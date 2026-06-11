@@ -44,7 +44,7 @@ export default () => {
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 overflow-hidden">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
-          <div className="max-w-5xl mx-auto w-full">
+          <div className="mx-auto flex w-full max-w-5xl justify-center">
             <TabsList className="bg-card/50 border border-border/50">
               <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
               <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>

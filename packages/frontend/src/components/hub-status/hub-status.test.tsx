@@ -188,6 +188,62 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
 
+  it('offers the WSL2 Docker Engine alternative on Windows and surfaces the restart state', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByText('Licensing-free alternative')).toBeInTheDocument();
+    expect(screen.getByText(/paid subscription for organizations/)).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Auto-Install Docker Engine in WSL2' });
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'install_docker_engine_alternative_command') {
+        return { state: 'needs_restart', detail: null };
+      }
+      if (cmd === 'get_hub_status_command') return 'DockerNotAvailable';
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: '' };
+      }
+      return undefined;
+    });
+
+    fireEvent.click(button);
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
+    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
+  });
+
+  it('offers the Colima alternative on macOS and reports success', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
+
+    expect(await screen.findByText('Licensing-free alternative')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Auto-Install Colima' });
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'install_docker_engine_alternative_command') {
+        return { state: 'completed', detail: null };
+      }
+      if (cmd === 'get_hub_status_command') return 'DockerNotAvailable';
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: '' };
+      }
+      return undefined;
+    });
+
+    fireEvent.click(button);
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
+    expect(screen.getByText(/Docker should become available momentarily/)).toBeInTheDocument();
+  });
+
+  it('does not show the alternative panel on Linux (the Engine is already licensing-free)', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (X11; Linux x86_64)');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument();
+    expect(screen.queryByText('Licensing-free alternative')).not.toBeInTheDocument();
+  });
+
   it('shows Linux manual guidance and docs only, with no install button', async () => {
     renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (X11; Linux x86_64)');
 

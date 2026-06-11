@@ -54,7 +54,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
   return (
     <Link to={`/store/${storeId}/${appId}`} className="block h-full group">
       <GlassContainer
-        className="h-full p-4 hover:bg-white/10 hover:shadow-lg transition-all active:scale-[0.98] flex flex-col min-h-[180px] sm:min-h-[220px]"
+        className="h-full min-h-[180px] flex flex-col p-4 shadow-sm shadow-slate-300/70 transition-all active:scale-[0.98] hover:bg-white/10 hover:shadow-xl hover:shadow-slate-300/80 sm:min-h-[220px] dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20"
         intensity="low"
       >
         <div className="flex items-start justify-between mb-3 sm:mb-4">

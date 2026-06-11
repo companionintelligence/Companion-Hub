@@ -362,3 +362,64 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
   });
 });
+
+describe('DockerComposeBuilder resource limits', () => {
+  let builder: DockerComposeBuilder;
+
+  const service: ServiceInput = {
+    name: 'nginx',
+    image: 'nginx:latest',
+    internalPort: 80,
+    isMain: true,
+  };
+
+  beforeEach(() => {
+    builder = new DockerComposeBuilder('example.com', 'ci.lan');
+  });
+
+  const build = (form: Parameters<DockerComposeBuilder['getDockerCompose']>[1], services = [service], defaults?: { cpu?: string; memory?: string }) =>
+    builder.getDockerCompose(services, form, urn, subnet, 'example.com', 'ci.lan', undefined, undefined, defaults?.cpu, defaults?.memory);
+
+  it('applies default cpu and memory limits when the app defines none', async () => {
+    const compose = await build({}, [service], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '4', memory: '4096M' });
+  });
+
+  it('prefers form limits over defaults', async () => {
+    const compose = await build({ cpuLimit: '2', memoryLimit: '2048M' }, [service], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '2', memory: '2048M' });
+  });
+
+  it('never overrides limits the app defines itself', async () => {
+    const limitedService: ServiceInput = {
+      ...service,
+      deploy: { resources: { limits: { cpus: '0.5', memory: '256M' } } },
+    };
+    const compose = await build({}, [limitedService], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '256M' });
+  });
+
+  it('fills only the missing limit when the app defines the other', async () => {
+    const cpuOnlyService: ServiceInput = {
+      ...service,
+      deploy: { resources: { limits: { cpus: '0.5' } } },
+    };
+    const compose = await build({}, [cpuOnlyService], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '4096M' });
+  });
+
+  it('adds no deploy section when there are no limits at all', async () => {
+    const compose = await build({});
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy).toBeUndefined();
+  });
+});

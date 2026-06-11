@@ -118,6 +118,12 @@ const DOCKER_DESKTOP_MACOS_INTEL_URL: &str = "https://desktop.docker.com/mac/mai
 #[cfg(target_os = "macos")]
 const DOCKER_DESKTOP_MACOS_ARM_URL: &str = "https://desktop.docker.com/mac/main/arm64/Docker.dmg";
 
+#[cfg(target_os = "windows")]
+const OLLAMA_WINDOWS_INSTALLER_URL: &str = "https://ollama.com/download/OllamaSetup.exe";
+// Universal binary (arm64 + x86_64) — one zip for all Macs.
+#[cfg(target_os = "macos")]
+const OLLAMA_MACOS_ZIP_URL: &str = "https://ollama.com/download/Ollama-darwin.zip";
+
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
     let mut cmd = Command::new(docker_path);
@@ -1064,13 +1070,15 @@ fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
     (total, used, mount)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const MIN_DOCKER_RAM_MB: u64 = 8192;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const DOCKER_OS_RESERVE_MB: u64 = 4096;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MIN_DOCKER_DISK_GB: u64 = 64;
 
-#[cfg(target_os = "linux")]
-fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn recommended_docker_vm_ram_mb(host_total_mb: u64) -> u64 {
     if host_total_mb == 0 {
         return MIN_DOCKER_RAM_MB;
     }
@@ -1081,20 +1089,32 @@ fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn docker_desktop_settings_path_linux() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".docker/desktop/settings-store.json"))
+fn docker_desktop_settings_path() -> Option<PathBuf> {
+    dirs::home_dir()
+        .map(|h| h.join(".docker/desktop/settings-store.json"))
+        .filter(|p| p.exists())
 }
 
-#[cfg(target_os = "linux")]
-fn read_docker_desktop_memory_mib(settings: &serde_json::Value) -> u64 {
+#[cfg(target_os = "macos")]
+fn docker_desktop_settings_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    [
+        home.join("Library/Group Containers/group.com.docker/settings-store.json"),
+        home.join(".docker/desktop/settings-store.json"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_docker_desktop_u64(settings: &serde_json::Value, key: &str, legacy_key: &str) -> Option<u64> {
     settings
-        .get("memoryMiB")
-        .or_else(|| settings.get("MemoryMiB"))
+        .get(key)
+        .or_else(|| settings.get(legacy_key))
         .and_then(|m| m.as_u64())
-        .unwrap_or(MIN_DOCKER_RAM_MB)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
     let path = data_dir.join("state/hardware/docker-tuning.json");
     if let Some(parent) = path.parent() {
@@ -1105,8 +1125,8 @@ fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn try_restart_docker_desktop_linux() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn try_restart_docker_desktop() {
     let docker = find_docker_binary();
     let _ = Command::new(&docker)
         .args(["desktop", "restart"])
@@ -1115,23 +1135,32 @@ fn try_restart_docker_desktop_linux() {
         .status();
 }
 
-/// On Linux with Docker Desktop, containers run in a linuxkit VM capped by `memoryMiB` in
-/// `~/.docker/desktop/settings-store.json`. Best-effort: raise toward ~75% of host RAM, restart
-/// Docker Desktop, and record outcome in `state/hardware/docker-tuning.json` (shown in Settings → System).
-#[cfg(target_os = "linux")]
-fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
-    let settings_path = match docker_desktop_settings_path_linux() {
-        Some(path) if path.exists() => path,
-        _ => return,
-    };
+/// Host hardware totals used to size the Docker Desktop VM.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct HostVmSizingInputs {
+    total_ram_mb: u64,
+    cpu_cores: u64,
+    disk_total_gb: u64,
+}
 
-    let host_total_mb = match read_proc_meminfo_kb("MemTotal") {
-        Some(kb) => kb / 1024,
+/// With Docker Desktop, containers run in a VM whose RAM/CPU/disk caps live in
+/// `settings-store.json`. Best-effort, raise-only tuning: memory toward ~75% of host
+/// RAM, CPUs toward all host cores, disk toward half the host disk (the disk image is
+/// sparse, so a higher cap costs nothing until apps use the space). Restarts Docker
+/// Desktop when something changed and records the outcome in
+/// `state/hardware/docker-tuning.json` (shown in Settings → System).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ensure_docker_desktop_vm_resources(data_dir: &Path, platform: &str, host: HostVmSizingInputs) {
+    let settings_path = match docker_desktop_settings_path() {
+        // No settings file means a native engine or no Docker Desktop — nothing to tune
+        Some(path) => path,
         None => return,
     };
 
-    let recommended_mb = recommended_docker_ram_mb_linux(host_total_mb);
-    let threshold_mb = (recommended_mb as f64 * 0.9) as u64;
+    if host.total_ram_mb == 0 {
+        return;
+    }
+
     let attempted_at = chrono::Utc::now().to_rfc3339();
 
     let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
@@ -1142,19 +1171,36 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
         _ => serde_json::json!({}),
     };
 
-    let current_mib = read_docker_desktop_memory_mib(&settings);
+    let recommended_ram_mb = recommended_docker_vm_ram_mb(host.total_ram_mb);
+    let ram_threshold_mb = (recommended_ram_mb as f64 * 0.9) as u64;
+    let current_ram_mib =
+        read_docker_desktop_u64(&settings, "memoryMiB", "MemoryMiB").unwrap_or(MIN_DOCKER_RAM_MB);
+    let raise_ram = current_ram_mib < ram_threshold_mb;
 
-    if current_mib >= threshold_mb {
+    // Give the VM every host core; per-app fairness comes from compose-level CPU caps.
+    let current_cpus = read_docker_desktop_u64(&settings, "cpus", "Cpus").unwrap_or(0);
+    let raise_cpus = host.cpu_cores > 0 && current_cpus < host.cpu_cores;
+
+    // Only touch the disk cap when the key already exists — a missing key means
+    // Docker Desktop manages its own (often larger) default.
+    let recommended_disk_mib = std::cmp::max(MIN_DOCKER_DISK_GB, host.disk_total_gb / 2) * 1024;
+    let current_disk_mib = read_docker_desktop_u64(&settings, "diskSizeMiB", "DiskSizeMiB");
+    let raise_disk = host.disk_total_gb > 0
+        && matches!(current_disk_mib, Some(current) if current < recommended_disk_mib);
+
+    if !raise_ram && !raise_cpus && !raise_disk {
         write_docker_tuning_record(
             data_dir,
             serde_json::json!({
                 "attemptedAt": attempted_at,
-                "platform": "linux",
+                "platform": platform,
                 "action": "noop",
-                "reason": "Docker Desktop VM memory already at or above recommended value",
-                "previousMemoryMb": current_mib,
-                "targetMemoryMb": recommended_mb,
-                "appliedMemoryMb": current_mib,
+                "reason": "Docker Desktop VM resources already at or above recommended values",
+                "previousMemoryMb": current_ram_mib,
+                "targetMemoryMb": recommended_ram_mb,
+                "appliedMemoryMb": current_ram_mib,
+                "previousCpus": current_cpus,
+                "targetCpus": host.cpu_cores,
             }),
         );
         return;
@@ -1163,10 +1209,32 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
     let Some(obj) = settings.as_object_mut() else {
         return;
     };
-    obj.insert(
-        "memoryMiB".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(recommended_mb)),
-    );
+
+    let mut changes: Vec<String> = Vec::new();
+    if raise_ram {
+        obj.insert(
+            "memoryMiB".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(recommended_ram_mb)),
+        );
+        changes.push(format!("memoryMiB {current_ram_mib} → {recommended_ram_mb}"));
+    }
+    if raise_cpus {
+        obj.insert(
+            "cpus".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(host.cpu_cores)),
+        );
+        changes.push(format!("cpus {current_cpus} → {}", host.cpu_cores));
+    }
+    if raise_disk {
+        obj.insert(
+            "diskSizeMiB".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(recommended_disk_mib)),
+        );
+        changes.push(format!(
+            "diskSizeMiB {} → {recommended_disk_mib}",
+            current_disk_mib.unwrap_or(0)
+        ));
+    }
 
     let serialized = match serde_json::to_string_pretty(&settings) {
         Ok(value) => format!("{value}\n"),
@@ -1175,11 +1243,11 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "failed",
                     "reason": format!("Could not serialize Docker Desktop settings: {error}"),
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
                 }),
             );
             return;
@@ -1188,33 +1256,40 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
 
     match std::fs::write(&settings_path, serialized) {
         Ok(_) => {
-            try_restart_docker_desktop_linux();
+            try_restart_docker_desktop();
             let _ = append_desktop_log_for(
                 data_dir,
-                "docker.mem",
+                "docker.vm",
                 &format!(
-                    "Raised Docker Desktop VM memory from {current_mib} MiB to {recommended_mb} MiB (host {host_total_mb} MB RAM); requested Docker Desktop restart.",
+                    "Raised Docker Desktop VM resources ({}) for host with {} MB RAM / {} cores / {} GB disk; requested Docker Desktop restart.",
+                    changes.join(", "),
+                    host.total_ram_mb,
+                    host.cpu_cores,
+                    host.disk_total_gb,
                 ),
             );
             write_docker_tuning_record(
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "updated",
-                    "reason": "Increased Docker Desktop memoryMiB (restart Docker Desktop if memory still looks capped)",
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
-                    "appliedMemoryMb": recommended_mb,
+                    "reason": format!("Increased Docker Desktop VM resources: {} (restart Docker Desktop if resources still look capped)", changes.join(", ")),
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
+                    "appliedMemoryMb": if raise_ram { recommended_ram_mb } else { current_ram_mib },
+                    "previousCpus": current_cpus,
+                    "targetCpus": host.cpu_cores,
+                    "appliedCpus": if raise_cpus { host.cpu_cores } else { current_cpus },
                 }),
             );
         }
         Err(error) => {
             let _ = append_desktop_log_for(
                 data_dir,
-                "docker.mem",
+                "docker.vm",
                 &format!(
-                    "Could not write Docker Desktop settings at {}: {error}. Raise memory manually under Docker Desktop → Settings → Resources.",
+                    "Could not write Docker Desktop settings at {}: {error}. Raise resources manually under Docker Desktop → Settings → Resources.",
                     settings_path.display()
                 ),
             );
@@ -1222,19 +1297,68 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "failed",
                     "reason": format!("Could not write Docker Desktop settings: {error}"),
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
                 }),
             );
         }
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn ensure_docker_desktop_memory_linux(_data_dir: &Path) {}
+#[cfg(target_os = "linux")]
+fn ensure_docker_vm_resources(data_dir: &Path) {
+    let total_ram_mb = match read_proc_meminfo_kb("MemTotal") {
+        Some(kb) => kb / 1024,
+        None => return,
+    };
+    let (_, cpu_cores) = read_linux_cpu_info();
+    let (disk_total_gb, _, _) = linux_primary_disk_gb(data_dir);
+
+    ensure_docker_desktop_vm_resources(
+        data_dir,
+        "linux",
+        HostVmSizingInputs {
+            total_ram_mb,
+            cpu_cores: cpu_cores as u64,
+            disk_total_gb,
+        },
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let output = Command::new("sysctl").args(["-n", name]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_docker_vm_resources(data_dir: &Path) {
+    let total_ram_mb = match sysctl_u64("hw.memsize") {
+        Some(bytes) if bytes > 0 => bytes / 1024 / 1024,
+        _ => return,
+    };
+    let cpu_cores = sysctl_u64("hw.logicalcpu").unwrap_or(0);
+    let (disk_total_gb, _, _) = detect_macos_primary_disk_gb();
+
+    ensure_docker_desktop_vm_resources(
+        data_dir,
+        "darwin",
+        HostVmSizingInputs {
+            total_ram_mb,
+            cpu_cores,
+            disk_total_gb,
+        },
+    );
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn ensure_docker_vm_resources(_data_dir: &Path) {}
 
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
@@ -1361,6 +1485,18 @@ pub enum DockerInstallState {
 #[derive(Clone, serde::Serialize)]
 pub struct DockerInstallResult {
     pub state: DockerInstallState,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OllamaInstallState {
+    Completed,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct OllamaInstallResult {
+    pub state: OllamaInstallState,
     pub detail: Option<String>,
 }
 
@@ -2393,6 +2529,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -2400,6 +2538,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -2411,6 +2551,7 @@ fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String>
     Some(context_name.to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn docker_context_host_from_inspect_output(raw: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let host = parsed
@@ -4077,8 +4218,8 @@ fn start_hub_inner(
     // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
     refresh_linux_host_metrics_probe_cache(data_dir);
 
-    // On Linux + Docker Desktop, best-effort raise VM memory (~75% host RAM) before compose up.
-    ensure_docker_desktop_memory_linux(data_dir);
+    // With Docker Desktop, best-effort raise VM memory/CPUs/disk toward host capacity before compose up.
+    ensure_docker_vm_resources(data_dir);
 
     // Release stale Docker publish mappings before resolving host ports.
     for port in [80u16, 443] {
@@ -5270,7 +5411,8 @@ pub fn install_docker() -> Result<DockerInstallResult, String> {
     #[cfg(target_os = "linux")]
     {
         return install_docker_linux().map(|detail| DockerInstallResult {
-            state: DockerInstallState::Completed,
+            // Linux always needs a logout/login for docker group membership to take effect.
+            state: DockerInstallState::NeedsRestart,
             detail: Some(detail),
         });
     }
@@ -5331,13 +5473,23 @@ exit 0
     )
 }
 
+fn docker_desktop_windows_outer_launch_command(script_path: &str, username: &str) -> String {
+    format!(
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
+        escape_powershell_single_quoted(script_path),
+        escape_powershell_single_quoted(username),
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn install_docker_windows() -> Result<DockerInstallResult, String> {
     use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
 
     let username = resolve_current_username_windows()?;
-    let mut script = NamedTempFile::new()
+    // PowerShell -File refuses scripts without a .ps1 extension.
+    let mut script = tempfile::Builder::new()
+        .suffix(".ps1")
+        .tempfile()
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(
@@ -5345,10 +5497,9 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
-    let launch_command = format!(
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
-        escape_powershell_single_quoted(&script.path().to_string_lossy()),
-        escape_powershell_single_quoted(&username),
+    let launch_command = docker_desktop_windows_outer_launch_command(
+        &script.path().to_string_lossy(),
+        &username,
     );
 
     let mut command = Command::new("powershell.exe");
@@ -5438,7 +5589,6 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -5608,8 +5758,19 @@ fn launch_docker_desktop_macos() -> Result<(), String> {
         .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))
 }
 
-/// Install Docker Engine on Linux using the official convenience script.
-/// Uses pkexec for privilege escalation (GUI polkit prompt).
+/// Install Docker Engine on Linux.
+///
+/// Detects the distro from /etc/os-release and picks the right package manager:
+///   - Arch-based (Arch, Manjaro, EndeavourOS, Garuda): pacman
+///   - Alpine: apk + OpenRC
+///   - SUSE-based (openSUSE Leap/Tumbleweed, SLES): zypper
+///   - RHEL: official Docker dnf repo (get.docker.com doesn't support RHEL)
+///   - Everything else (Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, Rocky, etc.):
+///     Docker's official get.docker.com convenience script; auto-installs curl/wget
+///     if neither is present.
+///
+/// Adds the current user to the docker group and enables the Docker service via
+/// systemd or OpenRC as available. Uses pkexec (polkit) for the GUI privilege prompt.
 #[cfg(target_os = "linux")]
 pub fn install_docker_linux() -> Result<String, String> {
     use std::io::Write as IoWrite;
@@ -5625,18 +5786,114 @@ pub fn install_docker_linux() -> Result<String, String> {
     wrapper_script
         .write_all(
             br#"#!/bin/bash
-set -euo pipefail
+# Docker auto-installer for Companion Hub. Runs as root via pkexec.
+# Arg 1: username to add to the docker group.
+set -e
 export DEBIAN_FRONTEND=noninteractive
-installer_script="$(mktemp)"
-cleanup() {
-  rm -f "$installer_script"
+USERNAME="$1"
+
+# -- Distro detection ---------------------------------------------------------
+DISTRO_ID="unknown"
+DISTRO_LIKE=""
+if [ -f /etc/os-release ]; then
+    DISTRO_ID="$(. /etc/os-release && printf '%s' "${ID:-unknown}")"
+    DISTRO_LIKE="$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")"
+fi
+
+# True if ID equals $1 OR ID_LIKE contains $1 as a whitespace-delimited word.
+is_distro() {
+    [ "$DISTRO_ID" = "$1" ] && return 0
+    case " $DISTRO_LIKE " in *" $1 "*) return 0;; esac
+    return 1
 }
-trap cleanup EXIT
-curl -fsSL https://get.docker.com -o "$installer_script"
-sh "$installer_script"
-usermod -aG docker "$1"
-systemctl enable docker
-systemctl start docker
+
+# -- Init-system: enable + start docker --------------------------------------
+enable_and_start_docker() {
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl enable docker
+        systemctl start docker
+    elif command -v rc-update >/dev/null 2>&1; then
+        rc-update add docker boot || true
+        rc-service docker start || true
+    elif command -v service >/dev/null 2>&1; then
+        service docker start || true
+    fi
+}
+
+# -- Download helper: curl then wget ------------------------------------------
+download_to() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" "$1"
+    else
+        return 1
+    fi
+}
+
+# -- Per-distro install -------------------------------------------------------
+
+if is_distro arch || is_distro manjaro || is_distro endeavouros || is_distro garuda; then
+    pacman -Sy --noconfirm docker docker-compose
+    enable_and_start_docker
+
+elif is_distro alpine; then
+    apk add --no-cache docker docker-cli-compose
+    rc-update add docker boot 2>/dev/null || true
+    rc-service docker start 2>/dev/null || true
+
+elif is_distro suse || is_distro opensuse-leap || is_distro opensuse-tumbleweed || is_distro sles; then
+    zypper --non-interactive install docker docker-compose
+    enable_and_start_docker
+
+elif [ "$DISTRO_ID" = "rhel" ]; then
+    # Only true RHEL (ID=rhel): get.docker.com does not support it; use the Docker dnf repo.
+    # Rocky Linux, AlmaLinux, CentOS (all have ID_LIKE containing "rhel") are handled by
+    # get.docker.com below -- do NOT use is_distro here or they fall into this branch.
+    dnf install -y dnf-plugins-core
+    # dnf 5 (RHEL 9+) syntax vs dnf 4 (RHEL 8) syntax
+    if ! dnf config-manager addrepo \
+            --from-repofile https://download.docker.com/linux/rhel/docker-ce.repo 2>/dev/null; then
+        dnf config-manager --add-repo \
+            https://download.docker.com/linux/rhel/docker-ce.repo
+    fi
+    dnf install -y docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin
+    enable_and_start_docker
+
+else
+    # Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, Rocky Linux, and others.
+    # Docker's official convenience script handles all of these.
+
+    # Ensure a downloader is available; install curl if neither curl nor wget is
+    # present. ca-certificates rides along: apt treats it as a Recommends, so
+    # --no-install-recommends curl alone cannot do HTTPS (curl error 77).
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y --no-install-recommends curl ca-certificates
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y curl ca-certificates
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y curl ca-certificates
+        else
+            printf 'Error: curl/wget not found and could not be installed automatically.\n' >&2
+            printf 'Install curl first, then retry.\n' >&2
+            exit 1
+        fi
+    fi
+
+    installer_script="$(mktemp)"
+    trap 'rm -f "$installer_script"' EXIT
+    download_to https://get.docker.com "$installer_script" \
+        || { printf 'Error: failed to download Docker installer from get.docker.com\n' >&2; exit 1; }
+    sh "$installer_script"
+    enable_and_start_docker
+fi
+
+# -- Add user to the docker group (common to all distros) --------------------
+if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker "$USERNAME"
+fi
 "#,
         )
         .map_err(|e| format!("Failed to write install script: {}", e))?;
@@ -5720,6 +5977,710 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
         })
 }
 
+/// Install Ollama on the current platform.
+///
+/// - Linux: official install.sh via pkexec (binary to /usr/local, systemd unit,
+///   `ollama` system user, NVIDIA/AMD GPU detection — all handled by the script).
+/// - macOS: Ollama-darwin.zip (universal binary) verified with codesign/spctl,
+///   installed to /Applications with the CLI symlinked, launched hidden.
+/// - Windows: OllamaSetup.exe (Inno Setup, per-user — no elevation needed),
+///   Authenticode-verified, run with /VERYSILENT; the tray app auto-starts.
+///
+/// The Ollama API listens on 127.0.0.1:11434 on every platform.
+pub fn install_ollama() -> Result<OllamaInstallResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_ollama_linux();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return install_ollama_windows();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return install_ollama_macos();
+    }
+
+    #[allow(unreachable_code)]
+    Err("Ollama auto-install is not supported on this platform.".to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn ollama_windows_install_script(download_url: &str) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.exe')
+Remove-Item $installer -Force -ErrorAction SilentlyContinue
+try {{
+  Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
+  $signature = Get-AuthenticodeSignature $installer
+  if ($signature.Status -ne 'Valid') {{
+    throw "Downloaded Ollama installer signature validation failed: $($signature.Status)"
+  }}
+  if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Ollama') {{
+    throw "Downloaded Ollama installer signer was not recognized as Ollama."
+  }}
+  $installProcess = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES'
+  if ($installProcess.ExitCode -ne 0) {{
+    exit $installProcess.ExitCode
+  }}
+}} finally {{
+  Remove-Item $installer -Force -ErrorAction SilentlyContinue
+}}
+exit 0
+"#,
+        download_url = download_url,
+    )
+}
+
+/// OllamaSetup.exe is an Inno Setup installer with PrivilegesRequired=lowest —
+/// it installs per-user to %LOCALAPPDATA%\Programs\Ollama, so unlike the Docker
+/// installer no elevation is required. The installer adds Ollama to the user
+/// PATH and launches the tray app itself.
+#[cfg(target_os = "windows")]
+fn install_ollama_windows() -> Result<OllamaInstallResult, String> {
+    use std::io::Write as IoWrite;
+
+    // PowerShell -File refuses scripts without a .ps1 extension.
+    let mut script = tempfile::Builder::new()
+        .suffix(".ps1")
+        .tempfile()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(ollama_windows_install_script(OLLAMA_WINDOWS_INSTALLER_URL).as_bytes())
+        .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.path().to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch Ollama installer: {}", e))?;
+
+    if output.status.success() {
+        Ok(OllamaInstallResult {
+            state: OllamaInstallState::Completed,
+            detail: Some(
+                "Ollama installed. The API is available at http://127.0.0.1:11434.".to_string(),
+            ),
+        })
+    } else {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        if combined.is_empty() {
+            Err(format!(
+                "Ollama installation failed with exit code {:?}.",
+                output.status.code()
+            ))
+        } else {
+            Err(format!("Ollama installation failed: {}", combined))
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn ollama_macos_install_script(download_url: &str) -> String {
+    format!(
+        r#"#!/bin/bash
+set -euo pipefail
+workdir="$(mktemp -d)"
+cleanup() {{
+  rm -rf "$workdir"
+}}
+trap cleanup EXIT
+
+zip="$workdir/Ollama-darwin.zip"
+curl -L --fail -o "$zip" "{download_url}"
+ditto -x -k "$zip" "$workdir/extracted"
+app="$workdir/extracted/Ollama.app"
+test -d "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
+spctl --assess --type execute --verbose=2 "$app"
+pkill -x Ollama 2>/dev/null || true
+rm -rf /Applications/Ollama.app
+ditto "$app" /Applications/Ollama.app
+mkdir -p /usr/local/bin
+ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
+"#,
+        download_url = download_url,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn install_ollama_macos() -> Result<OllamaInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let mut script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(ollama_macos_install_script(OLLAMA_MACOS_ZIP_URL).as_bytes())
+        .map_err(|e| format!("Failed to write macOS installer script: {}", e))?;
+    script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Failed to set macOS installer script permissions: {}", e))?;
+
+    let applescript = format!(
+        "do shell script quoted form of POSIX path of \"{}\" with administrator privileges",
+        script.path().to_string_lossy().replace('"', "\\\"")
+    );
+
+    let output = Command::new("osascript")
+        .args(["-e", &applescript])
+        .output()
+        .map_err(|e| format!("Failed to launch elevated Ollama installer: {}", e))?;
+
+    if output.status.success() {
+        // Launch as the current user (not root) so the menu-bar app lands in
+        // the user session; `hidden` suppresses the first-run window.
+        let _ = Command::new("open")
+            .args(["-a", "Ollama", "--args", "hidden"])
+            .spawn();
+        Ok(OllamaInstallResult {
+            state: OllamaInstallState::Completed,
+            detail: Some(
+                "Ollama installed. The API is available at http://127.0.0.1:11434.".to_string(),
+            ),
+        })
+    } else {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+
+        if combined_lower.contains("cancel") && combined_lower.contains("user") {
+            Err("Authorization was cancelled or denied.".to_string())
+        } else if combined.is_empty() {
+            Err("Ollama installation failed.".to_string())
+        } else {
+            Err(format!("Ollama installation failed: {}", combined))
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn ollama_linux_install_script() -> &'static str {
+    // The official installer is distro-agnostic (tarball to /usr/local + systemd
+    // unit + GPU detection), so unlike Docker no per-distro branching is needed —
+    // only its hard dependencies (curl, zstd) vary by package manager.
+    r#"#!/bin/bash
+# Ollama auto-installer for Companion Hub. Runs as root via pkexec.
+# Arg 1: username to add to the ollama group.
+set -e
+USERNAME="$1"
+
+# The official installer hard-requires curl and zstd; install whichever are
+# missing. ca-certificates rides along with curl: apt treats it as a Recommends,
+# so --no-install-recommends curl alone cannot do HTTPS (curl error 77). The
+# package name is identical across all six package-manager families.
+need=""
+command -v curl >/dev/null 2>&1 || need="curl ca-certificates"
+command -v zstd >/dev/null 2>&1 || need="$need zstd"
+if [ -n "$need" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y --no-install-recommends $need \
+            || { apt-get update && apt-get install -y --no-install-recommends $need; }
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y $need
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y $need
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm $need
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper --non-interactive install $need
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache $need
+    else
+        printf 'Error: missing required tools (%s) and no known package manager found.\n' "$need" >&2
+        exit 1
+    fi
+fi
+
+installer_script="$(mktemp)"
+trap 'rm -f "$installer_script"' EXIT
+curl -fsSL https://ollama.com/install.sh -o "$installer_script"
+sh "$installer_script"
+
+# Best-effort: the ollama group grants direct model-dir access; the HTTP API
+# itself needs no group membership. Without systemd the script skips group
+# creation, hence the existence check.
+if getent group ollama >/dev/null 2>&1; then
+    usermod -aG ollama "$USERNAME" || true
+fi
+"#
+}
+
+/// Install Ollama on Linux via the official install.sh, elevated with pkexec
+/// (GUI polkit prompt). The script handles arch detection, the systemd service,
+/// and NVIDIA/AMD GPU setup; GPU driver installation can take several minutes.
+#[cfg(target_os = "linux")]
+pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let username = resolve_current_username()?;
+    let pkexec_path = find_executable("pkexec").ok_or_else(|| {
+        "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
+    })?;
+
+    let mut wrapper_script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
+    wrapper_script
+        .write_all(ollama_linux_install_script().as_bytes())
+        .map_err(|e| format!("Failed to write install script: {}", e))?;
+
+    let permissions = std::fs::Permissions::from_mode(0o700);
+    wrapper_script
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+
+    let output = Command::new(&pkexec_path)
+        .arg(wrapper_script.path())
+        .arg(&username)
+        .output()
+        .map_err(|e| format!("Failed to run pkexec installer: {}", e))?;
+
+    if output.status.success() {
+        Ok(OllamaInstallResult {
+            state: OllamaInstallState::Completed,
+            detail: Some(
+                "Ollama installed. The API is available at http://127.0.0.1:11434.".to_string(),
+            ),
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let combined = format_command_output(&stdout, &stderr);
+        let combined_lower = combined.to_lowercase();
+
+        if combined_lower.contains("dismissed")
+            || combined_lower.contains("not authorized")
+            || combined_lower.contains("authorization required")
+            || combined_lower.contains("authentication failed")
+        {
+            Err("Authorization was cancelled or denied.".to_string())
+        } else if combined.is_empty() {
+            Err(format!(
+                "Ollama installation failed with exit code {:?}.",
+                output.status.code()
+            ))
+        } else {
+            Err(format!("Ollama installation failed: {}", combined))
+        }
+    }
+}
+
+/// Install a licensing-free Docker engine. Docker Desktop requires a paid
+/// subscription for organizations with >250 employees or >$10M revenue; these
+/// paths run the open-source Docker Engine instead:
+///   - macOS: Colima (Engine in a lightweight vz VM). Homebrew when present,
+///     otherwise verified binaries (colima + lima + docker CLI) into /usr/local.
+///   - Windows: Docker Engine inside WSL2 (Ubuntu), TCP-exposed on
+///     127.0.0.1:2375 with a docker context — no Docker Desktop involved.
+///   - Linux: the standard Engine install (already licensing-free).
+pub fn install_docker_engine_alternative() -> Result<DockerInstallResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_docker_linux().map(|detail| DockerInstallResult {
+            state: DockerInstallState::NeedsRestart,
+            detail: Some(detail),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return install_colima_macos();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return install_docker_wsl2_windows();
+    }
+
+    #[allow(unreachable_code)]
+    Err("No licensing-free engine path is available on this platform.".to_string())
+}
+
+/// Elevated phase of the no-Homebrew Colima install: place colima, lima, and
+/// the docker CLI under /usr/local. Checksums are verified for colima (per-asset
+/// .sha256sum) and lima (release SHA256SUMS); Docker's static CLI publishes no
+/// checksums, so it relies on TLS like the get.docker.com path.
+#[cfg(any(test, target_os = "macos"))]
+fn colima_macos_binary_install_script() -> &'static str {
+    r#"#!/bin/bash
+set -euo pipefail
+workdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$workdir"
+}
+trap cleanup EXIT
+cd "$workdir"
+
+ARCH="$(uname -m)"   # arm64 | x86_64
+case "$ARCH" in
+  arm64) DOCKER_ARCH_DIR="aarch64" ;;
+  x86_64) DOCKER_ARCH_DIR="x86_64" ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+# colima: version-less asset names, so latest/download is stable; verify sha256.
+curl -fsSL -o colima "https://github.com/abiosoft/colima/releases/latest/download/colima-Darwin-${ARCH}"
+curl -fsSL -o colima.sha256sum "https://github.com/abiosoft/colima/releases/latest/download/colima-Darwin-${ARCH}.sha256sum"
+# The published file references the asset name; check against our local name.
+expected="$(awk '{print $1}' colima.sha256sum)"
+echo "${expected}  colima" | shasum -a 256 -c -
+install -m 0755 colima /usr/local/bin/colima
+
+# lima: asset names embed the version; resolve the tag from the GitHub API.
+LIMA_TAG="$(curl -fsSL https://api.github.com/repos/lima-vm/lima/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+test -n "$LIMA_TAG"
+LIMA_VERSION="${LIMA_TAG#v}"
+curl -fsSL -o lima.tar.gz "https://github.com/lima-vm/lima/releases/download/${LIMA_TAG}/lima-${LIMA_VERSION}-Darwin-${ARCH}.tar.gz"
+curl -fsSL -o lima-SHA256SUMS "https://github.com/lima-vm/lima/releases/download/${LIMA_TAG}/SHA256SUMS"
+grep "lima-${LIMA_VERSION}-Darwin-${ARCH}.tar.gz" lima-SHA256SUMS | awk '{print $1}' | { read -r sum; echo "${sum}  lima.tar.gz" | shasum -a 256 -c -; }
+# Extract the whole tarball to one prefix: limactl resolves ../share/lima
+# (guest agents, templates) relative to its own binary.
+tar -xzf lima.tar.gz -C /usr/local
+
+# docker CLI (static, client-only): no latest pointer — scrape the index.
+DOCKER_TGZ="$(curl -fsSL "https://download.docker.com/mac/static/stable/${DOCKER_ARCH_DIR}/" | grep -o 'docker-[0-9][0-9.]*\.tgz' | sort -uV | tail -1)"
+test -n "$DOCKER_TGZ"
+curl -fsSL -o docker.tgz "https://download.docker.com/mac/static/stable/${DOCKER_ARCH_DIR}/${DOCKER_TGZ}"
+tar -xzf docker.tgz
+install -m 0755 docker/docker /usr/local/bin/docker
+"#
+}
+
+/// User phase of the Colima install (never root — brew refuses it, and the VM
+/// must belong to the user). Installs via Homebrew when available; otherwise
+/// assumes the binary phase already ran, registers a LaunchAgent for autostart,
+/// and waits until `docker info` answers (first start downloads a ~350 MB VM
+/// image, so the ceiling is generous).
+#[cfg(any(test, target_os = "macos"))]
+fn colima_macos_start_script() -> &'static str {
+    r#"#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+BREW=""
+for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+  if [ -x "$candidate" ]; then BREW="$candidate"; break; fi
+done
+
+if [ -n "$BREW" ]; then
+  "$BREW" install colima docker
+  "$BREW" services start colima
+else
+  # Binary install path: autostart via a per-user LaunchAgent.
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$HOME/Library/LaunchAgents/com.companionhub.colima.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.companionhub.colima</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/colima</string>
+    <string>start</string>
+    <string>--foreground</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+  launchctl unload "$HOME/Library/LaunchAgents/com.companionhub.colima.plist" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/com.companionhub.colima.plist"
+fi
+
+# First start downloads the VM image (~350 MB); wait until the engine answers.
+for _ in $(seq 1 120); do
+  if docker info >/dev/null 2>&1; then exit 0; fi
+  sleep 5
+done
+echo "Timed out waiting for the Colima engine to come up." >&2
+exit 1
+"#
+}
+
+#[cfg(target_os = "macos")]
+fn install_colima_macos() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let brew_present = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+
+    // Without Homebrew the binaries must be placed under /usr/local first —
+    // the only step that needs admin rights.
+    if !brew_present {
+        let mut script = NamedTempFile::new()
+            .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+        script
+            .write_all(colima_macos_binary_install_script().as_bytes())
+            .map_err(|e| format!("Failed to write Colima installer script: {}", e))?;
+        script
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to set installer script permissions: {}", e))?;
+
+        let applescript = format!(
+            "do shell script quoted form of POSIX path of \"{}\" with administrator privileges",
+            script.path().to_string_lossy().replace('"', "\\\"")
+        );
+        let output = Command::new("osascript")
+            .args(["-e", &applescript])
+            .output()
+            .map_err(|e| format!("Failed to launch elevated Colima installer: {}", e))?;
+        if !output.status.success() {
+            let combined = format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            );
+            let combined_lower = combined.to_lowercase();
+            if combined_lower.contains("cancel") && combined_lower.contains("user") {
+                return Err("Authorization was cancelled or denied.".to_string());
+            }
+            return Err(format!("Colima binary installation failed: {}", combined));
+        }
+    }
+
+    // Brew install, autostart registration, colima start, and the readiness
+    // wait all run as the user — never root.
+    let mut start_script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary start script: {}", e))?;
+    start_script
+        .write_all(colima_macos_start_script().as_bytes())
+        .map_err(|e| format!("Failed to write Colima start script: {}", e))?;
+    start_script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Failed to set start script permissions: {}", e))?;
+
+    let output = Command::new("bash")
+        .arg(start_script.path())
+        .output()
+        .map_err(|e| format!("Failed to run Colima start script: {}", e))?;
+
+    if output.status.success() {
+        Ok(DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(
+                "Colima installed and the Docker Engine is running (context \"colima\").".to_string(),
+            ),
+        })
+    } else {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        if combined.is_empty() {
+            Err("Colima installation failed.".to_string())
+        } else {
+            Err(format!("Colima installation failed: {}", combined))
+        }
+    }
+}
+
+/// Windows: Docker Engine inside WSL2, no Docker Desktop.
+///
+/// Exit code contract matches the Docker Desktop installer: 100 = WSL was just
+/// enabled and Windows must reboot (NeedsRestart); 0 = engine reachable.
+///
+/// Design notes (all verified against MS Learn / Docker docs):
+///   - `wsl --install -d Ubuntu --no-launch` registers Ubuntu without the
+///     interactive first-run user creation; `wsl -u root` works without it.
+///   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
+///     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
+///   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
+///     Windows, but only while the distro runs — and systemd services do NOT
+///     keep the VM alive, hence the hidden `sleep infinity` keepalive in the
+///     user's Startup folder.
+///   - docker.exe goes where find_docker_binary() already looks, and a docker
+///     context (stored in ~/.docker, read at runtime) points it at the TCP
+///     endpoint — no env vars, so the running Hub needs no restart.
+#[cfg(any(test, target_os = "windows"))]
+fn wsl2_engine_windows_install_script() -> String {
+    let linux_setup = r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v dockerd >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+fi
+printf '[boot]\nsystemd=true\n' > /etc/wsl.conf
+mkdir -p /etc/systemd/system/docker.service.d
+printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375\n' > /etc/systemd/system/docker.service.d/companionhub-tcp.conf
+systemctl enable docker 2>/dev/null || true"#;
+
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:WSL_UTF8 = '1'
+
+# Phase 1: WSL itself (admin + reboot when absent).
+& wsl.exe --status | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & wsl.exe --install --no-distribution
+  exit 100
+}}
+
+# Phase 2: Ubuntu distro, registered without the interactive first-run.
+$distros = (& wsl.exe -l -q) | ForEach-Object {{ $_.Trim() }}
+$distro = $distros | Where-Object {{ $_ -eq 'Ubuntu' -or $_ -match '^Ubuntu-' }} | Select-Object -First 1
+if (-not $distro) {{
+  & wsl.exe --install -d Ubuntu --no-launch
+  if ($LASTEXITCODE -ne 0) {{ throw "Ubuntu installation failed with exit code $LASTEXITCODE" }}
+  $distro = 'Ubuntu'
+}}
+
+# Phase 3: Docker Engine + systemd TCP drop-in inside the distro (as root).
+$setup = @'
+{linux_setup}
+'@ -replace "`r`n", "`n"
+$setup | & wsl.exe -d $distro -u root -- sh
+if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
+
+# Restart the distro so wsl.conf + the drop-in take effect.
+& wsl.exe --terminate $distro
+& wsl.exe -d $distro -u root -- true
+
+# Phase 4: static docker CLI where the Hub already looks for it.
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {{ 'aarch64' }} else {{ 'x86_64' }}
+$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
+if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {{
+  $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
+  $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object {{ $_.Value }} | Sort-Object {{ [version]($_ -replace 'docker-|\.zip', '') }}
+  $latest = $zips[-1]
+  if (-not $latest) {{ throw 'Could not determine the latest static docker CLI version.' }}
+  $zipPath = Join-Path $Env:TEMP $latest
+  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
+  try {{
+    $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zipPath -DestinationPath $extract
+    New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
+    Copy-Item (Join-Path $extract 'docker\docker.exe') (Join-Path $dockerBin 'docker.exe') -Force
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+  }} finally {{
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+  }}
+}}
+
+# Phase 5: route the CLI at the WSL engine via a context (read from ~/.docker
+# at runtime — no env vars, no Hub restart needed).
+$dockerExe = Join-Path $dockerBin 'docker.exe'
+& $dockerExe context inspect wsl-engine 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & $dockerExe context create wsl-engine --docker host=tcp://127.0.0.1:2375 | Out-Null
+}}
+& $dockerExe context use wsl-engine | Out-Null
+
+# Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
+$startup = [Environment]::GetFolderPath('Startup')
+$vbs = Join-Path $startup 'CompanionHub-WSL-Docker.vbs'
+Set-Content -Path $vbs -Value "CreateObject(""Wscript.Shell"").Run ""wsl.exe -d $distro -u root -- sleep infinity"", 0, False"
+
+# Keepalive for this session too, then wait for the engine.
+Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d',$distro,'-u','root','--','sleep','infinity'
+# Wait up to 30 s for systemd to finish booting before polling Docker.
+for ($s = 0; $s -lt 15; $s++) {{
+  $state = (& wsl.exe -d $distro -u root -- systemctl is-system-running 2>$null)
+  if ($state -match 'running|degraded') {{ break }}
+  Start-Sleep -Seconds 2
+}}
+for ($i = 0; $i -lt 60; $i++) {{
+  & $dockerExe info 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) {{ exit 0 }}
+  Start-Sleep -Seconds 5
+}}
+throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
+"#,
+        linux_setup = linux_setup,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+
+    // PowerShell -File refuses scripts without a .ps1 extension.
+    let mut script = tempfile::Builder::new()
+        .suffix(".ps1")
+        .tempfile()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(wsl2_engine_windows_install_script().as_bytes())
+        .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
+
+    let launch_command = format!(
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+        escape_powershell_single_quoted(&script.path().to_string_lossy()),
+    );
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &launch_command,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch elevated WSL2 engine installer: {}", e))?;
+
+    let combined = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+    let combined_lower = combined.to_lowercase();
+
+    match output.status.code() {
+        Some(0) => Ok(DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(
+                "Docker Engine is running inside WSL2 (context \"wsl-engine\").".to_string(),
+            ),
+        }),
+        Some(100) => Ok(DockerInstallResult {
+            state: DockerInstallState::NeedsRestart,
+            detail: Some(
+                "WSL was installed or enabled. Restart Windows, then reopen Companion Hub to continue Docker setup."
+                    .to_string(),
+            ),
+        }),
+        _ if combined_lower.contains("cancel") && combined_lower.contains("user") => {
+            Err("Authorization was cancelled or denied.".to_string())
+        }
+        _ if combined.is_empty() => Err(format!(
+            "WSL2 Docker Engine installation failed with exit code {:?}.",
+            output.status.code()
+        )),
+        _ => Err(format!("WSL2 Docker Engine installation failed: {}", combined)),
+    }
+}
+
 fn truncate_command_output(output: &str) -> String {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -5757,6 +6718,18 @@ mod tests {
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
+    #[cfg(any(test, target_os = "linux"))]
+    use super::ollama_linux_install_script;
+    #[cfg(any(test, target_os = "macos"))]
+    use super::ollama_macos_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::ollama_windows_install_script;
+    #[cfg(any(test, target_os = "macos"))]
+    use super::{colima_macos_binary_install_script, colima_macos_start_script};
+    #[cfg(any(test, target_os = "windows"))]
+    use super::wsl2_engine_windows_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_outer_launch_command;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
@@ -5778,7 +6751,9 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -6213,6 +7188,122 @@ mod tests {
         assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("--user=\"hex\""));
+    }
+
+    #[test]
+    fn ollama_windows_installer_script_validates_signature_and_runs_silently() {
+        let script = ollama_windows_install_script("https://ollama.com/download/OllamaSetup.exe");
+
+        assert!(script.contains("GetTempFileName()"));
+        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("-notmatch 'Ollama'"));
+        assert!(script.contains("'/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES'"));
+        // Per-user Inno Setup installer — must never request elevation.
+        assert!(!script.contains("RunAs"));
+        assert!(!script.contains("-Verb"));
+    }
+
+    #[test]
+    fn ollama_macos_installer_script_verifies_app_signature_and_installs_cli() {
+        let script = ollama_macos_install_script("https://ollama.com/download/Ollama-darwin.zip");
+
+        assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
+        assert!(script.contains("spctl --assess --type execute --verbose=2"));
+        assert!(script.contains("ditto"));
+        assert!(script.contains("/Applications/Ollama.app"));
+        assert!(script.contains("ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"));
+    }
+
+    #[test]
+    fn colima_binary_install_script_verifies_checksums_and_layout() {
+        let script = colima_macos_binary_install_script();
+
+        // colima sha256 + lima SHA256SUMS verification are non-negotiable.
+        assert!(script.contains("shasum -a 256 -c"));
+        assert!(script.contains("colima.sha256sum"));
+        assert!(script.contains("SHA256SUMS"));
+        // The lima tarball must be extracted whole — limactl resolves
+        // ../share/lima relative to its own binary.
+        assert!(script.contains("tar -xzf lima.tar.gz -C /usr/local"));
+        assert!(script.contains("releases/latest/download/colima-Darwin-"));
+        assert!(script.contains("download.docker.com/mac/static/stable"));
+    }
+
+    #[test]
+    fn colima_start_script_never_runs_brew_as_root_and_waits_for_engine() {
+        let script = colima_macos_start_script();
+
+        // brew refuses root; this script must not contain any elevation.
+        assert!(!script.contains("sudo"));
+        assert!(!script.contains("osascript"));
+        assert!(script.contains(r#""$BREW" install colima docker"#));
+        assert!(script.contains(r#""$BREW" services start colima"#));
+        assert!(script.contains("LaunchAgents/com.companionhub.colima.plist"));
+        // Success must mean a working engine, not just installed binaries.
+        assert!(script.contains("docker info"));
+    }
+
+    #[test]
+    fn wsl2_engine_script_keeps_desktop_contract_and_avoids_daemon_json_hosts() {
+        let script = wsl2_engine_windows_install_script();
+
+        // Exit-code contract shared with the Docker Desktop installer.
+        assert!(script.contains("exit 100"));
+        assert!(script.contains("--no-distribution"));
+        assert!(script.contains("--install -d Ubuntu --no-launch"));
+        // TCP exposure must be a systemd drop-in, not daemon.json "hosts"
+        // (which conflicts with Ubuntu's -H fd:// unit).
+        assert!(script.contains("docker.service.d"));
+        assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2375"));
+        assert!(!script.contains("\"hosts\""));
+        // UTF-16 output guard for wsl -l parsing.
+        assert!(script.contains("WSL_UTF8"));
+        // Context routing (no env vars) + logon keepalive.
+        assert!(script.contains("context create wsl-engine"));
+        assert!(script.contains("sleep infinity"));
+        assert!(script.contains("docker.exe"));
+        // Dynamic Ubuntu variant selection: handles Ubuntu-22.04, Ubuntu-24.04, etc.
+        assert!(script.contains("-match '^Ubuntu-'"));
+        // Must restart only the target distro, not every running WSL distro.
+        assert!(script.contains("--terminate $distro"));
+        assert!(!script.contains("--shutdown"));
+        // Architecture-aware docker CLI download: ARM64 gets aarch64, x86 gets x86_64.
+        assert!(script.contains("PROCESSOR_ARCHITECTURE"));
+        assert!(script.contains("aarch64"));
+        // Systemd boot check before the docker-info poll loop.
+        assert!(script.contains("is-system-running"));
+    }
+
+    #[test]
+    fn docker_desktop_outer_launch_has_stop_on_error_preference() {
+        let cmd = docker_desktop_windows_outer_launch_command(
+            "C:\\Users\\test\\AppData\\Local\\Temp\\install.ps1",
+            "testuser",
+        );
+        assert!(cmd.starts_with("$ErrorActionPreference = 'Stop';"));
+        assert!(cmd.contains("-Verb RunAs"));
+        assert!(cmd.contains("exit $process.ExitCode"));
+        // Username must appear in the -AppUser argument.
+        assert!(cmd.contains("testuser"));
+    }
+
+    #[test]
+    fn ollama_linux_installer_script_uses_official_installer_and_handles_deps() {
+        let script = ollama_linux_install_script();
+
+        assert!(script.contains("https://ollama.com/install.sh"));
+        // The official installer hard-requires curl and zstd.
+        assert!(script.contains("command -v curl"));
+        assert!(script.contains("command -v zstd"));
+        // apt's --no-install-recommends curl can't do HTTPS without this.
+        assert!(script.contains("curl ca-certificates"));
+        // Dep install must cover the major package-manager families.
+        for pm in ["apt-get", "dnf", "yum", "pacman", "zypper", "apk"] {
+            assert!(script.contains(pm), "missing package manager: {}", pm);
+        }
+        // Group add is best-effort and gated on group existence (no-systemd hosts).
+        assert!(script.contains("getent group ollama"));
+        assert!(script.contains(r#"usermod -aG ollama "$USERNAME""#));
     }
 
     // --- is_container_name_conflict / is_oci_runtime_error classifiers ---

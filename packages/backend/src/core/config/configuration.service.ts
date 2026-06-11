@@ -101,6 +101,9 @@ export class ConfigurationService {
     let settingsValues: {
       ciHubApiKey: string | null;
       ciHubOrganizationId: string | null;
+      defaultAppCpuLimit?: string;
+      defaultAppMemoryLimit?: string;
+      autoAllocateAppResources?: boolean;
       inferenceBackend: InferenceBackendType | undefined;
       inferenceModel: string | undefined;
       inferenceEmbeddingModel: string | undefined;
@@ -108,6 +111,9 @@ export class ConfigurationService {
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
+      defaultAppCpuLimit: undefined,
+      defaultAppMemoryLimit: undefined,
+      autoAllocateAppResources: undefined,
       inferenceBackend: undefined,
       inferenceModel: undefined,
       inferenceEmbeddingModel: undefined,
@@ -121,6 +127,9 @@ export class ConfigurationService {
         settingsValues = {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
+          defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
+          defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
+          autoAllocateAppResources: settings.autoAllocateAppResources,
           inferenceBackend: settings.inferenceBackend,
           inferenceModel: settings.inferenceModel,
           inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
@@ -157,6 +166,10 @@ export class ConfigurationService {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
         // Consent plumbing retained; error reporting is always-on when SENTRY_DSN is configured.
         allowErrorMonitoring: true,
+        defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
+        defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
+        // Auto resource allocation is opt-out: undefined means enabled
+        autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
         demoMode: env.data.DEMO_MODE,
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,

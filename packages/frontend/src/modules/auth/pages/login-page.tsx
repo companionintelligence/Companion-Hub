@@ -1,12 +1,15 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
+import { client } from '@/api-client/client.gen';
 import { setTauriSessionId } from '@/lib/api-fetch';
+import { apiFetch } from '@/lib/api-fetch';
+import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
 import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { Navigate, redirect, useNavigate, useSearchParams } from 'react-router';
@@ -44,6 +47,57 @@ export default () => {
   const { t } = useTranslation();
   const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
   const navigate = useNavigate();
+  const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  const completeDesktopPortalLogin = useCallback(
+    async (payload: DesktopPortalAuthPayload | null) => {
+      if (!payload) {
+        return;
+      }
+
+      try {
+        const res = await apiFetch(`/api/auth/portal/desktop-exchange?token=${encodeURIComponent(payload.token)}`);
+        if (!res.ok) {
+          throw new Error(`Desktop portal exchange failed with status ${res.status}`);
+        }
+
+        const data = (await res.json()) as { sessionId: string; redirectPath: string };
+        setTauriSessionId(data.sessionId);
+        setUserContext({ isLoggedIn: true });
+        await refreshUserContext();
+        navigate(data.redirectPath || '/home');
+      } catch {
+        toast.error(t('COMMON_AN_ERROR_OCCURRED'));
+      }
+    },
+    [navigate, refreshUserContext, setUserContext, t],
+  );
+
+  useEffect(() => {
+    if (!isTauriDesktop) {
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<DesktopPortalAuthPayload>('deep-link-auth', (event) => {
+          void completeDesktopPortalLogin(event.payload);
+        });
+      } catch {
+        // Non-desktop or deep-link listener unavailable.
+      }
+
+      const pending = await takePendingDesktopPortalAuth();
+      await completeDesktopPortalLogin(pending);
+    })();
+
+    return () => {
+      void unlisten?.();
+    };
+  }, [completeDesktopPortalLogin, isTauriDesktop]);
 
   const login = useMutation({
     ...loginMutation(),
@@ -104,9 +158,13 @@ export default () => {
   }
 
   const portalSsoHref = (() => {
-    const url = new URL('/api/auth/portal/start', window.location.origin);
+    const baseUrl = isTauriDesktop ? client.getConfig().baseUrl || 'http://localhost:5002' : window.location.origin;
+    const url = new URL('/api/auth/portal/start', baseUrl);
     if (redirect_url) {
       url.searchParams.set('redirect_url', redirect_url);
+    }
+    if (isTauriDesktop) {
+      url.searchParams.set('desktop', '1');
     }
     return url.toString();
   })();

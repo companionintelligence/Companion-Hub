@@ -1,0 +1,320 @@
+{
+  "meta": {
+    "viewports": {
+      "desktop": "1920x1080",
+      "mobile": "390x844 (capture without OS chrome; Remotion supplies the phone frame)"
+    },
+    "themeDefault": "dark",
+    "v1Manifest": "../shots.json (all v1 captures are desktop 1920x1080; reuseV1=true means the existing v1 capture covers this state — do not re-shoot unless the state note says otherwise)",
+    "slugDiscipline": "Device 'Living Room Server'; one org slug everywhere — 'acme' is the storyboard placeholder, substitute the real QA org slug uniformly at capture time (hub-living-room-server-<org>.ci.computer, immich-living-room-server-<org>.ci.computer).",
+    "dedupNotes": "Union of sections c1-c6. Merged: c5 'hub-home-mobile' -> 'hub-home-dashboard-mobile' (v1 base id + -mobile rule); c2/c5 'portal-home-mobile' merged; c4/c5 'app-immich-live-mobile' merged. Counts: 34 shots = 18 reuseV1 + 16 new."
+  },
+  "shots": [
+    {
+      "id": "portal-signup",
+      "app": "portal",
+      "route": "/signup",
+      "viewport": "desktop",
+      "state": "Clean sign-up form (AuthPage with defaultIsSignUp), empty fields, no validation errors. Meta title 'Create account | Companion Hub'. Note: there is no padlock element on the page — any padlock business is a Remotion overlay.",
+      "authRequired": false,
+      "reuseV1": true
+    },
+    {
+      "id": "portal-signup-mobile",
+      "app": "portal",
+      "route": "/signup",
+      "viewport": "mobile",
+      "state": "Same clean sign-up form at 390x844, responsive layout, empty fields. Capture without OS chrome for the Remotion phone frame.",
+      "authRequired": false,
+      "reuseV1": false
+    },
+    {
+      "id": "portal-store-public",
+      "app": "portal",
+      "route": "/store",
+      "viewport": "desktop",
+      "state": "Public Companion Intelligence App Store, unauthenticated (anonymous / redirects here). Default All Apps view: 'Browse every app in the Companion App Store' heading with the full catalog alphabetical by title (there is no Featured row at this URL — FeaturedView only renders at /store?category=featured, and its collapsed preview shows Collabora/ComfyUI/Excalidraw/Ghost, not the flagships). Capture two takes: (1) top of grid with the heading, (2) scrolled to the H–J alphabetical band where Home Assistant (row ~16, col 1), Immich (row ~17, col 4), and Jellyfin (row ~18, col 1) share one desktop frame. NOT a v1 reuse: the v1 entry of this id described a Featured section that does not exist at this URL; new takes required.",
+      "authRequired": false,
+      "reuseV1": false
+    },
+    {
+      "id": "portal-store-public-mobile",
+      "app": "portal",
+      "route": "/store",
+      "viewport": "mobile",
+      "state": "Public store at 390x844, unauthenticated, 1-column card list. Capture two takes: top of page, and deep-scrolled to the H–J alphabetical region (Home Assistant is ~card 61 — one viewport down only reaches cards ~5–9) so Home Assistant, Immich, and Jellyfin cards are in frame for the center-frame pass.",
+      "authRequired": false,
+      "reuseV1": false
+    },
+    {
+      "id": "portal-home",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "desktop",
+      "state": "Authenticated workspace: WorkspaceHeader with org name + device/app counts, AppLauncherGrid with a few hosted apps, DevicesSidebar on the right with at least one device. Use the QA test org so the grid is not empty.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "portal-home-mobile",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "mobile",
+      "state": "Authenticated workspace at 390x844, dark theme: WorkspaceHeader with org name + device/app counts (plain header text, e.g. '2 devices · 5 apps'), AppLauncherGrid stacked in the mobile single/two-column layout, DevicesSidebar content inlined BELOW the grid in the mobile flow with at least one device showing the green 'Online' dot. Same QA org/data as portal-home so counts match between viewports. Used by c2 (workspace split composition) and c5 (pocket beat scroll tour: header -> grid -> devices, exactly the UI's real mobile order). Merged from c2 and c5 section drafts.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "portal-add-device-dialog",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "desktop",
+      "state": "'Name your device' dialog open over /home. Device Name field contains 'Living Room Server' (matches the field's real placeholder 'e.g. Living Room Server') with the slug preview rendered as 'Slug: living-room-server' in a code chip below the input. Capture an empty-field take too so the type-on can be animated.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "portal-pairing-code-dialog",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "desktop",
+      "state": "'Device Pairing Code' dialog open over /home — capture the FULL dialog: Shield icon header, 'Your Pairing Code' label, large monospace 6-character code in the primary-bordered gradient code card (border-2 border-primary/20 — NOT teal; --primary is navy in light mode and near-white in dark mode, so it reads as a faint light border), copy icon button, security-warning box ('Do not share this pairing code...'), and 'Open in Companion Hub' / 'I've Saved My Code' buttons. Remotion handles the tight code-card crop. Capture immediately after creating the 'Living Room Server' device. Additional take: post-copy state, where the icon button shows a green Check and the '✓ Copied to clipboard!' line is visible below the code row.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "portal-pairing-code-dialog-mobile",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "mobile",
+      "state": "Device Pairing Code dialog at 390x844 — dialog renders near full-screen on mobile, including the Shield header, code card, security warning, and action buttons. MUST show the same 6-character code as portal-pairing-code-dialog (capture both viewports in the same pairing session, or composite the code in Remotion — composited glyphs must match the product UI's monospace exactly; UI reproduction is the only acceptable non-Montserrat text).",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-device-registration-empty",
+      "app": "hub",
+      "route": "/device-registration",
+      "viewport": "desktop",
+      "state": "Unregistered phase: real two-panel layout — Step 1 account section (Log in / Create account) and Step 2 section with device ID and the pairing-code input, auto-focused and empty. No status card exists in this phase (the progress card only renders once pairing starts). Identical to v1.",
+      "authRequired": false,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-device-registration-provisioning",
+      "app": "hub",
+      "route": "/device-registration",
+      "viewport": "desktop",
+      "state": "Mid-registration: status card showing the real phase string 'Provisioning your domain' (alt take 'Setting up your Hub') with progress indicator; the form is replaced by the card in this phase. Timing-sensitive live capture. Identical to v1.",
+      "authRequired": false,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-device-registration-complete",
+      "app": "hub",
+      "route": "/device-registration",
+      "viewport": "desktop",
+      "state": "Registration complete / pairing-accepted success state just before redirect. Timing-sensitive. Identical to v1.",
+      "authRequired": false,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-device-registration-mobile-code",
+      "app": "hub",
+      "route": "/device-registration",
+      "viewport": "mobile",
+      "state": "390x844 capture, unregistered form: 6-char code fully typed in the pairing-code input, Register button visible, not yet submitted. Capture one of two for the portrait claim sequence — the live page never shows the input and the status card together (the progress card replaces the form, and the code is cleared on success).",
+      "authRequired": false,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-device-registration-mobile-provisioning",
+      "app": "hub",
+      "route": "/device-registration",
+      "viewport": "mobile",
+      "state": "390x844 capture, pending phase: status card alone showing the real string 'Setting up your Hub' with progress indicator (the pairing form is not rendered in this phase). Timing-sensitive live capture. Capture two of two for the portrait claim sequence.",
+      "authRequired": false,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-onboarding-form",
+      "app": "hub",
+      "route": "/onboarding",
+      "viewport": "desktop",
+      "state": "'Set Up Your Hub' wizard, form phase: local AI models / Ollama step and the 'Set Up Private VPN' (remote access) step visible, Step 4 'Recommended Apps' with pinned apps pre-selected via the circular select indicators on the app cards (round border + check icon, not square checkboxes), sticky 'Install & Finish' footer enabled. Requires logged-in user with hasCompletedOnboarding=false. Identical to v1.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-onboarding-installing",
+      "app": "hub",
+      "route": "/onboarding",
+      "viewport": "desktop",
+      "state": "Installing phase: InstallStep progress list actively installing the selected apps. Timing-sensitive. Identical to v1.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-home-dashboard",
+      "app": "hub",
+      "route": "/home",
+      "viewport": "desktop",
+      "state": "Dashboard with the three stat cards — rendered labels DISK SPACE, CPU LOAD, MEMORY USED (titles 'Disk space' / 'CPU load' / 'Memory used', displayed uppercase by CompactSystemStat) — showing believable utilization and a populated installed-apps row (4-6 apps). CPU load idle-ish (~10-20%) so the mobile sibling's exhale gag has matching numbers. Identical to v1 otherwise.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-home-dashboard-mobile",
+      "app": "hub",
+      "route": "/home",
+      "viewport": "mobile",
+      "state": "Same Hub and same data moment as hub-home-dashboard, captured at 390x844, dark theme: the three stat cards keep their fixed 3-across single-row grid (grid grid-cols-3 has no responsive breakpoint — they do NOT stack; do not add CSS overrides), installed-apps list below with 4-6 apps. Numbers must match the desktop shot so c3's side-by-side reads as one machine, and CPU load must read idle-ish (~10-20%) so c5's exhale gag lands. Avoid the queued-installs indicator. QA against the real i18n strings ('Disk space', 'CPU load', 'Memory used'). Canonical id for what the c5 section draft called 'hub-home-mobile' — merged.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-settings-overview",
+      "app": "hub",
+      "route": "/settings",
+      "viewport": "desktop",
+      "state": "Settings page, default tab: full tab row visible (Settings, Security, App Stores, Network, AI, System, Logs), user-settings form rendered with the public hub hostname field populated (hub-<device>-<org>.ci.computer). Clean state, no toasts.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-resource-monitor",
+      "app": "hub",
+      "route": "/resource-monitor",
+      "viewport": "desktop",
+      "state": "Resource monitor with history warmed up: per-app CPU history chart drawing 3+ colored polyline series (needs at least 2 samples) with legend chips beneath, and the app table populated (App, Status, CPU, Memory, CPU cap, Responsiveness) with all rows green 'Responsive'. No degraded-apps warning alert. History is accumulated client-side from live polls (60s interval) — there is no server-side history to seed — so either leave the page open 2-3 poll cycles or mock the fetchAppRuntimeMonitor responses.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-store-grid",
+      "app": "hub",
+      "route": "/store",
+      "viewport": "desktop",
+      "state": "App Store index: search bar, category sidebar, populated app-card grid with real logos. Sorted alphabetically by URN (activepieces, adguardhome-sync, ...) with 24-per-page infinite scroll — flagships are NOT co-located here; this shot is the opening scale drift only. Same capture as v1 hub-store-grid; state description corrected (v1 wrongly claimed the 8 flagships were visible or one drift away).",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-store-featured",
+      "app": "hub",
+      "route": "/store (Featured category selected via UI state — category lives in Zustand, not the URL)",
+      "viewport": "desktop",
+      "state": "NEW: store filtered to the Featured category — 16 apps including all 8 flagships (Immich, Jellyfin, Home Assistant, Nextcloud, n8n, Open WebUI, Vaultwarden, Pi-hole). Framed so all 8 are visible or one drift away for the highlight-ring hop. Set the category in useAppStoreState before capture; there is no ?category= URL param.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-store-featured-mobile",
+      "app": "hub",
+      "route": "/store (Featured category selected via UI state)",
+      "viewport": "mobile",
+      "state": "NEW: Featured category grid captured at 390x844: responsive single/two-column card layout, search bar at top. Alphabetical order within Featured puts Home Assistant, Immich, and Jellyfin near the top, so at least two flagships sit above the fold.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-store-ci-category",
+      "app": "hub",
+      "route": "/store (companion-intelligence category set programmatically in Zustand before capture — no ?category= URL param exists, and the sidebar has no companion-intelligence entry: iconForCategory in table-helpers.ts omits it)",
+      "viewport": "desktop",
+      "state": "Store filtered to the companion-intelligence category (13 apps return from the backend filter): Companion Earth, Photo Time Machine, Just In Case, Spellbook, Hermes, Companion Planning, Spatial Time Machine, OpenClaw WebCLI cards visible among the results. Same grid as v1 hub-store-ci-category; route/capture-path description corrected. Optional alternative if a sidebar click is ever wanted narratively: small frontend change adding companion-intelligence to iconForCategory (schema and backend already support it).",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-app-details-immich",
+      "app": "hub",
+      "route": "/store/:storeId/immich",
+      "viewport": "desktop",
+      "state": "Immich details, not installed: logo, short description, 'About this app' description panel (left column), Information panel with Provider / Categories / Download size (right column), App Privacy card containing the developer-details sentence, a 'Data Collection' sub-label, and 'No data collected', plus prominent Install button. Same capture as v1 hub-app-details-immich; panel naming corrected for capture QA ('Information', not 'About').",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-install-dialog-immich",
+      "app": "hub",
+      "route": "/store/:storeId/immich",
+      "viewport": "desktop",
+      "state": "'Install Immich' dialog open over the details page: Upload Location text field pre-filled ('/nfs/tipi/immich'), submit enabled. NO secret fields are rendered — Immich's three secrets (DB Password, JWT Secret, Typesense API Key) are type 'random' and filtered out by hiddenTypes in form-validators.ts:98; they generate server-side. Same capture as v1 hub-install-dialog-immich; state description corrected (v1 wrongly claimed visible generated-secret fields).",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-app-installing-immich",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "viewport": "desktop",
+      "state": "Installed-app page right after submit: status badge is a gray-400 dot labeled 'installing' (NOT amber — amber is install_failed), 'Installing X%' button at low progress with stage line 'Preparing'. Timing-sensitive capture. Same capture as v1 hub-app-installing-immich; badge-color expectation corrected.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-app-install-progress-immich",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "viewport": "desktop",
+      "state": "NEW: mid-install frame(s) of the same page — gray 'installing' badge, 'Installing 55%'-style button with stage line ticking through the real progress strings ('Preparing' <20%, 'Downloading' <40%, 'Setting up' <70%, 'Starting' <90%, 'Almost ready' 90%+; app-actions.tsx progress tiers). Capture several frames across one install to cover the stage ticks. Note: the status badge itself never reads 'starting' during install — installing flips directly to running (app-lifecycle.service.ts); 'starting' is only a manual stop/start state and is not used in this section.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "hub-app-running-immich",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "viewport": "desktop",
+      "state": "Status 'running': pulsing green-500 dot badge with Open and Stop action buttons visible (Restart is a dropdown list item in the actions menu, not a button). Same capture as v1 hub-app-running-immich; action-button description corrected.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "hub-app-running-immich-mobile",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "viewport": "mobile",
+      "state": "Installed Immich app page at 390x844: the running state renders a green pulsing status dot with muted-gray 'Running' text next to the action buttons (a dot + label at scale-90, NOT a pill/badge element — don't QA for a badge). Stop and Open buttons visible without scrolling; Restart lives in the overflow dropdown menu, so do not expect a Restart button. Frame the capture so Open is in the upper two-thirds for the tap ripple. Replace :storeId with the enabled store's id at capture time. Mobile sibling of v1 hub-app-running-immich.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "app-immich-live",
+      "app": "website",
+      "route": "https://immich-<device>-<org>.ci.computer/ (dev: http://immich-<store-slug>.ci.localhost/ — default local subdomain is appName-appStoreId per app-lifecycle.service.ts:781; plain immich.ci.localhost requires a custom localSubdomain in the install form)",
+      "viewport": "desktop",
+      "state": "Immich's own UI with a populated photo timeline (seeded demo library). Capture clean — the Remotion browser frame supplies the URL bar, which is the proof shot. Same capture as v1 app-immich-live (NEEDS REVIEW carries over: requires a live install); dev URL corrected. IMPORTANT (applies to v1 too): install with custom local subdomain 'immich' so the public hostname reads immich-<device>-<org>.ci.computer — the out-of-box appSubdomain is `${appName}-${appStoreId}` and would leak the store slug into the on-screen URL.",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "app-immich-live-mobile",
+      "app": "website",
+      "route": "https://immich-<device>-<org>.ci.computer/ (requires install-time custom subdomain — see state)",
+      "viewport": "mobile",
+      "state": "Immich's own mobile-web timeline at 390x844 with a seeded demo photo library — populated grid, responsive mobile layout with bottom nav visible, no empty states. Capture note: install Immich with custom local subdomain 'immich' to get the clean immich-<device>-<org>.ci.computer hostname (default appSubdomain is `${appName}-${appStoreId}`). The mobile browser URL bar showing that subdomain is the point of the shot for c5 — capture one take with the URL bar visible; c4's portrait composition uses a Remotion URL chip instead. NEEDS REVIEW like app-immich-live: requires a live install with seeded data on a fleet/test device; capture both viewports in one session. Merged from c4 and c5 section drafts.",
+      "authRequired": true,
+      "reuseV1": false
+    },
+    {
+      "id": "portal-home-with-device",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "desktop",
+      "state": "Authenticated workspace after pairing: DevicesSidebar (right column on desktop) shows 'Living Room Server' with online status; AppLauncherGrid includes the freshly installed Immich tile with its store logo; WorkspaceHeader counts reflect 1 device / 1 app. Identical state to v1 shot of the same id (NEEDS REVIEW there too: requires a really-paired fleet/test device).",
+      "authRequired": true,
+      "reuseV1": true
+    },
+    {
+      "id": "portal-home-with-device-mobile",
+      "app": "portal",
+      "route": "/home",
+      "viewport": "mobile",
+      "state": "Same paired-and-installed state as portal-home-with-device, captured at 390x844 in the real mobile single-column order: WorkspaceHeader ('1 device · 1 app' counts) at top, AppLauncherGrid with the Immich tile next, DevicesSidebar inline BELOW the grid showing 'Living Room Server' online (per the xl: breakpoint layout in CI-Portal home/index.tsx). Capture scrolled so both the Immich tile and the device card are in frame — the device card sits below the header and grid and will not fit unscrolled. New capture for the portrait edit.",
+      "authRequired": true,
+      "reuseV1": false
+    }
+  ]
+}

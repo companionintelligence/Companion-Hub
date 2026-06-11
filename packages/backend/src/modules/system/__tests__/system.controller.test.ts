@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { pipeline } from 'node:stream/promises';
+import { ResourceAllocatorService } from '../resource-allocator.service';
 import { SystemController } from '../system.controller';
 import { SystemService } from '../system.service';
 
@@ -22,6 +23,7 @@ describe('SystemController', () => {
       providers: [
         { provide: SystemService, useValue: mock<SystemService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
+        { provide: ResourceAllocatorService, useValue: mock<ResourceAllocatorService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

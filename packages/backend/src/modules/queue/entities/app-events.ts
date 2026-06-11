@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -20,6 +22,8 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
+    cpuLimit: optionalCpuLimitSchema,
+    memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
     // These must be typed explicitly so generateEnvFile and triggerCloudflareSync receive them correctly.
     // Validation mirrors appFormSchema in app-lifecycle.dto.ts for consistency.

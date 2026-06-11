@@ -21,6 +21,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/constants';
@@ -90,6 +91,7 @@ describe('App lifecycle', () => {
   const traefikConfigService = mock<TraefikConfigService>();
   const registrationService = mock<RegistrationService>();
   const imageSizeService = mock<ImageSizeService>();
+  const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -119,6 +121,24 @@ describe('App lifecycle', () => {
     await cleanTestData(db);
     // Best-effort arch check: null = registry unreachable, do not block install in tests.
     imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+    appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
+      appUrn: 'test:test',
+      appName: 'test',
+      status: 'running',
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+      highCpu: false,
+      sustainedHighCpu: false,
+      responsive: true,
+      degraded: false,
+      forceStopEligible: false,
+      reason: null,
+      cpuLimit: null,
+      usesDefaultCpuLimit: false,
+      sampledAt: new Date().toISOString(),
+      containers: [],
+    } as any);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -142,6 +162,10 @@ describe('App lifecycle', () => {
         EnvUtils,
         AppHelpers,
         AppsService,
+        {
+          provide: AppRuntimeMonitorService,
+          useValue: appRuntimeMonitorService,
+        },
         InstallPipelineTracker,
         {
           provide: SubnetManagerService,

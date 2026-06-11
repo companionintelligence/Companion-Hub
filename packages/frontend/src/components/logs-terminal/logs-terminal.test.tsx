@@ -42,4 +42,12 @@ describe('LogsTerminal', () => {
 
     expect(onMaxLinesChange).not.toHaveBeenCalled();
   });
+
+  it('keeps the themed scrollbar hook on the log terminal element', () => {
+    const onMaxLinesChange = vi.fn();
+
+    const { container } = render(<LogsTerminal logs={[]} maxLines={300} onMaxLinesChange={onMaxLinesChange} />);
+
+    expect(container.querySelector('#log-terminal')).toHaveClass('log-terminal');
+  });
 });

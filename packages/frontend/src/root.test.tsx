@@ -1,17 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from './lib/registration-status';
 
-const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubException } = vi.hoisted(() => ({
+const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubException, loadHubSentryDeviceId } = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   userContext: vi.fn(),
   requestUse: vi.fn(),
   responseUse: vi.fn(),
   setConfig: vi.fn(),
   captureHubException: vi.fn(),
+  loadHubSentryDeviceId: vi.fn(),
 }));
 
 vi.mock('./lib/sentry', () => ({
   captureHubException,
+  loadHubSentryDeviceId,
 }));
 
 vi.mock('./lib/api-fetch', () => ({

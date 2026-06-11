@@ -28,6 +28,7 @@ export interface AppFailureContext {
 export class ErrorReportingService {
   private readonly debounce = new Map<string, number>();
   private readonly debounceMs = 30_000;
+  private readonly messageDebounceMs = 5 * 60_000;
 
   constructor(private readonly configuration: ConfigurationService) {}
 
@@ -73,9 +74,24 @@ export class ErrorReportingService {
     });
   }
 
-  captureMessage(message: string, level: Sentry.SeverityLevel = 'error', context?: Record<string, unknown>): void {
+  captureMessage(
+    message: string,
+    level: Sentry.SeverityLevel = 'error',
+    context?: Record<string, unknown>,
+    options?: { debounceKey?: string; debounceMs?: number },
+  ): void {
     if (!this.isEnabled()) {
       return;
+    }
+
+    if (options?.debounceKey) {
+      const now = Date.now();
+      const lastSent = this.debounce.get(options.debounceKey);
+      const debounceMs = options.debounceMs ?? this.messageDebounceMs;
+      if (lastSent !== undefined && now - lastSent < debounceMs) {
+        return;
+      }
+      this.debounce.set(options.debounceKey, now);
     }
 
     Sentry.withScope((scope) => {
@@ -84,6 +100,10 @@ export class ErrorReportingService {
       this.applyContext(scope, context);
       Sentry.captureMessage(scrubString(message), level);
     });
+  }
+
+  captureWarning(message: string, context?: Record<string, unknown>, options?: { debounceKey?: string; debounceMs?: number }): void {
+    this.captureMessage(message, 'warning', context, options);
   }
 
   reportAppFailure(context: AppFailureContext): void {

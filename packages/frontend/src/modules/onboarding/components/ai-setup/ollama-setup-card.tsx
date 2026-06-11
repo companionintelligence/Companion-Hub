@@ -1,10 +1,15 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { openExternal } from '@/lib/helpers/open-external';
-import { CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
+/** After a successful install, poll status until the service comes up. */
+const POST_INSTALL_RECHECK_ATTEMPTS = 10;
+const POST_INSTALL_RECHECK_DELAY_MS = 2000;
 
 interface OllamaStatus {
   ready: boolean;
@@ -22,12 +27,49 @@ interface OllamaSetupCardProps {
   onRecheck: () => Promise<void>;
 }
 
+type OllamaInstallPhase = 'idle' | 'installing' | 'completed' | 'error';
+
 function isBridgeRefused(status: OllamaStatus): boolean {
   return status.bridgeUnreachable === true;
 }
 
 export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCardProps) => {
   const { t } = useTranslation();
+  const [installPhase, setInstallPhase] = useState<OllamaInstallPhase>('idle');
+  const [installError, setInstallError] = useState('');
+  const unmounted = useRef(false);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(
+    () => () => {
+      unmounted.current = true;
+    },
+    [],
+  );
+
+  const canAutoInstall = getTauriInvoke() !== null;
+
+  const handleAutoInstall = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    setInstallPhase('installing');
+    setInstallError('');
+    try {
+      await invoke('install_ollama_command');
+      if (unmounted.current) return;
+      setInstallPhase('completed');
+      for (let i = 0; i < POST_INSTALL_RECHECK_ATTEMPTS; i++) {
+        if (unmounted.current || statusRef.current?.ready) break;
+        await onRecheck();
+        await new Promise((resolve) => setTimeout(resolve, POST_INSTALL_RECHECK_DELAY_MS));
+      }
+    } catch (err) {
+      if (unmounted.current) return;
+      setInstallError(err instanceof Error ? err.message : String(err));
+      setInstallPhase('error');
+    }
+  }, [onRecheck]);
 
   if (!status) {
     return (
@@ -98,18 +140,48 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             <div className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">{description}</div>
             {status.error && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200 font-mono">{status.error}</div>}
             {status.hint && !bridgeUnreachable && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200">{status.hint}</div>}
-            <div className="flex gap-2">
-              {!bridgeUnreachable && (
-                <Button size="sm" onClick={() => openExternal(OLLAMA_DOWNLOAD_URL)} className="bg-yellow-600 hover:bg-yellow-700 text-white">
-                  <Download className="h-3.5 w-3.5 mr-1.5" />
-                  {t('ONBOARDING_OLLAMA_GET')}
+            {installPhase === 'completed' && (
+              <div className="mb-3 flex items-center gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                {t('ONBOARDING_OLLAMA_INSTALL_SUCCESS')}
+              </div>
+            )}
+            {installPhase === 'error' && (
+              <div className="mb-3 flex items-start gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
+              </div>
+            )}
+            {installPhase === 'installing' ? (
+              <div className="flex items-center gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                {t('ONBOARDING_OLLAMA_INSTALLING')}
+              </div>
+            ) : (
+              <div className="flex gap-2 flex-wrap">
+                {!bridgeUnreachable && canAutoInstall && (
+                  <Button size="sm" onClick={handleAutoInstall} className="bg-yellow-600 hover:bg-yellow-700 text-white">
+                    <Download className="h-3.5 w-3.5 mr-1.5" />
+                    {t('ONBOARDING_OLLAMA_AUTO_INSTALL')}
+                  </Button>
+                )}
+                {!bridgeUnreachable && (
+                  <Button
+                    size="sm"
+                    variant={canAutoInstall ? 'ghost' : undefined}
+                    onClick={() => openExternal(OLLAMA_DOWNLOAD_URL)}
+                    className={canAutoInstall ? undefined : 'bg-yellow-600 hover:bg-yellow-700 text-white'}
+                  >
+                    <Download className="h-3.5 w-3.5 mr-1.5" />
+                    {t('ONBOARDING_OLLAMA_GET')}
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking}>
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                  {t('ONBOARDING_OLLAMA_RECHECK')}
                 </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking}>
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {t('ONBOARDING_OLLAMA_RECHECK')}
-              </Button>
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </CardContent>

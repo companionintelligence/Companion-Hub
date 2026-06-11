@@ -17,7 +17,7 @@ import { getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
-import { captureHubException } from './lib/sentry';
+import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
@@ -191,6 +191,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!apiReady) {
+      return;
+    }
+
+    void loadHubSentryDeviceId();
+  }, [apiReady]);
+
+  useEffect(() => {
     const syncDocumentTitle = () => {
       setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
@@ -345,7 +353,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster position="bottom-center" />
     </Providers>
   );
 }

@@ -1,0 +1,150 @@
+{
+  "meta": {
+    "title": "Companion Intelligence — Platform Walkthrough",
+    "fps": 30,
+    "resolution": "1920x1080",
+    "totalDurationInSeconds": 185,
+    "narrationWordCount": 390
+  },
+  "scenes": [
+    {
+      "id": "s01-brand-intro",
+      "title": "Cold open / brand intro",
+      "durationInSeconds": 8,
+      "kind": "brand-intro",
+      "caption": "Your data. Your hardware. Your AI.",
+      "narration": "This is Companion Intelligence. AI that runs on hardware you own, with data that never has to leave your home.",
+      "screens": [],
+      "notes": "Pure Remotion graphics. Logo scales 0.92->1.0, wordmark types on, teal rule draws left-to-right. Navy gradient background."
+    },
+    {
+      "id": "s02-platform-diagram",
+      "title": "Platform overview diagram",
+      "durationInSeconds": 18,
+      "kind": "diagram",
+      "caption": "Three pieces. One private platform.",
+      "narration": "Three pieces work together. The Portal is the cloud control plane for accounts and devices. The Hub is the runtime on your own machine. And the Marketplace is the catalog of apps the Hub can install.",
+      "screens": [],
+      "notes": "Animated nodes: Portal (cloud, hub.ci.computer) -> Hub (appliance) <- Marketplace (catalog), with Server (memory) docked beside Hub. Arrows pulse as each is named."
+    },
+    {
+      "id": "s03-portal-signup",
+      "title": "Portal: create your account",
+      "durationInSeconds": 16,
+      "kind": "screen-walkthrough",
+      "caption": "hub.ci.computer — create a free account",
+      "narration": "Start at hub dot ci dot computer. Create a free account — it manages your devices and apps, not your data.",
+      "screens": ["portal-signup", "portal-login"],
+      "notes": "Browser frame with real URL. Simulated cursor fills the form. portal-login is an alternate take if signup state is awkward to capture."
+    },
+    {
+      "id": "s04-portal-workspace-add-device",
+      "title": "Portal: workspace + add a device",
+      "durationInSeconds": 18,
+      "kind": "screen-walkthrough",
+      "caption": "One dashboard for every device you own",
+      "narration": "Your home screen shows every device and every app in one place. To bring a new machine in, add a device and give it a name.",
+      "screens": ["portal-home", "portal-add-device-dialog"],
+      "notes": "Highlight ring on the Add device action in the DevicesSidebar, then the Name-your-device dialog (placeholder 'e.g. Living Room Server', slug preview)."
+    },
+    {
+      "id": "s05-portal-pairing-code",
+      "title": "Portal: the pairing code",
+      "durationInSeconds": 12,
+      "kind": "screen-walkthrough",
+      "caption": "One code claims your Hub",
+      "narration": "The Portal hands you a one-time pairing code. That code is how your Hub proves it belongs to you.",
+      "screens": ["portal-pairing-code-dialog"],
+      "notes": "Large monospace 6-character code, teal-bordered card, gentle glow pulse, copy-button micro-interaction."
+    },
+    {
+      "id": "s06-hub-device-registration",
+      "title": "Hub: claim the device",
+      "durationInSeconds": 16,
+      "kind": "screen-walkthrough",
+      "caption": "Enter the code on your Hub",
+      "narration": "On the Hub, enter the code. It registers with the Portal, gets its own secure domain, and finishes setting itself up.",
+      "screens": [
+        "hub-device-registration-empty",
+        "hub-device-registration-provisioning",
+        "hub-device-registration-complete"
+      ],
+      "notes": "Phases are real strings from the page: Checking status / Provisioning your domain / Setting up Hub / complete. Horizontal teal wipe into this scene to signal machine switch."
+    },
+    {
+      "id": "s07-hub-onboarding",
+      "title": "Hub: first-boot onboarding",
+      "durationInSeconds": 16,
+      "kind": "screen-walkthrough",
+      "caption": "Local AI, configured in one pass",
+      "narration": "First boot walks you through setup: pick your local AI models, choose remote access, and select your starter apps. One click installs everything.",
+      "screens": ["hub-onboarding-form", "hub-onboarding-installing"],
+      "notes": "'Set up your Hub' wizard. Vertical pan over AI setup steps + Recommended Apps; highlight on the sticky 'Install & Finish' button (data-testid finish-setup-btn)."
+    },
+    {
+      "id": "s08-hub-home-dashboard",
+      "title": "Hub: home dashboard",
+      "durationInSeconds": 14,
+      "kind": "screen-walkthrough",
+      "caption": "Running on your machine — and you can see it",
+      "narration": "This is home. Real disk, real CPU, real memory — your apps running on a machine you can point to.",
+      "screens": ["hub-home-dashboard"],
+      "notes": "Disk/CPU/Memory stat cards animate progress bars; numbers count up. Installed-apps row below."
+    },
+    {
+      "id": "s09-store-browse",
+      "title": "App Store: browse the catalog",
+      "durationInSeconds": 18,
+      "kind": "screen-walkthrough",
+      "caption": "200+ self-hosted apps, one click away",
+      "narration": "The App Store is fed by the open Marketplace catalog — over two hundred apps. Photos, media, automation, password management — plus Companion-exclusive apps you won't find anywhere else.",
+      "screens": ["hub-store-grid", "hub-store-ci-category"],
+      "notes": "Flagships to highlight: Immich, Jellyfin, Home Assistant, Nextcloud, n8n, Open WebUI, Vaultwarden, Pi-hole. CI exclusives beat: Companion Earth, Photo Time Machine, Just In Case, Spellbook."
+    },
+    {
+      "id": "s10-install-lifecycle",
+      "title": "App detail + install lifecycle",
+      "durationInSeconds": 20,
+      "kind": "screen-walkthrough",
+      "caption": "installing → starting → running",
+      "narration": "Open an app to see exactly what it is and what it collects — which, on your own hardware, is nothing. Hit install, and watch it move from installing to running.",
+      "screens": [
+        "hub-app-details-immich",
+        "hub-install-dialog-immich",
+        "hub-app-installing-immich",
+        "hub-app-running-immich"
+      ],
+      "notes": "Lifecycle states are canonical (packages/common/src/schemas/sse.ts): use installing -> starting -> running only. App Privacy card reads 'No data collected'."
+    },
+    {
+      "id": "s11-app-live",
+      "title": "The app, live on your hardware",
+      "durationInSeconds": 12,
+      "kind": "screen-walkthrough",
+      "caption": "Your photos. Your server. No subscription.",
+      "narration": "And there it is — a full photo library, served from your own machine, reachable from anywhere through your own secure domain.",
+      "screens": ["app-immich-live"],
+      "notes": "NEEDS REVIEW: requires a real installed Immich with demo photos; capture on a fleet/test device. Browser frame must show the *.ci.computer (or .ci.localhost) subdomain."
+    },
+    {
+      "id": "s12-portal-fleet",
+      "title": "Portal: the fleet view ties it together",
+      "durationInSeconds": 12,
+      "kind": "screen-walkthrough",
+      "caption": "Every device, every app — one quiet dashboard",
+      "narration": "Back in the Portal, your device is online and your apps are one click away — from anywhere, on every device you own.",
+      "screens": ["portal-home-with-device"],
+      "notes": "Devices sidebar shows the device online; launcher grid shows the installed app with store logo. Animated teal connector from device card to app tile echoes the s02 diagram."
+    },
+    {
+      "id": "s13-outro",
+      "title": "Outro / CTA",
+      "durationInSeconds": 5,
+      "kind": "outro",
+      "caption": "ci.computer",
+      "narration": "Companion Intelligence. Own your AI.",
+      "screens": [],
+      "notes": "Brand frame from s01; URL fades in under the logo with the teal rule. Hold 2s, fade to black."
+    }
+  ]
+}

@@ -15,6 +15,7 @@ describe('AuthController', () => {
   let _authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
   let _config: MockProxy<ConfigurationService>;
+  let cache: MockProxy<CacheService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -33,6 +34,7 @@ describe('AuthController', () => {
     _authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
     _config = moduleRef.get(ConfigurationService);
+    cache = moduleRef.get(CacheService);
   });
 
   it('should be defined', () => {
@@ -89,6 +91,19 @@ describe('AuthController', () => {
         'Unauthenticated Traefik forward auth request',
         expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' }),
       );
+    });
+  });
+
+  describe('exchangePortalDesktopLogin', () => {
+    it('returns the cached desktop handoff once', async () => {
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth' }));
+
+      await expect(authController.exchangePortalDesktopLogin('desktop-token')).resolves.toEqual({
+        sessionId: 'session-123',
+        redirectPath: '/settings?tab=auth',
+      });
+      expect(cache.get).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+      expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
     });
   });
 });

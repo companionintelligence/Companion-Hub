@@ -5,7 +5,8 @@ import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { pipeline } from 'node:stream/promises';
 import { AuthGuard } from '../auth/auth.guard';
-import { LoadDto } from './dto/system.dto';
+import { LoadDto, SystemResourcesDto } from './dto/system.dto';
+import { ResourceAllocatorService } from './resource-allocator.service';
 import { SystemService } from './system.service';
 
 const isExpectedDownloadAbortError = (error: unknown) => {
@@ -21,6 +22,7 @@ export class SystemController {
   constructor(
     private readonly systemService: SystemService,
     private readonly dockerService: DockerService,
+    private readonly resourceAllocator: ResourceAllocatorService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -30,6 +32,14 @@ export class SystemController {
   async systemLoad() {
     const res = await this.systemService.getSystemLoad();
     return LoadDto.parse(res, { reportOnly: true });
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('/resources')
+  @ApiResponse({ type: SystemResourcesDto })
+  async systemResources() {
+    const res = await this.resourceAllocator.getResourceOverview();
+    return SystemResourcesDto.parse(res, { reportOnly: true });
   }
 
   @UseGuards(AuthGuard)

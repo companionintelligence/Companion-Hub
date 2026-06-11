@@ -11,6 +11,7 @@ mod updater;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::StoreExt;
@@ -21,6 +22,13 @@ const STACK_DEV_COMPOSE_PATH_ENV: &str = "CI_HUB_STACK_DEV_COMPOSE_PATH";
 const STACK_DEV_ENV_PATH_ENV: &str = "CI_HUB_STACK_DEV_ENV_PATH";
 
 struct PendingPairingCode(Mutex<Option<String>>);
+struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPortalAuthPayload {
+    token: String,
+}
 
 fn stack_dev_mode_enabled() -> bool {
     std::env::var(STACK_DEV_ENV)
@@ -120,6 +128,20 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
     hub_manager::install_docker()
 }
 
+/// Install Ollama using the platform-native bootstrap flow.
+#[tauri::command]
+async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
+    hub_manager::install_ollama()
+}
+
+/// Install a licensing-free Docker engine (Colima on macOS, Engine-in-WSL2 on
+/// Windows, the standard Engine on Linux).
+#[tauri::command]
+async fn install_docker_engine_alternative_command() -> Result<hub_manager::DockerInstallResult, String>
+{
+    hub_manager::install_docker_engine_alternative()
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -149,6 +171,18 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn save_download_command(filename: String, contents: Vec<u8>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let target = unique_download_path(&filename)?;
+        std::fs::write(&target, contents)
+            .map_err(|error| format!("Failed to write download {}: {error}", target.display()))?;
+        Ok(target.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Save download task failed: {error}"))?
+}
+
 /// Returns `true` if the user intentionally stopped the Hub on last use.
 #[tauri::command]
 async fn is_user_stopped_command() -> bool {
@@ -158,6 +192,13 @@ async fn is_user_stopped_command() -> bool {
 /// Returns a pairing code from a deep link that arrived before the UI was ready.
 #[tauri::command]
 fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> Option<String> {
+    state.0.lock().ok()?.take()
+}
+
+#[tauri::command]
+fn consume_pending_portal_auth(
+    state: tauri::State<'_, PendingPortalAuth>,
+) -> Option<DesktopPortalAuthPayload> {
     state.0.lock().ok()?.take()
 }
 
@@ -191,12 +232,8 @@ async fn perform_desktop_update_command(download_url: String) -> Result<(), Stri
         if !updater::is_trusted_download_url(&url) {
             return Err("Untrusted download URL".to_string());
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("HTTP client error: {}", e))?;
         let (expected_size, expected_sha256) =
-            updater::artifact_expectations_for_url(&client, &info.latest_version, &info, &url)?;
+            updater::artifact_expectations_for_url(&info.latest_version, &info, &url)?;
         updater::perform_host_update(&url, expected_size, expected_sha256.as_deref())
     })
     .await
@@ -219,7 +256,16 @@ async fn trigger_host_update_command() -> Result<String, String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
+        .manage(PendingPortalAuth(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A freshly-updated instance signals us (the old binary, still running)
+            // to restart so the new binary on disk takes over.
+            if args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
+                && updater::prepare_self_restart_for_update().is_ok()
+            {
+                app.exit(0);
+                return;
+            }
             focus_main_window(app);
             for arg in &args {
                 handle_deep_link_url(app, arg);
@@ -240,9 +286,13 @@ pub fn run() {
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
+            save_download_command,
             is_user_stopped_command,
             install_docker_command,
+            install_ollama_command,
+            install_docker_engine_alternative_command,
             consume_pending_pairing_code,
+            consume_pending_portal_auth,
             check_desktop_update_command,
             perform_desktop_update_command,
             get_update_progress_command,
@@ -599,6 +649,65 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn sanitize_download_filename(filename: &str) -> String {
+    let trimmed = filename.trim();
+    let mut sanitized = trimmed
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim_matches('.')
+        .trim()
+        .to_string();
+
+    if sanitized.is_empty() {
+        sanitized = "download.bin".to_string();
+    }
+
+    sanitized
+}
+
+fn preferred_download_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::desktop_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn unique_download_path(filename: &str) -> Result<PathBuf, String> {
+    let dir = preferred_download_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create download directory {}: {error}", dir.display()))?;
+
+    let sanitized = sanitize_download_filename(filename);
+    let path = PathBuf::from(&sanitized);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download");
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+
+    for index in 0..10_000 {
+        let candidate_name = if index == 0 {
+            sanitized.clone()
+        } else if extension.is_empty() {
+            format!("{stem}-{index}")
+        } else {
+            format!("{stem}-{index}.{extension}")
+        };
+
+        let candidate = dir.join(candidate_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Failed to allocate a unique download filename".to_string())
+}
+
 fn queue_pairing_code(app: &tauri::AppHandle, code: &str) {
     if let Some(state) = app.try_state::<PendingPairingCode>() {
         if let Ok(mut pending) = state.0.lock() {
@@ -608,10 +717,25 @@ fn queue_pairing_code(app: &tauri::AppHandle, code: &str) {
     let _ = app.emit("deep-link-pair", code);
 }
 
+fn queue_portal_auth(app: &tauri::AppHandle, payload: DesktopPortalAuthPayload) {
+    if let Some(state) = app.try_state::<PendingPortalAuth>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app.emit("deep-link-auth", payload);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         focus_main_window(app);
         queue_pairing_code(app, &code);
+        return;
+    }
+
+    if let Some(payload) = extract_portal_auth(url) {
+        focus_main_window(app);
+        queue_portal_auth(app, payload);
     }
 }
 
@@ -664,10 +788,33 @@ fn extract_pairing_code(url: &str) -> Option<String> {
     None
 }
 
+fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("cihub://auth") {
+        return None;
+    }
+
+    let query = trimmed.split('?').nth(1)?;
+    for param in query.split('&') {
+        if let Some(token) = param.strip_prefix("token=") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(DesktopPortalAuthPayload {
+                    token: token.to_string(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_pairing_code, launch_mode_from_args,
+        deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
+        launch_mode_from_args,
+        sanitize_download_filename,
         stack_dev_mode_enabled, stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
         STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
@@ -686,6 +833,29 @@ mod tests {
         assert_eq!(
             extract_pairing_code("cihub://pair/abc123"),
             Some("ABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_portal_auth_token_from_query_param() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?token=desktop-token"),
+            Some(super::DesktopPortalAuthPayload {
+                token: "desktop-token".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn ignore_non_auth_deep_links_for_portal_auth() {
+        assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn sanitize_download_filename_removes_path_separators() {
+        assert_eq!(
+            sanitize_download_filename("../ci:hub\\logs?.log"),
+            "_ci_hub_logs_.log".to_string()
         );
     }
 
