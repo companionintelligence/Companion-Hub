@@ -1070,13 +1070,15 @@ fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
     (total, used, mount)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const MIN_DOCKER_RAM_MB: u64 = 8192;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const DOCKER_OS_RESERVE_MB: u64 = 4096;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const MIN_DOCKER_DISK_GB: u64 = 64;
 
-#[cfg(target_os = "linux")]
-fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn recommended_docker_vm_ram_mb(host_total_mb: u64) -> u64 {
     if host_total_mb == 0 {
         return MIN_DOCKER_RAM_MB;
     }
@@ -1087,20 +1089,32 @@ fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn docker_desktop_settings_path_linux() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".docker/desktop/settings-store.json"))
+fn docker_desktop_settings_path() -> Option<PathBuf> {
+    dirs::home_dir()
+        .map(|h| h.join(".docker/desktop/settings-store.json"))
+        .filter(|p| p.exists())
 }
 
-#[cfg(target_os = "linux")]
-fn read_docker_desktop_memory_mib(settings: &serde_json::Value) -> u64 {
+#[cfg(target_os = "macos")]
+fn docker_desktop_settings_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    [
+        home.join("Library/Group Containers/group.com.docker/settings-store.json"),
+        home.join(".docker/desktop/settings-store.json"),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_docker_desktop_u64(settings: &serde_json::Value, key: &str, legacy_key: &str) -> Option<u64> {
     settings
-        .get("memoryMiB")
-        .or_else(|| settings.get("MemoryMiB"))
+        .get(key)
+        .or_else(|| settings.get(legacy_key))
         .and_then(|m| m.as_u64())
-        .unwrap_or(MIN_DOCKER_RAM_MB)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
     let path = data_dir.join("state/hardware/docker-tuning.json");
     if let Some(parent) = path.parent() {
@@ -1111,8 +1125,8 @@ fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn try_restart_docker_desktop_linux() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn try_restart_docker_desktop() {
     let docker = find_docker_binary();
     let _ = Command::new(&docker)
         .args(["desktop", "restart"])
@@ -1121,23 +1135,32 @@ fn try_restart_docker_desktop_linux() {
         .status();
 }
 
-/// On Linux with Docker Desktop, containers run in a linuxkit VM capped by `memoryMiB` in
-/// `~/.docker/desktop/settings-store.json`. Best-effort: raise toward ~75% of host RAM, restart
-/// Docker Desktop, and record outcome in `state/hardware/docker-tuning.json` (shown in Settings → System).
-#[cfg(target_os = "linux")]
-fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
-    let settings_path = match docker_desktop_settings_path_linux() {
-        Some(path) if path.exists() => path,
-        _ => return,
-    };
+/// Host hardware totals used to size the Docker Desktop VM.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct HostVmSizingInputs {
+    total_ram_mb: u64,
+    cpu_cores: u64,
+    disk_total_gb: u64,
+}
 
-    let host_total_mb = match read_proc_meminfo_kb("MemTotal") {
-        Some(kb) => kb / 1024,
+/// With Docker Desktop, containers run in a VM whose RAM/CPU/disk caps live in
+/// `settings-store.json`. Best-effort, raise-only tuning: memory toward ~75% of host
+/// RAM, CPUs toward all host cores, disk toward half the host disk (the disk image is
+/// sparse, so a higher cap costs nothing until apps use the space). Restarts Docker
+/// Desktop when something changed and records the outcome in
+/// `state/hardware/docker-tuning.json` (shown in Settings → System).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ensure_docker_desktop_vm_resources(data_dir: &Path, platform: &str, host: HostVmSizingInputs) {
+    let settings_path = match docker_desktop_settings_path() {
+        // No settings file means a native engine or no Docker Desktop — nothing to tune
+        Some(path) => path,
         None => return,
     };
 
-    let recommended_mb = recommended_docker_ram_mb_linux(host_total_mb);
-    let threshold_mb = (recommended_mb as f64 * 0.9) as u64;
+    if host.total_ram_mb == 0 {
+        return;
+    }
+
     let attempted_at = chrono::Utc::now().to_rfc3339();
 
     let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
@@ -1148,19 +1171,36 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
         _ => serde_json::json!({}),
     };
 
-    let current_mib = read_docker_desktop_memory_mib(&settings);
+    let recommended_ram_mb = recommended_docker_vm_ram_mb(host.total_ram_mb);
+    let ram_threshold_mb = (recommended_ram_mb as f64 * 0.9) as u64;
+    let current_ram_mib =
+        read_docker_desktop_u64(&settings, "memoryMiB", "MemoryMiB").unwrap_or(MIN_DOCKER_RAM_MB);
+    let raise_ram = current_ram_mib < ram_threshold_mb;
 
-    if current_mib >= threshold_mb {
+    // Give the VM every host core; per-app fairness comes from compose-level CPU caps.
+    let current_cpus = read_docker_desktop_u64(&settings, "cpus", "Cpus").unwrap_or(0);
+    let raise_cpus = host.cpu_cores > 0 && current_cpus < host.cpu_cores;
+
+    // Only touch the disk cap when the key already exists — a missing key means
+    // Docker Desktop manages its own (often larger) default.
+    let recommended_disk_mib = std::cmp::max(MIN_DOCKER_DISK_GB, host.disk_total_gb / 2) * 1024;
+    let current_disk_mib = read_docker_desktop_u64(&settings, "diskSizeMiB", "DiskSizeMiB");
+    let raise_disk = host.disk_total_gb > 0
+        && matches!(current_disk_mib, Some(current) if current < recommended_disk_mib);
+
+    if !raise_ram && !raise_cpus && !raise_disk {
         write_docker_tuning_record(
             data_dir,
             serde_json::json!({
                 "attemptedAt": attempted_at,
-                "platform": "linux",
+                "platform": platform,
                 "action": "noop",
-                "reason": "Docker Desktop VM memory already at or above recommended value",
-                "previousMemoryMb": current_mib,
-                "targetMemoryMb": recommended_mb,
-                "appliedMemoryMb": current_mib,
+                "reason": "Docker Desktop VM resources already at or above recommended values",
+                "previousMemoryMb": current_ram_mib,
+                "targetMemoryMb": recommended_ram_mb,
+                "appliedMemoryMb": current_ram_mib,
+                "previousCpus": current_cpus,
+                "targetCpus": host.cpu_cores,
             }),
         );
         return;
@@ -1169,10 +1209,32 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
     let Some(obj) = settings.as_object_mut() else {
         return;
     };
-    obj.insert(
-        "memoryMiB".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(recommended_mb)),
-    );
+
+    let mut changes: Vec<String> = Vec::new();
+    if raise_ram {
+        obj.insert(
+            "memoryMiB".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(recommended_ram_mb)),
+        );
+        changes.push(format!("memoryMiB {current_ram_mib} → {recommended_ram_mb}"));
+    }
+    if raise_cpus {
+        obj.insert(
+            "cpus".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(host.cpu_cores)),
+        );
+        changes.push(format!("cpus {current_cpus} → {}", host.cpu_cores));
+    }
+    if raise_disk {
+        obj.insert(
+            "diskSizeMiB".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(recommended_disk_mib)),
+        );
+        changes.push(format!(
+            "diskSizeMiB {} → {recommended_disk_mib}",
+            current_disk_mib.unwrap_or(0)
+        ));
+    }
 
     let serialized = match serde_json::to_string_pretty(&settings) {
         Ok(value) => format!("{value}\n"),
@@ -1181,11 +1243,11 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "failed",
                     "reason": format!("Could not serialize Docker Desktop settings: {error}"),
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
                 }),
             );
             return;
@@ -1194,33 +1256,40 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
 
     match std::fs::write(&settings_path, serialized) {
         Ok(_) => {
-            try_restart_docker_desktop_linux();
+            try_restart_docker_desktop();
             let _ = append_desktop_log_for(
                 data_dir,
-                "docker.mem",
+                "docker.vm",
                 &format!(
-                    "Raised Docker Desktop VM memory from {current_mib} MiB to {recommended_mb} MiB (host {host_total_mb} MB RAM); requested Docker Desktop restart.",
+                    "Raised Docker Desktop VM resources ({}) for host with {} MB RAM / {} cores / {} GB disk; requested Docker Desktop restart.",
+                    changes.join(", "),
+                    host.total_ram_mb,
+                    host.cpu_cores,
+                    host.disk_total_gb,
                 ),
             );
             write_docker_tuning_record(
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "updated",
-                    "reason": "Increased Docker Desktop memoryMiB (restart Docker Desktop if memory still looks capped)",
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
-                    "appliedMemoryMb": recommended_mb,
+                    "reason": format!("Increased Docker Desktop VM resources: {} (restart Docker Desktop if resources still look capped)", changes.join(", ")),
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
+                    "appliedMemoryMb": if raise_ram { recommended_ram_mb } else { current_ram_mib },
+                    "previousCpus": current_cpus,
+                    "targetCpus": host.cpu_cores,
+                    "appliedCpus": if raise_cpus { host.cpu_cores } else { current_cpus },
                 }),
             );
         }
         Err(error) => {
             let _ = append_desktop_log_for(
                 data_dir,
-                "docker.mem",
+                "docker.vm",
                 &format!(
-                    "Could not write Docker Desktop settings at {}: {error}. Raise memory manually under Docker Desktop → Settings → Resources.",
+                    "Could not write Docker Desktop settings at {}: {error}. Raise resources manually under Docker Desktop → Settings → Resources.",
                     settings_path.display()
                 ),
             );
@@ -1228,19 +1297,68 @@ fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
                 data_dir,
                 serde_json::json!({
                     "attemptedAt": attempted_at,
-                    "platform": "linux",
+                    "platform": platform,
                     "action": "failed",
                     "reason": format!("Could not write Docker Desktop settings: {error}"),
-                    "previousMemoryMb": current_mib,
-                    "targetMemoryMb": recommended_mb,
+                    "previousMemoryMb": current_ram_mib,
+                    "targetMemoryMb": recommended_ram_mb,
                 }),
             );
         }
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn ensure_docker_desktop_memory_linux(_data_dir: &Path) {}
+#[cfg(target_os = "linux")]
+fn ensure_docker_vm_resources(data_dir: &Path) {
+    let total_ram_mb = match read_proc_meminfo_kb("MemTotal") {
+        Some(kb) => kb / 1024,
+        None => return,
+    };
+    let (_, cpu_cores) = read_linux_cpu_info();
+    let (disk_total_gb, _, _) = linux_primary_disk_gb(data_dir);
+
+    ensure_docker_desktop_vm_resources(
+        data_dir,
+        "linux",
+        HostVmSizingInputs {
+            total_ram_mb,
+            cpu_cores: cpu_cores as u64,
+            disk_total_gb,
+        },
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let output = Command::new("sysctl").args(["-n", name]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_docker_vm_resources(data_dir: &Path) {
+    let total_ram_mb = match sysctl_u64("hw.memsize") {
+        Some(bytes) if bytes > 0 => bytes / 1024 / 1024,
+        _ => return,
+    };
+    let cpu_cores = sysctl_u64("hw.logicalcpu").unwrap_or(0);
+    let (disk_total_gb, _, _) = detect_macos_primary_disk_gb();
+
+    ensure_docker_desktop_vm_resources(
+        data_dir,
+        "darwin",
+        HostVmSizingInputs {
+            total_ram_mb,
+            cpu_cores,
+            disk_total_gb,
+        },
+    );
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn ensure_docker_vm_resources(_data_dir: &Path) {}
 
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
@@ -4095,8 +4213,8 @@ fn start_hub_inner(
     // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
     refresh_linux_host_metrics_probe_cache(data_dir);
 
-    // On Linux + Docker Desktop, best-effort raise VM memory (~75% host RAM) before compose up.
-    ensure_docker_desktop_memory_linux(data_dir);
+    // With Docker Desktop, best-effort raise VM memory/CPUs/disk toward host capacity before compose up.
+    ensure_docker_vm_resources(data_dir);
 
     // Release stale Docker publish mappings before resolving host ports.
     for port in [80u16, 443] {

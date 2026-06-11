@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 
 import { userSchema } from './modules/user/dto/user.dto';
 
@@ -14,6 +15,8 @@ export const settingsSchema = z.object({
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
   defaultAppCpuLimit: optionalCpuLimitSchema,
+  defaultAppMemoryLimit: optionalMemoryLimitSchema,
+  autoAllocateAppResources: z.boolean().optional(),
   demoMode: z.boolean(),
   disablePasswordReset: z.boolean(),
   dnsIp: z.string().ipv4(),

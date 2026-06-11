@@ -368,18 +368,7 @@ export class DockerService {
     // Prefer docker compose (v2 plugin) over docker-compose (v1 binary) for better compatibility
     // Try docker compose first, fallback to docker-compose binary if needed
     try {
-      // Verify docker compose is available before using it
-      const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
-      await new Promise<void>((resolve, reject) => {
-        testCmd.on('close', (code) => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`docker compose not available (exit code: ${code})`));
-          }
-        });
-        testCmd.on('error', reject);
-      });
+      await this.assertComposePluginAvailable();
 
       this.logger.debug('docker compose plugin is available, using it');
       // Use docker compose plugin (docker-cli is installed in the container)
@@ -392,6 +381,31 @@ export class DockerService {
         throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
       });
     }
+  }
+
+  // Plugin availability doesn't change at runtime; probe once and reuse so
+  // every compose operation doesn't pay for an extra process spawn.
+  private composePluginAvailable?: Promise<void>;
+
+  private assertComposePluginAvailable(): Promise<void> {
+    if (!this.composePluginAvailable) {
+      this.composePluginAvailable = new Promise<void>((resolve, reject) => {
+        const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
+        testCmd.on('close', (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`docker compose not available (exit code: ${code})`));
+          }
+        });
+        testCmd.on('error', reject);
+      });
+      // A failed probe should not be cached forever — allow retry on the next call
+      this.composePluginAvailable.catch(() => {
+        this.composePluginAvailable = undefined;
+      });
+    }
+    return this.composePluginAvailable;
   }
 
   private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {
