@@ -1,0 +1,23 @@
+{
+  "name": "ci-tutorial-video",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Companion Intelligence — automated FTUE tutorial video (Portal → Hub → Marketplace), rendered from code with Remotion",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render CIPlatformTour out/ci-platform-tour.mp4",
+    "still": "remotion still"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.0",
+    "@remotion/transitions": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.5.0"
+  }
+}
