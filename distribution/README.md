@@ -115,7 +115,18 @@ Companion Hub now ships best-effort uninstall cleanup hooks/scripts for maintain
 
 Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`.
 
-Cleanup removes Hub-related state in user config/cache/data directories and attempts Docker cleanup for CI-Hub resources.
+**Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
+config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
+`ci_hub_app_data`, `hub_tailscale_state`) — i.e. the database and all app data. This is
+intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
+no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
+uninstalling.
+
+Upgrades never trigger this purge: the deb `postrm` skips the `upgrade` lifecycle, the rpm
+`postun` skips when an instance remains, and AUR/snap run cleanup only on true removal.
+Scoop is the exception — because `scoop update` also runs the uninstaller, the Scoop
+uninstaller removes only containers/networks and preserves data; a full Scoop purge requires
+running `uninstall-cleanup.ps1` manually after `scoop uninstall`.
 
 ### Nix
 

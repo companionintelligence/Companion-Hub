@@ -59,7 +59,6 @@ if command -v docker >/dev/null 2>&1; then
     {
       collect_names --filter "label=com.docker.compose.project=ci-os-hub"
       collect_names --filter "label=com.docker.compose.project=ci-hub"
-      collect_names --filter "label=com.docker.compose.project=runtipi"
       collect_names --filter "network=ci_os_hub_network"
       collect_names --filter "network=ci-os-hub_network"
     } | awk 'NF && !seen[$0]++'
@@ -77,7 +76,7 @@ if command -v docker >/dev/null 2>&1; then
 
   docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
     case "$volume" in
-      *ci_os_hub*|*ci-os-hub*|runtipi_*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)
+      *ci_os_hub*|*ci-os-hub*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*)
         run_cmd "docker volume rm $volume" || true
         ;;
     esac

@@ -22,7 +22,6 @@
       "  $containerNames = @()",
       "  $containerNames += docker ps -a --filter 'label=com.docker.compose.project=ci-os-hub' --format '{{.Names}}' 2>$null",
       "  $containerNames += docker ps -a --filter 'label=com.docker.compose.project=ci-hub' --format '{{.Names}}' 2>$null",
-      "  $containerNames += docker ps -a --filter 'label=com.docker.compose.project=runtipi' --format '{{.Names}}' 2>$null",
       "  $containerNames += docker ps -a --filter 'network=ci_os_hub_network' --format '{{.Names}}' 2>$null",
       "  $containerNames += docker ps -a --filter 'network=ci-os-hub_network' --format '{{.Names}}' 2>$null",
       "  $containerNames = $containerNames | Where-Object { $_ -and $_.Trim().Length -gt 0 } | Select-Object -Unique",

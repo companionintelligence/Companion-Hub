@@ -50,7 +50,6 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $containerNames = @()
     $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-os-hub'
     $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-hub'
-    $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=runtipi'
     $containerNames += Get-ContainerNamesByFilter 'network=ci_os_hub_network'
     $containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
 
@@ -73,7 +72,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     }
 
     foreach ($volume in $volumes) {
-        if ($volume -match 'ci_os_hub|ci-os-hub|^runtipi_|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state|^e2e-|^test-e2e-') {
+        if ($volume -match 'ci_os_hub|ci-os-hub|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state') {
             Invoke-CleanupCommand "docker volume rm $volume"
         }
     }

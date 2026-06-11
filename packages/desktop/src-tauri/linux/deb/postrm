@@ -32,7 +32,6 @@ cleanup_docker() {
   {
     docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
     docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null
-    docker ps -a --filter "label=com.docker.compose.project=runtipi" --format '{{.Names}}' 2>/dev/null
     docker ps -a --filter "network=ci_os_hub_network" --format '{{.Names}}' 2>/dev/null
     docker ps -a --filter "network=ci-os-hub_network" --format '{{.Names}}' 2>/dev/null
   } | awk 'NF && !seen[$0]++' | while IFS= read -r name; do
@@ -41,7 +40,7 @@ cleanup_docker() {
 
   docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
     case "$volume" in
-      *ci_os_hub*|*ci-os-hub*|runtipi_*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)
+      *ci_os_hub*|*ci-os-hub*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*)
         docker volume rm "$volume" >/dev/null 2>&1 || true
         ;;
     esac
