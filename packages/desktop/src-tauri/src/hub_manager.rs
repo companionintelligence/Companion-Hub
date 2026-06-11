@@ -5473,6 +5473,14 @@ exit 0
     )
 }
 
+fn docker_desktop_windows_outer_launch_command(script_path: &str, username: &str) -> String {
+    format!(
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
+        escape_powershell_single_quoted(script_path),
+        escape_powershell_single_quoted(username),
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn install_docker_windows() -> Result<DockerInstallResult, String> {
     use std::io::Write as IoWrite;
@@ -5489,10 +5497,9 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
-    let launch_command = format!(
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
-        escape_powershell_single_quoted(&script.path().to_string_lossy()),
-        escape_powershell_single_quoted(&username),
+    let launch_command = docker_desktop_windows_outer_launch_command(
+        &script.path().to_string_lossy(),
+        &username,
     );
 
     let mut command = Command::new("powershell.exe");
@@ -5582,7 +5589,6 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -6555,18 +6561,19 @@ $setup | & wsl.exe -d $distro -u root -- sh
 if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
 
 # Restart the distro so wsl.conf + the drop-in take effect.
-& wsl.exe --shutdown
+& wsl.exe --terminate $distro
 & wsl.exe -d $distro -u root -- true
 
 # Phase 4: static docker CLI where the Hub already looks for it.
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {{ 'aarch64' }} else {{ 'x86_64' }}
 $dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
 if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {{
-  $index = (Invoke-WebRequest -UseBasicParsing -Uri 'https://download.docker.com/win/static/stable/x86_64/').Content
+  $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
   $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object {{ $_.Value }} | Sort-Object {{ [version]($_ -replace 'docker-|\.zip', '') }}
   $latest = $zips[-1]
   if (-not $latest) {{ throw 'Could not determine the latest static docker CLI version.' }}
   $zipPath = Join-Path $Env:TEMP $latest
-  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/x86_64/$latest" -OutFile $zipPath
+  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
   try {{
     $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
     Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
@@ -6595,6 +6602,12 @@ Set-Content -Path $vbs -Value "CreateObject(""Wscript.Shell"").Run ""wsl.exe -d 
 
 # Keepalive for this session too, then wait for the engine.
 Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d',$distro,'-u','root','--','sleep','infinity'
+# Wait up to 30 s for systemd to finish booting before polling Docker.
+for ($s = 0; $s -lt 15; $s++) {{
+  $state = (& wsl.exe -d $distro -u root -- systemctl is-system-running 2>$null)
+  if ($state -match 'running|degraded') {{ break }}
+  Start-Sleep -Seconds 2
+}}
 for ($i = 0; $i -lt 60; $i++) {{
   & $dockerExe info 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) {{ exit 0 }}
@@ -6715,6 +6728,8 @@ mod tests {
     use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(any(test, target_os = "windows"))]
     use super::wsl2_engine_windows_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_outer_launch_command;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
@@ -7247,6 +7262,29 @@ mod tests {
         assert!(script.contains("context create wsl-engine"));
         assert!(script.contains("sleep infinity"));
         assert!(script.contains("docker.exe"));
+        // Dynamic Ubuntu variant selection: handles Ubuntu-22.04, Ubuntu-24.04, etc.
+        assert!(script.contains("-match '^Ubuntu-'"));
+        // Must restart only the target distro, not every running WSL distro.
+        assert!(script.contains("--terminate $distro"));
+        assert!(!script.contains("--shutdown"));
+        // Architecture-aware docker CLI download: ARM64 gets aarch64, x86 gets x86_64.
+        assert!(script.contains("PROCESSOR_ARCHITECTURE"));
+        assert!(script.contains("aarch64"));
+        // Systemd boot check before the docker-info poll loop.
+        assert!(script.contains("is-system-running"));
+    }
+
+    #[test]
+    fn docker_desktop_outer_launch_has_stop_on_error_preference() {
+        let cmd = docker_desktop_windows_outer_launch_command(
+            "C:\\Users\\test\\AppData\\Local\\Temp\\install.ps1",
+            "testuser",
+        );
+        assert!(cmd.starts_with("$ErrorActionPreference = 'Stop';"));
+        assert!(cmd.contains("-Verb RunAs"));
+        assert!(cmd.contains("exit $process.ExitCode"));
+        // Username must appear in the -AppUser argument.
+        assert!(cmd.contains("testuser"));
     }
 
     #[test]
