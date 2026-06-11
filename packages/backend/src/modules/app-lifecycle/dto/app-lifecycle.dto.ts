@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import isFQDN from 'validator/lib/isFQDN';
 
 export const appFormSchema = z
@@ -25,6 +26,7 @@ export const appFormSchema = z
       .optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
+    memoryLimit: optionalMemoryLimitSchema,
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),

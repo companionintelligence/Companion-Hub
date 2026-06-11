@@ -128,6 +128,20 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
     hub_manager::install_docker()
 }
 
+/// Install Ollama using the platform-native bootstrap flow.
+#[tauri::command]
+async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
+    hub_manager::install_ollama()
+}
+
+/// Install a licensing-free Docker engine (Colima on macOS, Engine-in-WSL2 on
+/// Windows, the standard Engine on Linux).
+#[tauri::command]
+async fn install_docker_engine_alternative_command() -> Result<hub_manager::DockerInstallResult, String>
+{
+    hub_manager::install_docker_engine_alternative()
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -218,12 +232,8 @@ async fn perform_desktop_update_command(download_url: String) -> Result<(), Stri
         if !updater::is_trusted_download_url(&url) {
             return Err("Untrusted download URL".to_string());
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("HTTP client error: {}", e))?;
         let (expected_size, expected_sha256) =
-            updater::artifact_expectations_for_url(&client, &info.latest_version, &info, &url)?;
+            updater::artifact_expectations_for_url(&info.latest_version, &info, &url)?;
         updater::perform_host_update(&url, expected_size, expected_sha256.as_deref())
     })
     .await
@@ -248,6 +258,14 @@ pub fn run() {
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A freshly-updated instance signals us (the old binary, still running)
+            // to restart so the new binary on disk takes over.
+            if args.iter().any(|a| a == updater::RELAUNCH_AFTER_UPDATE_FLAG)
+                && updater::prepare_self_restart_for_update().is_ok()
+            {
+                app.exit(0);
+                return;
+            }
             focus_main_window(app);
             for arg in &args {
                 handle_deep_link_url(app, arg);
@@ -271,6 +289,8 @@ pub fn run() {
             save_download_command,
             is_user_stopped_command,
             install_docker_command,
+            install_ollama_command,
+            install_docker_engine_alternative_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             check_desktop_update_command,

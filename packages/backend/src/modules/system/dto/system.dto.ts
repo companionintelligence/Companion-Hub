@@ -24,3 +24,40 @@ const loadSchema = z.object({
 
 // Load
 export class LoadDto extends createZodDto(loadSchema) {}
+
+const systemResourcesSchema = z.object({
+  docker: z
+    .object({
+      cpuCores: z.number(),
+      memTotalMb: z.number(),
+      serverVersion: z.string().optional(),
+    })
+    .nullable(),
+  host: z
+    .object({
+      cpuCores: z.number(),
+      totalRamMb: z.number(),
+      availableRamMb: z.number(),
+      diskTotalGb: z.number(),
+      diskUsedGb: z.number(),
+    })
+    .nullable(),
+  runtimeKind: runtimeKindSchema,
+  hasVmWedge: z.boolean(),
+  recommended: z
+    .object({
+      dockerRamMb: z.number(),
+      dockerCpus: z.number(),
+      dockerDiskGb: z.number(),
+    })
+    .nullable(),
+  appDefaults: z.object({
+    cpuLimit: z.string().optional(),
+    memoryLimit: z.string().optional(),
+    autoAllocated: z.boolean(),
+  }),
+  tuning: z.record(z.string(), z.unknown()).nullable(),
+});
+
+// Resources
+export class SystemResourcesDto extends createZodDto(systemResourcesSchema) {}

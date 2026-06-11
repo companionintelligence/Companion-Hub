@@ -27,6 +27,7 @@ export class DockerComposeBuilder {
   private localDomain: string;
   private publicWebHostname?: string;
   private defaultCpuLimit?: string;
+  private defaultMemoryLimit?: string;
 
   constructor(_domain: string, localDomain: string) {
     this.localDomain = localDomain;
@@ -83,15 +84,20 @@ export class DockerComposeBuilder {
     }
 
     const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultCpuLimit;
+    const effectiveMemoryLimit = (typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() : undefined) || this.defaultMemoryLimit;
+    // App-provided limits always win; defaults only fill the gaps
+    const applyCpuLimit = Boolean(effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus);
+    const applyMemoryLimit = Boolean(effectiveMemoryLimit && !params.deploy?.resources?.limits?.memory);
     const deployConfig =
-      effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus
+      applyCpuLimit || applyMemoryLimit
         ? {
             ...(params.deploy ?? {}),
             resources: {
               ...(params.deploy?.resources ?? {}),
               limits: {
                 ...(params.deploy?.resources?.limits ?? {}),
-                cpus: effectiveCpuLimit,
+                ...(applyCpuLimit ? { cpus: effectiveCpuLimit } : {}),
+                ...(applyMemoryLimit ? { memory: effectiveMemoryLimit } : {}),
               },
             },
           }
@@ -193,12 +199,14 @@ export class DockerComposeBuilder {
     envFile?: string,
     publicWebHostname?: string,
     defaultCpuLimit?: string,
+    defaultMemoryLimit?: string,
   ) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.publicWebHostname = publicWebHostname;
     this.defaultCpuLimit = defaultCpuLimit?.trim() || undefined;
+    this.defaultMemoryLimit = defaultMemoryLimit?.trim() || undefined;
 
     const serviceHealthcheckMap = new Map<string, boolean>();
     for (const service of services) {

@@ -726,8 +726,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       phase(appId, 'screenshot', 'Taking screenshot');
       const chromeBin = resolveChromiumBinary();
       if (chromeBin) {
+        // Let a just-became-ready app settle before shooting: heavy SPAs serve their first request
+        // mid-bootstrap, and a request that hangs >45s gets the chromium SIGKILLed → no PNG → false warn.
+        await new Promise((r) => setTimeout(r, 4000));
         // Retry once: headless chromium occasionally races the app's first paint, or hiccups, and
         // writes no PNG — which made a healthy app score a false `warn`. A single retry recovers most.
+        let ssDiag = '';
         for (let attempt = 0; attempt < 2 && !result.hasScreenshot; attempt++) {
           const ss = spawnSync(
             chromeBin,
@@ -742,14 +746,30 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
               // libreoffice, …) are heavy SPAs that don't finish their first paint in 4s — they were
               // healthy (http 200, backend ok) but scored warn for a missing PNG. 12s flips them to pass.
               '--virtual-time-budget=12000',
+              // HARD capture deadline: apps holding persistent websocket/GCM connections never go
+              // network-idle, so the virtual-time budget never completes and chromium hangs until the
+              // 45s spawnSync SIGKILL → no PNG (diagnosed via the self-explaining `signal=SIGKILL`
+              // notes: jellyfin/element/plex/docmost/woodpecker all do this). `--timeout` forces the
+              // screenshot of whatever has rendered after 20s real time, ending the hang class.
+              '--timeout=20000',
               `http://localhost:${hostPort}${uiPath}`,
             ],
             { timeout: 45_000, killSignal: 'SIGKILL', stdio: 'pipe' },
           );
           result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
+          if (!result.hasScreenshot) {
+            // Self-explaining failures: a missing PNG used to leave NO trace of why (exit code,
+            // SIGKILL-on-hang, chromium crash) — record it so a warn verdict carries its own diagnosis.
+            const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
+            ssDiag = `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+          }
+        }
+        if (!result.hasScreenshot && ssDiag) {
+          result.notes = result.notes ? `${result.notes} | ${ssDiag}` : ssDiag;
         }
       } else {
         result.hasScreenshot = false;
+        result.notes = result.notes ? `${result.notes} | no chromium on node` : 'no chromium on node';
       }
     }
 

@@ -13,6 +13,7 @@ depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'glibc')
 provides=('companion-hub')
 conflicts=('companion-hub')
 options=('!strip')
+install=companion-hub-bin.install
 
 source_x86_64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_amd64.deb")
 source_aarch64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_arm64.deb")

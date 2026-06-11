@@ -59,8 +59,12 @@ export async function installApp(request: APIRequestContext) {
 /**
  * Uninstall the test app via Hub API
  */
-export async function uninstallApp(request: APIRequestContext) {
-  const res = await request.delete(`${BASE_URL}/api/app-lifecycle/${APP_URN}/uninstall`);
+export async function uninstallApp(request: APIRequestContext, options?: { deleteAllData?: boolean }) {
+  const res = await request.delete(`${BASE_URL}/api/app-lifecycle/${APP_URN}/uninstall`, {
+    data: {
+      deleteAllData: options?.deleteAllData ?? true,
+    },
+  });
   expect(res.ok(), `Uninstall failed: ${res.status()} ${await res.text()}`).toBeTruthy();
   return res.json();
 }
