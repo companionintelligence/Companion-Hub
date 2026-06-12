@@ -10,25 +10,35 @@ This guide covers complete uninstallation of Companion Hub on Linux, macOS, and 
 
 Use this when you want to completely remove Companion Hub, all apps, Docker containers, volumes, and data.
 
+**⚠️ IMPORTANT:** Replace `<YOUR_USERNAME>` in the commands below with your actual Linux username!
+
 ```bash
-# 1. Stop all Docker containers
+# Stop all running containers
 docker stop $(docker ps -q)
 
-# 2. Remove all Docker containers, images, volumes, and networks
-docker system prune --volumes --all --force
+# Remove all Docker resources (containers, images, volumes, networks)
+docker system prune --volumes --all --force && docker volume rm $(docker volume ls -q)
 
-# 3. Remove all remaining Docker volumes (if any survived)
-docker volume rm $(docker volume ls -q) 2>/dev/null || true
-
-# 4. Uninstall Companion Hub package
+# Uninstall Companion Hub package
 sudo apt-get purge -y companion-hub && sudo apt-get autoremove -y
 
-# 5. Remove user data directories
-# IMPORTANT: Replace 'username' with your actual username!
-sudo rm -rf /home/username/.local/share/companion-hub
-sudo rm -rf /home/username/.local/share/computer.ci.app.hub
-sudo rm -rf /home/username/.config/companion-hub
-sudo rm -rf /home/username/.cache/companion-hub
+# Remove user data directories (REPLACE <YOUR_USERNAME> WITH YOUR ACTUAL USERNAME!)
+sudo rm -rf /home/<YOUR_USERNAME>/.local/share/companion-hub
+sudo rm -rf /home/<YOUR_USERNAME>/.local/share/computer.ci.app.hub
+```
+
+**Example:** If your username is `john`, use:
+```bash
+sudo rm -rf /home/john/.local/share/companion-hub
+sudo rm -rf /home/john/.local/share/computer.ci.app.hub
+```
+
+**Alternative (works for current user automatically):**
+```bash
+rm -rf ~/.local/share/companion-hub
+rm -rf ~/.local/share/computer.ci.app.hub
+rm -rf ~/.config/companion-hub
+rm -rf ~/.cache/companion-hub
 ```
 
 **⚠️ Warning:** This will delete:
