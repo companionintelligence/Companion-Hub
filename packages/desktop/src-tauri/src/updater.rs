@@ -55,6 +55,7 @@ impl UpdateSource {
         Self::prod()
     }
 
+    #[cfg(any(debug_assertions, test))]
     /// Parse an override base origin like `http://127.0.0.1:8765`. Plain http is
     /// only reachable through the debug-gated env override above.
     fn from_base(base: &str) -> Option<Self> {
@@ -122,6 +123,7 @@ impl UpdateSource {
     }
 }
 
+#[cfg(any(debug_assertions, test))]
 fn any_scheme_hostname(url: &str) -> Option<String> {
     let rest = strip_ascii_case_prefix(url, "https://")
         .or_else(|| strip_ascii_case_prefix(url, "http://"))?;

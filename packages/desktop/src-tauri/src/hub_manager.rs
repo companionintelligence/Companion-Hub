@@ -5484,6 +5484,7 @@ exit 0
     )
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn docker_desktop_windows_outer_launch_command(script_path: &str, username: &str) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
@@ -5600,6 +5601,7 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
