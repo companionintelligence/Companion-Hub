@@ -644,38 +644,36 @@ export const InstallForm: React.FC<IProps> = ({
         toast.error(dnsAvailabilityError);
         return;
       }
-      if (isProduction) {
-        // Perform a final DNS check before submission
-        try {
-          const query = new URLSearchParams({ subdomain: formValues.localSubdomain });
-          const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
-          if (selectedDomain) {
-            query.set('domain', selectedDomain);
-          }
-
-          const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
-            credentials: 'include',
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            if (!data.available) {
-              if (typeof data.message === 'string' && data.message) {
-                setError('localSubdomain', { message: data.message });
-                toast.error(data.message);
-                return;
-              }
-
-              validationErrors.localSubdomain = {
-                messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
-                params: { name: formValues.localSubdomain },
-              };
-            }
-          }
-        } catch (error) {
-          // If DNS check fails, allow submission (graceful degradation)
-          console.warn('DNS check failed during validation, allowing submission:', error);
+      // Perform a final DNS check before submission
+      try {
+        const query = new URLSearchParams({ subdomain: formValues.localSubdomain });
+        const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
+        if (selectedDomain) {
+          query.set('domain', selectedDomain);
         }
+
+        const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (!data.available) {
+            if (typeof data.message === 'string' && data.message) {
+              setError('localSubdomain', { message: data.message });
+              toast.error(data.message);
+              return;
+            }
+
+            validationErrors.localSubdomain = {
+              messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
+              params: { name: formValues.localSubdomain },
+            };
+          }
+        }
+      } catch (error) {
+        // If DNS check fails, allow submission (graceful degradation)
+        console.warn('DNS check failed during validation, allowing submission:', error);
       }
     }
 
