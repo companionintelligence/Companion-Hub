@@ -240,7 +240,9 @@ describe('CloudflareClientService', () => {
     it('should fail open when CI-Cloud availability check times out before a response', async () => {
       mockAxiosInstance.get.mockRejectedValue({
         code: 'ETIMEDOUT',
+        isAxiosError: true,
       });
+      mockedAxios.isAxiosError.mockReturnValue(true);
 
       const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
 

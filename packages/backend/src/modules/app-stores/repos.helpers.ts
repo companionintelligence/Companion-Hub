@@ -101,9 +101,21 @@ export class ReposHelpers {
           return response.data;
         }
 
-        throw new Error(`CI Cloud request failed: ${config.method ?? 'GET'} ${config.url} -> ${response.status} ${response.statusText}`);
+        const shouldRetryStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+        const message = `CI Cloud request failed: ${config.method ?? 'GET'} ${config.url} -> ${response.status} ${response.statusText}`;
+        if (!shouldRetryStatus) {
+          throw new Error(message);
+        }
+        const retryableError = new Error(message) as Error & { retryable?: boolean };
+        retryableError.retryable = true;
+        throw retryableError;
       } catch (error) {
         lastError = error;
+        const retryableTransportError = axios.isAxiosError(error) && !error.response;
+        const retryableHttpError = error instanceof Error && 'retryable' in error && error.retryable === true;
+        if (!retryableTransportError && !retryableHttpError) {
+          throw error;
+        }
         if (attempt >= retries) {
           throw error;
         }

@@ -132,6 +132,27 @@ describe('ReposHelpers', () => {
       expect(writtenConfig).toHaveProperty('port', 8080);
       expect(writtenConfig).toHaveProperty('supported_architectures', ['amd64', 'arm64']);
     });
+
+    it('retries transient CI Cloud HTTP failures before succeeding', async () => {
+      axiosMock.request
+        .mockResolvedValueOnce({ status: 503, statusText: 'Service Unavailable', data: {} })
+        .mockResolvedValueOnce({ status: 200, statusText: 'OK', data: [] });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(true);
+      expect(axiosMock.request).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry permanent CI Cloud client errors', async () => {
+      axiosMock.request.mockResolvedValueOnce({ status: 404, statusText: 'Not Found', data: {} });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('404 Not Found');
+      expect(axiosMock.request).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('downloadAppFiles', () => {
