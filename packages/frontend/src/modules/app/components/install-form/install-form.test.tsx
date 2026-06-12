@@ -25,6 +25,17 @@ vi.mock('@/lib/api-fetch', () => ({
   apiFetch,
 }));
 
+const { toast } = vi.hoisted(() => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: toast,
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -387,8 +398,8 @@ describe('InstallForm', () => {
     expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
   });
 
-  it('renders the public domain selector inside the subdomain field instead of a separate row', () => {
-    vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
+  it('renders the public domain selector inside the subdomain field in simple mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
     MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'ci.computer', isDefault: true }];
 
     const exposableInfo = {
@@ -408,5 +419,57 @@ describe('InstallForm', () => {
     expect(screen.queryByText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
+  it('shows a DNS-specific toast when DNS availability fails', async () => {
+    vi.useFakeTimers();
+    const onSubmit = vi.fn();
+    const dnsMessage = 'DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com';
+    apiFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: false,
+          message: dnsMessage,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(dnsMessage);
   });
 });
