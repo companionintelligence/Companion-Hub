@@ -324,7 +324,10 @@ export const InstallForm: React.FC<IProps> = ({
             setDnsAvailabilityError(null);
             clearErrors('localSubdomain');
           } else {
-            const errorMessage = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
+            const errorMessage =
+              typeof data.message === 'string' && data.message
+                ? data.message
+                : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
             setDnsAvailabilityError(errorMessage);
             setError('localSubdomain', {
               type: 'manual',
@@ -591,6 +594,12 @@ export const InstallForm: React.FC<IProps> = ({
           if (response.ok) {
             const data = await response.json();
             if (!data.available) {
+              if (typeof data.message === 'string' && data.message) {
+                setError('localSubdomain', { message: data.message });
+                toast.error(data.message);
+                return;
+              }
+
               validationErrors.localSubdomain = {
                 messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
                 params: { name: formValues.localSubdomain },

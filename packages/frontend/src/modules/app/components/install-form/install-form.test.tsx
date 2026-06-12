@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
@@ -15,6 +15,14 @@ global.ResizeObserver = class ResizeObserver {
 // Mocks
 vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
+}));
+
+const { apiFetch } = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+}));
+
+vi.mock('@/lib/api-fetch', () => ({
+  apiFetch,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -85,6 +93,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 describe('InstallForm', () => {
   afterEach(() => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   const createContext = (advancedMode: boolean) => ({
@@ -255,6 +265,55 @@ describe('InstallForm', () => {
     fireEvent.click(toggle);
 
     expect(screen.getByText('Optional field')).toBeInTheDocument();
+  });
+
+  it('surfaces the full hostname from the DNS availability response', async () => {
+    vi.useFakeTimers();
+    apiFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: false,
+          message: 'DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com')).toBeInTheDocument();
   });
 
   it('shows optional fields by default and hides toggle in advanced mode', () => {
