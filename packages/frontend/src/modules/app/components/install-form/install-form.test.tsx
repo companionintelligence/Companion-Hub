@@ -12,6 +12,12 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
+Object.assign(navigator, {
+  clipboard: {
+    writeText: vi.fn().mockResolvedValue(undefined),
+  },
+});
+
 // Mocks
 vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
@@ -158,7 +164,7 @@ describe('InstallForm', () => {
     );
 
     // Expect to see "-josh.example.com" (lowercased)
-    expect(screen.getByText(/-josh.example.com/)).toBeInTheDocument();
+    expect(screen.getAllByText(/-josh.example.com/).length).toBeGreaterThan(0);
   });
 
   it('should fallback to local domain when organization slug is missing', () => {
@@ -416,7 +422,54 @@ describe('InstallForm', () => {
     );
 
     expect(screen.getByLabelText('COMMON_PUBLIC_DOMAIN')).toBeInTheDocument();
-    expect(screen.queryByText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
+
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
+  it('shows hostname details with copy buttons in simple mode', async () => {
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'companionintelligence.com', isDefault: true }];
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      name: 'OpenClaw WebCLI',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('OpenClaw WebCLI')).toBeInTheDocument();
+    expect(screen.getByText('blaptop')).toBeInTheDocument();
+    expect(screen.getByText('bc')).toBeInTheDocument();
+    expect(screen.getAllByText('companionintelligence.com').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ci-openclaw-blaptop-bc.companionintelligence.com').length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy COMMON_HOSTNAME' }));
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('ci-openclaw-blaptop-bc.companionintelligence.com');
+    expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_COPIED');
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
   });

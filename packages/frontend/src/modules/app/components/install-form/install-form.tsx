@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { Button } from '@/components/ui/Button';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { getAvailableDomainsQueryOptions } from '@/api-client/domains-query';
@@ -11,6 +12,7 @@ import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
+import { Copy } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -84,6 +86,7 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
+  const displayAppName = info.name || defaultAppSubdomain;
 
   const {
     register,
@@ -130,6 +133,17 @@ export const InstallForm: React.FC<IProps> = ({
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+
+  const copyToClipboard = async (text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
+  };
 
   // Track form validity for parent components
   useEffect(() => {
@@ -518,6 +532,46 @@ export const InstallForm: React.FC<IProps> = ({
             placeholder={info.urn.split(':')[0]}
           />
           {isCheckingDns && <p className="mt-1.5 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p>}
+        </div>
+        <div className="mb-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+          <div className="mb-2 text-sm font-medium text-foreground">{t('COMMON_HOSTNAME')}</div>
+          <div className="space-y-2">
+            {[
+              { label: 'App', value: displayAppName },
+              { label: 'Device', value: ciHubDeviceSlug || '' },
+              { label: 'Organization', value: ciHubOrganizationSlug || '' },
+              { label: t('COMMON_PUBLIC_DOMAIN'), value: watchExposureMode === 'cloudflare' ? watchPublicDomain || domain || '' : localDomain || '' },
+              {
+                label: t('COMMON_HOSTNAME'),
+                value:
+                  watchExposureMode === 'cloudflare'
+                    ? publicWebPreview?.hostname || ''
+                    : `${sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain)}.${localDomain || 'tailnet'}`,
+              },
+            ]
+              .filter((entry) => entry.value)
+              .map((entry) => (
+                <div key={entry.label} className="flex items-center gap-2 rounded-md bg-background/70 px-2 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{entry.label}</div>
+                    <div title={entry.value} className="truncate text-sm text-foreground">
+                      {entry.value}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => void copyToClipboard(entry.value)}
+                    aria-label={`Copy ${entry.label}`}
+                    title={`Copy ${entry.label}`}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+          </div>
         </div>
       </>
     );
