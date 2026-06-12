@@ -47,6 +47,7 @@
       "persistent": true,
       "env": [
         "API_PORT",
+        "FRONTEND_PORT",
         "CI_HUB_DATA_DIR",
         "CI_HUB_APP_DATA_DIR",
         "CI_HUB_APP_DIR",
@@ -81,6 +82,7 @@
       "persistent": true,
       "env": [
         "API_PORT",
+        "FRONTEND_PORT",
         "CI_HUB_DATA_DIR",
         "CI_HUB_APP_DATA_DIR",
         "CI_HUB_APP_DIR",

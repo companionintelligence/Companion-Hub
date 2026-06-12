@@ -146,8 +146,8 @@ cp .env.example .env.local
 pnpm run local
 ```
 
-- **Frontend:** <http://localhost:5173>
-- **Backend API:** <http://localhost:3000>
+- **Frontend:** <http://localhost:5005>
+- **Backend API:** <http://localhost:5004>
 
 Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
 

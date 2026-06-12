@@ -79,10 +79,10 @@ client.setConfig({
   credentials: credentialMode,
 });
 
-// Probe the backend port — try 5002 (prod) then 3000 (dev)
+// Probe the backend port — try 5002 (prod) then 5004 (local source dev)
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
   ? (async () => {
-      for (const port of [5002, 3000]) {
+      for (const port of [5002, 5004]) {
         try {
           const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
           if (res.ok) {

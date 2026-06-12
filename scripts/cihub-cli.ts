@@ -42,6 +42,8 @@ type CommandEntry = {
 
 const BASE_COMMAND = 'cihub';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
+const LOCAL_DEV_BACKEND_PORT = '5004';
+const LOCAL_DEV_FRONTEND_PORT = '5005';
 
 const COMPANY_ART = 'COMPANION HUB\nci.computer';
 
@@ -379,6 +381,13 @@ function commandLineForPid(pid: number): string {
   return ok ? stdout.trim() : '';
 }
 
+function sleepMs(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Intentional short synchronous wait for local-dev port cleanup.
+  }
+}
+
 function killPid(pid: number): void {
   try {
     process.kill(pid, 'SIGTERM');
@@ -388,8 +397,10 @@ function killPid(pid: number): void {
 }
 
 function ensureLocalDevPortsAvailable(): void {
-  const frontendPids = listeningPidsForPort(9091);
-  const backendPids = listeningPidsForPort(3000);
+  const frontendPort = Number.parseInt(LOCAL_DEV_FRONTEND_PORT, 10);
+  const backendPort = Number.parseInt(LOCAL_DEV_BACKEND_PORT, 10);
+  const frontendPids = listeningPidsForPort(frontendPort);
+  const backendPids = listeningPidsForPort(backendPort);
   const repoRoot = process.cwd();
 
   const staleFrontend = frontendPids.filter((pid) => {
@@ -398,21 +409,40 @@ function ensureLocalDevPortsAvailable(): void {
   });
   const staleBackend = backendPids.filter((pid) => {
     const command = commandLineForPid(pid);
-    return command.includes(repoRoot) && command.includes('nest start --watch --preserveWatchOutput');
+    return (
+      command.includes(repoRoot) &&
+      (command.includes('nest start --watch --preserveWatchOutput') ||
+        command.includes('/packages/backend/') ||
+        command.includes('packages/backend/dist/src/main.js'))
+    );
   });
 
   for (const pid of [...staleFrontend, ...staleBackend]) {
     killPid(pid);
   }
 
-  const remainingFrontend = listeningPidsForPort(9091).filter((pid) => !staleFrontend.includes(pid));
-  if (remainingFrontend.length > 0) {
-    usageAndExit(`Port 9091 is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`);
+  if (staleFrontend.length > 0 || staleBackend.length > 0) {
+    sleepMs(1500);
   }
 
-  const remainingBackend = listeningPidsForPort(3000).filter((pid) => !staleBackend.includes(pid));
+  const remainingFrontend = listeningPidsForPort(frontendPort).filter((pid) => !staleFrontend.includes(pid));
+  if (remainingFrontend.length > 0) {
+    printMessageBox(
+      'Local development port conflict',
+      [`Port ${LOCAL_DEV_FRONTEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  const remainingBackend = listeningPidsForPort(backendPort).filter((pid) => !staleBackend.includes(pid));
   if (remainingBackend.length > 0) {
-    usageAndExit(`Port 3000 is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`);
+    printMessageBox(
+      'Local development port conflict',
+      [`Port ${LOCAL_DEV_BACKEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
+      'red',
+    );
+    process.exit(2);
   }
 }
 
@@ -600,6 +630,8 @@ function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
     ...sourceVars,
     ENV_FILE: envFileName,
     ROOT_FOLDER_HOST: rootFolderHost,
+    API_PORT: sourceVars.API_PORT || LOCAL_DEV_BACKEND_PORT,
+    FRONTEND_PORT: sourceVars.FRONTEND_PORT || LOCAL_DEV_FRONTEND_PORT,
     CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
     CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
     CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
