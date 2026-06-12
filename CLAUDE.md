@@ -28,8 +28,11 @@ Local app runtime. Installs and supervises marketplace apps as Docker Compose de
 # Install dependencies
 pnpm install
 
-# Start development server / service
-pnpm dev
+# Start source-based local development
+pnpm run local
+
+# Start the dev appliance stack
+pnpm run dev
 
 # Run tests
 pnpm test
@@ -51,7 +54,7 @@ pnpm build
 
 ## Desktop app
 
-Tauri 2 in `packages/desktop/`. Run `pnpm dev:app` to launch. macOS signing identity set in tauri.conf.json — other devs without the cert will see TCC prompts.
+Tauri 2 in `packages/desktop/`. Run `pnpm run local:app` to launch. macOS signing identity set in tauri.conf.json — other devs without the cert will see TCC prompts.
 
 ## Packages layout
 

@@ -8,7 +8,9 @@
     "pnpm": ">=11"
   },
   "scripts": {
-    "dev": "pnpm exec tsx scripts/start.ts up local",
+    "start": "pnpm exec tsx scripts/start.ts up",
+    "dev": "pnpm exec tsx scripts/start.ts up dev --detached",
+    "local": "pnpm exec tsx scripts/start.ts up local",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
     "bundle": "turbo bundle",
     "build": "turbo run build",

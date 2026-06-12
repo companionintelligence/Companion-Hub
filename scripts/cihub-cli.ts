@@ -52,6 +52,17 @@ const envFileMap: Record<HubEnv, string> = {
   prod: '.env.prod',
 };
 
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as {
+      version?: string;
+    };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'Setup & Registration',
@@ -523,6 +534,28 @@ function prepareHubDataDirectory(envFileName: string): void {
   }
 }
 
+function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  const runtimeEnvPath = join(rootFolderHost, '.env');
+  const appDataDir = join(rootFolderHost, 'app-data');
+  const sourceVars = parseEnvFile(envFileName);
+  const runtimeVars = {
+    ...sourceVars,
+    ENV_FILE: envFileName,
+    ROOT_FOLDER_HOST: rootFolderHost,
+    CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
+    CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
+    CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
+    CI_HUB_VERSION: sourceVars.CI_HUB_VERSION || process.env.CI_HUB_VERSION || packageVersion(),
+  };
+  const content = Object.entries(runtimeVars)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+  writeFileSync(runtimeEnvPath, `${content}\n`, 'utf-8');
+  return runtimeVars;
+}
+
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
 async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
@@ -566,6 +599,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
   run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
   if (mode === 'local-dev') {
+    const runtimeVars = ensureLocalDevRuntimeEnv(envFileName);
     printMessageBox(
       'Starting local development',
       ['Environment: local', 'Bringing up PostgreSQL and RabbitMQ, then launching backend/frontend from source.'],
@@ -589,8 +623,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
       envOverrides,
     );
     run('tsx', ['scripts/sync-postgres-password.ts', envFileName], envOverrides);
-    const fileVars = parseEnvFile(envFileName);
-    run('pnpm', ['run', 'dev:app'], { ...fileVars, ...envOverrides });
+    run('pnpm', ['run', 'dev:app'], { ...runtimeVars, ...envOverrides });
     return;
   }
 
@@ -1365,12 +1398,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
 // ─── version ─────────────────────────────────────────────────────────────────
 
 export function renderVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version?: string };
-    return `${BASE_COMMAND} ${pkg.version ?? '(unknown)'}`;
-  } catch {
-    return `${BASE_COMMAND} (unknown version)`;
-  }
+  return `${BASE_COMMAND} ${packageVersion()}`;
 }
 
 // ─── error / usage ────────────────────────────────────────────────────────────

@@ -28,6 +28,8 @@ Local app runtime. Installs and supervises marketplace apps as Docker Compose de
 
 ```bash
 pnpm install   # install
+pnpm run local   # source-based local dev
+pnpm run dev   # dev appliance stack
 pnpm test   # test
 ```
 

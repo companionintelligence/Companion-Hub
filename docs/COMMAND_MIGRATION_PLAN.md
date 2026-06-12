@@ -33,7 +33,9 @@
 
 Keep engineering-task scripts such as:
 
+- `start`
 - `dev`
+- `local`
 - `dev:app`
 - `dev:desktop`
 - `build`
@@ -55,6 +57,12 @@ Keep engineering-task scripts such as:
 - `version`
 
 Remove lifecycle-style root scripts and move those workflows behind `cihub`.
+
+Additional approved root-entrypoint mapping:
+
+- `pnpm run local` = source-based local development
+- `pnpm run dev` = `.env.dev` appliance stack, detached
+- `pnpm start <env>` = shared start entrypoint for appliance environments
 
 ## Breaking migration policy
 

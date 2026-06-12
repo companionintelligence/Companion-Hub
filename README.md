@@ -143,7 +143,7 @@ See **[docs/CLI.md](docs/CLI.md)** for the full reference.
 pnpm install
 cp .env.example .env.local
 # Edit .env.local — set ROOT_FOLDER_HOST, JWT_SECRET
-pnpm dev
+pnpm run local
 ```
 
 - **Frontend:** <http://localhost:5173>
@@ -153,7 +153,9 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 
 | Command | Description |
 |---------|-------------|
-| `pnpm dev` | Start infra + backend + frontend with hot reload |
+| `pnpm run local` | Start infra + backend + frontend with hot reload |
+| `pnpm run dev` | Start the `.env.dev` appliance stack in detached mode |
+| `pnpm start dev` | Start the `.env.dev` appliance stack via the shared start entrypoint |
 | `cihub wizard [env]` | Guided first-time setup or action menu |
 | `cihub status [env]` | Show running containers + resolved config |
 | `cihub up [env] [--detached]` | Start the hub stack |
