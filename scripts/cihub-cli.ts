@@ -359,6 +359,63 @@ function runCapture(cmd: string, args: string[]): { stdout: string; ok: boolean 
   return { stdout: (result.stdout || '').trim(), ok: result.status === 0 };
 }
 
+function commandExists(cmd: string): boolean {
+  return runCapture(process.platform === 'win32' ? 'where' : 'which', [cmd]).ok;
+}
+
+function listeningPidsForPort(port: number): number[] {
+  if (process.platform === 'win32' || !commandExists('lsof')) return [];
+  const { stdout, ok } = runCapture('lsof', ['-t', '-n', `-iTCP:${port}`, '-sTCP:LISTEN']);
+  if (!ok || !stdout) return [];
+  return stdout
+    .split('\n')
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function commandLineForPid(pid: number): string {
+  if (process.platform === 'win32') return '';
+  const { stdout, ok } = runCapture('ps', ['-p', String(pid), '-o', 'command=']);
+  return ok ? stdout.trim() : '';
+}
+
+function killPid(pid: number): void {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // Best effort: if the process already exited we do not need to fail startup.
+  }
+}
+
+function ensureLocalDevPortsAvailable(): void {
+  const frontendPids = listeningPidsForPort(9091);
+  const backendPids = listeningPidsForPort(3000);
+  const repoRoot = process.cwd();
+
+  const staleFrontend = frontendPids.filter((pid) => {
+    const command = commandLineForPid(pid);
+    return command.includes(repoRoot) && command.includes('@react-router/dev/bin.js dev');
+  });
+  const staleBackend = backendPids.filter((pid) => {
+    const command = commandLineForPid(pid);
+    return command.includes(repoRoot) && command.includes('nest start --watch --preserveWatchOutput');
+  });
+
+  for (const pid of [...staleFrontend, ...staleBackend]) {
+    killPid(pid);
+  }
+
+  const remainingFrontend = listeningPidsForPort(9091).filter((pid) => !staleFrontend.includes(pid));
+  if (remainingFrontend.length > 0) {
+    usageAndExit(`Port 9091 is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`);
+  }
+
+  const remainingBackend = listeningPidsForPort(3000).filter((pid) => !staleBackend.includes(pid));
+  if (remainingBackend.length > 0) {
+    usageAndExit(`Port 3000 is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`);
+  }
+}
+
 function printRemovedCommand(oldUsage: string, replacement: string, detail?: string): never {
   const lines = [`${oldUsage} was removed in this release.`, `Use ${bold(replacement)} instead.`];
   if (detail) lines.push(detail);
@@ -599,6 +656,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
   run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
   if (mode === 'local-dev') {
+    ensureLocalDevPortsAvailable();
     const runtimeVars = ensureLocalDevRuntimeEnv(envFileName);
     printMessageBox(
       'Starting local development',
