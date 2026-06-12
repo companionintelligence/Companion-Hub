@@ -537,9 +537,9 @@ export const InstallForm: React.FC<IProps> = ({
           <div className="mb-2 text-sm font-medium text-foreground">{t('COMMON_HOSTNAME')}</div>
           <div className="space-y-2">
             {[
-              { label: 'App', value: displayAppName },
-              { label: 'Device', value: ciHubDeviceSlug || '' },
-              { label: 'Organization', value: ciHubOrganizationSlug || '' },
+              { label: t('COMMON_APP'), value: displayAppName },
+              { label: t('COMMON_DEVICE'), value: ciHubDeviceSlug || '' },
+              { label: t('COMMON_ORGANIZATION'), value: ciHubOrganizationSlug || '' },
               { label: t('COMMON_PUBLIC_DOMAIN'), value: watchExposureMode === 'cloudflare' ? watchPublicDomain || domain || '' : localDomain || '' },
               {
                 label: t('COMMON_HOSTNAME'),
