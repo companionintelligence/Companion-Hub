@@ -325,7 +325,7 @@ export class ServiceBuilder {
    * @example
    * ```typescript
    * const service = new ServiceBuilder();
-   * service.setCommand('npm run start');
+   * service.setCommand('node server.js');
    * ```
    */
   setCommand(command?: string | string[]) {

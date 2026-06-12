@@ -147,12 +147,13 @@ dotenv -e .env.local -- pnpm run dev:app
 **Prod stack + Tauri (same containers as desktop, no Vite):** from repo root, with `.env.dev` configured:
 
 ```bash
-pnpm run start:dev:desktop
+cihub up dev --detached
+pnpm run dev:desktop
 ```
 
-This runs `start:dev:detached` (init:host + prod compose), waits for `http://localhost:5002/api/health`, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not port 9091).
+This starts the dev appliance stack in the background, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not port 9091).
 
-Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `pnpm run compose:profiles`.
+Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `cihub config dev`.
 
 **Classic Vite + native backend dev UI:**
 

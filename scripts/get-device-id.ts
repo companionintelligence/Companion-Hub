@@ -3,7 +3,7 @@
  * Requires sudo for dmidecode access.
  *
  * Usage:
- *   pnpm run device-id
+ *   pnpm exec tsx scripts/get-device-id.ts
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

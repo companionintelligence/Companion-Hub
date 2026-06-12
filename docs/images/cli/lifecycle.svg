@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="954" height="624" viewBox="0 0 954 624" role="img" aria-label="cihub cihub config · up · shutdown">
+<svg xmlns="http://www.w3.org/2000/svg" width="954" height="624" viewBox="0 0 954 624" role="img" aria-label="cihub cihub config · up · down">
   <rect width="954" height="624" rx="12" fill="#0d1117"/>
   <rect x="0" y="0" width="954" height="36" rx="12" fill="#161b22"/>
   <rect x="0" y="24" width="954" height="12" fill="#161b22"/>
   <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
   <circle cx="40" cy="18" r="6" fill="#febc2e"/>
   <circle cx="60" cy="18" r="6" fill="#28c840"/>
-  <text x="477" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub config · up · shutdown</text>
+  <text x="477" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub config · up · down</text>
   <g font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="15" xml:space="preserve">
     <text x="18" y="62" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
     <text x="36" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
@@ -22,7 +22,7 @@
     <text x="189" y="125" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">.env.local</text>
     <text x="36" y="146" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">root</text>
     <text x="81" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">folder</text>
-    <text x="189" y="146" textLength="666" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">/Users/liam/devel/ci/CI-Hub/.claude/worktrees/nifty-knuth-8787df/.internal</text>
+    <text x="189" y="146" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">/Users/bennett/Development/companion/ci-core/ci-hub/.internal</text>
     <text x="36" y="167" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">cloud</text>
     <text x="90" y="167" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">url</text>
     <text x="189" y="167" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">https://hub.companionintelligence.com</text>
@@ -31,11 +31,12 @@
     <text x="189" y="188" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">private-vpn</text>
     <text x="36" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">mcp</text>
     <text x="72" y="209" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">enabled</text>
-    <text x="189" y="209" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">false</text>
+    <text x="189" y="209" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">true</text>
     <text x="36" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">mcp</text>
     <text x="72" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">api</text>
     <text x="108" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">key</text>
-    <text x="189" y="230" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;set&gt;</text>
+    <text x="189" y="230" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;not</text>
+    <text x="234" y="230" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">set&gt;</text>
     <text x="18" y="251" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
     <text x="18" y="293" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
     <text x="36" y="293" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
@@ -71,13 +72,12 @@
     <text x="108" y="440" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">started.</text>
     <text x="18" y="482" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
     <text x="36" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
-    <text x="90" y="482" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">shutdown</text>
-    <text x="171" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="90" y="482" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">down</text>
+    <text x="135" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
     <text x="18" y="503" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d29922">┌─</text>
-    <text x="45" y="503" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#d29922">Shutting</text>
-    <text x="126" y="503" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d29922">down</text>
-    <text x="171" y="503" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d29922">hub</text>
-    <text x="207" y="503" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#d29922">──────────────────────────────────────────────────────────────┐</text>
+    <text x="45" y="503" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#d29922">Stopping</text>
+    <text x="126" y="503" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d29922">hub</text>
+    <text x="162" y="503" textLength="612" lengthAdjust="spacingAndGlyphs" fill="#d29922">───────────────────────────────────────────────────────────────────┐</text>
     <text x="36" y="524" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Environment:</text>
     <text x="153" y="524" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
     <text x="18" y="545" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#d29922">└──────────────────────────────────────────────────────────────────────────────────┘</text>

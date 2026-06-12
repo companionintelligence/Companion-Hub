@@ -3,7 +3,7 @@
  * Cleanup all CI-Hub runtime resources (containers, volumes, and local state).
  *
  * Usage:
- *   pnpm run cleanup
+ *   pnpm exec tsx scripts/cleanup.ts
  */
 
 import { runHubCleanup } from './hub-cleanup-lib';
