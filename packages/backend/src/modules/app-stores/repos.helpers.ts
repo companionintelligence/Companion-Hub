@@ -6,6 +6,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import axios, { type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
@@ -83,6 +84,51 @@ export class ReposHelpers {
     }
   }
 
+  private async requestCiCloud<T>(config: AxiosRequestConfig, retries = 2): Promise<T> {
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= retries) {
+      try {
+        const response = await axios.request<T>({
+          timeout: 15_000,
+          responseType: 'json',
+          validateStatus: () => true,
+          ...config,
+        });
+
+        if (response.status >= 200 && response.status < 300) {
+          return response.data;
+        }
+
+        const shouldRetryStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+        const message = `CI Cloud request failed: ${config.method ?? 'GET'} ${config.url} -> ${response.status} ${response.statusText}`;
+        if (!shouldRetryStatus) {
+          throw new Error(message);
+        }
+        const retryableError = new Error(message) as Error & { retryable?: boolean };
+        retryableError.retryable = true;
+        throw retryableError;
+      } catch (error) {
+        lastError = error;
+        const retryableTransportError = axios.isAxiosError(error) && !error.response;
+        const retryableHttpError = error instanceof Error && 'retryable' in error && error.retryable === true;
+        if (!retryableTransportError && !retryableHttpError) {
+          throw error;
+        }
+        if (attempt >= retries) {
+          throw error;
+        }
+        this.logger.warn(
+          `Retrying CI Cloud request (${attempt + 1}/${retries + 1}): ${config.method ?? 'GET'} ${config.url} — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      attempt++;
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
   /**
    * Given a repo url, clone it to the repos folder if it doesn't exist
    *
@@ -151,12 +197,10 @@ export class ReposHelpers {
       // Fetch metadata list
       const storeUrl = `${url}/store`;
       this.logger.debug(`Fetching store metadata from ${storeUrl}`);
-      const response = await fetch(storeUrl); // Assuming url is base API url
-      if (!response.ok) {
-        throw new Error(`Failed to fetch store metadata from ${storeUrl}: ${response.status} ${response.statusText}`);
-      }
-
-      const apps = (await response.json()) as Array<{ id: string; slug?: string; [key: string]: unknown }>;
+      const apps = await this.requestCiCloud<Array<{ id: string; slug?: string; [key: string]: unknown }>>({
+        method: 'GET',
+        url: storeUrl,
+      });
 
       for (const app of apps) {
         const appSlug = app.slug || app.id;
@@ -165,11 +209,17 @@ export class ReposHelpers {
 
         let markdownDescription: string | null = null;
         try {
-          const descriptionRes = await fetch(`${url}/store/${appSlug}/metadata/description.md`);
-          if (descriptionRes.ok) {
-            const contentType = descriptionRes.headers.get('content-type') || '';
+          const descriptionUrl = `${url}/store/${appSlug}/metadata/description.md`;
+          const descriptionRes = await axios.get<string>(descriptionUrl, {
+            timeout: 15_000,
+            responseType: 'text',
+            validateStatus: () => true,
+          });
+          if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
+            const contentTypeHeader = descriptionRes.headers['content-type'];
+            const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
             if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-              const descriptionText = await descriptionRes.text();
+              const descriptionText = descriptionRes.data;
               if (descriptionText.trim().length > 0) {
                 markdownDescription = descriptionText;
                 const metadataDir = path.join(appDir, 'metadata');
@@ -216,14 +266,19 @@ export class ReposHelpers {
         if (iconUrl) {
           try {
             const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
-            const iconRes = await fetch(fullIconUrl);
-            if (iconRes.ok) {
-              const contentType = iconRes.headers.get('content-type') || 'image/png';
+            const iconRes = await axios.get<ArrayBuffer>(fullIconUrl, {
+              timeout: 15_000,
+              responseType: 'arraybuffer',
+              validateStatus: () => true,
+            });
+            if (iconRes.status >= 200 && iconRes.status < 300) {
+              const contentTypeHeader = iconRes.headers['content-type'];
+              const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : 'image/png';
               const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
               const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
               const metadataDir = path.join(appDir, 'metadata');
               await this.ensureDirectoryWithPermissions(metadataDir);
-              const buffer = Buffer.from(await iconRes.arrayBuffer());
+              const buffer = Buffer.from(iconRes.data);
               await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
             }
           } catch {
@@ -253,21 +308,21 @@ export class ReposHelpers {
 
       // Fetch full install data
       const deviceId = await this.registrationService.getDeviceId();
-      const response = await fetch(`${repoUrl}/store/${appSlug}/install`, {
+      const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
+        timeout: 20_000,
+        validateStatus: () => true,
         headers: {
           'x-device-id': deviceId,
         },
       });
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         if (response.status === 402) {
           return { success: false, message: 'Payment Required' };
         }
-        throw new Error(`Failed to fetch app files: ${response.statusText}`);
+        throw new Error(`Failed to fetch app files: ${response.status} ${response.statusText}`);
       }
 
-      const data = (await response.json()) as {
-        files?: Record<string, string>;
-      };
+      const data = response.data;
 
       await this.ensureDirectoryWithPermissions(appPath);
 

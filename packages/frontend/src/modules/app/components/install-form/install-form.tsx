@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { Button } from '@/components/ui/Button';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { getAvailableDomainsQueryOptions } from '@/api-client/domains-query';
@@ -11,6 +12,7 @@ import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
+import { Copy } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -84,6 +86,7 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
+  const displayAppName = info.name || defaultAppSubdomain;
 
   const {
     register,
@@ -122,6 +125,7 @@ export const InstallForm: React.FC<IProps> = ({
   const watchedRequiredValues = watch(requiredFieldNames);
 
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastDnsToastRef = useRef<string | null>(null);
   // Track the previously-rendered app URN so the init effect can detect when
   // the form is reused for a different app and force-reset stale field values.
   const prevUrnRef = useRef<string | undefined>(undefined);
@@ -129,6 +133,17 @@ export const InstallForm: React.FC<IProps> = ({
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+
+  const copyToClipboard = async (text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
+  };
 
   // Track form validity for parent components
   useEffect(() => {
@@ -322,10 +337,18 @@ export const InstallForm: React.FC<IProps> = ({
           if (data.available) {
             // Clear error if DNS is available
             setDnsAvailabilityError(null);
+            lastDnsToastRef.current = null;
             clearErrors('localSubdomain');
           } else {
-            const errorMessage = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
+            const errorMessage =
+              typeof data.message === 'string' && data.message
+                ? data.message
+                : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
             setDnsAvailabilityError(errorMessage);
+            if (lastDnsToastRef.current !== errorMessage) {
+              lastDnsToastRef.current = errorMessage;
+              toast.error(errorMessage);
+            }
             setError('localSubdomain', {
               type: 'manual',
               message: errorMessage,
@@ -438,8 +461,8 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
-  const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+  const renderHostnameSettings = () => {
+    if (!info.exposable || watchExposureMode === 'local') return null;
 
     const cloudflareSuffix = publicWebPreview
       ? publicWebPreview.hostname
@@ -455,64 +478,110 @@ export const InstallForm: React.FC<IProps> = ({
           </p>
         )}
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
-        {watchExposureMode !== 'local' && (
-          <div className="mb-3">
-            <InputGroup
-              groupPrefix="https://"
-              groupClassName={watchExposureMode === 'cloudflare' ? 'overflow-hidden' : undefined}
-              groupSuffixClassName={
-                watchExposureMode === 'cloudflare' ? 'shrink min-w-0 max-w-[55%] flex-1 basis-0 overflow-hidden items-stretch' : undefined
-              }
-              groupSuffix={
-                watchExposureMode === 'tailscale' ? (
-                  `.${localDomain || 'tailnet'}`
-                ) : availableDomains.length > 0 ? (
-                  <Controller
-                    control={control}
-                    name="publicDomain"
-                    render={({ field: { onChange, value } }) => {
-                      const prefixText = `-${cloudflareSuffix}.`;
-                      const selectedDomain = value || watchPublicDomain || domain || '';
+        <div className="mb-3">
+          <InputGroup
+            groupPrefix="https://"
+            groupClassName={watchExposureMode === 'cloudflare' ? 'overflow-hidden' : undefined}
+            groupSuffixClassName={
+              watchExposureMode === 'cloudflare' ? 'shrink min-w-0 max-w-[55%] flex-1 basis-0 overflow-hidden items-stretch' : undefined
+            }
+            groupSuffix={
+              watchExposureMode === 'tailscale' ? (
+                `.${localDomain || 'tailnet'}`
+              ) : availableDomains.length > 0 ? (
+                <Controller
+                  control={control}
+                  name="publicDomain"
+                  render={({ field: { onChange, value } }) => {
+                    const prefixText = `-${cloudflareSuffix}.`;
+                    const selectedDomain = value || watchPublicDomain || domain || '';
 
-                      return (
-                        <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
-                          <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
-                            <span className="block w-full min-w-0 truncate">{prefixText}</span>
-                          </div>
-                          <Select value={value || ''} onValueChange={onChange}>
-                            <SelectTrigger
-                              title={selectedDomain}
-                              aria-label={t('COMMON_PUBLIC_DOMAIN')}
-                              className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
-                            >
-                              <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {availableDomains.map((entry) => (
-                                <SelectItem key={entry.id} value={entry.domain}>
-                                  {entry.domain}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                    return (
+                      <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
+                        <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
+                          <span className="block w-full min-w-0 truncate">{prefixText}</span>
                         </div>
-                      );
-                    }}
-                  />
-                ) : (
-                  `-${cloudflareSuffix}.${watchPublicDomain || domain}`
-                )
-              }
-              {...register('localSubdomain')}
-              label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-              error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
-              disabled={loading}
-              placeholder={info.urn.split(':')[0]}
-            />
-            {isCheckingDns && <p className="mt-1.5 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p>}
+                        <Select value={value || ''} onValueChange={onChange}>
+                          <SelectTrigger
+                            title={selectedDomain}
+                            aria-label={t('COMMON_PUBLIC_DOMAIN')}
+                            className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
+                          >
+                            <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableDomains.map((entry) => (
+                              <SelectItem key={entry.id} value={entry.domain}>
+                                {entry.domain}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    );
+                  }}
+                />
+              ) : (
+                `-${cloudflareSuffix}.${watchPublicDomain || domain}`
+              )
+            }
+            {...register('localSubdomain')}
+            label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+            error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+            disabled={loading}
+            placeholder={info.urn.split(':')[0]}
+          />
+          {isCheckingDns && <p className="mt-1.5 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p>}
+        </div>
+        <div className="mb-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+          <div className="mb-2 text-sm font-medium text-foreground">{t('COMMON_HOSTNAME')}</div>
+          <div className="space-y-2">
+            {[
+              { label: t('COMMON_APP'), value: displayAppName },
+              { label: t('COMMON_DEVICE'), value: ciHubDeviceSlug || '' },
+              { label: t('COMMON_ORGANIZATION'), value: ciHubOrganizationSlug || '' },
+              { label: t('COMMON_PUBLIC_DOMAIN'), value: watchExposureMode === 'cloudflare' ? watchPublicDomain || domain || '' : localDomain || '' },
+              {
+                label: t('COMMON_HOSTNAME'),
+                value:
+                  watchExposureMode === 'cloudflare'
+                    ? publicWebPreview?.hostname || ''
+                    : `${sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain)}.${localDomain || 'tailnet'}`,
+              },
+            ]
+              .filter((entry) => entry.value)
+              .map((entry) => (
+                <div key={entry.label} className="flex items-center gap-2 rounded-md bg-background/70 px-2 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{entry.label}</div>
+                    <div title={entry.value} className="truncate text-sm text-foreground">
+                      {entry.value}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => void copyToClipboard(entry.value)}
+                    aria-label={`Copy ${entry.label}`}
+                    title={`Copy ${entry.label}`}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
           </div>
-        )}
+        </div>
+      </>
+    );
+  };
 
+  const renderAdvancedExposureOptions = () => {
+    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+
+    return (
+      <>
         <Controller
           control={control}
           name="enableAuth"
@@ -571,36 +640,40 @@ export const InstallForm: React.FC<IProps> = ({
 
       // If DNS check found an error, prevent submission
       if (dnsAvailabilityError) {
-        validationErrors.localSubdomain = {
-          messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
-          params: { name: formValues.localSubdomain },
-        };
-      } else if (isProduction) {
-        // Perform a final DNS check before submission
-        try {
-          const query = new URLSearchParams({ subdomain: formValues.localSubdomain });
-          const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
-          if (selectedDomain) {
-            query.set('domain', selectedDomain);
-          }
-
-          const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
-            credentials: 'include',
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            if (!data.available) {
-              validationErrors.localSubdomain = {
-                messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
-                params: { name: formValues.localSubdomain },
-              };
-            }
-          }
-        } catch (error) {
-          // If DNS check fails, allow submission (graceful degradation)
-          console.warn('DNS check failed during validation, allowing submission:', error);
+        setError('localSubdomain', { message: dnsAvailabilityError });
+        toast.error(dnsAvailabilityError);
+        return;
+      }
+      // Perform a final DNS check before submission
+      try {
+        const query = new URLSearchParams({ subdomain: formValues.localSubdomain });
+        const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
+        if (selectedDomain) {
+          query.set('domain', selectedDomain);
         }
+
+        const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (!data.available) {
+            if (typeof data.message === 'string' && data.message) {
+              setError('localSubdomain', { message: data.message });
+              toast.error(data.message);
+              return;
+            }
+
+            validationErrors.localSubdomain = {
+              messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
+              params: { name: formValues.localSubdomain },
+            };
+          }
+        }
+      } catch (error) {
+        // If DNS check fails, allow submission (graceful degradation)
+        console.warn('DNS check failed during validation, allowing submission:', error);
       }
     }
 
@@ -632,6 +705,7 @@ export const InstallForm: React.FC<IProps> = ({
     <form className="flex flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>
       {/* Exposure mode selector — always shown when applicable, even in simple mode */}
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
+      {renderHostnameSettings()}
 
       {/* Configuration section — scrollable when in a dialog */}
       {hasConfigSection && (

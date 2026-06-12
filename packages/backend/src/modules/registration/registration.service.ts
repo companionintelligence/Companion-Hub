@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
+import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
@@ -420,12 +421,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Use the existing unauthenticated check-in endpoint to confirm the
       // device is still active in CI Portal. A 400 means the device is no
       // longer active; network errors are counted toward the failure threshold.
-      const response = await fetch(`${ciCloudUrl}/api/devices/check-in`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await axios.post(
+        `${ciCloudUrl}/api/devices/check-in`,
+        { device_id: deviceId },
+        {
+          timeout: 10_000,
+          validateStatus: () => true,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
 
       if (response.status === 400) {
         // 400 is definitive — device was removed or deactivated in CI Portal.
@@ -435,7 +439,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return;
       }
 
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         // Transient failure (5xx, etc.) — count toward the 3-strike threshold.
         this.consecutiveValidationFailures++;
         this.logger.warn(`Registration validation: CI Portal check-in returned ${response.status} (failure ${this.consecutiveValidationFailures}/3)`);
@@ -464,11 +468,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         if (org?.hubSubdomain && domain && domain !== 'example.com') {
           const hostname = `${org.hubSubdomain}.${domain}`;
           try {
-            const dnsCheck = await fetch(`https://${hostname}`, {
-              method: 'HEAD',
-              signal: AbortSignal.timeout(5_000),
+            const dnsCheck = await axios.head(`https://${hostname}`, {
+              timeout: 5_000,
+              validateStatus: () => true,
             });
-            if (!dnsCheck.ok && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
+            if (dnsCheck.status >= 400 && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
               this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
             }
           } catch {

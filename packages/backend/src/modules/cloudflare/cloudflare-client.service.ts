@@ -309,6 +309,14 @@ export class CloudflareClientService {
       const responseMessage =
         typeof errorData?.message === 'string' ? errorData.message : typeof errorData?.error === 'string' ? errorData.error : '';
 
+      if (axios.isAxiosError(error) && !error.response) {
+        this.logger.warn('CI-Cloud DNS availability check timed out or was unreachable; failing open');
+        return {
+          available: true,
+          message: 'Unable to verify DNS availability right now. Please try again.',
+        };
+      }
+
       const message = responseMessage || 'Unable to verify DNS availability right now. Please try again.';
 
       return {

@@ -623,33 +623,35 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
         config={app?.config ?? {}}
         status={app?.status}
       />
-      <div className="mt-1 flex flex-wrap gap-2">
-        {buttons.map((button) => {
-          return createElement(button.type, {
-            ...button.props,
-            key: button.key,
-          });
-        })}
+      <div className="mt-1 space-y-1">
+        <div className="flex flex-wrap items-start gap-2">
+          {buttons.map((button) => {
+            return createElement(button.type, {
+              ...button.props,
+              key: button.key,
+            });
+          })}
+          {listItems.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" name="more" className="more-button relative">
+                  <MoreHorizontal size={14} />
+                  {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
+                    <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuGroup>{listItems}</DropdownMenuGroup>
+                {runtimeHealth?.forceStopEligible ? <DropdownMenuSeparator /> : null}
+                {runtimeHealth?.forceStopEligible ? <DropdownMenuGroup>{[ForceStopListItem]}</DropdownMenuGroup> : null}
+                {listItemsDestructive.length > 0 ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuGroup>{listItemsDestructive}</DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
         {InstallErrorMessage}
-        {listItems.length > 0 && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" name="more" className="more-button relative">
-                <MoreHorizontal size={14} />
-                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
-                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuGroup>{listItems}</DropdownMenuGroup>
-              {runtimeHealth?.forceStopEligible ? <DropdownMenuSeparator /> : null}
-              {runtimeHealth?.forceStopEligible ? <DropdownMenuGroup>{[ForceStopListItem]}</DropdownMenuGroup> : null}
-              {listItemsDestructive.length > 0 ? <DropdownMenuSeparator /> : null}
-              <DropdownMenuGroup>{listItemsDestructive}</DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
     </>
   );

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
@@ -12,9 +12,34 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
+Object.assign(navigator, {
+  clipboard: {
+    writeText: vi.fn().mockResolvedValue(undefined),
+  },
+});
+
 // Mocks
 vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
+}));
+
+const { apiFetch } = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+}));
+
+vi.mock('@/lib/api-fetch', () => ({
+  apiFetch,
+}));
+
+const { toast } = vi.hoisted(() => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: toast,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -85,6 +110,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 describe('InstallForm', () => {
   afterEach(() => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   const createContext = (advancedMode: boolean) => ({
@@ -137,7 +164,7 @@ describe('InstallForm', () => {
     );
 
     // Expect to see "-josh.example.com" (lowercased)
-    expect(screen.getByText(/-josh.example.com/)).toBeInTheDocument();
+    expect(screen.getAllByText(/-josh.example.com/).length).toBeGreaterThan(0);
   });
 
   it('should fallback to local domain when organization slug is missing', () => {
@@ -257,6 +284,55 @@ describe('InstallForm', () => {
     expect(screen.getByText('Optional field')).toBeInTheDocument();
   });
 
+  it('surfaces the full hostname from the DNS availability response', async () => {
+    vi.useFakeTimers();
+    apiFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: false,
+          message: 'DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com')).toBeInTheDocument();
+  });
+
   it('shows optional fields by default and hides toggle in advanced mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
 
@@ -328,8 +404,8 @@ describe('InstallForm', () => {
     expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
   });
 
-  it('renders the public domain selector inside the subdomain field instead of a separate row', () => {
-    vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
+  it('renders the public domain selector inside the subdomain field in simple mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
     MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'ci.computer', isDefault: true }];
 
     const exposableInfo = {
@@ -346,8 +422,107 @@ describe('InstallForm', () => {
     );
 
     expect(screen.getByLabelText('COMMON_PUBLIC_DOMAIN')).toBeInTheDocument();
-    expect(screen.queryByText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
+  it('shows hostname details with copy buttons in simple mode', async () => {
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'companionintelligence.com', isDefault: true }];
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      name: 'OpenClaw WebCLI',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('OpenClaw WebCLI')).toBeInTheDocument();
+    expect(screen.getByText('blaptop')).toBeInTheDocument();
+    expect(screen.getByText('bc')).toBeInTheDocument();
+    expect(screen.getAllByText('companionintelligence.com').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ci-openclaw-blaptop-bc.companionintelligence.com').length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy COMMON_HOSTNAME' }));
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('ci-openclaw-blaptop-bc.companionintelligence.com');
+    expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_COPIED');
+
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
+  it('shows a DNS-specific toast when DNS availability fails', async () => {
+    vi.useFakeTimers();
+    const onSubmit = vi.fn();
+    const dnsMessage = 'DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com';
+    apiFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: false,
+          message: dnsMessage,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={onSubmit} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(dnsMessage);
   });
 });

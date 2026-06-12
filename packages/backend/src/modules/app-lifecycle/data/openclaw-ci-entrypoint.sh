@@ -345,7 +345,9 @@ const baseEntry = (id, name, caps) => {
   };
 
   const existingModels = config.agents?.defaults?.models ?? {};
-  const map = {};
+  const map = Object.fromEntries(
+    Object.entries(existingModels).filter(([key]) => !key.startsWith('ci-hub/')),
+  );
   for (const model of models) {
     const key = 'ci-hub/' + model.id;
     map[key] = existingModels[key] ?? {};
