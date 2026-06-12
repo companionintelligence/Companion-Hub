@@ -72,7 +72,7 @@ describe('renderHelp', () => {
     expect(plain).toContain('Hub lifecycle');
     expect(plain).toContain('App lifecycle');
     expect(plain).toContain('MCP');
-    expect(plain).toContain('Developer workflow');
+    expect(plain).toContain('Maintenance');
   });
 
   it('mentions public-web commands', () => {
@@ -99,6 +99,8 @@ describe('renderHelp', () => {
   it('shows the cihub status command', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('cihub status');
+    expect(plain).toContain('cihub down');
+    expect(plain).toContain('cihub doctor');
   });
 
   it('documents cihub update as the host update command', () => {
@@ -123,9 +125,10 @@ describe('renderManPage', () => {
     expect(plain).toContain('On-device testing loop');
   });
 
-  it('mentions pnpm run hub compat command', () => {
+  it('uses the direct cihub synopsis', () => {
     const plain = stripAnsi(renderManPage());
-    expect(plain).toContain('pnpm run hub -- <command> [args]');
+    expect(plain).toContain('cihub <command> [args]');
+    expect(plain).not.toContain('pnpm run hub --');
   });
 });
 
@@ -256,8 +259,9 @@ describe('wizard selections', () => {
     expect(resolveWizardActionInput('1')).toBe('setup');
     expect(resolveWizardActionInput('2')).toBe('up');
     expect(resolveWizardActionInput('5')).toBe('mcp-setup');
-    expect(resolveWizardActionInput('9')).toBe('purge');
-    expect(resolveWizardActionInput('10')).toBe('hot-reload');
+    expect(resolveWizardActionInput('7')).toBe('down');
+    expect(resolveWizardActionInput('9')).toBe('reset');
+    expect(resolveWizardActionInput('10')).toBe('restart');
     expect(resolveWizardActionInput('')).toBe('setup');
   });
 
