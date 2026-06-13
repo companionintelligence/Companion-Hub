@@ -5,7 +5,6 @@ import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
-import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { runHubCleanup } from './hub-cleanup-lib';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
@@ -610,25 +609,6 @@ export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
 }
 
-function prepareHubDataDirectory(envFileName: string): void {
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  try {
-    const identity = ensureHubBindMountsWritable(rootFolderHost, { envFile: join(process.cwd(), envFileName) });
-    printMessageBox(
-      'Data directory ready',
-      [
-        `Prepared ${rootFolderHost} for Hub container UID/GID ${identity.uid}:${identity.gid} (${identity.source}).`,
-        'Bind mounts verified writable before startup.',
-      ],
-      'green',
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    printMessageBox('Data directory permissions', [message], 'red');
-    throw error;
-  }
-}
-
 function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
   const rootFolderHost = resolveRootFolderHost(envFileName);
   const runtimeEnvPath = join(rootFolderHost, '.env');
@@ -691,7 +671,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
     usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
   }
   const envFileName = getEnvFileOrExit(env);
-  prepareHubDataDirectory(envFileName);
+  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
@@ -754,7 +734,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
 function setupHub(env: HubEnv) {
   requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
-  prepareHubDataDirectory(envFileName);
+  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-traefik.ts'], envOverrides);
   run('tsx', ['scripts/init-docker-config.ts'], envOverrides);

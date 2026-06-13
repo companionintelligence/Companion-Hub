@@ -104,6 +104,7 @@ services:
     environment:
       NODE_ENV: production
       NODE_OPTIONS: ${NODE_OPTIONS:---disable-warning=ExperimentalWarning}
+      HOME: /data/user-config
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: "false"
       EXPERIMENTAL_INSECURE_COOKIE: "true"

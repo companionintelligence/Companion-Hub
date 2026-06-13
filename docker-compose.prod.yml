@@ -62,6 +62,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Use the host network for build RUN steps so package-manager bootstrap and
+      # dependency installs follow the host's working DNS path instead of the
+      # flakier default BuildKit sandbox network seen on some Linux hosts.
+      network: ${DOCKER_BUILD_NETWORK:-host}
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
         CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
@@ -136,6 +140,7 @@ services:
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       NODE_OPTIONS: ${NODE_OPTIONS:---disable-warning=ExperimentalWarning}
+      HOME: /data/user-config
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       DOCKER_CONFIG: /data/.docker
       CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}

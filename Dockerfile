@@ -10,8 +10,6 @@ FROM --platform=${BUILDPLATFORM:-${DOCKER_PLATFORM:-linux/amd64}} node:${NODE_VE
 # ---- BUILDER BASE ----
 FROM node_base AS builder_base
 
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-
 WORKDIR /deps
 
 ARG TARGETARCH
@@ -73,6 +71,20 @@ COPY ./packages/backend/package.json ./packages/backend/package.json
 COPY ./packages/frontend/package.json ./packages/frontend/package.json
 COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/public ./packages/frontend/public
+
+RUN corepack enable && \
+    package_manager="$(node -p "require('./package.json').packageManager")" && \
+    attempt=1 && \
+    max_attempts=5 && \
+    until corepack prepare "$package_manager" --activate; do \
+      if [ "$attempt" -ge "$max_attempts" ]; then \
+        echo "corepack prepare failed after ${max_attempts} attempts for ${package_manager}" >&2; \
+        exit 1; \
+      fi; \
+      echo "corepack prepare failed (attempt ${attempt}/${max_attempts}) for ${package_manager}; retrying..." >&2; \
+      sleep $((attempt * 5)); \
+      attempt=$((attempt + 1)); \
+    done
 
 # Install dependencies (including devDependencies needed for build)
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
