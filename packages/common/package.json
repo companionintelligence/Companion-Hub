@@ -44,7 +44,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "MIT",
+  "license": "CI-Commercial-1.0",
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.1",
     "@changesets/cli": "^2.29.3",
