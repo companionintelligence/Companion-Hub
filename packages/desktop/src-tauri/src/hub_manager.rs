@@ -1129,7 +1129,11 @@ fn docker_desktop_settings_path() -> Option<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_docker_desktop_u64(settings: &serde_json::Value, key: &str, legacy_key: &str) -> Option<u64> {
+fn read_docker_desktop_u64(
+    settings: &serde_json::Value,
+    key: &str,
+    legacy_key: &str,
+) -> Option<u64> {
     settings
         .get(key)
         .or_else(|| settings.get(legacy_key))
@@ -1238,7 +1242,9 @@ fn ensure_docker_desktop_vm_resources(data_dir: &Path, platform: &str, host: Hos
             "memoryMiB".to_string(),
             serde_json::Value::Number(serde_json::Number::from(recommended_ram_mb)),
         );
-        changes.push(format!("memoryMiB {current_ram_mib} → {recommended_ram_mb}"));
+        changes.push(format!(
+            "memoryMiB {current_ram_mib} → {recommended_ram_mb}"
+        ));
     }
     if raise_cpus {
         obj.insert(
@@ -1912,8 +1918,7 @@ fn bundled_cli_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 fn path_contains_dir(dir: &Path) -> bool {
     std::env::var_os("PATH")
         .map(|value| {
-            std::env::split_paths(&value)
-                .any(|entry| paths_match_by_components(&entry, dir))
+            std::env::split_paths(&value).any(|entry| paths_match_by_components(&entry, dir))
         })
         .unwrap_or(false)
 }
@@ -1984,10 +1989,22 @@ fn append_unix_profile_path(dir: &Path) -> Result<Option<PathBuf>, String> {
         .create(true)
         .append(true)
         .open(&profile)
-        .map_err(|error| format!("Failed to open shell profile {}: {}", profile.display(), error))?;
+        .map_err(|error| {
+            format!(
+                "Failed to open shell profile {}: {}",
+                profile.display(),
+                error
+            )
+        })?;
     use std::io::Write;
     file.write_all(format!("{prefix}{marker}\n{line}\n").as_bytes())
-        .map_err(|error| format!("Failed to update shell profile {}: {}", profile.display(), error))?;
+        .map_err(|error| {
+            format!(
+                "Failed to update shell profile {}: {}",
+                profile.display(),
+                error
+            )
+        })?;
 
     Ok(Some(profile))
 }
@@ -2022,7 +2039,11 @@ fn host_cli_install_dir() -> Option<PathBuf> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let home = dirs::home_dir()?;
-        let preferred = [home.join(".local/bin"), home.join("bin"), PathBuf::from("/usr/local/bin")];
+        let preferred = [
+            home.join(".local/bin"),
+            home.join("bin"),
+            PathBuf::from("/usr/local/bin"),
+        ];
         for dir in preferred {
             if path_contains_dir(&dir) {
                 return Some(dir);
@@ -5772,10 +5793,8 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
-    let launch_command = docker_desktop_windows_outer_launch_command(
-        &script.path().to_string_lossy(),
-        &username,
-    );
+    let launch_command =
+        docker_desktop_windows_outer_launch_command(&script.path().to_string_lossy(), &username);
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
@@ -6774,7 +6793,8 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
         Ok(DockerInstallResult {
             state: DockerInstallState::Completed,
             detail: Some(
-                "Colima installed and the Docker Engine is running (context \"colima\").".to_string(),
+                "Colima installed and the Docker Engine is running (context \"colima\")."
+                    .to_string(),
             ),
         })
     } else {
@@ -7007,33 +7027,32 @@ mod tests {
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_outer_launch_command;
     #[cfg(any(test, target_os = "linux"))]
     use super::ollama_linux_install_script;
     #[cfg(any(test, target_os = "macos"))]
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
-    #[cfg(any(test, target_os = "macos"))]
-    use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(any(test, target_os = "windows"))]
     use super::wsl2_engine_windows_install_script;
-    #[cfg(any(test, target_os = "windows"))]
-    use super::docker_desktop_windows_outer_launch_command;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
-        format_command_output, generate_container_docker_config, host_container_uid_gid,
-        host_docker_socket_path, is_container_name_conflict, is_host_port_bind_conflict,
-        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
-        managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, parse_docker_socket_uid_gid, paths_match_by_components,
-        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        files_match, format_command_output, generate_container_docker_config,
+        host_container_uid_gid, host_docker_socket_path, is_container_name_conflict,
+        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        merge_compose_profiles, parse_container_ids, parse_docker_socket_uid_gid,
+        paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
         seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
         startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
-        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED,
-        TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR, files_match,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
+    #[cfg(any(test, target_os = "macos"))]
+    use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(target_os = "linux")]
     use super::{
         current_docker_context_name, linux_docker_host_for_context_or_local_sockets,
@@ -7499,7 +7518,9 @@ mod tests {
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("ditto"));
         assert!(script.contains("/Applications/Ollama.app"));
-        assert!(script.contains("ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"));
+        assert!(script.contains(
+            "ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"
+        ));
     }
 
     #[test]

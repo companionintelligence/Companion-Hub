@@ -137,8 +137,8 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
 /// Install a licensing-free Docker engine (Colima on macOS, Engine-in-WSL2 on
 /// Windows, the standard Engine on Linux).
 #[tauri::command]
-async fn install_docker_engine_alternative_command() -> Result<hub_manager::DockerInstallResult, String>
-{
+async fn install_docker_engine_alternative_command(
+) -> Result<hub_manager::DockerInstallResult, String> {
     hub_manager::install_docker_engine_alternative()
 }
 
@@ -719,8 +719,12 @@ fn preferred_download_dir() -> PathBuf {
 
 fn unique_download_path(filename: &str) -> Result<PathBuf, String> {
     let dir = preferred_download_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("Failed to create download directory {}: {error}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "Failed to create download directory {}: {error}",
+            dir.display()
+        )
+    })?;
 
     let sanitized = sanitize_download_filename(filename);
     let path = PathBuf::from(&sanitized);
@@ -729,7 +733,10 @@ fn unique_download_path(filename: &str) -> Result<PathBuf, String> {
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("download");
-    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
 
     for index in 0..10_000 {
         let candidate_name = if index == 0 {
@@ -854,10 +861,9 @@ fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
 mod tests {
     use super::{
         deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
-        launch_mode_from_args,
-        sanitize_download_filename,
-        stack_dev_mode_enabled, stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
-        STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
+        launch_mode_from_args, sanitize_download_filename, stack_dev_mode_enabled,
+        stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV,
+        STACK_DEV_ENV_PATH_ENV,
     };
     use std::path::PathBuf;
 

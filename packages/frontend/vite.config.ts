@@ -76,6 +76,7 @@ export default defineConfig(({ mode }) => {
   const hubFileEnv = loadCiHubRootEnvFiles(hubRoot);
   /** Same variable as backend/runtime; injected into the client bundle for portal API calls. */
   const ciCloudUrl = (process.env.CI_CLOUD_URL ?? fileEnv.CI_CLOUD_URL ?? hubFileEnv.CI_CLOUD_URL ?? '').trim();
+  const ciHubVersion = (process.env.CI_HUB_VERSION ?? fileEnv.CI_HUB_VERSION ?? hubFileEnv.CI_HUB_VERSION ?? '').trim();
   /**
    * Matches the Rust binary's compile-time `CI_HUB_ENVIRONMENT` check.
    * Injected so the frontend can derive correct defaults without relying on
@@ -99,6 +100,7 @@ export default defineConfig(({ mode }) => {
     plugins,
     define: {
       'import.meta.env.CI_CLOUD_URL': JSON.stringify(ciCloudUrl),
+      'import.meta.env.CI_HUB_VERSION': JSON.stringify(ciHubVersion),
       'import.meta.env.CI_HUB_ENVIRONMENT': JSON.stringify(ciHubEnvironment),
     },
     resolve: {

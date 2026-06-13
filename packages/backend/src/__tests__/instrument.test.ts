@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const init = vi.fn();
 const setTag = vi.fn();
+const setUser = vi.fn();
 
 vi.mock('@sentry/nestjs', () => ({
   init,
   setTag,
+  setUser,
 }));
 
 describe('backend instrument', () => {
@@ -21,6 +23,7 @@ describe('backend instrument', () => {
     delete process.env.SENTRY_RELEASE;
     delete process.env.CI_HUB_ENVIRONMENT;
     delete process.env.CI_HUB_VERSION;
+    delete process.env.CI_CLOUD_URL;
     delete process.env.NODE_ENV;
   });
 
@@ -32,7 +35,8 @@ describe('backend instrument', () => {
     process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
     process.env.CI_HUB_ENVIRONMENT = 'production';
     process.env.NODE_ENV = 'development';
-    process.env.CI_HUB_VERSION = '4.7.0';
+    process.env.CI_HUB_VERSION = 'v0.2.22';
+    process.env.CI_CLOUD_URL = 'https://hub.ci.computer/';
 
     await import('../instrument');
 
@@ -40,10 +44,14 @@ describe('backend instrument', () => {
       expect.objectContaining({
         dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0',
         environment: 'production',
-        release: '4.7.0',
+        release: 'v0.2.22',
         sendDefaultPii: true,
       }),
     );
+    expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
+    expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
+    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.22');
+    expect(setUser).not.toHaveBeenCalled();
   });
 
   it('does not initialize sentry without a DSN', async () => {

@@ -5,6 +5,8 @@ let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
 const warningDebounce = new Map<string, number>();
 
+const DEFAULT_DEV_PORTAL_URL = 'https://hub.companionintelligence.com';
+const DEFAULT_PROD_PORTAL_URL = 'https://hub.ci.computer';
 const SENTRY_DEVICE_ID_STORAGE_KEY = 'ci-hub-sentry-device-id';
 const WARNING_DEBOUNCE_MS = 60_000;
 
@@ -19,6 +21,58 @@ function getComponentTag(): 'browser-web' | 'desktop-web' {
 function normalizeDeviceId(deviceId: string | null | undefined): string | null {
   const normalized = deviceId?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizePortalUrl(url: string | null | undefined): string | null {
+  const normalized = url?.trim().replace(/\/+$/, '');
+  return normalized ? normalized : null;
+}
+
+function getPortalUrl(): string {
+  return (
+    normalizePortalUrl(import.meta.env.CI_CLOUD_URL as string | undefined) ||
+    (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? DEFAULT_PROD_PORTAL_URL : DEFAULT_DEV_PORTAL_URL)
+  );
+}
+
+function getPortalEnvironment(url: string): 'dev' | 'prod' | 'custom' {
+  if (url === DEFAULT_DEV_PORTAL_URL) {
+    return 'dev';
+  }
+  if (url === DEFAULT_PROD_PORTAL_URL) {
+    return 'prod';
+  }
+  return 'custom';
+}
+
+function getDeploymentVersion(): string | null {
+  const version = import.meta.env.CI_HUB_VERSION?.trim();
+  return version ? version : null;
+}
+
+function getSentryRelease(): string | undefined {
+  const release = import.meta.env.VITE_SENTRY_RELEASE?.trim();
+  if (release) {
+    return release;
+  }
+
+  const deploymentVersion = getDeploymentVersion();
+  return deploymentVersion ? `ci-hub-frontend@${deploymentVersion}` : undefined;
+}
+
+function applyStaticSentryTags(): void {
+  if (!sentryInitialized) {
+    return;
+  }
+
+  const portalUrl = getPortalUrl();
+  Sentry.setTag('ci_portal_url', portalUrl);
+  Sentry.setTag('ci_portal_environment', getPortalEnvironment(portalUrl));
+
+  const deploymentVersion = getDeploymentVersion();
+  if (deploymentVersion) {
+    Sentry.setTag('deployment_version', deploymentVersion);
+  }
 }
 
 function readStoredDeviceId(): string | null {
@@ -44,6 +98,7 @@ function applyDeviceId(deviceId: string | null | undefined): void {
   }
 
   Sentry.setTag('device_id', normalized);
+  Sentry.setUser({ id: normalized });
 }
 
 async function ensureHubSentryDeviceId(): Promise<void> {
@@ -97,7 +152,7 @@ export function initHubSentry(): void {
   Sentry.init({
     dsn,
     environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
-    release: import.meta.env.VITE_SENTRY_RELEASE,
+    release: getSentryRelease(),
     enabled: true,
     tracesSampleRate: 0,
     sendDefaultPii: true,
@@ -105,6 +160,7 @@ export function initHubSentry(): void {
 
   sentryInitialized = true;
   Sentry.setTag('component', getComponentTag());
+  applyStaticSentryTags();
   applyDeviceId(readStoredDeviceId());
   void ensureHubSentryDeviceId();
 }

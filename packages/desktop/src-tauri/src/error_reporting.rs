@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
@@ -49,6 +49,42 @@ fn read_device_id(env_path: &Path) -> Option<String> {
     read_first_env_value(env_path, &["DEVICE_ID"])
 }
 
+fn normalize_portal_url(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn read_portal_url(env_path: &Path) -> Option<String> {
+    read_first_env_value(env_path, &["CI_CLOUD_URL"]).and_then(|value| normalize_portal_url(&value))
+}
+
+fn read_deployment_version(env_path: &Path, release: &str) -> Option<String> {
+    read_first_env_value(env_path, &["CI_HUB_VERSION"]).or_else(|| {
+        let normalized = release.trim();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized.to_string())
+        }
+    })
+}
+
+fn portal_environment_for_url(url: &str) -> &'static str {
+    match reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_string()))
+        .as_deref()
+    {
+        Some("hub.companionintelligence.com") => "dev",
+        Some("hub.ci.computer") => "prod",
+        _ => "custom",
+    }
+}
+
 pub fn init_from_env(env_path: &Path, release: &str) {
     if SENTRY_GUARD.get().is_some() {
         return;
@@ -93,11 +129,25 @@ pub fn init_from_env(env_path: &Path, release: &str) {
     });
 
     if guard.is_enabled() {
-        if let Some(device_id) = read_device_id(env_path) {
-            sentry::configure_scope(|scope| {
+        sentry::configure_scope(|scope| {
+            if let Some(device_id) = read_device_id(env_path) {
                 scope.set_tag("device_id", device_id.clone());
-            });
-        }
+                scope.set_user(Some(sentry::User {
+                    id: Some(device_id),
+                    ..Default::default()
+                }));
+            }
+            if let Some(portal_url) = read_portal_url(env_path) {
+                scope.set_tag("ci_portal_url", portal_url.clone());
+                scope.set_tag(
+                    "ci_portal_environment",
+                    portal_environment_for_url(&portal_url),
+                );
+            }
+            if let Some(deployment_version) = read_deployment_version(env_path, release) {
+                scope.set_tag("deployment_version", deployment_version);
+            }
+        });
         let _ = SENTRY_GUARD.set(guard);
     }
 }
@@ -222,7 +272,10 @@ fn truncate(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_log_level, parse_dsn, read_device_id, read_first_env_value};
+    use super::{
+        classify_log_level, normalize_portal_url, parse_dsn, portal_environment_for_url,
+        read_deployment_version, read_device_id, read_first_env_value, read_portal_url,
+    };
 
     #[test]
     fn rejects_malformed_dsn_without_panicking() {
@@ -265,6 +318,51 @@ mod tests {
     }
 
     #[test]
+    fn reads_normalized_portal_url_from_env_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let env_path = tempdir.path().join("hub.env");
+        std::fs::write(&env_path, "CI_CLOUD_URL=https://hub.ci.computer/\n").expect("write env");
+
+        let value = read_portal_url(&env_path);
+        assert_eq!(value.as_deref(), Some("https://hub.ci.computer"));
+    }
+
+    #[test]
+    fn classifies_known_portal_urls() {
+        assert_eq!(
+            portal_environment_for_url("https://hub.companionintelligence.com"),
+            "dev"
+        );
+        assert_eq!(
+            portal_environment_for_url("https://hub.ci.computer"),
+            "prod"
+        );
+        assert_eq!(
+            portal_environment_for_url("https://portal.example.com"),
+            "custom"
+        );
+    }
+
+    #[test]
+    fn prefers_env_deployment_version_over_release_fallback() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let env_path = tempdir.path().join("hub.env");
+        std::fs::write(&env_path, "CI_HUB_VERSION=v0.2.22\n").expect("write env");
+
+        let value = read_deployment_version(&env_path, "v0.0.0");
+        assert_eq!(value.as_deref(), Some("v0.2.22"));
+    }
+
+    #[test]
+    fn normalizes_portal_url() {
+        assert_eq!(
+            normalize_portal_url(" https://hub.ci.computer/ "),
+            Some("https://hub.ci.computer".to_string())
+        );
+        assert_eq!(normalize_portal_url("   "), None);
+    }
+
+    #[test]
     fn classifies_recoverable_messages_as_warning() {
         assert_eq!(
             classify_log_level("Pre-start cleanup warning (non-fatal): test"),
@@ -274,7 +372,10 @@ mod tests {
             classify_log_level("Tailscale Services failed, falling back to path-based"),
             sentry::Level::Error
         );
-        assert_eq!(classify_log_level("warning: could not chmod file"), sentry::Level::Warning);
+        assert_eq!(
+            classify_log_level("warning: could not chmod file"),
+            sentry::Level::Warning
+        );
         assert_eq!(classify_log_level("startup complete"), sentry::Level::Info);
     }
 }

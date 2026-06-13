@@ -410,7 +410,9 @@ fn artifact_for_platform_data(
     source: &UpdateSource,
 ) -> Option<ResolvedArtifact> {
     let read = |key: &str| -> Option<ResolvedArtifact> {
-        platform_data.get(key).and_then(|v| parse_artifact(v, source))
+        platform_data
+            .get(key)
+            .and_then(|v| parse_artifact(v, source))
     };
 
     match os {
@@ -430,7 +432,12 @@ fn artifact_for_platform(
     platform_data: &serde_json::Value,
     source: &UpdateSource,
 ) -> Option<ResolvedArtifact> {
-    artifact_for_platform_data(platform_data, host_os()?, linux_package_preference(), source)
+    artifact_for_platform_data(
+        platform_data,
+        host_os()?,
+        linux_package_preference(),
+        source,
+    )
 }
 
 fn resolve_download_artifact(
@@ -449,7 +456,10 @@ fn lookup_artifact_in_manifest(
 ) -> Option<ResolvedArtifact> {
     for platform_data in manifest.platforms.values() {
         for key in ARTIFACT_KEYS {
-            if let Some(artifact) = platform_data.get(key).and_then(|v| parse_artifact(v, source)) {
+            if let Some(artifact) = platform_data
+                .get(key)
+                .and_then(|v| parse_artifact(v, source))
+            {
                 if artifact.url == download_url {
                     return Some(artifact);
                 }
@@ -1738,7 +1748,9 @@ mod tests {
             Path::new(r"C:\Program Files\Companion Hub\companion-hub.exe"),
             &relaunch_args(PersistedLaunchMode::Detached),
         );
-        assert!(msi.contains(r#"msiexec /i "C:\staging\Companion Hub_0.3.0_x64_en-US.msi" /qn /norestart"#));
+        assert!(msi.contains(
+            r#"msiexec /i "C:\staging\Companion Hub_0.3.0_x64_en-US.msi" /qn /norestart"#
+        ));
         assert!(msi.contains(r#"start "" "C:\Program Files\Companion Hub\companion-hub.exe" --relaunch-after-update --detached"#));
         assert!(msi.contains("ping -n 3"));
         assert!(msi.contains(r#"del "%~f0""#));
@@ -1788,7 +1800,11 @@ mod tests {
             PathBuf::from("/opt/Hub.AppImage")
         );
         assert_eq!(
-            linux_appimage_target_from(None, Some(PathBuf::from("/usr/bin/hub")), Some(PathBuf::from("/home/u"))),
+            linux_appimage_target_from(
+                None,
+                Some(PathBuf::from("/usr/bin/hub")),
+                Some(PathBuf::from("/home/u"))
+            ),
             PathBuf::from("/home/u/Applications/Companion Hub.AppImage")
         );
     }
@@ -1838,11 +1854,7 @@ mod tests {
                     continue;
                 }
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-                let path = request
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let (status, body): (&str, Vec<u8>) = if path == "/latest.json" {
                     ("200 OK", latest.clone().into_bytes())
                 } else if path == manifest_path {
@@ -1892,9 +1904,11 @@ mod tests {
 
         // Tampered artifact is rejected.
         std::fs::write(&dest, b"tampered-bytes-here-not-same").expect("tamper");
-        assert!(
-            verify_downloaded_artifact(&dest, info.expected_size, info.expected_sha256.as_deref())
-                .is_err()
-        );
+        assert!(verify_downloaded_artifact(
+            &dest,
+            info.expected_size,
+            info.expected_sha256.as_deref()
+        )
+        .is_err());
     }
 }
