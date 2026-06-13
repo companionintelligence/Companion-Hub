@@ -1913,10 +1913,13 @@ fn path_contains_dir(dir: &Path) -> bool {
     std::env::var_os("PATH")
         .map(|value| {
             std::env::split_paths(&value)
-                .map(|entry| entry.components().collect::<PathBuf>())
-                .any(|entry| entry == dir.components().collect::<PathBuf>())
+                .any(|entry| paths_match_by_components(&entry, dir))
         })
         .unwrap_or(false)
+}
+
+fn paths_match_by_components(left: &Path, right: &Path) -> bool {
+    left.components().eq(right.components())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -7001,8 +7004,8 @@ mod tests {
         host_docker_socket_path, is_container_name_conflict, is_host_port_bind_conflict,
         is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
         managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, seeded_traefik_config_contents,
+        parse_container_ids, parse_docker_socket_uid_gid, paths_match_by_components,
+        prepare_traefik_runtime_state, private_vpn_enabled_from_map, seeded_traefik_config_contents,
         should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
         tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
         TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
@@ -7015,9 +7018,7 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(target_os = "linux")]
-    use std::path::Path;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -7800,6 +7801,18 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert!(parsed.is_object());
         assert!(parsed.get("credsStore").is_none());
+    }
+
+    #[test]
+    fn matches_paths_by_components() {
+        assert!(paths_match_by_components(
+            Path::new("/usr/local/bin/"),
+            Path::new("/usr/local/bin")
+        ));
+        assert!(!paths_match_by_components(
+            Path::new("/usr/local/bin"),
+            Path::new("/usr/local/share")
+        ));
     }
 
     #[test]

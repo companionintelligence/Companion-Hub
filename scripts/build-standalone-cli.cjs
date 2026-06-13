@@ -167,10 +167,16 @@ function printHelp() {
 Usage:
   node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>] [--outfile <file>]
 
+Options:
+  --target <rust-target|bun-target>  Build for a specific standalone target
+  --outdir <dir>                     Write the default artifact name into this directory
+  --outfile <file>                  Write the binary to an explicit output path
+
 Examples:
   node scripts/build-standalone-cli.cjs
   node scripts/build-standalone-cli.cjs --target x86_64-unknown-linux-gnu
   node scripts/build-standalone-cli.cjs --target bun-darwin-arm64 --outdir packages/desktop/src-tauri/resources/cli
+  node scripts/build-standalone-cli.cjs --outfile packages/desktop/src-tauri/resources/cihub
 `);
 }
 
