@@ -161,7 +161,7 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `cihub up [env] [--detached]` | Start the hub stack |
 | `cihub down [env]` | Stop the hub stack |
 | `cihub restart [env]` | Restart the hub stack |
-| `cihub recreate [env]` | Reset runtime state for the environment, then start again |
+| `cihub recreate [env] [--detached] [--yes]` | Reset runtime state for the environment, then start again |
 | `cihub setup [env]` | Initialize Traefik and Docker auth config |
 | `cihub register [env]` | Print cloud portal registration URL |
 | `cihub doctor [env]` | Validate Docker, env files, bind mounts, and compose inputs |

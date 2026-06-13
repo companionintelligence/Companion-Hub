@@ -87,7 +87,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack' },
       { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
       { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
-      { command: `${BASE_COMMAND} recreate [env]`, description: 'Reset the target environment and start it again' },
+      { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
@@ -868,7 +868,7 @@ async function confirmDestructiveAction(actionLabel: string, force: boolean, pro
   }
 }
 
-async function resetHub(env: HubEnv, force: boolean) {
+async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   requireRepoRoot('cihub reset');
   const confirmed = await confirmDestructiveAction(
     `Resetting ${env}`,
@@ -877,14 +877,16 @@ async function resetHub(env: HubEnv, force: boolean) {
   );
   if (!confirmed) {
     printMessageBox('Reset cancelled', ['Left runtime state untouched.'], 'yellow');
-    return;
+    return false;
   }
   downHub(env, { volumes: true });
   cleanHub(env);
+  return true;
 }
 
-async function recreateHub(env: HubEnv, detached = false) {
-  await resetHub(env, true);
+async function recreateHub(env: HubEnv, detached = false, force = false) {
+  const resetComplete = await resetHub(env, force);
+  if (!resetComplete) return;
   await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
 }
 
@@ -1638,7 +1640,9 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'recreate') {
     const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
-    await recreateHub(resolveEnvFromArgs(remaining), detached);
+    const force = remaining.includes('--yes');
+    const env = resolveEnvFromArgs(remaining.filter((arg) => arg !== '--yes'));
+    await recreateHub(env, detached, force);
     return;
   }
 
