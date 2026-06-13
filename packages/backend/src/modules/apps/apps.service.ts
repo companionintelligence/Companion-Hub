@@ -16,6 +16,7 @@ import { PortAllocationRepository } from '../network/port-allocation.repository'
 import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
 
@@ -209,6 +210,15 @@ export class AppsService {
         return { available: false, appUrl: undefined, stage: 'error' };
       }
 
+      const host = resolveBrowserHost(userSettings.internalIp);
+      appUrl = `http://${host}:${app.port}${urlSuffix}`;
+      return { available: true, appUrl, stage: 'ready' };
+    }
+    const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
+    const hasTunnelToken = Boolean(
+      cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
+    );
+    if (exposureMode === 'cloudflare' && !hasTunnelToken && app.port) {
       const host = resolveBrowserHost(userSettings.internalIp);
       appUrl = `http://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };

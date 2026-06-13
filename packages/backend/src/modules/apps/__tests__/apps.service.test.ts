@@ -60,6 +60,7 @@ describe('AppsService', () => {
     configService = module.get(ConfigurationService);
     registrationService = module.get(RegistrationService);
     moduleRef = module.get(ModuleRef);
+    moduleRef.get.mockReturnValue({ getTunnelToken: () => 'token' } as any);
   });
 
   it('should be defined', () => {
@@ -218,6 +219,15 @@ describe('AppsService', () => {
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
+    });
+
+    it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists', async () => {
+      setupApp({ exposureMode: 'cloudflare', openPort: false, port: 8080 });
+      moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('http://192.168.1.100:8080');
+      expect(mockAxiosGet).not.toHaveBeenCalled();
     });
 
     it('MUST map 0.0.0.0 internal IP to 127.0.0.1 for local URLs', async () => {
@@ -423,7 +433,7 @@ describe('AppsService', () => {
 
     it('MUST call syncExposurePublic for CF/DNS errors', async () => {
       const mockSync = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({ syncExposurePublic: mockSync, restartContainer: vi.fn() })) as any);
+      moduleRef.get.mockImplementation((() => ({ syncExposurePublic: mockSync, restartContainer: vi.fn(), getTunnelToken: () => 'token' })) as any);
 
       setupForResolve('dns');
       await service.resolveAppAvailability(appUrn);
@@ -432,7 +442,11 @@ describe('AppsService', () => {
 
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({ restartContainer: mockRestart, syncExposurePublic: vi.fn() })) as any);
+      moduleRef.get.mockImplementation((() => ({
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
 
       setupForResolve('proxy502');
       await service.resolveAppAvailability(appUrn);
