@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const { DEFAULT_OUTDIR, artifactFilename, detectHostRustTarget, parseArgs, resolveOutputPath, resolveStandaloneTarget } =
@@ -38,7 +39,7 @@ describe('build-standalone-cli target mapping', () => {
 
   it('builds output paths under dist/cli by default', () => {
     const target = resolveStandaloneTarget('aarch64-apple-darwin');
-    expect(resolveOutputPath(target, DEFAULT_OUTDIR)).toBe(`${DEFAULT_OUTDIR}/cihub-macos-arm64`);
+    expect(resolveOutputPath(target, DEFAULT_OUTDIR)).toBe(path.join(DEFAULT_OUTDIR, 'cihub-macos-arm64'));
   });
 
   it('detects a supported host target on this machine', () => {
@@ -49,7 +50,7 @@ describe('build-standalone-cli target mapping', () => {
   it('accepts an explicit outfile path', () => {
     const parsed = parseArgs(['--target', 'x86_64-unknown-linux-gnu', '--outfile', 'packages/desktop/src-tauri/resources/cihub']);
     expect(parsed.target).toBe('x86_64-unknown-linux-gnu');
-    expect(parsed.outfile).toContain('/packages/desktop/src-tauri/resources/cihub');
+    expect(parsed.outfile).toBe(path.resolve(process.cwd(), 'packages/desktop/src-tauri/resources/cihub'));
   });
 
   it('rejects a missing outfile value passed as a separate argument', () => {
