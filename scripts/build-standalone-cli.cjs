@@ -102,6 +102,14 @@ function resolveOutputPath(target, outdir = DEFAULT_OUTDIR) {
   return path.join(outdir, artifactFilename(target));
 }
 
+function requireOptionValue(argv, index, optionName) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${optionName} requires a path value`);
+  }
+  return value;
+}
+
 function parseArgs(argv) {
   let target;
   let outdir = DEFAULT_OUTDIR;
@@ -119,21 +127,29 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === '--outdir') {
-      outdir = path.resolve(process.cwd(), argv[index + 1]);
+      outdir = path.resolve(process.cwd(), requireOptionValue(argv, index, '--outdir'));
       index += 1;
       continue;
     }
     if (arg.startsWith('--outdir=')) {
-      outdir = path.resolve(process.cwd(), arg.slice('--outdir='.length));
+      const value = arg.slice('--outdir='.length);
+      if (!value) {
+        throw new Error('--outdir requires a path value');
+      }
+      outdir = path.resolve(process.cwd(), value);
       continue;
     }
     if (arg === '--outfile') {
-      outfile = path.resolve(process.cwd(), argv[index + 1]);
+      outfile = path.resolve(process.cwd(), requireOptionValue(argv, index, '--outfile'));
       index += 1;
       continue;
     }
     if (arg.startsWith('--outfile=')) {
-      outfile = path.resolve(process.cwd(), arg.slice('--outfile='.length));
+      const value = arg.slice('--outfile='.length);
+      if (!value) {
+        throw new Error('--outfile requires a path value');
+      }
+      outfile = path.resolve(process.cwd(), value);
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -149,7 +165,7 @@ function printHelp() {
   console.log(`Build a standalone Companion Hub CLI binary with Bun.
 
 Usage:
-  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>]
+  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>] [--outfile <file>]
 
 Examples:
   node scripts/build-standalone-cli.cjs

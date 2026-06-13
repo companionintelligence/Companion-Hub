@@ -51,4 +51,12 @@ describe('build-standalone-cli target mapping', () => {
     expect(parsed.target).toBe('x86_64-unknown-linux-gnu');
     expect(parsed.outfile).toContain('/packages/desktop/src-tauri/resources/cihub');
   });
+
+  it('rejects a missing outfile value passed as a separate argument', () => {
+    expect(() => parseArgs(['--outfile'])).toThrow('--outfile requires a path value');
+  });
+
+  it('rejects an empty outfile value passed with equals syntax', () => {
+    expect(() => parseArgs(['--outfile='])).toThrow('--outfile requires a path value');
+  });
 });
