@@ -1941,18 +1941,26 @@ fn files_match(source: &Path, installed: &Path) -> std::io::Result<bool> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn preferred_unix_profile() -> Option<PathBuf> {
-    let shell = std::env::var("SHELL").ok().unwrap_or_default();
     let home = dirs::home_dir()?;
+    let shell = std::env::var("SHELL").ok().unwrap_or_default();
+    Some(unix_profile_for_shell(&home, &shell))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn unix_profile_for_shell(home: &Path, shell: &str) -> PathBuf {
     let shell_name = Path::new(&shell)
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
 
-    Some(match shell_name {
+    match shell_name {
         "zsh" => home.join(".zshrc"),
+        #[cfg(target_os = "macos")]
+        "bash" => home.join(".bash_profile"),
+        #[cfg(target_os = "linux")]
         "bash" => home.join(".bashrc"),
         _ => home.join(".profile"),
-    })
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -7049,6 +7057,8 @@ mod tests {
     use super::wsl2_engine_windows_install_script;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::preferred_unix_cli_install_dir;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::unix_profile_for_shell;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
@@ -7912,6 +7922,19 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         }
 
         assert_eq!(selected, home.join(".local/bin"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn chooses_platform_correct_bash_profile() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let selected = unix_profile_for_shell(tempdir.path(), "/bin/bash");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(selected, tempdir.path().join(".bash_profile"));
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(selected, tempdir.path().join(".bashrc"));
     }
 
     #[test]
