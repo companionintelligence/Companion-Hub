@@ -157,10 +157,10 @@ country, entity, or person.
 ## 12. Governing Law and Jurisdiction
 
 This Agreement shall be governed by and construed in accordance with the laws of
-the State of Deleware, without regard to its conflict of laws provisions. Any
+the State of Delaware, without regard to its conflict of laws provisions. Any
 dispute arising under or in connection with this Agreement shall be subject to
 the exclusive jurisdiction of the state and federal courts located in United
-States of America, Deleware
+States of America, Delaware
 
 ## 13. General Provisions
 
