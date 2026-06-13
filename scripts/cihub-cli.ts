@@ -805,6 +805,17 @@ function composeBaseArgs(env: HubEnv): string[] {
   return args;
 }
 
+function removeLeftoverProjectContainers(): void {
+  const { stdout, ok } = runCapture('docker', ['ps', '-a', '--filter', 'label=com.docker.compose.project=ci-hub', '--format', '{{.ID}}']);
+  if (!ok || !stdout) return;
+  const ids = stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (ids.length === 0) return;
+  run('docker', ['rm', '-f', ...ids]);
+}
+
 function downHub(env: HubEnv, options?: { volumes?: boolean }) {
   const envFileName = getEnvFileOrExit(env);
   const envOverrides = buildEnvOverrides(envFileName);
@@ -813,6 +824,7 @@ function downHub(env: HubEnv, options?: { volumes?: boolean }) {
   if (options?.volumes) args.push('-v', '--remove-orphans');
   printMessageBox(options?.volumes ? 'Resetting hub runtime' : 'Stopping hub', [`Environment: ${env}`], 'yellow');
   run('docker', args, envOverrides);
+  removeLeftoverProjectContainers();
 }
 
 async function restartHub(env: HubEnv, detached = false) {
