@@ -164,10 +164,65 @@ export function checkTauriDesktopPrereqs(): TauriPrereqResult {
 }
 
 export function buildTauriProcessEnv(guiEnv: GuiEnvironmentResolution | null): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...(guiEnv?.env ?? {}),
   };
+
+  if (process.platform !== 'linux') {
+    return env;
+  }
+
+  const isSnapInjectedPath = (value: string) => value.includes('/snap/') || /\/home\/[^/]+\/snap\//.test(value) || value.includes('/var/lib/snapd/');
+
+  const sanitizePathList = (value: string | undefined) => {
+    if (!value) return undefined;
+    const parts = value
+      .split(':')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .filter((entry) => !isSnapInjectedPath(entry));
+    return parts.length > 0 ? parts.join(':') : undefined;
+  };
+
+  for (const key of Object.keys(env)) {
+    if (key === 'SNAP' || key.startsWith('SNAP_') || key.endsWith('_VSCODE_SNAP_ORIG')) {
+      delete env[key];
+    }
+  }
+
+  const scrubbedLdLibraryPath = sanitizePathList(env.LD_LIBRARY_PATH);
+  if (scrubbedLdLibraryPath) env.LD_LIBRARY_PATH = scrubbedLdLibraryPath;
+  else delete env.LD_LIBRARY_PATH;
+
+  const scrubbedXdgDataDirs = sanitizePathList(env.XDG_DATA_DIRS);
+  if (scrubbedXdgDataDirs) env.XDG_DATA_DIRS = scrubbedXdgDataDirs;
+  else delete env.XDG_DATA_DIRS;
+
+  for (const key of [
+    'GTK_PATH',
+    'GTK_EXE_PREFIX',
+    'GTK_IM_MODULE_FILE',
+    'GIO_EXTRA_MODULES',
+    'GIO_MODULE_DIR',
+    'GIO_LAUNCHED_DESKTOP_FILE',
+    'GIO_LAUNCHED_DESKTOP_FILE_PID',
+    'GDK_PIXBUF_MODULEDIR',
+    'GDK_PIXBUF_MODULE_FILE',
+    'GI_TYPELIB_PATH',
+    'GSETTINGS_SCHEMA_DIR',
+    'LOCPATH',
+    'XDG_DATA_HOME',
+    'GIT_ASKPASS',
+    'VSCODE_GIT_ASKPASS_MAIN',
+    'VSCODE_GIT_ASKPASS_NODE',
+  ]) {
+    if (env[key] && isSnapInjectedPath(env[key])) {
+      delete env[key];
+    }
+  }
+
+  return env;
 }
 
 export function formatTauriPrereqReport(result: TauriPrereqResult, guiEnv: GuiEnvironmentResolution | null): string[] {
