@@ -86,6 +86,8 @@ describe('renderHelp', () => {
     expect(plain).toContain('app status');
     expect(plain).toContain('app logs');
     expect(plain).toContain('app inspect');
+    expect(plain).toContain('app stop-managed');
+    expect(plain).toContain('app remove-managed');
   });
 
   it('lists the Models section with install/rm', () => {

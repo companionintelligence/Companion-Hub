@@ -107,6 +107,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} app list`, description: 'List managed Docker containers' },
       { command: `${BASE_COMMAND} app status [name]`, description: 'Show container status with ports (color-coded)' },
       { command: `${BASE_COMMAND} app logs <name> [--tail N]`, description: 'Stream container logs' },
+      { command: `${BASE_COMMAND} app stop-managed`, description: 'Stop all Hub-managed app containers' },
+      { command: `${BASE_COMMAND} app remove-managed`, description: 'Remove all Hub-managed app containers' },
       { command: `${BASE_COMMAND} app add <name> <image>`, description: 'Launch a new Docker container app' },
       { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
       { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
@@ -1155,6 +1157,24 @@ export function appStatusColor(status: string): string {
   return dim(status);
 }
 
+function managedAppContainerIds(): string[] {
+  const { stdout, ok } = runCapture('docker', [
+    'ps',
+    '-a',
+    '--filter',
+    'label=ci-os-hub.managed=true',
+    '--filter',
+    'label=ci-os-hub.appurn',
+    '--format',
+    '{{.ID}}',
+  ]);
+  if (!ok || !stdout) return [];
+  return stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function runAppCommand(args: string[]) {
   const subcommand = args[0];
   if (!subcommand) usageAndExit('Missing app subcommand');
@@ -1198,6 +1218,20 @@ function runAppCommand(args: string[]) {
     const tail = tailIdx !== -1 && args[tailIdx + 1] ? args[tailIdx + 1] : '50';
     printMessageBox('Container logs', [`Container: ${name}`, `Tail: ${tail} lines`], 'dim');
     run('docker', ['logs', '--tail', tail, '--timestamps', name]);
+    return;
+  }
+
+  if (subcommand === 'stop-managed' || subcommand === 'remove-managed') {
+    const ids = managedAppContainerIds();
+    if (ids.length === 0) {
+      printMessageBox('Managed app cleanup', ['No Hub-managed app containers found.'], 'yellow');
+      return;
+    }
+    const dockerCommand = subcommand === 'stop-managed' ? 'stop' : 'rm';
+    const dockerArgs = subcommand === 'stop-managed' ? ['stop', ...ids] : ['rm', '-f', ...ids];
+    printMessageBox('Managed app cleanup', [`Action: ${subcommand === 'stop-managed' ? 'stop' : 'remove'}`, `Containers: ${ids.length}`], 'yellow');
+    run('docker', dockerArgs);
+    printMessageBox('Managed app cleanup', [`Successfully ran docker ${dockerCommand} on ${ids.length} Hub-managed app container(s).`], 'green');
     return;
   }
 
