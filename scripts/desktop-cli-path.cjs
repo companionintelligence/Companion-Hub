@@ -1,4 +1,4 @@
-const { appendFileSync, existsSync, mkdirSync, readFileSync } = require('node:fs');
+const { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -25,6 +25,50 @@ function preferredUnixProfile() {
   if (shell === 'zsh') return path.join(home, '.zshrc');
   if (shell === 'bash') return path.join(home, '.bashrc');
   return path.join(home, '.profile');
+}
+
+/**
+ * Tries to symlink the cihub entrypoint into a well-known generic bin
+ * directory that is already on PATH (e.g. ~/.local/bin, ~/bin),
+ * making it immediately usable in the current shell without requiring a new
+ * terminal or a manual `export PATH=...`.
+ * Returns the symlink path on success, null on failure.
+ */
+function trySymlinkToCurrentPath(cliEntrypoint, cliCommand) {
+  const home = os.homedir();
+  const currentPath = process.env.PATH || '';
+  const onPath = new Set(splitPathEntries(currentPath).map((d) => path.resolve(d)));
+
+  // Ordered list of well-known, generic user bin directories (not tool-specific
+  // dirs like ~/.cargo/bin or ~/.nvm/...).  We try each in order and pick the
+  // first one that is already on PATH (or create it if it's the standard
+  // ~/.local/bin which distros/macOS tooling puts on PATH automatically).
+  const candidates = [
+    path.join(home, '.local', 'bin'), // Linux standard; also works on macOS
+    path.join(home, 'bin'), // common on macOS / older Linux setups
+    '/usr/local/bin', // macOS default (writable without sudo on most setups)
+  ];
+
+  for (const dir of candidates) {
+    const isOnPath = onPath.has(path.resolve(dir));
+    // Only attempt dirs that are already on PATH (don't silently add unknown dirs)
+    if (!isOnPath) continue;
+    const linkPath = path.join(dir, cliCommand);
+    try {
+      mkdirSync(dir, { recursive: true });
+      // Remove existing file/symlink (including broken symlinks) so we can re-create it
+      try {
+        unlinkSync(linkPath);
+      } catch {
+        /* doesn't exist — fine */
+      }
+      symlinkSync(cliEntrypoint, linkPath);
+      return linkPath;
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
 }
 
 function appendUnixProfile(dir) {
@@ -107,6 +151,22 @@ function ensureRepoCliOnPath(repoRoot) {
     };
   }
 
+  // First, try to symlink into a directory already on PATH so cihub is
+  // immediately usable in the current shell without reopening a terminal.
+  const symlinkPath = trySymlinkToCurrentPath(cliEntrypoint, cliCommand);
+  if (symlinkPath) {
+    appendUnixProfile(cliDir);
+    return {
+      status: 'symlinked-to-path',
+      cliDir,
+      cliEntrypoint,
+      cliCommand,
+      symlinkPath,
+      messageLines: [`Companion Hub CLI is now available: ${cliCommand} → ${symlinkPath}`, `Try it now: ${cliCommand} --help`],
+    };
+  }
+
+  // Fallback: append to shell profile (takes effect in new shells)
   try {
     const profile = appendUnixProfile(cliDir);
     return {
@@ -116,7 +176,7 @@ function ensureRepoCliOnPath(repoRoot) {
       cliCommand,
       profile,
       messageLines: [
-        `Companion Hub CLI path was checked and ensured in ${profile}.`,
+        `Companion Hub CLI path was added to ${profile}.`,
         `Companion Hub CLI should be available from: ${cliDir}`,
         'Open a new shell, or run this in your current shell, then try:',
         `  export PATH="${cliDir}:$PATH"`,
