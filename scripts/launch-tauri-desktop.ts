@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { box } from './cihub-cli';
@@ -12,6 +13,10 @@ import {
 } from './check-tauri-desktop-prereqs';
 
 type LaunchMode = 'stack-dev' | 'vite-dev';
+const require = createRequire(import.meta.url);
+const { ensureRepoCliOnPath } = require('./desktop-cli-path.cjs') as {
+  ensureRepoCliOnPath: (repoRoot: string) => { messageLines: string[] };
+};
 
 function parseMode(): LaunchMode {
   return process.argv.includes('--stack-dev') ? 'stack-dev' : 'vite-dev';
@@ -75,6 +80,11 @@ function launchTauriDesktop(mode: LaunchMode): number {
   if (result.error) {
     printBox('Failed to launch Tauri', [result.error.message], 'red');
     return 1;
+  }
+
+  if ((result.status ?? 1) === 0) {
+    const cliPath = ensureRepoCliOnPath(repoRoot);
+    printBox('Companion Hub CLI', cliPath.messageLines, 'green');
   }
 
   return result.status ?? 1;
