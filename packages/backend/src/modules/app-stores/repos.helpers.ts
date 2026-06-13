@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -202,90 +203,97 @@ export class ReposHelpers {
         url: storeUrl,
       });
 
-      for (const app of apps) {
-        const appSlug = app.slug || app.id;
-        const appDir = path.join(appsPath, appSlug);
-        await this.ensureDirectoryWithPermissions(appDir);
+      const limit = pLimit(12);
+      await Promise.all(
+        apps.map((app) =>
+          limit(async () => {
+            const appSlug = app.slug || app.id;
+            const appDir = path.join(appsPath, appSlug);
+            await this.ensureDirectoryWithPermissions(appDir);
 
-        let markdownDescription: string | null = null;
-        try {
-          const descriptionUrl = `${url}/store/${appSlug}/metadata/description.md`;
-          const descriptionRes = await axios.get<string>(descriptionUrl, {
-            timeout: 15_000,
-            responseType: 'text',
-            validateStatus: () => true,
-          });
-          if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
-            const contentTypeHeader = descriptionRes.headers['content-type'];
-            const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
-            if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-              const descriptionText = descriptionRes.data;
-              if (descriptionText.trim().length > 0) {
-                markdownDescription = descriptionText;
-                const metadataDir = path.join(appDir, 'metadata');
-                await this.ensureDirectoryWithPermissions(metadataDir);
-                await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+            let markdownDescription: string | null = null;
+            try {
+              const descriptionUrl = `${url}/store/${appSlug}/metadata/description.md`;
+              const descriptionRes = await axios.get<string>(descriptionUrl, {
+                timeout: 15_000,
+                responseType: 'text',
+                validateStatus: () => true,
+              });
+              if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
+                const contentTypeHeader = descriptionRes.headers['content-type'];
+                const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
+                if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
+                  const descriptionText = descriptionRes.data;
+                  if (descriptionText.trim().length > 0) {
+                    markdownDescription = descriptionText;
+                    const metadataDir = path.join(appDir, 'metadata');
+                    await this.ensureDirectoryWithPermissions(metadataDir);
+                    await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                  }
+                }
+              }
+            } catch {
+              // Non-fatal: description will fall back to API payload/config.
+            }
+
+            // Enrich app metadata with default required fields if missing
+            const enrichedApp = {
+              ...app,
+              urn: `urn:app:${appSlug}`,
+              name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
+              author: typeof app.author === 'string' ? app.author : 'Unknown Author',
+              available: typeof app.available === 'boolean' ? app.available : true,
+              short_desc:
+                typeof app.short_desc === 'string'
+                  ? app.short_desc
+                  : (typeof app.shortDescription === 'string' ? app.shortDescription : null) ||
+                    (app.description as string) ||
+                    'No description provided',
+              title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
+              description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
+              categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
+              port: typeof app.port === 'number' ? app.port : 8080,
+              version: typeof app.version === 'string' ? app.version : '0.0.1',
+              cihub_app_version:
+                typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+              source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
+              supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
+            };
+
+            await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
+
+            // Write docker-compose.json if available
+            if (typeof app.compose === 'string') {
+              await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
+            }
+
+            // Download app icon so getAppImage can serve it from metadata/logo.*
+            const iconUrl = typeof app.icon === 'string' ? app.icon : null;
+            if (iconUrl) {
+              try {
+                const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
+                const iconRes = await axios.get<ArrayBuffer>(fullIconUrl, {
+                  timeout: 15_000,
+                  responseType: 'arraybuffer',
+                  validateStatus: () => true,
+                });
+                if (iconRes.status >= 200 && iconRes.status < 300) {
+                  const contentTypeHeader = iconRes.headers['content-type'];
+                  const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : 'image/png';
+                  const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+                  const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
+                  const metadataDir = path.join(appDir, 'metadata');
+                  await this.ensureDirectoryWithPermissions(metadataDir);
+                  const buffer = Buffer.from(iconRes.data);
+                  await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
+                }
+              } catch {
+                // Non-fatal: logo will fall back to generic thumbnail
               }
             }
-          }
-        } catch {
-          // Non-fatal: description will fall back to API payload/config.
-        }
-
-        // Enrich app metadata with default required fields if missing
-        const enrichedApp = {
-          ...app,
-          urn: `urn:app:${appSlug}`,
-          name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
-          author: typeof app.author === 'string' ? app.author : 'Unknown Author',
-          available: typeof app.available === 'boolean' ? app.available : true,
-          short_desc:
-            typeof app.short_desc === 'string'
-              ? app.short_desc
-              : (typeof app.shortDescription === 'string' ? app.shortDescription : null) || (app.description as string) || 'No description provided',
-          title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
-          description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
-          categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
-          port: typeof app.port === 'number' ? app.port : 8080,
-          version: typeof app.version === 'string' ? app.version : '0.0.1',
-          cihub_app_version:
-            typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
-          source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
-          supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
-        };
-
-        await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
-
-        // Write docker-compose.json if available
-        if (typeof app.compose === 'string') {
-          await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
-        }
-
-        // Download app icon so getAppImage can serve it from metadata/logo.*
-        const iconUrl = typeof app.icon === 'string' ? app.icon : null;
-        if (iconUrl) {
-          try {
-            const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
-            const iconRes = await axios.get<ArrayBuffer>(fullIconUrl, {
-              timeout: 15_000,
-              responseType: 'arraybuffer',
-              validateStatus: () => true,
-            });
-            if (iconRes.status >= 200 && iconRes.status < 300) {
-              const contentTypeHeader = iconRes.headers['content-type'];
-              const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : 'image/png';
-              const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
-              const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
-              const metadataDir = path.join(appDir, 'metadata');
-              await this.ensureDirectoryWithPermissions(metadataDir);
-              const buffer = Buffer.from(iconRes.data);
-              await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
-            }
-          } catch {
-            // Non-fatal: logo will fall back to generic thumbnail
-          }
-        }
-      }
+          }),
+        ),
+      );
 
       // Also write a repo.json or config.json so Hub sees it as a valid repo?
       // CI Hub expects `repo.json` in root of repo?
