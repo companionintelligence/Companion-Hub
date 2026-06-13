@@ -2030,6 +2030,26 @@ fn set_windows_user_path(dir: &Path) -> Result<bool, String> {
     Ok(output.status.success())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn preferred_unix_cli_install_dir(home: &Path) -> PathBuf {
+    let local_bin = home.join(".local/bin");
+    let home_bin = home.join("bin");
+
+    if path_contains_dir(&local_bin) {
+        return local_bin;
+    }
+
+    if path_contains_dir(&home_bin) {
+        return home_bin;
+    }
+
+    if home_bin.exists() && !local_bin.exists() {
+        return home_bin;
+    }
+
+    local_bin
+}
+
 fn host_cli_install_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -2039,17 +2059,7 @@ fn host_cli_install_dir() -> Option<PathBuf> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let home = dirs::home_dir()?;
-        let preferred = [
-            home.join(".local/bin"),
-            home.join("bin"),
-            PathBuf::from("/usr/local/bin"),
-        ];
-        for dir in preferred {
-            if path_contains_dir(&dir) {
-                return Some(dir);
-            }
-        }
-        return Some(home.join(".local/bin"));
+        return Some(preferred_unix_cli_install_dir(&home));
     }
 
     #[allow(unreachable_code)]
@@ -7037,6 +7047,8 @@ mod tests {
     use super::ollama_windows_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::wsl2_engine_windows_install_script;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::preferred_unix_cli_install_dir;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
@@ -7879,6 +7891,27 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         std::fs::write(&installed, b"diffsize!").expect("write installed");
 
         assert!(!files_match(&source, &installed).expect("compare files"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn prefers_user_bin_dir_even_when_system_bin_is_on_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let home = tempdir.path();
+        let original_path = std::env::var_os("PATH");
+
+        unsafe {
+            std::env::set_var("PATH", "/usr/local/bin");
+        }
+
+        let selected = preferred_unix_cli_install_dir(home);
+
+        match original_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert_eq!(selected, home.join(".local/bin"));
     }
 
     #[test]
