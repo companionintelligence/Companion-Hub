@@ -1922,6 +1922,18 @@ fn paths_match_by_components(left: &Path, right: &Path) -> bool {
     left.components().eq(right.components())
 }
 
+fn files_match(source: &Path, installed: &Path) -> std::io::Result<bool> {
+    let source_metadata = std::fs::metadata(source)?;
+    let installed_metadata = std::fs::metadata(installed)?;
+    if !source_metadata.is_file() || !installed_metadata.is_file() {
+        return Ok(false);
+    }
+    if source_metadata.len() != installed_metadata.len() {
+        return Ok(false);
+    }
+    Ok(std::fs::read(source)? == std::fs::read(installed)?)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn preferred_unix_profile() -> Option<PathBuf> {
     let shell = std::env::var("SHELL").ok().unwrap_or_default();
@@ -2064,18 +2076,21 @@ fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
     }
 
     let installed_path = install_dir.join(HOST_CLI_FILENAME);
-    if let Err(error) = std::fs::copy(&source, &installed_path) {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "cli",
-            &format!(
-                "Failed to install bundled Companion Hub CLI from {} to {}: {}",
-                source.display(),
-                installed_path.display(),
-                error
-            ),
-        );
-        return;
+    let already_current = files_match(&source, &installed_path).unwrap_or(false);
+    if !already_current {
+        if let Err(error) = std::fs::copy(&source, &installed_path) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "cli",
+                &format!(
+                    "Failed to install bundled Companion Hub CLI from {} to {}: {}",
+                    source.display(),
+                    installed_path.display(),
+                    error
+                ),
+            );
+            return;
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2083,10 +2098,17 @@ fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
         let _ = std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o755));
     }
 
-    let mut notes = vec![format!(
-        "Bundled Companion Hub CLI installed to {}",
-        installed_path.display()
-    )];
+    let mut notes = vec![if already_current {
+        format!(
+            "Bundled Companion Hub CLI at {} is already current",
+            installed_path.display()
+        )
+    } else {
+        format!(
+            "Bundled Companion Hub CLI installed to {}",
+            installed_path.display()
+        )
+    }];
 
     if !path_contains_dir(&install_dir) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -7005,11 +7027,12 @@ mod tests {
         is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
         managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
         parse_container_ids, parse_docker_socket_uid_gid, paths_match_by_components,
-        prepare_traefik_runtime_state, private_vpn_enabled_from_map, seeded_traefik_config_contents,
-        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
-        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
-        TRAEFIK_TLS_DIR,
+        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED,
+        TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR, files_match,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -7813,6 +7836,28 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             Path::new("/usr/local/bin"),
             Path::new("/usr/local/share")
         ));
+    }
+
+    #[test]
+    fn matches_files_by_contents() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let source = tempdir.path().join("source.bin");
+        let installed = tempdir.path().join("installed.bin");
+        std::fs::write(&source, b"same-bytes").expect("write source");
+        std::fs::write(&installed, b"same-bytes").expect("write installed");
+
+        assert!(files_match(&source, &installed).expect("compare files"));
+    }
+
+    #[test]
+    fn detects_when_installed_file_differs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let source = tempdir.path().join("source.bin");
+        let installed = tempdir.path().join("installed.bin");
+        std::fs::write(&source, b"same-size").expect("write source");
+        std::fs::write(&installed, b"diffsize!").expect("write installed");
+
+        assert!(!files_match(&source, &installed).expect("compare files"));
     }
 
     #[test]
