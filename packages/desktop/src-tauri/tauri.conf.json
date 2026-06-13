@@ -6,7 +6,7 @@
   "identifier": "computer.ci.app.hub",
   "build": {
     "beforeDevCommand": "",
-    "devUrl": "http://localhost:9091",
+    "devUrl": "http://localhost:5005",
     "beforeBuildCommand": "",
     "frontendDist": "../../../packages/frontend/dist/client"
   },

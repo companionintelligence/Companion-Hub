@@ -49,8 +49,9 @@ function launchTauriDesktop(mode: LaunchMode): number {
     printBox('Desktop session', formatTauriPrereqReport({ ok: true, issues: [], guiEnv }, guiEnv), 'cyan');
   }
 
-  const args = ['tauri', 'dev', '--no-dev-server-wait'];
+  const args = ['tauri', 'dev'];
   if (mode === 'stack-dev') {
+    args.push('--no-dev-server-wait');
     args.push('--config', 'src-tauri/tauri.stack-dev.json');
   }
 
