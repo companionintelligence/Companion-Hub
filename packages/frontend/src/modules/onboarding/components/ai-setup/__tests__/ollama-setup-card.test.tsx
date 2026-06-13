@@ -87,7 +87,7 @@ describe('OllamaSetupCard auto-install', () => {
     expect(screen.getByRole('button', { name: /Auto-Install Ollama/i })).toBeInTheDocument();
   });
 
-  it('does not offer auto-install when Ollama is installed but the bridge is unreachable', () => {
+  it('still offers auto-install when Ollama is installed but the bridge is unreachable', () => {
     installTauriMock(vi.fn());
     render(
       <OllamaSetupCard
@@ -97,7 +97,7 @@ describe('OllamaSetupCard auto-install', () => {
       />,
     );
 
-    expect(screen.queryByRole('button', { name: /Auto-Install Ollama/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Auto-Install Ollama/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
   });
 });
