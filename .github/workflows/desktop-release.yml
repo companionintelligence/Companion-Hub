@@ -126,6 +126,9 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+      - name: Install Bun
+        if: env.BUILD_ENABLED
+        uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
@@ -156,6 +159,16 @@ jobs:
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
+      - name: Build standalone Companion Hub CLI
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CLI_OUT="${CLI_OUT}.exe"
+          fi
+          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT"
+          ls -lh "$CLI_OUT"
       - name: Upload frontend source maps to Sentry
         if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
         continue-on-error: true

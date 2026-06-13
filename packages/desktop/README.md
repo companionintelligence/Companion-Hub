@@ -19,6 +19,7 @@ Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2]
 - [Rust](https://rustup.rs/) (stable) — `rustup` will install `cargo`, `rustc`, etc.
 - [pnpm](https://pnpm.io/) (≥ 10) — for frontend build and dependency management
 - [Node.js](https://nodejs.org/) (≥ 22) — required by some build tooling
+- [Bun](https://bun.sh/) — required to compile the bundled standalone `cihub` CLI for desktop releases
 - [Git](https://git-scm.com/)
 
 ### macOS

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-const { DEFAULT_OUTDIR, artifactFilename, detectHostRustTarget, resolveOutputPath, resolveStandaloneTarget } =
+const { DEFAULT_OUTDIR, artifactFilename, detectHostRustTarget, parseArgs, resolveOutputPath, resolveStandaloneTarget } =
   require('../build-standalone-cli.cjs') as {
     DEFAULT_OUTDIR: string;
     artifactFilename: (target: { platformKey: string; archKey: string; extension: string }) => string;
     detectHostRustTarget: () => string;
+    parseArgs: (args: string[]) => { target?: string; outdir: string; outfile?: string; help?: boolean };
     resolveOutputPath: (
       target: {
         platformKey: string;
@@ -43,5 +44,11 @@ describe('build-standalone-cli target mapping', () => {
   it('detects a supported host target on this machine', () => {
     const hostTarget = detectHostRustTarget();
     expect(resolveStandaloneTarget(hostTarget).rustTarget).toBe(hostTarget);
+  });
+
+  it('accepts an explicit outfile path', () => {
+    const parsed = parseArgs(['--target', 'x86_64-unknown-linux-gnu', '--outfile', 'packages/desktop/src-tauri/resources/cihub']);
+    expect(parsed.target).toBe('x86_64-unknown-linux-gnu');
+    expect(parsed.outfile).toContain('/packages/desktop/src-tauri/resources/cihub');
   });
 });

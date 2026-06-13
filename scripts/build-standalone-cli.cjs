@@ -105,6 +105,7 @@ function resolveOutputPath(target, outdir = DEFAULT_OUTDIR) {
 function parseArgs(argv) {
   let target;
   let outdir = DEFAULT_OUTDIR;
+  let outfile;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -126,13 +127,22 @@ function parseArgs(argv) {
       outdir = path.resolve(process.cwd(), arg.slice('--outdir='.length));
       continue;
     }
+    if (arg === '--outfile') {
+      outfile = path.resolve(process.cwd(), argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--outfile=')) {
+      outfile = path.resolve(process.cwd(), arg.slice('--outfile='.length));
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       return { help: true };
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { target, outdir };
+  return { target, outdir, outfile };
 }
 
 function printHelp() {
@@ -151,10 +161,10 @@ Examples:
 function buildStandaloneCli(options = {}) {
   const target = resolveStandaloneTarget(options.target);
   const outdir = options.outdir || DEFAULT_OUTDIR;
-  const outfile = resolveOutputPath(target, outdir);
+  const outfile = options.outfile || resolveOutputPath(target, outdir);
   const version = readPackageVersion();
 
-  mkdirSync(outdir, { recursive: true });
+  mkdirSync(path.dirname(outfile), { recursive: true });
   if (existsSync(outfile)) {
     rmSync(outfile, { force: true });
   }

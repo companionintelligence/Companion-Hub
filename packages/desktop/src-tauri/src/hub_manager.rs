@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,6 +98,10 @@ const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
+#[cfg(target_os = "windows")]
+const HOST_CLI_FILENAME: &str = "cihub.exe";
+#[cfg(not(target_os = "windows"))]
+const HOST_CLI_FILENAME: &str = "cihub";
 const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &["docker-config.json", ".internal/docker-config.json"];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
@@ -1886,6 +1891,238 @@ pub fn get_hub_status() -> HubStatus {
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("companion-hub")
+}
+
+fn bundled_cli_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        resource_dir.join(HOST_CLI_FILENAME),
+        resource_dir.join("resources").join(HOST_CLI_FILENAME),
+        std::env::current_exe()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("resources")
+            .join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/lib/companion-hub/resources").join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/lib/Companion Hub/resources").join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/share/companion-hub").join(HOST_CLI_FILENAME),
+    ]
+}
+
+fn path_contains_dir(dir: &Path) -> bool {
+    std::env::var_os("PATH")
+        .map(|value| {
+            std::env::split_paths(&value)
+                .map(|entry| entry.components().collect::<PathBuf>())
+                .any(|entry| entry == dir.components().collect::<PathBuf>())
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn preferred_unix_profile() -> Option<PathBuf> {
+    let shell = std::env::var("SHELL").ok().unwrap_or_default();
+    let home = dirs::home_dir()?;
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+
+    Some(match shell_name {
+        "zsh" => home.join(".zshrc"),
+        "bash" => home.join(".bashrc"),
+        _ => home.join(".profile"),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn append_unix_profile_path(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let profile = match preferred_unix_profile() {
+        Some(profile) => profile,
+        None => return Ok(None),
+    };
+
+    let line = format!("export PATH=\"{}:$PATH\"", dir.display());
+    let marker = "# Companion Hub CLI";
+    let current = std::fs::read_to_string(&profile).unwrap_or_default();
+    if current.contains(&line) {
+        return Ok(Some(profile));
+    }
+
+    if let Some(parent) = profile.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to prepare shell profile directory {}: {}",
+                parent.display(),
+                error
+            )
+        })?;
+    }
+
+    let prefix = if current.is_empty() || current.ends_with('\n') {
+        String::new()
+    } else {
+        "\n".to_string()
+    };
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)
+        .map_err(|error| format!("Failed to open shell profile {}: {}", profile.display(), error))?;
+    use std::io::Write;
+    file.write_all(format!("{prefix}{marker}\n{line}\n").as_bytes())
+        .map_err(|error| format!("Failed to update shell profile {}: {}", profile.display(), error))?;
+
+    Ok(Some(profile))
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_user_path(dir: &Path) -> Result<bool, String> {
+    let target = dir.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$target = '{target}'; \
+         $current = [Environment]::GetEnvironmentVariable('Path','User'); \
+         $entries = @(); \
+         if ($current) {{ $entries = $current -split ';' | Where-Object {{ $_ -and $_.Trim() -ne '' }} }}; \
+         if ($entries -contains $target) {{ exit 0 }}; \
+         $entries += $target; \
+         [Environment]::SetEnvironmentVariable('Path', (($entries | Select-Object -Unique) -join ';'), 'User')"
+    );
+
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|error| format!("Failed to launch PowerShell to update PATH: {}", error))?;
+
+    Ok(output.status.success())
+}
+
+fn host_cli_install_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return dirs::data_local_dir().map(|dir| dir.join("Companion Hub").join("bin"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let home = dirs::home_dir()?;
+        let preferred = [home.join(".local/bin"), home.join("bin"), PathBuf::from("/usr/local/bin")];
+        for dir in preferred {
+            if path_contains_dir(&dir) {
+                return Some(dir);
+            }
+        }
+        return Some(home.join(".local/bin"));
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
+    let candidates = bundled_cli_resource_candidates(resource_dir);
+    let Some(source) = candidates.into_iter().find(|path| path.exists()) else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            &format!(
+                "Bundled Companion Hub CLI resource not found. Looked for {}.",
+                bundled_cli_resource_candidates(resource_dir)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        return;
+    };
+
+    let Some(install_dir) = host_cli_install_dir() else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            "Unable to resolve a host install directory for the bundled Companion Hub CLI.",
+        );
+        return;
+    };
+
+    if let Err(error) = std::fs::create_dir_all(&install_dir) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            &format!(
+                "Failed to create Companion Hub CLI install directory {}: {}",
+                install_dir.display(),
+                error
+            ),
+        );
+        return;
+    }
+
+    let installed_path = install_dir.join(HOST_CLI_FILENAME);
+    if let Err(error) = std::fs::copy(&source, &installed_path) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            &format!(
+                "Failed to install bundled Companion Hub CLI from {} to {}: {}",
+                source.display(),
+                installed_path.display(),
+                error
+            ),
+        );
+        return;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let _ = std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    let mut notes = vec![format!(
+        "Bundled Companion Hub CLI installed to {}",
+        installed_path.display()
+    )];
+
+    if !path_contains_dir(&install_dir) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        match append_unix_profile_path(&install_dir) {
+            Ok(Some(profile)) => notes.push(format!(
+                "Added {} to PATH in {} (open a new shell to use `cihub`).",
+                install_dir.display(),
+                profile.display()
+            )),
+            Ok(None) => notes.push(format!(
+                "{} is not on PATH yet. Add it manually to use `cihub`.",
+                install_dir.display()
+            )),
+            Err(error) => notes.push(format!(
+                "Failed to update shell profile for PATH export: {}",
+                error
+            )),
+        }
+
+        #[cfg(target_os = "windows")]
+        match set_windows_user_path(&install_dir) {
+            Ok(true) => notes.push(format!(
+                "Added {} to the Windows user PATH (open a new terminal to use `cihub`).",
+                install_dir.display()
+            )),
+            Ok(false) => notes.push(format!(
+                "Could not confirm PATH update for {}. You may need to add it manually.",
+                install_dir.display()
+            )),
+            Err(error) => notes.push(format!("Failed to update Windows user PATH: {}", error)),
+        }
+    } else {
+        notes.push(format!(
+            "{} is already on PATH. `cihub` should be available in new shells.",
+            install_dir.display()
+        ));
+    }
+
+    let _ = append_desktop_log_for(data_dir, "cli", &notes.join(" "));
 }
 
 pub fn hub_env_path_for(data_dir: &Path) -> PathBuf {
@@ -5078,6 +5315,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
             resource_dir.display()
         ),
     );
+    ensure_bundled_cli_available(resource_dir, &data_dir);
 
     // Copy docker-compose.prod.yml from resources
     let compose_candidates = compose_resource_candidates(resource_dir);
