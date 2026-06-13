@@ -4,7 +4,7 @@
   "description": "",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "CI-Commercial-1.0",
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
     "local": "pnpm run dev",

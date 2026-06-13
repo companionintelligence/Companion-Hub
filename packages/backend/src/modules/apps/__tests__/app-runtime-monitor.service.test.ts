@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { NotFoundException } from '@nestjs/common';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppRuntimeMonitorService } from '../app-runtime-monitor.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -93,5 +94,11 @@ describe('AppRuntimeMonitorService', () => {
     expect(first.responsive).toBe(false);
     expect(second.responsive).toBe(false);
     expect(appsService.checkAppAvailability).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns not found when the app record is gone', async () => {
+    appsRepository.getAppByUrn.mockResolvedValue(null);
+
+    await expect(service.getAppRuntimeHealth('missing:store' as any)).rejects.toBeInstanceOf(NotFoundException);
   });
 });

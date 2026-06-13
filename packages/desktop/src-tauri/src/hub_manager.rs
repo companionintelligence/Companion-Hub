@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,6 +98,10 @@ const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
+#[cfg(target_os = "windows")]
+const HOST_CLI_FILENAME: &str = "cihub.exe";
+#[cfg(not(target_os = "windows"))]
+const HOST_CLI_FILENAME: &str = "cihub";
 const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &["docker-config.json", ".internal/docker-config.json"];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
@@ -1124,7 +1129,11 @@ fn docker_desktop_settings_path() -> Option<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_docker_desktop_u64(settings: &serde_json::Value, key: &str, legacy_key: &str) -> Option<u64> {
+fn read_docker_desktop_u64(
+    settings: &serde_json::Value,
+    key: &str,
+    legacy_key: &str,
+) -> Option<u64> {
     settings
         .get(key)
         .or_else(|| settings.get(legacy_key))
@@ -1233,7 +1242,9 @@ fn ensure_docker_desktop_vm_resources(data_dir: &Path, platform: &str, host: Hos
             "memoryMiB".to_string(),
             serde_json::Value::Number(serde_json::Number::from(recommended_ram_mb)),
         );
-        changes.push(format!("memoryMiB {current_ram_mib} → {recommended_ram_mb}"));
+        changes.push(format!(
+            "memoryMiB {current_ram_mib} → {recommended_ram_mb}"
+        ));
     }
     if raise_cpus {
         obj.insert(
@@ -1886,6 +1897,296 @@ pub fn get_hub_status() -> HubStatus {
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("companion-hub")
+}
+
+fn bundled_cli_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        resource_dir.join(HOST_CLI_FILENAME),
+        resource_dir.join("resources").join(HOST_CLI_FILENAME),
+        std::env::current_exe()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("resources")
+            .join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/lib/companion-hub/resources").join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/lib/Companion Hub/resources").join(HOST_CLI_FILENAME),
+        PathBuf::from("/usr/share/companion-hub").join(HOST_CLI_FILENAME),
+    ]
+}
+
+fn path_contains_dir(dir: &Path) -> bool {
+    std::env::var_os("PATH")
+        .map(|value| {
+            std::env::split_paths(&value).any(|entry| paths_match_by_components(&entry, dir))
+        })
+        .unwrap_or(false)
+}
+
+fn paths_match_by_components(left: &Path, right: &Path) -> bool {
+    left.components().eq(right.components())
+}
+
+fn files_match(source: &Path, installed: &Path) -> std::io::Result<bool> {
+    let source_metadata = std::fs::metadata(source)?;
+    let installed_metadata = std::fs::metadata(installed)?;
+    if !source_metadata.is_file() || !installed_metadata.is_file() {
+        return Ok(false);
+    }
+    if source_metadata.len() != installed_metadata.len() {
+        return Ok(false);
+    }
+    Ok(std::fs::read(source)? == std::fs::read(installed)?)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn preferred_unix_profile() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let shell = std::env::var("SHELL").ok().unwrap_or_default();
+    Some(unix_profile_for_shell(&home, &shell))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn unix_profile_for_shell(home: &Path, shell: &str) -> PathBuf {
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+
+    match shell_name {
+        "zsh" => home.join(".zshrc"),
+        #[cfg(target_os = "macos")]
+        "bash" => home.join(".bash_profile"),
+        #[cfg(target_os = "linux")]
+        "bash" => home.join(".bashrc"),
+        _ => home.join(".profile"),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn append_unix_profile_path(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let profile = match preferred_unix_profile() {
+        Some(profile) => profile,
+        None => return Ok(None),
+    };
+
+    let line = format!("export PATH=\"{}:$PATH\"", dir.display());
+    let marker = "# Companion Hub CLI";
+    let current = std::fs::read_to_string(&profile).unwrap_or_default();
+    if current.contains(&line) {
+        return Ok(Some(profile));
+    }
+
+    if let Some(parent) = profile.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to prepare shell profile directory {}: {}",
+                parent.display(),
+                error
+            )
+        })?;
+    }
+
+    let prefix = if current.is_empty() || current.ends_with('\n') {
+        String::new()
+    } else {
+        "\n".to_string()
+    };
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)
+        .map_err(|error| {
+            format!(
+                "Failed to open shell profile {}: {}",
+                profile.display(),
+                error
+            )
+        })?;
+    use std::io::Write;
+    file.write_all(format!("{prefix}{marker}\n{line}\n").as_bytes())
+        .map_err(|error| {
+            format!(
+                "Failed to update shell profile {}: {}",
+                profile.display(),
+                error
+            )
+        })?;
+
+    Ok(Some(profile))
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_user_path(dir: &Path) -> Result<bool, String> {
+    let target = dir.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$target = '{target}'; \
+         $current = [Environment]::GetEnvironmentVariable('Path','User'); \
+         $entries = @(); \
+         if ($current) {{ $entries = $current -split ';' | Where-Object {{ $_ -and $_.Trim() -ne '' }} }}; \
+         if ($entries -contains $target) {{ exit 0 }}; \
+         $entries += $target; \
+         [Environment]::SetEnvironmentVariable('Path', (($entries | Select-Object -Unique) -join ';'), 'User')"
+    );
+
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(|error| format!("Failed to launch PowerShell to update PATH: {}", error))?;
+
+    Ok(output.status.success())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn preferred_unix_cli_install_dir(home: &Path) -> PathBuf {
+    let local_bin = home.join(".local/bin");
+    let home_bin = home.join("bin");
+
+    if path_contains_dir(&local_bin) {
+        return local_bin;
+    }
+
+    if path_contains_dir(&home_bin) {
+        return home_bin;
+    }
+
+    if home_bin.exists() && !local_bin.exists() {
+        return home_bin;
+    }
+
+    local_bin
+}
+
+fn host_cli_install_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        return dirs::data_local_dir().map(|dir| dir.join("Companion Hub").join("bin"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let home = dirs::home_dir()?;
+        return Some(preferred_unix_cli_install_dir(&home));
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
+    let candidates = bundled_cli_resource_candidates(resource_dir);
+    let Some(source) = candidates.into_iter().find(|path| path.exists()) else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            &format!(
+                "Bundled Companion Hub CLI resource not found. Looked for {}.",
+                bundled_cli_resource_candidates(resource_dir)
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        return;
+    };
+
+    let Some(install_dir) = host_cli_install_dir() else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            "Unable to resolve a host install directory for the bundled Companion Hub CLI.",
+        );
+        return;
+    };
+
+    if let Err(error) = std::fs::create_dir_all(&install_dir) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "cli",
+            &format!(
+                "Failed to create Companion Hub CLI install directory {}: {}",
+                install_dir.display(),
+                error
+            ),
+        );
+        return;
+    }
+
+    let installed_path = install_dir.join(HOST_CLI_FILENAME);
+    let already_current = files_match(&source, &installed_path).unwrap_or(false);
+    if !already_current {
+        if let Err(error) = std::fs::copy(&source, &installed_path) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "cli",
+                &format!(
+                    "Failed to install bundled Companion Hub CLI from {} to {}: {}",
+                    source.display(),
+                    installed_path.display(),
+                    error
+                ),
+            );
+            return;
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let _ = std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    let mut notes = vec![if already_current {
+        format!(
+            "Bundled Companion Hub CLI at {} is already current",
+            installed_path.display()
+        )
+    } else {
+        format!(
+            "Bundled Companion Hub CLI installed to {}",
+            installed_path.display()
+        )
+    }];
+
+    if !path_contains_dir(&install_dir) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        match append_unix_profile_path(&install_dir) {
+            Ok(Some(profile)) => notes.push(format!(
+                "Added {} to PATH in {} (open a new shell to use `cihub`).",
+                install_dir.display(),
+                profile.display()
+            )),
+            Ok(None) => notes.push(format!(
+                "{} is not on PATH yet. Add it manually to use `cihub`.",
+                install_dir.display()
+            )),
+            Err(error) => notes.push(format!(
+                "Failed to update shell profile for PATH export: {}",
+                error
+            )),
+        }
+
+        #[cfg(target_os = "windows")]
+        match set_windows_user_path(&install_dir) {
+            Ok(true) => notes.push(format!(
+                "Added {} to the Windows user PATH (open a new terminal to use `cihub`).",
+                install_dir.display()
+            )),
+            Ok(false) => notes.push(format!(
+                "Could not confirm PATH update for {}. You may need to add it manually.",
+                install_dir.display()
+            )),
+            Err(error) => notes.push(format!("Failed to update Windows user PATH: {}", error)),
+        }
+    } else {
+        notes.push(format!(
+            "{} is already on PATH. `cihub` should be available in new shells.",
+            install_dir.display()
+        ));
+    }
+
+    let _ = append_desktop_log_for(data_dir, "cli", &notes.join(" "));
 }
 
 pub fn hub_env_path_for(data_dir: &Path) -> PathBuf {
@@ -5078,6 +5379,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
             resource_dir.display()
         ),
     );
+    ensure_bundled_cli_available(resource_dir, &data_dir);
 
     // Copy docker-compose.prod.yml from resources
     let compose_candidates = compose_resource_candidates(resource_dir);
@@ -5509,10 +5811,8 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
-    let launch_command = docker_desktop_windows_outer_launch_command(
-        &script.path().to_string_lossy(),
-        &username,
-    );
+    let launch_command =
+        docker_desktop_windows_outer_launch_command(&script.path().to_string_lossy(), &username);
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
@@ -6511,7 +6811,8 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
         Ok(DockerInstallResult {
             state: DockerInstallState::Completed,
             detail: Some(
-                "Colima installed and the Docker Engine is running (context \"colima\").".to_string(),
+                "Colima installed and the Docker Engine is running (context \"colima\")."
+                    .to_string(),
             ),
         })
     } else {
@@ -6744,32 +7045,36 @@ mod tests {
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_outer_launch_command;
     #[cfg(any(test, target_os = "linux"))]
     use super::ollama_linux_install_script;
     #[cfg(any(test, target_os = "macos"))]
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
-    #[cfg(any(test, target_os = "macos"))]
-    use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(any(test, target_os = "windows"))]
     use super::wsl2_engine_windows_install_script;
-    #[cfg(any(test, target_os = "windows"))]
-    use super::docker_desktop_windows_outer_launch_command;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::preferred_unix_cli_install_dir;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::unix_profile_for_shell;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
-        format_command_output, generate_container_docker_config, host_container_uid_gid,
-        host_docker_socket_path, is_container_name_conflict, is_host_port_bind_conflict,
-        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
-        managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, seeded_traefik_config_contents,
-        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
-        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
-        TRAEFIK_TLS_DIR,
+        files_match, format_command_output, generate_container_docker_config,
+        host_container_uid_gid, host_docker_socket_path, is_container_name_conflict,
+        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        merge_compose_profiles, parse_container_ids, parse_docker_socket_uid_gid,
+        paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
+    #[cfg(any(test, target_os = "macos"))]
+    use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(target_os = "linux")]
     use super::{
         current_docker_context_name, linux_docker_host_for_context_or_local_sockets,
@@ -6777,9 +7082,7 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(target_os = "linux")]
-    use std::path::Path;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -7237,7 +7540,9 @@ mod tests {
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("ditto"));
         assert!(script.contains("/Applications/Ollama.app"));
-        assert!(script.contains("ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"));
+        assert!(script.contains(
+            "ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"
+        ));
     }
 
     #[test]
@@ -7562,6 +7867,74 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert!(parsed.is_object());
         assert!(parsed.get("credsStore").is_none());
+    }
+
+    #[test]
+    fn matches_paths_by_components() {
+        assert!(paths_match_by_components(
+            Path::new("/usr/local/bin/"),
+            Path::new("/usr/local/bin")
+        ));
+        assert!(!paths_match_by_components(
+            Path::new("/usr/local/bin"),
+            Path::new("/usr/local/share")
+        ));
+    }
+
+    #[test]
+    fn matches_files_by_contents() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let source = tempdir.path().join("source.bin");
+        let installed = tempdir.path().join("installed.bin");
+        std::fs::write(&source, b"same-bytes").expect("write source");
+        std::fs::write(&installed, b"same-bytes").expect("write installed");
+
+        assert!(files_match(&source, &installed).expect("compare files"));
+    }
+
+    #[test]
+    fn detects_when_installed_file_differs() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let source = tempdir.path().join("source.bin");
+        let installed = tempdir.path().join("installed.bin");
+        std::fs::write(&source, b"same-size").expect("write source");
+        std::fs::write(&installed, b"diffsize!").expect("write installed");
+
+        assert!(!files_match(&source, &installed).expect("compare files"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn prefers_user_bin_dir_even_when_system_bin_is_on_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let home = tempdir.path();
+        let original_path = std::env::var_os("PATH");
+
+        unsafe {
+            std::env::set_var("PATH", "/usr/local/bin");
+        }
+
+        let selected = preferred_unix_cli_install_dir(home);
+
+        match original_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert_eq!(selected, home.join(".local/bin"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn chooses_platform_correct_bash_profile() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let selected = unix_profile_for_shell(tempdir.path(), "/bin/bash");
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(selected, tempdir.path().join(".bash_profile"));
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(selected, tempdir.path().join(".bashrc"));
     }
 
     #[test]

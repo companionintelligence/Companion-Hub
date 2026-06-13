@@ -34,6 +34,7 @@ export default () => {
     ...getAppOptions({ path: { urn: appUrn } }),
     staleTime: 30_000,
   });
+  const runtimeHealthEnabled = Boolean(getApp.data?.app && getApp.data.app.status !== 'uninstalling');
 
   const imageSize = useQuery({
     queryKey: ['app-image-size', appUrn],
@@ -49,7 +50,7 @@ export default () => {
     queryKey: ['app-runtime-health', appUrn],
     queryFn: () => fetchAppRuntimeHealth(appUrn),
     refetchInterval: 15_000,
-    enabled: Boolean(getApp.data?.app),
+    enabled: runtimeHealthEnabled,
   });
 
   const { userSettings } = useAppContext();

@@ -2,7 +2,7 @@
   "name": "desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "Companion Hub Desktop — Tauri v2 native wrapper",
+  "description": "Desktop app for managing and accessing the Companion Intelligence Hub",
   "scripts": {
     "dev": "cargo tauri dev",
     "build": "node scripts/build-desktop.cjs",

@@ -102,9 +102,18 @@ function resolveOutputPath(target, outdir = DEFAULT_OUTDIR) {
   return path.join(outdir, artifactFilename(target));
 }
 
+function requireOptionValue(argv, index, optionName) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${optionName} requires a path value`);
+  }
+  return value;
+}
+
 function parseArgs(argv) {
   let target;
   let outdir = DEFAULT_OUTDIR;
+  let outfile;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -118,12 +127,29 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === '--outdir') {
-      outdir = path.resolve(process.cwd(), argv[index + 1]);
+      outdir = path.resolve(process.cwd(), requireOptionValue(argv, index, '--outdir'));
       index += 1;
       continue;
     }
     if (arg.startsWith('--outdir=')) {
-      outdir = path.resolve(process.cwd(), arg.slice('--outdir='.length));
+      const value = arg.slice('--outdir='.length);
+      if (!value) {
+        throw new Error('--outdir requires a path value');
+      }
+      outdir = path.resolve(process.cwd(), value);
+      continue;
+    }
+    if (arg === '--outfile') {
+      outfile = path.resolve(process.cwd(), requireOptionValue(argv, index, '--outfile'));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--outfile=')) {
+      const value = arg.slice('--outfile='.length);
+      if (!value) {
+        throw new Error('--outfile requires a path value');
+      }
+      outfile = path.resolve(process.cwd(), value);
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -132,29 +158,35 @@ function parseArgs(argv) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { target, outdir };
+  return { target, outdir, outfile };
 }
 
 function printHelp() {
   console.log(`Build a standalone Companion Hub CLI binary with Bun.
 
 Usage:
-  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>]
+  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>] [--outfile <file>]
+
+Options:
+  --target <rust-target|bun-target>  Build for a specific standalone target
+  --outdir <dir>                     Write the default artifact name into this directory
+  --outfile <file>                  Write the binary to an explicit output path
 
 Examples:
   node scripts/build-standalone-cli.cjs
   node scripts/build-standalone-cli.cjs --target x86_64-unknown-linux-gnu
   node scripts/build-standalone-cli.cjs --target bun-darwin-arm64 --outdir packages/desktop/src-tauri/resources/cli
+  node scripts/build-standalone-cli.cjs --outfile packages/desktop/src-tauri/resources/cihub
 `);
 }
 
 function buildStandaloneCli(options = {}) {
   const target = resolveStandaloneTarget(options.target);
   const outdir = options.outdir || DEFAULT_OUTDIR;
-  const outfile = resolveOutputPath(target, outdir);
+  const outfile = options.outfile || resolveOutputPath(target, outdir);
   const version = readPackageVersion();
 
-  mkdirSync(outdir, { recursive: true });
+  mkdirSync(path.dirname(outfile), { recursive: true });
   if (existsSync(outfile)) {
     rmSync(outfile, { force: true });
   }

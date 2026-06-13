@@ -3,6 +3,8 @@
 interface ImportMetaEnv {
   /** Injected at build time from `CI_CLOUD_URL` (see `vite.config.ts`). */
   readonly CI_CLOUD_URL: string;
+  /** Injected at build time from `CI_HUB_VERSION` (see `vite.config.ts`). */
+  readonly CI_HUB_VERSION: string;
   /**
    * Injected at build time from `CI_HUB_ENVIRONMENT` (see `vite.config.ts`).
    * `"production"` in release builds; empty string in dev/local builds.

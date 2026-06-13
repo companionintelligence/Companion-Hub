@@ -2,7 +2,7 @@
   "version": "0.2.4",
   "description": "AI-powered companion intelligence hub",
   "homepage": "https://github.com/companionintelligence/CI-Hub",
-  "license": "AGPL-3.0-only",
+  "license": "CI-Commercial-1.0",
   "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64-setup.exe",
   "hash": "TODO_SHA256_NSIS_EXE",
   "installer": {

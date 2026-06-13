@@ -32,7 +32,11 @@ EOF
       companion intelligence ecosystem.
     '';
     homepage = "https://github.com/companionintelligence/CI-Hub";
-    license = licenses.agpl3Only;
+    license = {
+      shortName = "CI-Commercial-1.0";
+      fullName = "Commercial Standard License";
+      free = false;
+    };
     platforms = [ "x86_64-linux" ];
     maintainers = [];
     mainProgram = "companion-hub";

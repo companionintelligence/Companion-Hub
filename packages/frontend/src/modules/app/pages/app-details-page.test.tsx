@@ -104,4 +104,36 @@ describe('AppDetailsPage', () => {
 
     expect(screen.getByRole('img', { name: 'Test App' })).toHaveAttribute('src', '/app-not-found.jpg');
   });
+
+  it('disables runtime-health polling while an app is uninstalling', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: {
+          info: {
+            urn: 'test-app:community',
+            name: 'Test App',
+            author: 'CI',
+            categories: ['utilities'],
+          },
+          app: { status: 'uninstalling' },
+          metadata: {},
+        },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(useQuery).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        queryKey: ['app-runtime-health', 'test-app:community'],
+        enabled: false,
+      }),
+    );
+  });
 });

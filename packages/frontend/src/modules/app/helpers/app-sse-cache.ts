@@ -1,3 +1,4 @@
+import type { GetAppDto } from '@/api-client';
 import { getAppQueryKey, getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
@@ -39,9 +40,28 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);
 
+function runtimeHealthQueryKey(appUrn: string) {
+  return ['app-runtime-health', appUrn];
+}
+
 function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
   void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: appUrn } }) });
+}
+
+function clearUninstalledAppCaches(queryClient: QueryClient, appUrn: string) {
+  queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) => {
+    if (!current) {
+      return current;
+    }
+
+    return {
+      ...current,
+      app: null,
+    };
+  });
+  void queryClient.cancelQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
+  queryClient.removeQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
 }
 
 function updateInstallErrorCache(queryClient: QueryClient, appUrn: string, error: string | undefined, appStatus?: string) {
@@ -87,6 +107,14 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   if (event === 'install_success') {
     queryClient.setQueryData(['app-install-error', urn], null);
     updateInstallationProgress(urn, null);
+    invalidateAppQueries(queryClient, appUrn);
+    return;
+  }
+
+  if (event === 'uninstall_success') {
+    queryClient.setQueryData(['app-install-error', urn], null);
+    updateInstallationProgress(urn, null);
+    clearUninstalledAppCaches(queryClient, appUrn);
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
