@@ -1,9 +1,13 @@
 [package]
 name = "ci-os-hub-desktop"
 version = "0.1.0"
-description = "Companion Hub Desktop — native wrapper for the Companion Intelligence Hub"
+description = "Desktop app for managing and accessing the Companion Intelligence Hub"
 authors = ["Companion Intelligence"]
 edition = "2021"
+license = "CI-Commercial-1.0"
+readme = "../README.md"
+homepage = "https://ci.computer"
+repository = "https://github.com/companionintelligence"
 
 [lib]
 name = "ci_os_hub_desktop_lib"
