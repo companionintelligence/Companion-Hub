@@ -420,119 +420,160 @@ pub fn run() {
                 return Ok(());
             }
 
-            // Hash-based reconciliation: start/restart when containers are missing,
-            // configuration changed, or the Traefik runtime preflight changed mounted
-            // state and needs a recreate. Respects user intent as much as possible
-            // while still healing poisoned bind mounts on upgrade/relaunch.
-            if hub_manager::is_docker_available() {
-                let config_hash =
-                    hub_manager::compute_config_hash(&compose_path, &env_path);
-                let hash_path = data_dir.join(".config-hash");
-                let saved_hash = std::fs::read_to_string(&hash_path).ok();
-                let containers_exist = hub_manager::hub_containers_exist();
-                let traefik_recreate_required = traefik_preflight.changed
-                    || hub_manager::is_traefik_recreate_required(&data_dir);
-                // Respect the user's explicit decision to stop the Hub: if they clicked
-                // "Stop Hub" last time, don't auto-restart on the next launch until they
-                // explicitly click "Start Hub" again.
-                let user_stopped = hub_manager::is_user_stopped(&data_dir);
+            // Defer Docker probing and auto-start reconciliation until after setup returns
+            // so the main window can appear quickly. These checks can take noticeable
+            // time on cold desktop launches, especially while Docker Desktop or the
+            // engine is still waking up.
+            {
+                let compose = compose_path.clone();
+                let env = env_path.clone();
+                let data = data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    let compose_for_decision = compose.clone();
+                    let env_for_decision = env.clone();
+                    let data_for_decision = data.clone();
 
-                let should_start = if user_stopped {
-                    false // User explicitly stopped — honour the decision across relaunches
-                } else if !containers_exist {
-                    true // First launch or containers were removed
-                } else if traefik_recreate_required {
-                    true // Runtime state changed and Traefik must be recreated before reuse
-                } else if saved_hash.as_deref() != Some(&config_hash) {
-                    true // Config changed (upgrade, env fix, etc.)
-                } else {
-                    false // Containers exist, config unchanged, no runtime repair pending — do nothing
-                };
+                    let decision = tokio::task::spawn_blocking(move || {
+                        if !hub_manager::is_docker_available() {
+                            return Ok::<_, String>(None);
+                        }
 
-                let reason = if user_stopped {
-                    "user intentionally stopped the Hub — respecting decision across relaunch"
-                        .to_string()
-                } else if !containers_exist {
-                    "containers are missing".to_string()
-                } else if traefik_recreate_required {
-                    "Traefik runtime preflight changed mounted state and requires container recreation"
-                        .to_string()
-                } else if saved_hash.as_deref() != Some(&config_hash) {
-                    "configuration hash changed".to_string()
-                } else {
-                    "containers exist, configuration is unchanged, and no runtime repair is pending"
-                        .to_string()
-                };
-                let _ = hub_manager::append_desktop_log_for(
-                    &data_dir,
-                    "setup",
-                    &format!(
-                        "Auto-start decision: should_start={} ({})",
-                        should_start, reason
-                    ),
-                );
+                        let config_hash =
+                            hub_manager::compute_config_hash(&compose_for_decision, &env_for_decision);
+                        let hash_path = data_for_decision.join(".config-hash");
+                        let saved_hash = std::fs::read_to_string(&hash_path).ok();
+                        let containers_exist = hub_manager::hub_containers_exist();
+                        let traefik_recreate_required = traefik_preflight.changed
+                            || hub_manager::is_traefik_recreate_required(&data_for_decision);
+                        // Respect the user's explicit decision to stop the Hub: if they clicked
+                        // "Stop Hub" last time, don't auto-restart on the next launch until they
+                        // explicitly click "Start Hub" again.
+                        let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
 
-                if should_start {
-                    // Pre-cleanup: remove stale containers from a previous install
-                    // before attempting compose up.  This prevents "container name
-                    // already in use" errors after an uninstall/reinstall cycle.
-                    if let Err(err) = hub_manager::cleanup_stale_project_containers(
-                        &compose_path,
-                        &env_path,
-                        &data_dir,
-                    ) {
-                        let _ = hub_manager::append_desktop_log_for(
-                            &data_dir,
-                            "setup",
-                            &format!("Pre-start cleanup failed (non-fatal): {}", err),
-                        );
-                    }
+                        let should_start = if user_stopped {
+                            false
+                        } else if !containers_exist {
+                            true
+                        } else if traefik_recreate_required {
+                            true
+                        } else if saved_hash.as_deref() != Some(&config_hash) {
+                            true
+                        } else {
+                            false
+                        };
 
-                    let compose = compose_path;
-                    let env = env_path;
-                    let data = data_dir;
-                    let data_for_log = data.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            hub_manager::start_hub(&compose, &env, &data)
-                        })
-                        .await;
-                        match result {
-                            Ok(Ok(message)) => {
-                                let _ = hub_manager::append_desktop_log_for(
-                                    &data_for_log,
-                                    "setup",
-                                    &message,
-                                );
-                            }
-                            Ok(Err(error)) => {
-                                let _ = hub_manager::append_desktop_log_for(
-                                    &data_for_log,
-                                    "setup",
-                                    &format!("Auto-start failed: {}", error),
-                                );
-                            }
-                            Err(join_err) => {
-                                let msg = if join_err.is_panic() {
-                                    format!("start_hub task panicked: {}", join_err)
-                                } else {
-                                    format!("start_hub task was cancelled: {}", join_err)
-                                };
-                                let _ = hub_manager::append_desktop_log_for(
-                                    &data_for_log,
-                                    "setup",
-                                    &msg,
-                                );
+                        let reason = if user_stopped {
+                            "user intentionally stopped the Hub — respecting decision across relaunch"
+                                .to_string()
+                        } else if !containers_exist {
+                            "containers are missing".to_string()
+                        } else if traefik_recreate_required {
+                            "Traefik runtime preflight changed mounted state and requires container recreation"
+                                .to_string()
+                        } else if saved_hash.as_deref() != Some(&config_hash) {
+                            "configuration hash changed".to_string()
+                        } else {
+                            "containers exist, configuration is unchanged, and no runtime repair is pending"
+                                .to_string()
+                        };
+
+                        Ok(Some((should_start, reason)))
+                    })
+                    .await;
+
+                    match decision {
+                        Ok(Ok(Some((should_start, reason)))) => {
+                            let _ = hub_manager::append_desktop_log_for(
+                                &data,
+                                "setup",
+                                &format!(
+                                    "Auto-start decision: should_start={} ({})",
+                                    should_start, reason
+                                ),
+                            );
+
+                            if should_start {
+                                // Pre-cleanup: remove stale containers from a previous install
+                                // before attempting compose up. This prevents "container name
+                                // already in use" errors after an uninstall/reinstall cycle.
+                                if let Err(err) = hub_manager::cleanup_stale_project_containers(
+                                    &compose,
+                                    &env,
+                                    &data,
+                                ) {
+                                    let _ = hub_manager::append_desktop_log_for(
+                                        &data,
+                                        "setup",
+                                        &format!("Pre-start cleanup failed (non-fatal): {}", err),
+                                    );
+                                }
+
+                                let compose_for_start = compose.clone();
+                                let env_for_start = env.clone();
+                                let data_for_start = data.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    hub_manager::start_hub(
+                                        &compose_for_start,
+                                        &env_for_start,
+                                        &data_for_start,
+                                    )
+                                })
+                                .await;
+
+                                match result {
+                                    Ok(Ok(message)) => {
+                                        let _ = hub_manager::append_desktop_log_for(
+                                            &data,
+                                            "setup",
+                                            &message,
+                                        );
+                                    }
+                                    Ok(Err(error)) => {
+                                        let _ = hub_manager::append_desktop_log_for(
+                                            &data,
+                                            "setup",
+                                            &format!("Auto-start failed: {}", error),
+                                        );
+                                    }
+                                    Err(join_err) => {
+                                        let msg = if join_err.is_panic() {
+                                            format!("start_hub task panicked: {}", join_err)
+                                        } else {
+                                            format!("start_hub task was cancelled: {}", join_err)
+                                        };
+                                        let _ = hub_manager::append_desktop_log_for(
+                                            &data,
+                                            "setup",
+                                            &msg,
+                                        );
+                                    }
+                                }
                             }
                         }
-                    });
-                }
-            } else {
-                let _ = hub_manager::append_desktop_log_for(
-                    &data_dir,
-                    "setup",
-                    "Skipping auto-start because Docker is not currently available.",
-                );
+                        Ok(Ok(None)) => {
+                            let _ = hub_manager::append_desktop_log_for(
+                                &data,
+                                "setup",
+                                "Skipping auto-start because Docker is not currently available.",
+                            );
+                        }
+                        Ok(Err(error)) => {
+                            let _ = hub_manager::append_desktop_log_for(
+                                &data,
+                                "setup",
+                                &format!("Auto-start decision failed: {}", error),
+                            );
+                        }
+                        Err(join_err) => {
+                            let msg = if join_err.is_panic() {
+                                format!("auto-start decision task panicked: {}", join_err)
+                            } else {
+                                format!("auto-start decision task was cancelled: {}", join_err)
+                            };
+                            let _ = hub_manager::append_desktop_log_for(&data, "setup", &msg);
+                        }
+                    }
+                });
             }
 
             let app_handle = app.handle().clone();
