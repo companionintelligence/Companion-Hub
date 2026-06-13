@@ -64,6 +64,7 @@ Keep engineering-task scripts such as:
 - `local`
 - `dev:app`
 - `dev:desktop`
+- `local:desktop`
 - `build`
 - `bundle`
 - `tsc`

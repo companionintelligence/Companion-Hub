@@ -178,7 +178,8 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm run build` | Build all packages via Turborepo |
 | `pnpm run test` | Unit tests |
 | `pnpm test:e2e` | Playwright end-to-end tests |
-| `pnpm dev:desktop` | Launch Tauri desktop app in dev mode |
+| `pnpm run dev:desktop` | Launch Tauri against the `.env.dev` appliance stack |
+| `pnpm run local:desktop` | Launch Tauri against the local source-dev frontend/backend |
 
 ### Uninstall Cleanup Behavior
 
