@@ -1,0 +1,47 @@
+import { describe, expect, it } from 'vitest';
+
+const { DEFAULT_OUTDIR, artifactFilename, detectHostRustTarget, resolveOutputPath, resolveStandaloneTarget } =
+  require('../build-standalone-cli.cjs') as {
+    DEFAULT_OUTDIR: string;
+    artifactFilename: (target: { platformKey: string; archKey: string; extension: string }) => string;
+    detectHostRustTarget: () => string;
+    resolveOutputPath: (
+      target: {
+        platformKey: string;
+        archKey: string;
+        extension: string;
+      },
+      outdir?: string,
+    ) => string;
+    resolveStandaloneTarget: (target?: string) => {
+      bunTarget: string;
+      rustTarget: string;
+      platformKey: string;
+      archKey: string;
+      extension: string;
+    };
+  };
+
+describe('build-standalone-cli target mapping', () => {
+  it('maps Linux x64 rust targets to a stable artifact name and baseline Bun target', () => {
+    const target = resolveStandaloneTarget('x86_64-unknown-linux-gnu');
+    expect(target.bunTarget).toBe('bun-linux-x64-baseline');
+    expect(artifactFilename(target)).toBe('cihub-linux-x64');
+  });
+
+  it('keeps artifact names stable when a direct Bun target is supplied', () => {
+    const target = resolveStandaloneTarget('bun-windows-x64-modern');
+    expect(target.rustTarget).toBe('x86_64-pc-windows-msvc');
+    expect(artifactFilename(target)).toBe('cihub-windows-x64.exe');
+  });
+
+  it('builds output paths under dist/cli by default', () => {
+    const target = resolveStandaloneTarget('aarch64-apple-darwin');
+    expect(resolveOutputPath(target, DEFAULT_OUTDIR)).toBe(`${DEFAULT_OUTDIR}/cihub-macos-arm64`);
+  });
+
+  it('detects a supported host target on this machine', () => {
+    const hostTarget = detectHostRustTarget();
+    expect(resolveStandaloneTarget(hostTarget).rustTarget).toBe(hostTarget);
+  });
+});

@@ -55,15 +55,17 @@ const createMockService = () => {
   const getAppMock = vi.fn().mockResolvedValue({ app: mockApp, info: mockInfo });
   const getConfigMock = vi.fn().mockReturnValue(mockConfig);
   const getDeviceRegMock = vi.fn().mockResolvedValue(mockOrg);
+  const moduleRefMock = { get: vi.fn().mockReturnValue({ getTunnelToken: () => 'token' }) };
 
   // Assign mocked private dependencies
   (service as any).configurationService = { getConfig: getConfigMock };
   (service as any).registrationService = { getDeviceRegistrationInfo: getDeviceRegMock };
+  (service as any).moduleRef = moduleRefMock;
 
   // Override getApp
   (service as any).getApp = getAppMock;
 
-  return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock };
+  return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock, moduleRefMock };
 };
 
 describe('AppsService.checkAppAvailability', () => {
@@ -149,6 +151,19 @@ describe('AppsService.checkAppAvailability', () => {
 
     expect(result.available).toBe(true);
     expect(result.appUrl).toBe('https://myapp-device1-myorg.example.com');
+  });
+
+  it('cloudflare mode without tunnel token falls back to local app URL when a host port exists', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = 'myapp';
+    ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.stage).toBe('ready');
+    expect(result.appUrl).toBe('http://192.168.1.100:8080');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
   it('cloudflare mode falls back to appName-storeSlug when localSubdomain is missing', async () => {

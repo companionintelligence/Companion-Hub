@@ -27,10 +27,9 @@ export class OllamaInstallerService {
 
   /** Check whether host Ollama is reachable at the configured endpoint. */
   async checkInstallation(): Promise<OllamaInstallStatus> {
-    const endpointUrl = this.ollamaBackend.getBaseUrl();
-
     try {
       const endpointHealth = await this.ollamaBackend.healthCheck();
+      const endpointUrl = this.ollamaBackend.getBaseUrl();
       const ready = endpointHealth.running && endpointHealth.healthy;
       const { bridgeUnreachable, hint } = await this.buildUnreachableHint(ready, endpointHealth.error, endpointUrl);
 
@@ -50,6 +49,7 @@ export class OllamaInstallerService {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[OllamaInstaller] Health check threw unexpectedly: ${msg}`);
+      const endpointUrl = this.ollamaBackend.getBaseUrl();
       const { bridgeUnreachable, hint } = await this.buildUnreachableHint(false, msg, endpointUrl);
       return {
         ready: false,

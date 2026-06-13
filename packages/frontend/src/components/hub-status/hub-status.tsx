@@ -49,7 +49,7 @@ export function reloadCurrentWindow() {
 }
 
 /**
- * Hub listens on 5002 (Docker / typical) or 3000 (some dev setups). We probe both **in parallel**
+ * Hub listens on 5002 (Docker / typical) or 5004 (local source dev). We probe both **in parallel**
  * with one Abort deadline each (`TAURI_HUB_HEALTH_PROBE_MS`), so one poll cycle stays bounded by ~that
  * duration—not twice it as with sequential tries.
  *
@@ -57,7 +57,7 @@ export function reloadCurrentWindow() {
  * fires every 3s; a longer probe deadline would allow overlapping polls when both ports time out.
  */
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
-const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 3000] as const;
+const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 5004] as const;
 /** Parallel probes ⇒ wall-clock ≈ this value; must stay under the poll interval to avoid stacked ticks. */
 const TAURI_HUB_HEALTH_PROBE_MS = 2500;
 

@@ -50,7 +50,7 @@ scene('help', 'cihub --help', [promptLine('cihub --help'), ...capture('cihub --h
 scene('man', 'cihub man', [promptLine('cihub man'), ...capture('cihub man')]);
 
 // 3. config (captured)
-scene('lifecycle', 'cihub config · up · shutdown', [
+scene('lifecycle', 'cihub config · up · down', [
   promptLine('cihub config local'),
   ...capture('cihub config local'),
   EMPTY,
@@ -59,8 +59,8 @@ scene('lifecycle', 'cihub config · up · shutdown', [
   [T('▶ docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d --build', 'dim')],
   [T('Hub stack started.')],
   EMPTY,
-  promptLine('cihub shutdown local'),
-  ...box('Shutting down hub', [[T('Environment: local')]], 'yellow'),
+  promptLine('cihub down local'),
+  ...box('Stopping hub', [[T('Environment: local')]], 'yellow'),
   [T('▶ docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml down', 'dim')],
   [T('Hub stack stopped.')],
 ]);

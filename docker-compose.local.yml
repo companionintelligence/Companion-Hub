@@ -49,6 +49,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
     command: npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     depends_on:
       ci-hub-db:
@@ -98,6 +102,7 @@ services:
     environment:
       LOCAL: true
       NODE_ENV: development
+      HOME: /data/user-config
       ROOT_FOLDER_HOST: ${PWD}/.internal
       DOCKER_CONFIG: /data/.docker
       CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}

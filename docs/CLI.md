@@ -6,12 +6,6 @@ The preferred packaged executable is:
 cihub <command> [args]
 ```
 
-In-repo compatibility alias:
-
-```bash
-pnpm run hub -- <command> [args]
-```
-
 ## Install
 
 ```bash
@@ -34,14 +28,14 @@ Homebrew and other package managers expose the same `cihub` executable on `PATH`
 Use this loop when iterating on CLI/TUI or developer workflow changes:
 
 ```bash
-cihub purge --yes        # clean Docker state + caches
-cihub hot-reload local   # infra + backend/frontend from source
+cihub reset local --yes  # clean local runtime state
+cihub up local           # infra + backend/frontend from source
 cihub wizard             # run the full interactive flow
 pnpm run test:cli        # presentation tests (25 cases)
 ```
 
-- **`cihub purge --yes`** — removes Docker containers/volumes plus CI-Hub entries from `.local`, `.config`, and `.cache` for clean-slate testing.
-- **`cihub hot-reload local`** — brings up infra then starts backend/frontend from source; no Docker rebuild needed.
+- **`cihub reset local --yes`** — removes local runtime state for clean-slate testing.
+- **`cihub up local`** — brings up infra then starts backend/frontend from source; no Docker rebuild needed.
 - **`pnpm run test:cli`** — Vitest suite covering banner, step renderer, FTUE detection, arg validation, all wizard selectors, and help/man output.
 
 ---
@@ -87,7 +81,7 @@ cihub wizard staging  # target a specific environment
 
 ![Screenshot of cihub wizard (FTUE mode)](./images/cli/wizard.svg)
 
-Returning users get the action menu: setup, up, register, config, MCP, shutdown, app-list, purge, hot-reload.
+Returning users get the action menu: setup, up, register, config, MCP, down, app-list, reset, restart.
 
 ### `cihub setup [env]`
 
@@ -114,10 +108,13 @@ cihub register local
 ## Hub lifecycle
 
 ```bash
-cihub up [env] [--detached]   # start the hub stack
-cihub shutdown [env]           # stop the hub stack
-cihub status [env]             # show container health + resolved config
-cihub config [env]             # show resolved config values only
+cihub up [env] [--detached]  # start the hub stack
+cihub down [env]             # stop the hub stack
+cihub restart [env]          # stop then start the target environment
+cihub recreate [env]         # reset runtime state, then start again
+cihub status [env]           # show container health + resolved config
+cihub logs [env] [service]   # stream compose logs
+cihub config [env]           # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
@@ -125,7 +122,7 @@ cihub config [env]             # show resolved config values only
 
 ![Screenshot of cihub status local](./images/cli/status.svg)
 
-![Screenshots of cihub config, cihub up, and cihub shutdown](./images/cli/lifecycle.svg)
+![Screenshots of cihub config, cihub up, and cihub down](./images/cli/lifecycle.svg)
 
 ---
 
@@ -175,16 +172,16 @@ cihub mcp config [env]    # show current MCP settings
 
 ---
 
-## Developer workflow
+## Maintenance
 
 ```bash
-cihub hot-reload [env]   # infra up (detached) + pnpm run dev:app
-cihub purge [--yes]      # full clean: Docker + .internal + XDG config/cache dirs
+cihub doctor [env]         # validate env files, Docker access, and bind mounts
+cihub clean [env] [--yes]  # remove generated host-state files for one environment
+cihub reset [env] [--yes]  # remove runtime state for one environment
+cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 ```
 
-Both commands are available in the wizard's action menu (options 9 and 10).
-
-`purge` validates that XDG environment variables point inside the home directory before deleting anything, and wraps each directory removal in a try/catch — printing a `sudo rm -rf` hint if a root-owned directory can't be removed.
+`reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
 
 ---
 

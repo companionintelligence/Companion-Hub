@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -72,7 +73,7 @@ describe('renderHelp', () => {
     expect(plain).toContain('Hub lifecycle');
     expect(plain).toContain('App lifecycle');
     expect(plain).toContain('MCP');
-    expect(plain).toContain('Developer workflow');
+    expect(plain).toContain('Maintenance');
   });
 
   it('mentions public-web commands', () => {
@@ -86,6 +87,8 @@ describe('renderHelp', () => {
     expect(plain).toContain('app status');
     expect(plain).toContain('app logs');
     expect(plain).toContain('app inspect');
+    expect(plain).toContain('app stop-managed');
+    expect(plain).toContain('app remove-managed');
   });
 
   it('lists the Models section with install/rm', () => {
@@ -99,6 +102,8 @@ describe('renderHelp', () => {
   it('shows the cihub status command', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('cihub status');
+    expect(plain).toContain('cihub down');
+    expect(plain).toContain('cihub doctor');
   });
 
   it('documents cihub update as the host update command', () => {
@@ -123,9 +128,10 @@ describe('renderManPage', () => {
     expect(plain).toContain('On-device testing loop');
   });
 
-  it('mentions pnpm run hub compat command', () => {
+  it('uses the direct cihub synopsis', () => {
     const plain = stripAnsi(renderManPage());
-    expect(plain).toContain('pnpm run hub -- <command> [args]');
+    expect(plain).toContain('cihub <command> [args]');
+    expect(plain).not.toContain('pnpm run hub --');
   });
 });
 
@@ -169,10 +175,38 @@ describe('renderVersion', () => {
     expect(renderVersion()).toContain('cihub');
   });
 
+  it('prefers CIHUB_BUILD_VERSION when provided', () => {
+    const previous = process.env.CIHUB_BUILD_VERSION;
+    process.env.CIHUB_BUILD_VERSION = '9.9.9';
+    try {
+      expect(renderVersion()).toContain('9.9.9');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CIHUB_BUILD_VERSION;
+      } else {
+        process.env.CIHUB_BUILD_VERSION = previous;
+      }
+    }
+  });
+
   it('reads version from package.json', () => {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version?: string };
-    if (pkg.version) {
-      expect(renderVersion()).toContain(pkg.version);
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')) as { version?: string };
+    expect(typeof pkg.version).toBe('string');
+    expect(pkg.version?.length).toBeGreaterThan(0);
+    expect(renderVersion()).toContain(pkg.version as string);
+  });
+
+  it('reads version from the CLI package when cwd is unrelated', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')) as { version?: string };
+    const previousCwd = process.cwd();
+    const tempDir = mkdtempSync(join(tmpdir(), 'cihub-cli-version-'));
+
+    try {
+      process.chdir(tempDir);
+      expect(renderVersion()).toContain(pkg.version as string);
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });
@@ -256,8 +290,9 @@ describe('wizard selections', () => {
     expect(resolveWizardActionInput('1')).toBe('setup');
     expect(resolveWizardActionInput('2')).toBe('up');
     expect(resolveWizardActionInput('5')).toBe('mcp-setup');
-    expect(resolveWizardActionInput('9')).toBe('purge');
-    expect(resolveWizardActionInput('10')).toBe('hot-reload');
+    expect(resolveWizardActionInput('7')).toBe('down');
+    expect(resolveWizardActionInput('9')).toBe('reset');
+    expect(resolveWizardActionInput('10')).toBe('restart');
     expect(resolveWizardActionInput('')).toBe('setup');
   });
 

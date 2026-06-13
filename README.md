@@ -143,40 +143,43 @@ See **[docs/CLI.md](docs/CLI.md)** for the full reference.
 pnpm install
 cp .env.example .env.local
 # Edit .env.local — set ROOT_FOLDER_HOST, JWT_SECRET
-pnpm dev
+pnpm run local
 ```
 
-- **Frontend:** <http://localhost:5173>
-- **Backend API:** <http://localhost:3000>
+- **Frontend:** <http://localhost:5005>
+- **Backend API:** <http://localhost:5004>
 
 Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
 
 | Command | Description |
 |---------|-------------|
-| `pnpm dev` | Start infra + backend + frontend with hot reload |
-| `pnpm start [env]` | Full stack in Docker (attached) |
-| `pnpm start:detached [env]` | Full stack in Docker (background) |
-| `pnpm run hub -- wizard [env]` | Guided first-time setup or action menu |
-| `pnpm run hub -- status [env]` | Show running containers + resolved config |
-| `pnpm run hub -- up [env]` | Start the hub stack |
-| `pnpm run hub -- shutdown [env]` | Stop the hub stack |
-| `pnpm run hub -- setup [env]` | Initialize Traefik and Docker auth config |
-| `pnpm run hub -- register [env]` | Print cloud portal registration URL |
-| `pnpm run hub -- purge [--yes]` | Full clean: Docker + XDG config/cache dirs |
-| `pnpm run hub -- hot-reload [env]` | Infra up + backend/frontend from source |
-| `pnpm run hub -- app status [name]` | Color-coded container health |
-| `pnpm run hub -- app logs <name>` | Stream container logs |
-| `pnpm run hub -- app inspect <name>` | Show container ports, env, mounts |
-| `pnpm run hub -- app list\|add\|edit\|start\|stop\|restart\|delete` | Container lifecycle |
-| `pnpm run hub -- mcp setup\|shutdown\|config [env]` | MCP lifecycle commands |
-| `pnpm run hub -- man` | Manual-style CLI reference |
-| `pnpm run hub -- --help` | Full command reference |
+| `pnpm run local` | Start infra + backend + frontend with hot reload |
+| `pnpm run dev` | Start the `.env.dev` appliance stack in detached mode |
+| `pnpm start dev` | Start the `.env.dev` appliance stack via the shared start entrypoint |
+| `cihub wizard [env]` | Guided first-time setup or action menu |
+| `cihub status [env]` | Show running containers + resolved config |
+| `cihub up [env] [--detached]` | Start the hub stack |
+| `cihub down [env]` | Stop the hub stack |
+| `cihub restart [env]` | Restart the hub stack |
+| `cihub recreate [env] [--detached] [--yes]` | Reset runtime state for the environment, then start again |
+| `cihub setup [env]` | Initialize Traefik and Docker auth config |
+| `cihub register [env]` | Print cloud portal registration URL |
+| `cihub doctor [env]` | Validate Docker, env files, bind mounts, and compose inputs |
+| `cihub reset [env] [--yes]` | Remove runtime state for one environment |
+| `cihub uninstall [--yes]` | Full machine cleanup of CI-Hub runtime state |
+| `cihub app status [name]` | Color-coded container health |
+| `cihub app logs <name>` | Stream container logs |
+| `cihub app inspect <name>` | Show container ports, env, mounts |
+| `cihub app list\|add\|edit\|start\|stop\|restart\|delete` | Container lifecycle |
+| `cihub mcp setup\|shutdown\|config [env]` | MCP lifecycle commands |
+| `cihub man` | Manual-style CLI reference |
+| `cihub --help` | Full command reference |
 | `pnpm run test:cli` | CLI/TUI presentation tests (25 cases) |
 | `pnpm run build` | Build all packages via Turborepo |
 | `pnpm run test` | Unit tests |
 | `pnpm test:e2e` | Playwright end-to-end tests |
-| `pnpm run cleanup` | Tear down containers, remove `.internal/` data |
-| `pnpm dev:desktop` | Launch Tauri desktop app in dev mode |
+| `pnpm run dev:desktop` | Launch Tauri against the `.env.dev` appliance stack |
+| `pnpm run local:desktop` | Launch Tauri against the local source-dev frontend/backend |
 
 ### Uninstall Cleanup Behavior
 
@@ -208,19 +211,19 @@ every update would be needlessly slow). For a full purge of a Scoop install, run
 Developer cleanup remains available via:
 
 ```bash
-pnpm run hub -- purge --yes
-pnpm run cleanup
+cihub reset local --yes
+cihub uninstall --yes
 ```
 
-Warning: cleanup can remove persistent Hub data and Docker volumes (for example, database state).
+Warning: reset and uninstall can remove persistent Hub data and Docker volumes (for example, database state).
 
 Environments: `local` (default), `dev`, `staging`, `prod`.
 
 On-device CLI/TUI iteration loop:
 
 ```bash
-pnpm run hub -- purge --yes
-pnpm run hub -- hot-reload local
+cihub reset local --yes
+cihub up local
 pnpm run test:cli
 ```
 

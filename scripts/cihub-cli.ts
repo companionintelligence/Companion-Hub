@@ -1,19 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
-import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
+import { runHubCleanup } from './hub-cleanup-lib';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
 
-export const allowedModes = ['dev', 'start', 'start:detached'] as const;
+declare const CIHUB_BUILD_VERSION: string | undefined;
+
 export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
 
-export type StartMode = (typeof allowedModes)[number];
 export type HubEnv = (typeof allowedEnvs)[number];
+type StartMode = 'local-dev' | 'attached' | 'detached';
 
 type Tone = 'green' | 'cyan' | 'yellow' | 'red' | 'dim' | 'magenta';
 export type StepStatus = 'pending' | 'active' | 'done' | 'fail';
@@ -41,8 +42,9 @@ type CommandEntry = {
 };
 
 const BASE_COMMAND = 'cihub';
-const COMPAT_COMMAND = 'pnpm run hub --';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
+const LOCAL_DEV_BACKEND_PORT = '5004';
+const LOCAL_DEV_FRONTEND_PORT = '5005';
 
 const COMPANY_ART = 'COMPANION HUB\nci.computer';
 
@@ -52,6 +54,23 @@ const envFileMap: Record<HubEnv, string> = {
   staging: '.env.staging',
   prod: '.env.prod',
 };
+
+const PACKAGE_JSON_URL = new URL('../package.json', import.meta.url);
+
+function packageVersion(): string {
+  const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
+  const runtimeOverride = process.env.CIHUB_BUILD_VERSION?.trim() || '';
+  if (buildVersion) return buildVersion;
+  if (runtimeOverride) return runtimeOverride;
+  try {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_URL, 'utf-8')) as {
+      version?: string;
+    };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
@@ -66,8 +85,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     title: 'Hub lifecycle',
     entries: [
       { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack' },
-      { command: `${BASE_COMMAND} shutdown [env]`, description: 'Stop the hub stack' },
+      { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
+      { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
+      { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
+      { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
       { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires Companion Hub)' },
     ],
@@ -86,6 +108,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} app list`, description: 'List managed Docker containers' },
       { command: `${BASE_COMMAND} app status [name]`, description: 'Show container status with ports (color-coded)' },
       { command: `${BASE_COMMAND} app logs <name> [--tail N]`, description: 'Stream container logs' },
+      { command: `${BASE_COMMAND} app stop-managed`, description: 'Stop all Hub-managed app containers' },
+      { command: `${BASE_COMMAND} app remove-managed`, description: 'Remove all Hub-managed app containers' },
       { command: `${BASE_COMMAND} app add <name> <image>`, description: 'Launch a new Docker container app' },
       { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
       { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
@@ -108,10 +132,12 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
-    title: 'Developer workflow',
+    title: 'Maintenance',
     entries: [
-      { command: `${BASE_COMMAND} hot-reload [env]`, description: 'Run infra + backend/frontend with hot reload' },
-      { command: `${BASE_COMMAND} purge [--yes]`, description: 'Remove Docker state + CI-Hub caches/configs' },
+      { command: `${BASE_COMMAND} doctor [env]`, description: 'Validate Docker, env files, bind mounts, and compose inputs' },
+      { command: `${BASE_COMMAND} clean [env] [--yes]`, description: 'Remove generated host-state files for the target environment' },
+      { command: `${BASE_COMMAND} reset [env] [--yes]`, description: 'Remove runtime state for the target environment' },
+      { command: `${BASE_COMMAND} uninstall [--yes]`, description: 'Full machine cleanup of CI-Hub runtime state' },
     ],
   },
 ];
@@ -223,9 +249,9 @@ export function renderHelp() {
       'Quick start',
       [
         `${bold('First run')}  ${BASE_COMMAND} wizard`,
+        `${bold('Local dev')}  ${BASE_COMMAND} up local`,
         `${bold('Install')}   npm install -g ci-hub`,
         `${bold('NPX')}       npx --package ci-hub ${BASE_COMMAND} --help`,
-        `${bold('Dev')}       ${COMPAT_COMMAND} --help`,
       ],
       'green',
     ),
@@ -243,12 +269,13 @@ export function renderManPage() {
   return [
     colorize('CIHUB(1)', 'cyan'),
     '',
-    box('Synopsis', [`${BASE_COMMAND} <command> [args]`, `${COMPAT_COMMAND} <command> [args]`]),
+    box('Synopsis', [`${BASE_COMMAND} <command> [args]`]),
     box('Description', [
       'Companion Intelligence Hub CLI — setup, registration, Docker lifecycle,',
-      'MCP toggles, developer purge/hot-reload flows, and app management.',
+      'MCP toggles, environment resets, and app management.',
       '',
       'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
+      'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
     ]),
     ...commandSections.map((s) => renderSection(s.title, s.entries)),
     box(
@@ -256,13 +283,12 @@ export function renderManPage() {
       [
         `npm/pnpm/bun global installs expose ${BASE_COMMAND} on PATH via the package bin entry.`,
         `Homebrew and other package managers should install the same ${BASE_COMMAND} executable.`,
-        `In-repo compat: ${COMPAT_COMMAND} <command>`,
       ],
       'yellow',
     ),
     box(
       'On-device testing loop',
-      [`${BASE_COMMAND} purge --yes`, `${BASE_COMMAND} hot-reload local`, `${BASE_COMMAND} wizard`, 'pnpm run test:cli'],
+      [`${BASE_COMMAND} reset local --yes`, `${BASE_COMMAND} up local`, `${BASE_COMMAND} wizard`, 'pnpm run test:cli'],
       'dim',
     ),
   ].join('\n\n');
@@ -342,6 +368,98 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
 function runCapture(cmd: string, args: string[]): { stdout: string; ok: boolean } {
   const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe' });
   return { stdout: (result.stdout || '').trim(), ok: result.status === 0 };
+}
+
+function commandExists(cmd: string): boolean {
+  return runCapture(process.platform === 'win32' ? 'where' : 'which', [cmd]).ok;
+}
+
+function listeningPidsForPort(port: number): number[] {
+  if (process.platform === 'win32' || !commandExists('lsof')) return [];
+  const { stdout, ok } = runCapture('lsof', ['-t', '-n', `-iTCP:${port}`, '-sTCP:LISTEN']);
+  if (!ok || !stdout) return [];
+  return stdout
+    .split('\n')
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function commandLineForPid(pid: number): string {
+  if (process.platform === 'win32') return '';
+  const { stdout, ok } = runCapture('ps', ['-p', String(pid), '-o', 'command=']);
+  return ok ? stdout.trim() : '';
+}
+
+function sleepMs(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Intentional short synchronous wait for local-dev port cleanup.
+  }
+}
+
+function killPid(pid: number): void {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // Best effort: if the process already exited we do not need to fail startup.
+  }
+}
+
+function ensureLocalDevPortsAvailable(): void {
+  const frontendPort = Number.parseInt(LOCAL_DEV_FRONTEND_PORT, 10);
+  const backendPort = Number.parseInt(LOCAL_DEV_BACKEND_PORT, 10);
+  const frontendPids = listeningPidsForPort(frontendPort);
+  const backendPids = listeningPidsForPort(backendPort);
+  const repoRoot = process.cwd();
+
+  const staleFrontend = frontendPids.filter((pid) => {
+    const command = commandLineForPid(pid);
+    return command.includes(repoRoot) && command.includes('@react-router/dev/bin.js dev');
+  });
+  const staleBackend = backendPids.filter((pid) => {
+    const command = commandLineForPid(pid);
+    return (
+      command.includes(repoRoot) &&
+      (command.includes('nest start --watch --preserveWatchOutput') ||
+        command.includes('/packages/backend/') ||
+        command.includes('packages/backend/dist/src/main.js'))
+    );
+  });
+
+  for (const pid of [...staleFrontend, ...staleBackend]) {
+    killPid(pid);
+  }
+
+  if (staleFrontend.length > 0 || staleBackend.length > 0) {
+    sleepMs(1500);
+  }
+
+  const remainingFrontend = listeningPidsForPort(frontendPort).filter((pid) => !staleFrontend.includes(pid));
+  if (remainingFrontend.length > 0) {
+    printMessageBox(
+      'Local development port conflict',
+      [`Port ${LOCAL_DEV_FRONTEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  const remainingBackend = listeningPidsForPort(backendPort).filter((pid) => !staleBackend.includes(pid));
+  if (remainingBackend.length > 0) {
+    printMessageBox(
+      'Local development port conflict',
+      [`Port ${LOCAL_DEV_BACKEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
+      'red',
+    );
+    process.exit(2);
+  }
+}
+
+function printRemovedCommand(oldUsage: string, replacement: string, detail?: string): never {
+  const lines = [`${oldUsage} was removed in this release.`, `Use ${bold(replacement)} instead.`];
+  if (detail) lines.push(detail);
+  printMessageBox('Command removed', lines, 'red');
+  process.exit(2);
 }
 
 // ─── env / compose helpers ───────────────────────────────────────────────────
@@ -443,6 +561,13 @@ function renderConfigLines(env: HubEnv) {
   ];
 }
 
+function normalizeDetachedFlag(args: string[]): { detached: boolean; remaining: string[] } {
+  return {
+    detached: args.includes('--detached'),
+    remaining: args.filter((arg) => arg !== '--detached'),
+  };
+}
+
 // ─── docker availability ──────────────────────────────────────────────────────
 
 function checkDockerAvailable(): boolean {
@@ -486,23 +611,28 @@ export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
 }
 
-function prepareHubDataDirectory(envFileName: string): void {
+function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
   const rootFolderHost = resolveRootFolderHost(envFileName);
-  try {
-    const identity = ensureHubBindMountsWritable(rootFolderHost, { envFile: join(process.cwd(), envFileName) });
-    printMessageBox(
-      'Data directory ready',
-      [
-        `Prepared ${rootFolderHost} for Hub container UID/GID ${identity.uid}:${identity.gid} (${identity.source}).`,
-        'Bind mounts verified writable before startup.',
-      ],
-      'green',
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    printMessageBox('Data directory permissions', [message], 'red');
-    throw error;
-  }
+  const runtimeEnvPath = join(rootFolderHost, '.env');
+  const appDataDir = join(rootFolderHost, 'app-data');
+  const sourceVars = parseEnvFile(envFileName);
+  const runtimeVars = {
+    ...sourceVars,
+    ENV_FILE: envFileName,
+    ROOT_FOLDER_HOST: rootFolderHost,
+    API_PORT: sourceVars.API_PORT || LOCAL_DEV_BACKEND_PORT,
+    FRONTEND_PORT: sourceVars.FRONTEND_PORT || LOCAL_DEV_FRONTEND_PORT,
+    CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
+    CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
+    CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
+    CI_HUB_VERSION: sourceVars.CI_HUB_VERSION || process.env.CI_HUB_VERSION || packageVersion(),
+  };
+  const content = Object.entries(runtimeVars)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+  writeFileSync(runtimeEnvPath, `${content}\n`, 'utf-8');
+  return runtimeVars;
 }
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
@@ -538,16 +668,21 @@ async function runDockerComposeUp(envFileName: string, files: string[], detached
 }
 
 async function startHub(mode: StartMode, env: HubEnv) {
-  requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
+  requireRepoRoot(mode === 'local-dev' ? 'cihub up local' : 'cihub up');
+  if (mode === 'local-dev' && env !== 'local') {
+    usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
+  }
   const envFileName = getEnvFileOrExit(env);
-  prepareHubDataDirectory(envFileName);
+  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
-  if (mode === 'dev') {
+  if (mode === 'local-dev') {
+    ensureLocalDevPortsAvailable();
+    const runtimeVars = ensureLocalDevRuntimeEnv(envFileName);
     printMessageBox(
-      'Starting development mode',
-      [`Environment: ${env}`, 'Bringing up PostgreSQL and RabbitMQ, then launching backend/frontend locally.'],
+      'Starting local development',
+      ['Environment: local', 'Bringing up PostgreSQL and RabbitMQ, then launching backend/frontend from source.'],
       'green',
     );
     run(
@@ -568,8 +703,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
       envOverrides,
     );
     run('tsx', ['scripts/sync-postgres-password.ts', envFileName], envOverrides);
-    const fileVars = parseEnvFile(envFileName);
-    run('pnpm', ['run', 'dev:app'], { ...fileVars, ...envOverrides });
+    run('pnpm', ['run', 'dev:app'], { ...runtimeVars, ...envOverrides });
     return;
   }
 
@@ -589,7 +723,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
   }
 
   const files = getComposeFiles(env);
-  const detached = mode === 'start:detached';
+  const detached = mode === 'detached';
 
   printMessageBox(
     'Starting hub',
@@ -602,7 +736,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
 function setupHub(env: HubEnv) {
   requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
-  prepareHubDataDirectory(envFileName);
+  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-traefik.ts'], envOverrides);
   run('tsx', ['scripts/init-docker-config.ts'], envOverrides);
@@ -648,23 +782,158 @@ function registerHub(env: HubEnv) {
   );
 }
 
-function shutdownHub(env: HubEnv) {
+function composeBaseArgs(env: HubEnv): string[] {
   const envFileName = getEnvFileOrExit(env);
-  const envOverrides = buildEnvOverrides(envFileName);
   const args = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of getComposeFiles(env)) args.push('-f', f);
+  return args;
+}
+
+function removeLeftoverProjectContainers(): void {
+  const { stdout, ok } = runCapture('docker', ['ps', '-a', '--filter', 'label=com.docker.compose.project=ci-hub', '--format', '{{.ID}}']);
+  if (!ok || !stdout) return;
+  const ids = stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (ids.length === 0) return;
+  run('docker', ['rm', '-f', ...ids]);
+}
+
+function downHub(env: HubEnv, options?: { volumes?: boolean }) {
+  const envFileName = getEnvFileOrExit(env);
+  const envOverrides = buildEnvOverrides(envFileName);
+  const args = composeBaseArgs(env);
   args.push('down');
-  printMessageBox('Shutting down hub', [`Environment: ${env}`], 'yellow');
+  if (options?.volumes) args.push('-v', '--remove-orphans');
+  printMessageBox(options?.volumes ? 'Resetting hub runtime' : 'Stopping hub', [`Environment: ${env}`], 'yellow');
+  run('docker', args, envOverrides);
+  removeLeftoverProjectContainers();
+}
+
+async function restartHub(env: HubEnv, detached = false) {
+  downHub(env);
+  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+}
+
+function pathIsWithin(base: string, target: string): boolean {
+  const normalizedBase = path.resolve(base);
+  const normalizedTarget = path.resolve(target);
+  return normalizedTarget === normalizedBase || normalizedTarget.startsWith(`${normalizedBase}${path.sep}`);
+}
+
+function removeDirectoryTarget(targetPath: string, label: string, removed: string[], skipped: string[]) {
+  if (!existsSync(targetPath)) {
+    skipped.push(`${label}: ${targetPath}`);
+    return;
+  }
+  const repoRoot = process.cwd();
+  const homeDir = process.env.HOME || process.env.USERPROFILE || repoRoot;
+  if (!pathIsWithin(repoRoot, targetPath) && !pathIsWithin(homeDir, targetPath)) {
+    throw new Error(`Refusing to remove ${targetPath}; it is outside the repository and user home directory.`);
+  }
+  rmSync(targetPath, { recursive: true, force: true });
+  removed.push(`${label}: ${targetPath}`);
+}
+
+function cleanHub(env: HubEnv) {
+  requireRepoRoot('cihub clean');
+  const envFileName = getEnvFileOrExit(env);
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  const tunnelDir = path.resolve(rootFolderHost, '..', 'tunnel');
+  const removed: string[] = [];
+  const skipped: string[] = [];
+  removeDirectoryTarget(rootFolderHost, 'root folder', removed, skipped);
+  removeDirectoryTarget(tunnelDir, 'tunnel dir', removed, skipped);
+  printMessageBox('Environment files cleaned', [...removed, ...skipped.map((line) => dim(`skipped ${line}`))], 'yellow');
+}
+
+function confirmDestructive(actionLabel: string, force: boolean) {
+  if (force) return true;
+  if (!process.stdin.isTTY) {
+    console.error(colorize(`  ✗ ${actionLabel} is destructive — requires an interactive terminal or --yes`, 'red'));
+    process.exit(2);
+  }
+  return false;
+}
+
+async function confirmDestructiveAction(actionLabel: string, force: boolean, prompt: string) {
+  if (confirmDestructive(actionLabel, force)) return true;
+  const rl = createInterface({ input, output });
+  try {
+    const ans = (await rl.question(prompt)).trim().toLowerCase();
+    return ans === 'y' || ans === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
+  requireRepoRoot('cihub reset');
+  const confirmed = await confirmDestructiveAction(
+    `Resetting ${env}`,
+    force,
+    `Reset ${env} runtime state (containers, volumes, and host files)? [y/N]: `,
+  );
+  if (!confirmed) {
+    printMessageBox('Reset cancelled', ['Left runtime state untouched.'], 'yellow');
+    return false;
+  }
+  downHub(env, { volumes: true });
+  cleanHub(env);
+  return true;
+}
+
+async function recreateHub(env: HubEnv, detached = false, force = false) {
+  const resetComplete = await resetHub(env, force);
+  if (!resetComplete) return;
+  await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+}
+
+function logsHub(env: HubEnv, service?: string) {
+  const envFileName = getEnvFileOrExit(env);
+  const envOverrides = buildEnvOverrides(envFileName);
+  const args = composeBaseArgs(env);
+  args.push('logs', '-f');
+  if (service) args.push(service);
   run('docker', args, envOverrides);
 }
 
-async function hotReloadHub(env: HubEnv) {
+function doctorHub(env: HubEnv) {
+  requireRepoRoot('cihub doctor');
+  const envFileName = getEnvFileOrExit(env);
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  const composeFiles = getComposeFiles(env);
+  const lines = [
+    `Docker               ${checkDockerAvailable() ? colorize('● available', 'green') : colorize('✗ unavailable', 'red')}`,
+    `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? colorize('● available', 'green') : colorize('✗ unavailable', 'red')}`,
+    `Env file             ${existsSync(join(process.cwd(), envFileName)) ? colorize('● found', 'green') : colorize('○ missing', 'yellow')}  ${envFileName}`,
+    `Root folder          ${existsSync(rootFolderHost) ? colorize('● present', 'green') : colorize('○ missing', 'yellow')}  ${rootFolderHost}`,
+    `Compose files        ${composeFiles.every((file) => existsSync(join(process.cwd(), file))) ? colorize('● found', 'green') : colorize('✗ missing', 'red')}  ${composeFiles.join(', ')}`,
+    `Tunnel token         ${hasCloudflareTunnelToken(envFileName) ? colorize('● present', 'green') : colorize('○ absent', 'dim')}`,
+  ];
+  printMessageBox(`Hub doctor  [${env}]`, lines, 'cyan');
+}
+
+async function uninstallHub(force: boolean) {
+  requireRepoRoot('cihub uninstall');
+  const confirmed = await confirmDestructiveAction('Uninstalling CI-Hub', force, 'Remove CI-Hub runtime state from this machine? [y/N]: ');
+  if (!confirmed) {
+    printMessageBox('Uninstall cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');
+    return;
+  }
+  const summary = runHubCleanup();
   printMessageBox(
-    'Starting hot reload',
-    [`Environment: ${env}`, 'Infra + backend/frontend from source — changes reload without a full Docker rebuild.'],
-    'green',
+    'Uninstall complete',
+    [
+      `removed directories: ${summary.removedDirs}`,
+      `skipped directories: ${summary.skippedDirs}`,
+      `directory failures: ${summary.failedDirs}`,
+      `commands attempted: ${summary.attemptedCommands}`,
+      `command failures: ${summary.failedCommands}`,
+    ],
+    summary.failedDirs > 0 || summary.failedCommands > 0 ? 'yellow' : 'green',
   );
-  await startHub('dev', env);
 }
 
 function findComposeName(keyword: string): string {
@@ -793,39 +1062,6 @@ function runModelsCommand(args: string[]) {
 
 // ─── purge ────────────────────────────────────────────────────────────────────
 
-async function confirmPurge(force: boolean) {
-  if (force) return true;
-  if (!process.stdin.isTTY) {
-    console.error(colorize(`  ✗ Purge is destructive — requires an interactive terminal or: ${BASE_COMMAND} purge --yes`, 'red'));
-    process.exit(2);
-  }
-  const rl = createInterface({ input, output });
-  try {
-    const ans = (await rl.question('Purge Docker state + CI-Hub caches/configs? [y/N]: ')).trim().toLowerCase();
-    return ans === 'y' || ans === 'yes';
-  } finally {
-    rl.close();
-  }
-}
-
-async function purgeHub(args: string[]) {
-  requireRepoRoot('cihub purge');
-  const force = args.includes('--yes');
-  const bad = args.filter((a) => a !== '--yes');
-  if (bad.length > 0) usageAndExit(`Unknown purge option: ${bad[0]}`);
-  const confirmed = await confirmPurge(force);
-  if (!confirmed) {
-    printMessageBox('Purge cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');
-    return;
-  }
-  printMessageBox(
-    'Purging developer state',
-    ['Removing Docker containers, networks, and volumes for CI-Hub.', 'Removing .internal + CI-Hub entries from .local, .config, .cache.'],
-    'yellow',
-  );
-  run('tsx', ['scripts/cleanup.ts']);
-}
-
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 
 function setMcpState(env: HubEnv, enabled: boolean) {
@@ -905,6 +1141,24 @@ export function appStatusColor(status: string): string {
   return dim(status);
 }
 
+function managedAppContainerIds(): string[] {
+  const { stdout, ok } = runCapture('docker', [
+    'ps',
+    '-a',
+    '--filter',
+    'label=ci-os-hub.managed=true',
+    '--filter',
+    'label=ci-os-hub.appurn',
+    '--format',
+    '{{.ID}}',
+  ]);
+  if (!ok || !stdout) return [];
+  return stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function runAppCommand(args: string[]) {
   const subcommand = args[0];
   if (!subcommand) usageAndExit('Missing app subcommand');
@@ -948,6 +1202,20 @@ function runAppCommand(args: string[]) {
     const tail = tailIdx !== -1 && args[tailIdx + 1] ? args[tailIdx + 1] : '50';
     printMessageBox('Container logs', [`Container: ${name}`, `Tail: ${tail} lines`], 'dim');
     run('docker', ['logs', '--tail', tail, '--timestamps', name]);
+    return;
+  }
+
+  if (subcommand === 'stop-managed' || subcommand === 'remove-managed') {
+    const ids = managedAppContainerIds();
+    if (ids.length === 0) {
+      printMessageBox('Managed app cleanup', ['No Hub-managed app containers found.'], 'yellow');
+      return;
+    }
+    const dockerCommand = subcommand === 'stop-managed' ? 'stop' : 'rm';
+    const dockerArgs = subcommand === 'stop-managed' ? ['stop', ...ids] : ['rm', '-f', ...ids];
+    printMessageBox('Managed app cleanup', [`Action: ${subcommand === 'stop-managed' ? 'stop' : 'remove'}`, `Containers: ${ids.length}`], 'yellow');
+    run('docker', dockerArgs);
+    printMessageBox('Managed app cleanup', [`Successfully ran docker ${dockerCommand} on ${ids.length} Hub-managed app container(s).`], 'green');
     return;
   }
 
@@ -1070,14 +1338,14 @@ export function resolveWizardActionInput(value: string) {
     'mcp-setup': 'mcp-setup',
     '6': 'mcp-shutdown',
     'mcp-shutdown': 'mcp-shutdown',
-    '7': 'shutdown',
-    shutdown: 'shutdown',
+    '7': 'down',
+    down: 'down',
     '8': 'app-list',
     'app-list': 'app-list',
-    '9': 'purge',
-    purge: 'purge',
-    '10': 'hot-reload',
-    'hot-reload': 'hot-reload',
+    '9': 'reset',
+    reset: 'reset',
+    '10': 'restart',
+    restart: 'restart',
   };
   const action = map[n];
   if (!action) usageAndExit(`Unknown wizard action: ${value}`);
@@ -1121,10 +1389,10 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     printMessageBox(
       'Choose environment',
       [
-        '1. local    — Local Docker compose stack  (default)',
-        '2. dev      — Shared dev environment',
-        '3. staging  — Shared staging environment',
-        '4. prod     — Production environment',
+        '1. local    — Source-based local development  (default)',
+        '2. dev      — Dev appliance environment',
+        '3. staging  — Staging appliance environment',
+        '4. prod     — Production appliance environment',
       ],
       'cyan',
     );
@@ -1175,7 +1443,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       console.log();
       console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub…', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
-      await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      await startHub(env === 'local' ? 'local-dev' : detached === 'y' || detached === 'yes' ? 'detached' : 'attached', env);
       console.log(renderStep(5, FTUE_STEPS, 'Hub launched', 'done'));
 
       // ── Step 6: optional model ────────────────────────────────────────
@@ -1225,10 +1493,10 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         ' 4. config        Show resolved configuration',
         ' 5. mcp-setup     Enable MCP',
         ' 6. mcp-shutdown  Disable MCP',
-        ' 7. shutdown      Stop the hub stack',
+        ' 7. down          Stop the hub stack',
         ' 8. app-list      List local Docker apps',
-        ' 9. purge         Reset Docker state, configs, and caches',
-        '10. hot-reload    Start backend/frontend with hot reload',
+        ' 9. reset         Remove runtime state for this environment',
+        '10. restart       Restart the selected environment',
       ],
       'cyan',
     );
@@ -1238,23 +1506,16 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     if (action === 'setup') return setupHub(env);
     if (action === 'up') {
       const detached = (await rl.question('  Detached mode? [y/N]: ')).trim().toLowerCase();
-      return await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      return await startHub(env === 'local' ? 'local-dev' : detached === 'y' || detached === 'yes' ? 'detached' : 'attached', env);
     }
     if (action === 'register') return registerHub(env);
     if (action === 'config') return printConfig(env);
     if (action === 'mcp-setup') return setMcpState(env, true);
     if (action === 'mcp-shutdown') return setMcpState(env, false);
-    if (action === 'shutdown') return shutdownHub(env);
+    if (action === 'down') return downHub(env);
     if (action === 'app-list') return runAppCommand(['list']);
-    if (action === 'purge') {
-      const ans = (await rl.question('  Purge Docker state + CI-Hub caches? [y/N]: ')).trim().toLowerCase();
-      if (ans !== 'y' && ans !== 'yes') {
-        printMessageBox('Purge cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');
-        return;
-      }
-      return purgeHub(['--yes']);
-    }
-    if (action === 'hot-reload') return await hotReloadHub(env);
+    if (action === 'reset') return await resetHub(env, false);
+    if (action === 'restart') return await restartHub(env);
   } finally {
     rl.close();
   }
@@ -1263,12 +1524,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
 // ─── version ─────────────────────────────────────────────────────────────────
 
 export function renderVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version?: string };
-    return `${BASE_COMMAND} ${pkg.version ?? '(unknown)'}`;
-  } catch {
-    return `${BASE_COMMAND} (unknown version)`;
-  }
+  return `${BASE_COMMAND} ${packageVersion()}`;
 }
 
 // ─── error / usage ────────────────────────────────────────────────────────────
@@ -1317,7 +1573,7 @@ export function runHostUpdate(args: string[]) {
   const cliArgs = checkOnly ? ['update', '--check'] : ['update'];
   const result = spawnSync(binary, cliArgs, { stdio: 'inherit' });
   if (result.error) {
-    console.error(`${red('Error')}: Could not run ${binary}. Install Companion Hub desktop or run from the app Settings.`);
+    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install Companion Hub desktop or run from the app Settings.`);
     process.exit(1);
   }
   process.exit(result.status ?? 1);
@@ -1330,7 +1586,7 @@ export async function runCli(rawArgs: string[]) {
   const first = args[0];
 
   if (!first) {
-    await startHub('dev', 'local');
+    await startHub('local-dev', 'local');
     return;
   }
 
@@ -1346,14 +1602,6 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'version' || first === '--version' || first === '-v') {
     console.log(renderVersion());
-    return;
-  }
-
-  if (allowedModes.includes(first as StartMode)) {
-    const mode = first as StartMode;
-    const env = (args[1] || 'local') as HubEnv;
-    if (!allowedEnvs.includes(env)) usageAndExit(`Unknown env: ${env}`);
-    await startHub(mode, env);
     return;
   }
 
@@ -1373,14 +1621,39 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'up') {
-    const detached = args.includes('--detached');
-    const envArgs = args.slice(1).filter((a) => a !== '--detached');
-    await startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
+    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    const env = resolveEnvFromArgs(remaining);
+    await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
     return;
   }
 
-  if (first === 'shutdown') {
-    shutdownHub(resolveEnvFromArgs(args.slice(1)));
+  if (first === 'down') {
+    downHub(resolveEnvFromArgs(args.slice(1)));
+    return;
+  }
+
+  if (first === 'restart') {
+    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    await restartHub(resolveEnvFromArgs(remaining), detached);
+    return;
+  }
+
+  if (first === 'recreate') {
+    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    const force = remaining.includes('--yes');
+    const env = resolveEnvFromArgs(remaining.filter((arg) => arg !== '--yes'));
+    await recreateHub(env, detached, force);
+    return;
+  }
+
+  if (first === 'logs') {
+    const positional = args.slice(1);
+    const env = positional[0] && allowedEnvs.includes(positional[0] as HubEnv) ? (positional[0] as HubEnv) : 'local';
+    const service = positional[0] && allowedEnvs.includes(positional[0] as HubEnv) ? positional[1] : positional[0];
+    if ((service && positional.length > (allowedEnvs.includes(positional[0] as HubEnv) ? 2 : 1)) || (!service && positional.length > 1)) {
+      usageAndExit(`Usage: ${BASE_COMMAND} logs [env] [service]`);
+    }
+    logsHub(env, service);
     return;
   }
 
@@ -1394,13 +1667,32 @@ export async function runCli(rawArgs: string[]) {
     return;
   }
 
-  if (first === 'hot-reload') {
-    await hotReloadHub(resolveEnvFromArgs(args.slice(1)));
+  if (first === 'doctor') {
+    doctorHub(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 
-  if (first === 'purge') {
-    await purgeHub(args.slice(1));
+  if (first === 'clean') {
+    const force = args.includes('--yes');
+    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--yes'));
+    if (await confirmDestructiveAction(`Cleaning ${env}`, force, `Remove generated files for ${env}? [y/N]: `)) {
+      cleanHub(env);
+    } else {
+      printMessageBox('Clean cancelled', ['Left generated files untouched.'], 'yellow');
+    }
+    return;
+  }
+
+  if (first === 'reset') {
+    const force = args.includes('--yes');
+    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--yes'));
+    await resetHub(env, force);
+    return;
+  }
+
+  if (first === 'uninstall') {
+    const force = args.includes('--yes');
+    await uninstallHub(force);
     return;
   }
 
@@ -1431,6 +1723,26 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'update') {
     runHostUpdate(args.slice(1));
     return;
+  }
+
+  if (first === 'shutdown') {
+    printRemovedCommand('cihub shutdown [env]', 'cihub down [env]');
+  }
+
+  if (first === 'hot-reload' || first === 'dev') {
+    printRemovedCommand(`cihub ${first} [env]`, 'cihub up local', 'Use the local environment for source-based development.');
+  }
+
+  if (first === 'start') {
+    printRemovedCommand('cihub start [env]', 'cihub up [env]');
+  }
+
+  if (first === 'start:detached') {
+    printRemovedCommand('cihub start:detached [env]', 'cihub up [env] --detached');
+  }
+
+  if (first === 'purge') {
+    printRemovedCommand('cihub purge --yes', 'cihub uninstall --yes');
   }
 
   usageAndExit(`Unknown command: ${first}`);

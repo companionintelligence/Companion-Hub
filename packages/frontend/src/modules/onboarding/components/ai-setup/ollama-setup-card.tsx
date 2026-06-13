@@ -159,7 +159,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
               </div>
             ) : (
               <div className="flex gap-2 flex-wrap">
-                {!bridgeUnreachable && canAutoInstall && (
+                {canAutoInstall && (
                   <Button size="sm" onClick={handleAutoInstall} className="bg-yellow-600 hover:bg-yellow-700 text-white">
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_AUTO_INSTALL')}

@@ -62,6 +62,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
         CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
@@ -136,6 +140,7 @@ services:
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       NODE_OPTIONS: ${NODE_OPTIONS:---disable-warning=ExperimentalWarning}
+      HOME: /data/user-config
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       DOCKER_CONFIG: /data/.docker
       CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}

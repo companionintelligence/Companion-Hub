@@ -22,6 +22,7 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { hiddenTypes, validateAppConfig } from './form-validators';
 import { InstallFormField } from './install-form-field';
 
@@ -185,8 +186,11 @@ export const InstallForm: React.FC<IProps> = ({
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
       // Auto-select first available mode: cloudflare > tailscale > local
-      const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
-      setValue('exposureMode', (initialValues?.exposureMode as FormValues['exposureMode']) || defaultMode);
+      const defaultMode = resolveExposureMode(initialValues?.exposureMode as FormValues['exposureMode'] | undefined, {
+        cloudflareAvailable,
+        tailscaleAvailable,
+      });
+      setValue('exposureMode', defaultMode);
       setValue('exposedLocal', true); // backward compat
       setValue('openPort', defaultMode === 'local');
       setValue('enableAuth', true); // Enable authentication by default
@@ -581,36 +585,34 @@ export const InstallForm: React.FC<IProps> = ({
     if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
 
     return (
-      <>
-        <Controller
-          control={control}
-          name="enableAuth"
-          defaultValue={true}
-          render={({ field: { onChange, value, ref, ...props } }) => (
-            <Switch
-              {...props}
-              className="mb-3"
-              ref={ref}
-              checked={value ?? true}
-              onCheckedChange={onChange}
-              label={
-                <>
-                  {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                  <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
-                    {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
-                  </Tooltip>
-                  <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
-                </>
-              }
-            />
-          )}
-        />
-      </>
+      <Controller
+        control={control}
+        name="enableAuth"
+        defaultValue={true}
+        render={({ field: { onChange, value, ref, ...props } }) => (
+          <Switch
+            {...props}
+            className="mb-3"
+            ref={ref}
+            checked={value ?? true}
+            onCheckedChange={onChange}
+            label={
+              <>
+                {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
+                  {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
+                </Tooltip>
+                <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+              </>
+            }
+          />
+        )}
+      />
     );
   };
 
   const validate = async (values: FormValues) => {
-    const exposureMode = values.exposureMode || 'cloudflare';
+    const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
     const formValues = {
       ...values,
       exposureMode,

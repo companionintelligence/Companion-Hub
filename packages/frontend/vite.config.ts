@@ -109,7 +109,7 @@ export default defineConfig(({ mode }) => {
     server: {
       open: true,
       host: true,
-      port: 9091,
+      port: Number(process.env.FRONTEND_PORT || 5005),
       hmr: {
         timeout: 60000,
       },
@@ -135,7 +135,7 @@ export default defineConfig(({ mode }) => {
       },
       proxy: {
         '/api': {
-          target: `http://localhost:${process.env.API_PORT || 3000}`,
+          target: `http://localhost:${process.env.API_PORT || 5004}`,
           changeOrigin: false,
           configure: (proxy, _options) => {
             proxy.on('error', (err, _req, _res) => {
@@ -151,10 +151,10 @@ export default defineConfig(({ mode }) => {
       include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', 'js-cookie', '@tanstack/react-query'],
     },
     preview: {
-      port: 9091,
+      port: Number(process.env.FRONTEND_PORT || 5005),
       proxy: {
         '/api': {
-          target: `http://localhost:${process.env.API_PORT || 3000}`,
+          target: `http://localhost:${process.env.API_PORT || 5004}`,
           changeOrigin: false,
         },
       },

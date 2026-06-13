@@ -89,7 +89,7 @@ export async function requireInfraReady(retries = 10, intervalMs = 2000) {
     throw new Error(
       `E2E infrastructure not ready — missing: ${missing.join(', ')}.\n` +
         'Start infra with: docker compose -f e2e/docker-compose.e2e.yml up -d db queue\n' +
-        'Or: pnpm run infra:up',
+        'Or start the local development stack with: cihub up local',
     );
   }
   return status;

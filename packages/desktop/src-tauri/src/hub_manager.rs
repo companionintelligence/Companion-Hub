@@ -5484,6 +5484,7 @@ exit 0
     )
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn docker_desktop_windows_outer_launch_command(script_path: &str, username: &str) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
@@ -5600,6 +5601,7 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -6225,6 +6227,19 @@ installer_script="$(mktemp)"
 trap 'rm -f "$installer_script"' EXIT
 curl -fsSL https://ollama.com/install.sh -o "$installer_script"
 sh "$installer_script"
+
+# Ubuntu/systemd default installs often bind Ollama to loopback only, which
+# leaves the Hub container unable to reach it over host.docker.internal. Force
+# the service onto all interfaces for the common appliance-on-Linux case.
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+    install -d -m 0755 /etc/systemd/system/ollama.service.d
+    cat >/etc/systemd/system/ollama.service.d/override.conf <<'EOF'
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+EOF
+    systemctl daemon-reload
+    systemctl enable --now ollama || systemctl restart ollama
+fi
 
 # Best-effort: the ollama group grants direct model-dir access; the HTTP API
 # itself needs no group membership. Without systemd the script skips group
@@ -7315,6 +7330,10 @@ mod tests {
         // Group add is best-effort and gated on group existence (no-systemd hosts).
         assert!(script.contains("getent group ollama"));
         assert!(script.contains(r#"usermod -aG ollama "$USERNAME""#));
+        // Linux desktop installs should repair the default localhost-only bind.
+        assert!(script.contains("ollama.service.d/override.conf"));
+        assert!(script.contains(r#"Environment="OLLAMA_HOST=0.0.0.0:11434""#));
+        assert!(script.contains("systemctl daemon-reload"));
     }
 
     // --- is_container_name_conflict / is_oci_runtime_error classifiers ---

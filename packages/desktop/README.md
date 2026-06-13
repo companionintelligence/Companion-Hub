@@ -119,7 +119,7 @@ pnpm run --filter=@ci-hub/common build
 
 ### 3. Start the Hub backend + frontend
 
-The Tauri dev mode connects to the Vite frontend dev server at `http://localhost:9091`, which proxies API calls to the backend at `http://localhost:3000`.
+The Tauri dev mode connects to the Vite frontend dev server at `http://localhost:5005`, which proxies API calls to the backend at `http://localhost:5004`.
 
 **Option A — Docker (recommended for first setup):**
 
@@ -147,19 +147,20 @@ dotenv -e .env.local -- pnpm run dev:app
 **Prod stack + Tauri (same containers as desktop, no Vite):** from repo root, with `.env.dev` configured:
 
 ```bash
-pnpm run start:dev:desktop
+pnpm run dev:desktop
 ```
 
-This runs `start:dev:detached` (init:host + prod compose), waits for `http://localhost:5002/api/health`, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not port 9091).
+This starts the `.env.dev` appliance stack in the background, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not the local Vite port).
 
-Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `pnpm run compose:profiles`.
+Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `cihub config dev`.
 
-**Classic Vite + native backend dev UI:**
+**Classic local source-dev + Tauri:**
 
 From the repo root:
 
 ```bash
-pnpm run dev:desktop
+pnpm run local
+pnpm run local:desktop
 ```
 
 Or from this directory:
@@ -250,9 +251,9 @@ packages/desktop/
 
 ### How it works
 
-- **Dev mode:** The Tauri WebView loads from `http://localhost:9091` (Vite dev server). The frontend proxies `/api/*` to the backend on port 3000.
+- **Dev mode:** The Tauri WebView loads from `http://localhost:5005` (Vite dev server). The frontend proxies `/api/*` to the backend on port 5004.
 - **Release mode:** The pre-built frontend static files are embedded in the binary from `packages/frontend/dist/client`. The backend must be running separately.
-- **System tray:** Polls the Hub health endpoint every 10 seconds (tries both port 5002 for prod and port 3000 for dev). Start/Stop Hub uses `docker start/stop` on the known container names.
+- **System tray:** Polls the Hub health endpoint every 10 seconds (tries both port 5002 for appliance mode and port 5004 for local source dev). Start/Stop Hub uses `docker start/stop` on the known container names.
 - **Single instance:** Uses `tauri-plugin-single-instance` — a second launch sends focus to the existing window via IPC.
 - **Close-to-tray:** The window close button hides to tray instead of quitting. Use "Quit" from the tray menu to actually exit.
 
@@ -269,6 +270,6 @@ packages/desktop/
 | `error: no such command: tauri` | Install: `cargo install tauri-cli --version "^2" --locked` |
 | Windows build fails with "cannot compile" | Load VS env: `call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64` |
 | Linux build fails with missing headers | Install all deps listed in Prerequisites → Linux section |
-| App shows blank window | Ensure the frontend dev server is running on port 9091 (dev mode) or frontend was built (release mode) |
+| App shows blank window | Ensure the frontend dev server is running on port 5005 (dev mode) or frontend was built (release mode) |
 | Docker credential errors on Windows SSH | Clear `credsStore` in `~/.docker/config.json` |
 | "Maximum number of active sessions" (WebDriver) | Kill stale `tauri-driver` and `WebKitWebDriver` processes |

@@ -193,7 +193,7 @@ describe('repairCriticalBindMountFiles', () => {
 
 describe('repairHostRootOwnedBindMounts policy', () => {
   it('keeps data-bearing directories out of the auto-quarantine list', () => {
-    expect(RECREATABLE_BIND_MOUNT_DIRS).toEqual(['cache', 'logs', 'user-config']);
+    expect(RECREATABLE_BIND_MOUNT_DIRS).toEqual(['cache', 'logs', 'user-config', '.docker']);
     expect(DATA_BEARING_BIND_MOUNT_DIRS).toEqual(['apps', 'app-data', 'media', 'repos', 'backups']);
     expect(RECREATABLE_BIND_MOUNT_DIRS.some((dir) => (DATA_BEARING_BIND_MOUNT_DIRS as readonly string[]).includes(dir))).toBe(false);
   });

@@ -23,10 +23,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseEnvFile } from './cihub-cli';
 
-export const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repos', 'app-data', 'user-config', 'backups'] as const;
+export const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repos', 'app-data', 'user-config', 'backups', '.docker'] as const;
 
 /** Directories safe to quarantine and recreate when host-root-owned (no user app data expected). */
-export const RECREATABLE_BIND_MOUNT_DIRS = ['cache', 'logs', 'user-config'] as const;
+export const RECREATABLE_BIND_MOUNT_DIRS = ['cache', 'logs', 'user-config', '.docker'] as const;
 
 /** User data directories — chown only; never auto-quarantine. */
 export const DATA_BEARING_BIND_MOUNT_DIRS = ['apps', 'app-data', 'media', 'repos', 'backups'] as const;

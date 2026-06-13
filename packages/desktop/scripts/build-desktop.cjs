@@ -1,4 +1,14 @@
 const { execSync } = require('node:child_process');
+const { existsSync } = require('node:fs');
+const path = require('node:path');
+
+function loadCliPathHelper() {
+  try {
+    return require('../../../scripts/desktop-cli-path.cjs');
+  } catch {
+    return null;
+  }
+}
 
 function commandExists(cmd) {
   try {
@@ -32,8 +42,24 @@ const options = {
   shell: true,
 };
 
+const frontendDist = path.resolve(process.cwd(), '../frontend/dist/client');
+
+if (!existsSync(frontendDist)) {
+  console.log(`Frontend build output missing at ${frontendDist}; building frontend first...`);
+  execSync('pnpm --dir ../frontend run build', options);
+}
+
 execSync('cargo tauri build', options);
 
 if (process.platform !== 'win32') {
   execSync('sh scripts/patch-deb-maintainer-scripts.sh', options);
+}
+
+const cliPathHelper = loadCliPathHelper();
+if (cliPathHelper?.ensureRepoCliOnPath) {
+  const cliPath = cliPathHelper.ensureRepoCliOnPath(path.resolve(process.cwd(), '../..'));
+  console.log('\nCompanion Hub CLI');
+  for (const line of cliPath.messageLines) {
+    console.log(`- ${line}`);
+  }
 }

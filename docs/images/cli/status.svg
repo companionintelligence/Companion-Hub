@@ -17,25 +17,26 @@
     <text x="153" y="83" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">[local]</text>
     <text x="225" y="83" textLength="513" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">────────────────────────────────────────────────────────┐</text>
     <text x="36" y="104" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#6e7681">Containers</text>
-    <text x="54" y="125" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#f85149">✗</text>
-    <text x="72" y="125" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">cloudflared</text>
-    <text x="189" y="125" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">Exited</text>
-    <text x="252" y="125" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">(255)</text>
-    <text x="306" y="125" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#6e7681">12</text>
-    <text x="333" y="125" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">hours</text>
-    <text x="387" y="125" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#6e7681">ago</text>
+    <text x="54" y="125" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#6e7681">No</text>
+    <text x="81" y="125" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">CI-Hub</text>
+    <text x="144" y="125" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#6e7681">containers</text>
+    <text x="243" y="125" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">—</text>
+    <text x="261" y="125" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">run:</text>
+    <text x="306" y="125" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">cihub</text>
+    <text x="360" y="125" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#6e7681">up</text>
     <text x="36" y="167" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#6e7681">Network</text>
     <text x="54" y="188" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Dashboard</text>
     <text x="189" y="188" textLength="189" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">http://localhost:5002</text>
     <text x="54" y="209" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Cloudflare</text>
-    <text x="189" y="209" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">○</text>
-    <text x="207" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#6e7681">not</text>
-    <text x="243" y="209" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#6e7681">configured</text>
+    <text x="189" y="209" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#d29922">○</text>
+    <text x="207" y="209" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#d29922">tunnel</text>
+    <text x="270" y="209" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#d29922">down</text>
+    <text x="324" y="209" textLength="297" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">https://companionintelligence.com</text>
     <text x="54" y="230" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Tailscale</text>
     <text x="144" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">VPN</text>
     <text x="189" y="230" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">●</text>
     <text x="207" y="230" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">active</text>
-    <text x="279" y="230" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">100.72.243.39</text>
+    <text x="279" y="230" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">100.117.72.104</text>
     <text x="18" y="251" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>
