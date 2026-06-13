@@ -62,10 +62,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Use the host network for build RUN steps so package-manager bootstrap and
-      # dependency installs follow the host's working DNS path instead of the
-      # flakier default BuildKit sandbox network seen on some Linux hosts.
-      network: ${DOCKER_BUILD_NETWORK:-host}
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
         CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}

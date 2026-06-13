@@ -49,9 +49,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-      # Match prod/dev build networking so package-manager bootstrap uses the
-      # same host DNS path during local source-based container builds.
-      network: ${DOCKER_BUILD_NETWORK:-host}
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
     command: npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     depends_on:
       ci-hub-db:
