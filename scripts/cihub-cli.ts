@@ -55,13 +55,15 @@ const envFileMap: Record<HubEnv, string> = {
   prod: '.env.prod',
 };
 
+const PACKAGE_JSON_URL = new URL('../package.json', import.meta.url);
+
 function packageVersion(): string {
   const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
   const runtimeOverride = process.env.CIHUB_BUILD_VERSION?.trim() || '';
   if (buildVersion) return buildVersion;
   if (runtimeOverride) return runtimeOverride;
   try {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_URL, 'utf-8')) as {
       version?: string;
     };
     return pkg.version ?? '0.0.0';

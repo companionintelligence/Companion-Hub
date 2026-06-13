@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -189,9 +190,23 @@ describe('renderVersion', () => {
   });
 
   it('reads version from package.json', () => {
-    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version?: string };
-    if (pkg.version) {
-      expect(renderVersion()).toContain(pkg.version);
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')) as { version?: string };
+    expect(typeof pkg.version).toBe('string');
+    expect(pkg.version?.length).toBeGreaterThan(0);
+    expect(renderVersion()).toContain(pkg.version as string);
+  });
+
+  it('reads version from the CLI package when cwd is unrelated', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf-8')) as { version?: string };
+    const previousCwd = process.cwd();
+    const tempDir = mkdtempSync(join(tmpdir(), 'cihub-cli-version-'));
+
+    try {
+      process.chdir(tempDir);
+      expect(renderVersion()).toContain(pkg.version as string);
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });
