@@ -60,7 +60,7 @@ function setWindowsUserPath(dir) {
 function ensureRepoCliOnPath(repoRoot) {
   const cliDir = path.join(repoRoot, 'bin');
   const cliCommand = 'cihub';
-  const cliEntrypoint = path.join(cliDir, 'cihub.cjs');
+  const cliEntrypoint = process.platform === 'win32' ? path.join(cliDir, 'cihub.cjs') : path.join(cliDir, 'cihub');
 
   if (!existsSync(cliEntrypoint)) {
     return {
