@@ -15,14 +15,18 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 describe('handleAppSseEvent', () => {
   let queryClient: {
+    cancelQueries: ReturnType<typeof vi.fn>;
     invalidateQueries: ReturnType<typeof vi.fn>;
+    removeQueries: ReturnType<typeof vi.fn>;
     setQueryData: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     queryClient = {
+      cancelQueries: vi.fn(),
       invalidateQueries: vi.fn(),
+      removeQueries: vi.fn(),
       setQueryData: vi.fn(),
     };
   });
@@ -72,5 +76,18 @@ describe('handleAppSseEvent', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
+  });
+
+  it('clears app and runtime-health caches on uninstall_success', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'uninstall_success',
+      appUrn: 'plane:ci-marketplace',
+    });
+
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
+    expect(queryClient.cancelQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
+    expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
   });
 });

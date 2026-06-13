@@ -1,6 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import { AppsRepository } from './apps.repository';
@@ -92,7 +92,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
     const app = await this.appsRepository.getAppByUrn(appUrn);
     if (!app) {
-      throw new Error(`App ${appUrn} not found`);
+      throw new NotFoundException(`App ${appUrn} not found`);
     }
 
     return this.collectAppRuntimeHealthForApp(app);

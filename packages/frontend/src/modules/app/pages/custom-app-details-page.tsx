@@ -24,6 +24,7 @@ export const CustomAppDetailsPage = () => {
     ...getAppOptions({ path: { urn: `${params.appId}:_user` } }),
     staleTime: 30_000,
   });
+  const runtimeHealthEnabled = Boolean(getApp.data?.app && getApp.data.app.status !== 'uninstalling');
 
   const { userSettings } = useAppContext();
   const [searchParams] = useSearchParams();
@@ -47,7 +48,7 @@ export const CustomAppDetailsPage = () => {
     queryKey: ['app-runtime-health', `${params.appId}:_user`],
     queryFn: () => fetchAppRuntimeHealth(`${params.appId}:_user`),
     refetchInterval: 15_000,
-    enabled: Boolean(getApp.data?.app),
+    enabled: runtimeHealthEnabled,
   });
 
   const handleImageUpload = (file: File) => {
