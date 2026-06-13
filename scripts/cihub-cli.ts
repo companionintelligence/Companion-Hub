@@ -10,6 +10,8 @@ import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-p
 import { runHubCleanup } from './hub-cleanup-lib';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
 
+declare const CIHUB_BUILD_VERSION: string | undefined;
+
 export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
 
 export type HubEnv = (typeof allowedEnvs)[number];
@@ -55,6 +57,10 @@ const envFileMap: Record<HubEnv, string> = {
 };
 
 function packageVersion(): string {
+  const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
+  const runtimeOverride = process.env.CIHUB_BUILD_VERSION?.trim() || '';
+  if (buildVersion) return buildVersion;
+  if (runtimeOverride) return runtimeOverride;
   try {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as {
       version?: string;

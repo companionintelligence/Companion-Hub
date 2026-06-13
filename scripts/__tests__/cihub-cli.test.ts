@@ -172,6 +172,20 @@ describe('renderVersion', () => {
     expect(renderVersion()).toContain('cihub');
   });
 
+  it('prefers CIHUB_BUILD_VERSION when provided', () => {
+    const previous = process.env.CIHUB_BUILD_VERSION;
+    process.env.CIHUB_BUILD_VERSION = '9.9.9';
+    try {
+      expect(renderVersion()).toContain('9.9.9');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CIHUB_BUILD_VERSION;
+      } else {
+        process.env.CIHUB_BUILD_VERSION = previous;
+      }
+    }
+  });
+
   it('reads version from package.json', () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version?: string };
     if (pkg.version) {
