@@ -137,16 +137,22 @@ jobs:
         shell: bash
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
-            echo "CI_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
+            {
+              echo "CI_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
           else
-            echo "CI_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV
-            echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV
-            echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
+            {
+              echo "CI_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
           fi
-          echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
-          echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
+          {
+            echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
+          } >> "$GITHUB_ENV"
       - name: Build frontend
         if: env.BUILD_ENABLED
         env:
@@ -223,6 +229,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm certificate.p12
+      - name: Sign bundled macOS CLI resource
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          chmod 755 "$CLI_OUT"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
+          codesign --verify --verbose=2 "$CLI_OUT"
       - name: Build Tauri app (signed)
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
@@ -274,10 +290,11 @@ jobs:
           }
 
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            # deb/rpm bundle offline; build them once, then retry the flaky AppImage.
+            # The required Linux desktop release artifacts are deb/rpm only.
+            # AppImage is excluded here because linuxdeploy on GitHub ARM runners
+            # is flaky enough to break otherwise successful ARM64 releases.
             npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
             sh scripts/patch-deb-maintainer-scripts.sh
-            retry_build "${base_args[@]}" -b appimage
           else
             retry_build "${base_args[@]}"
           fi
@@ -412,7 +429,7 @@ jobs:
       - name: Collect all files
         run: |
           mkdir -p release-files
-          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
+          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
           echo "=== All release files ==="
           ls -lh release-files/
       - name: Create GitHub Release
@@ -433,8 +450,8 @@ jobs:
             | **Windows (ARM64)** | `.msi` or `-setup.exe` | Windows on ARM (Snapdragon and other ARM64 PCs) |
             | **macOS (Apple Silicon)** | `.dmg` | M1/M2/M3/M4 Macs |
             | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
-            | **Linux (x64)** | `.deb`, `.rpm`, or `.AppImage` | Ubuntu/Debian, Fedora/RHEL, or universal |
-            | **Linux (ARM64)** | `.deb`, `.rpm`, or `.AppImage` | Raspberry Pi, ARM servers |
+            | **Linux (x64)** | `.deb` or `.rpm` | Ubuntu/Debian or Fedora/RHEL |
+            | **Linux (ARM64)** | `.deb` or `.rpm` | Raspberry Pi, ARM servers |
             ### Requirements
             - Docker must be installed and running
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
@@ -498,19 +515,12 @@ jobs:
           for f in artifacts/release-x86_64-unknown-linux-gnu/*.rpm; do
             [ -f "$f" ] && upload "$VERSION/linux/rpm/x64/$(basename "$f")" "$f"
           done
-          for f in artifacts/release-x86_64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/x64/$(basename "$f")" "$f"
-          done
-
           # Linux ARM64
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.deb; do
             [ -f "$f" ] && upload "$VERSION/linux/deb/arm/$(basename "$f")" "$f"
           done
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.rpm; do
             [ -f "$f" ] && upload "$VERSION/linux/rpm/arm/$(basename "$f")" "$f"
-          done
-          for f in artifacts/release-aarch64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/arm/$(basename "$f")" "$f"
           done
 
       - name: Generate and upload manifest.json
@@ -537,8 +547,8 @@ jobs:
             ['windows-aarch64', 'release-aarch64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
             ['darwin-aarch64', 'release-aarch64-apple-darwin', { dmg: '.dmg' }],
             ['darwin-x86_64', 'release-x86_64-apple-darwin', { dmg: '.dmg' }],
-            ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
-            ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
+            ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
+            ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
           ];
 
           for (const [platform, artifactDir, formats] of mappings) {
@@ -559,8 +569,8 @@ jobs:
                 else if (platform.startsWith('windows')) r2Path = 'windows/x64';
                 else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
                 else if (platform === 'darwin-x86_64') r2Path = 'macos/intel';
-                else if (platform === 'linux-x86_64') r2Path = fmt === 'appimage' ? 'linux/appimage/x64' : 'linux/' + fmt + '/x64';
-                else r2Path = fmt === 'appimage' ? 'linux/appimage/arm' : 'linux/' + fmt + '/arm';
+                else if (platform === 'linux-x86_64') r2Path = 'linux/' + fmt + '/x64';
+                else r2Path = 'linux/' + fmt + '/arm';
                 platformData[fmt] = {
                   url: 'https://dl.ci.computer/$VERSION/' + r2Path + '/' + encodedFile,
                   size: stat.size,
@@ -584,7 +594,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          echo '{"version":"${{ inputs.tag }}","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > /tmp/latest.json
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "{\"version\":\"${{ inputs.tag }}\",\"date\":\"${DATE}\"}" > /tmp/latest.json
           wrangler r2 object put --remote "dl-prod/latest.json" --file /tmp/latest.json
 
   finalize-release-page:

@@ -73,20 +73,26 @@ jobs:
             ENV="dev"
           fi
 
-          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
           if [ "$ENV" = "production" ]; then
-            echo "docker_tag=latest" >> $GITHUB_OUTPUT
-            echo "container_tag=ci-os-hub:latest" >> $GITHUB_OUTPUT
-            echo "portal_registry=hub.ci.computer" >> $GITHUB_OUTPUT
+            {
+              echo "docker_tag=latest"
+              echo "container_tag=ci-os-hub:latest"
+              echo "portal_registry=hub.ci.computer"
+            } >> "$GITHUB_OUTPUT"
           elif [ "$ENV" = "staging" ]; then
-            echo "docker_tag=staging" >> $GITHUB_OUTPUT
-            echo "container_tag=ci-os-hub:staging" >> $GITHUB_OUTPUT
-            echo "portal_registry=portal.companionintel.com" >> $GITHUB_OUTPUT
+            {
+              echo "docker_tag=staging"
+              echo "container_tag=ci-os-hub:staging"
+              echo "portal_registry=portal.companionintel.com"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "docker_tag=dev" >> $GITHUB_OUTPUT
-            echo "container_tag=ci-os-hub:dev" >> $GITHUB_OUTPUT
-            echo "portal_registry=hub.companionintelligence.com" >> $GITHUB_OUTPUT
+            {
+              echo "docker_tag=dev"
+              echo "container_tag=ci-os-hub:dev"
+              echo "portal_registry=hub.companionintelligence.com"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Extract metadata (tags, labels) for Docker

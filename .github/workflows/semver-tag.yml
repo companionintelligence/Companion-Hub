@@ -9,12 +9,7 @@ on:
       bump:
         description: "Force bump type (patch/minor/major)"
         required: false
-        type: choice
-        options:
-          - ""
-          - patch
-          - minor
-          - major
+        type: string
 
 permissions:
   contents: write
@@ -159,9 +154,11 @@ jobs:
       - name: Summary
         if: steps.tag.outputs.tag
         run: |
-          echo "### 🏷️ Tagged ${{ steps.tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Bump type: **${{ steps.bump.outputs.type }}**" >> "$GITHUB_STEP_SUMMARY"
-          echo "Version: **${{ steps.tag.outputs.version }}**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This tag will trigger the [Release Workflow](https://github.com/${{ github.repository }}/actions/workflows/release.yml)." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### 🏷️ Tagged ${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo "Bump type: **${{ steps.bump.outputs.type }}**"
+            echo "Version: **${{ steps.tag.outputs.version }}**"
+            echo ""
+            echo "This tag will trigger the [Release Workflow](https://github.com/${{ github.repository }}/actions/workflows/release.yml)."
+          } >> "$GITHUB_STEP_SUMMARY"

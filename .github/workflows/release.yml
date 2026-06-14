@@ -17,13 +17,13 @@ jobs:
       - name: Set release type
         id: set-type
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          if [[ $TAG == *-alpha* ]]; then
-            echo "release_type=alpha" >> $GITHUB_OUTPUT
-          elif [[ $TAG == *-beta* ]]; then
-            echo "release_type=beta" >> $GITHUB_OUTPUT
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG" == *-alpha* ]]; then
+            echo "release_type=alpha" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAG" == *-beta* ]]; then
+            echo "release_type=beta" >> "$GITHUB_OUTPUT"
           else
-            echo "release_type=release" >> $GITHUB_OUTPUT
+            echo "release_type=release" >> "$GITHUB_OUTPUT"
           fi
 
   integration-tests:

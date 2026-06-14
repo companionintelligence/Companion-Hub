@@ -75,22 +75,22 @@ jobs:
               {\"server\":\"core-13\",\"ip\":\"$CORE_13_IP\",\"batch\":7},
               {\"server\":\"beta-1\",\"ip\":\"$BETA_1_IP\",\"batch\":8},
               {\"server\":\"beta-red\",\"ip\":\"$BETA_RED_IP\",\"batch\":9}
-            ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=126" >> $GITHUB_OUTPUT
+            ]}" >> "$GITHUB_OUTPUT"
+            echo "total_apps=126" >> "$GITHUB_OUTPUT"
             
           elif [[ "$MODE" == "high-priority" ]]; then
             # High priority apps only (9 apps, single server)
             echo "matrix={\"include\":[
               {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":\"high\"}
-            ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=9" >> $GITHUB_OUTPUT
+            ]}" >> "$GITHUB_OUTPUT"
+            echo "total_apps=9" >> "$GITHUB_OUTPUT"
             
           elif [[ "$MODE" == "single-batch" ]]; then
             SERVER="${{ github.event.inputs.server || 'core-1' }}"
             BATCH="${{ github.event.inputs.batch || '0' }}"
             
             # Map server to IP via env vars (values come from secrets)
-            case $SERVER in
+            case "$SERVER" in
               core-1)  IP="$CORE_1_IP" ;;
               core-2)  IP="$CORE_2_IP" ;;
               core-5)  IP="$CORE_5_IP" ;;
@@ -103,15 +103,15 @@ jobs:
               beta-red)   IP="$BETA_RED_IP" ;;
             esac
             
-            echo "matrix={\"include\":[{\"server\":\"$SERVER\",\"ip\":\"$IP\",\"batch\":$BATCH}]}" >> $GITHUB_OUTPUT
-            echo "total_apps=13" >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[{\"server\":\"$SERVER\",\"ip\":\"$IP\",\"batch\":$BATCH}]}" >> "$GITHUB_OUTPUT"
+            echo "total_apps=13" >> "$GITHUB_OUTPUT"
             
           elif [[ "$MODE" == "quick" ]]; then
             # Quick smoke test - 10 essential apps on one server
             echo "matrix={\"include\":[
               {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":\"quick\"}
-            ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=10" >> $GITHUB_OUTPUT
+            ]}" >> "$GITHUB_OUTPUT"
+            echo "total_apps=10" >> "$GITHUB_OUTPUT"
           fi
 
   test-batch:
@@ -138,7 +138,7 @@ jobs:
       - name: Verify connectivity
         run: |
           echo "Testing connection to ${{ matrix.server }} (${{ matrix.ip }})..."
-          ping -c 3 ${{ matrix.ip }}
+          ping -c 3 "${{ matrix.ip }}"
 
       - name: Prepare test environment
         run: |
@@ -165,16 +165,18 @@ jobs:
       - name: Run catalog tests
         id: run-tests
         run: |
-          BATCH="${{ matrix.batch }}"
-          
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${{ env.SSH_USER }}@${{ matrix.ip }} << ENDSSH
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 "${{ env.SSH_USER }}@${{ matrix.ip }}" 'bash -s' << 'ENDSSH'
             cd ~/devel/CI-Hub
             
             # Set environment
-            export BATCH=$BATCH
+            export BATCH='${{ matrix.batch }}'
             export TEST_DOMAIN=test.ci.computer
             export E2E_TEST_EMAIL=e2e-test@ci.computer
-            export E2E_TEST_PASSWORD="${{ secrets.E2E_TEST_PASSWORD }}"
+            E2E_TEST_PASSWORD="$(cat <<'__CI_HUB_E2E_PASSWORD__'
+            ${{ secrets.E2E_TEST_PASSWORD }}
+            __CI_HUB_E2E_PASSWORD__
+            )"
+            export E2E_TEST_PASSWORD
             mkdir -p e2e/results
             
             # Determine test file
@@ -322,7 +324,7 @@ jobs:
           SCRIPT
 
       - name: Post summary
-        run: cat fleet-report.md >> $GITHUB_STEP_SUMMARY
+        run: cat fleet-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unified report
         uses: actions/upload-artifact@v7
@@ -342,20 +344,22 @@ jobs:
         id: status
         run: |
           if [[ "${{ needs.test-batch.result }}" == "success" ]]; then
-            echo "status=✅ Passed" >> $GITHUB_OUTPUT
-            echo "color=3066993" >> $GITHUB_OUTPUT
+            echo "status=✅ Passed" >> "$GITHUB_OUTPUT"
+            echo "color=3066993" >> "$GITHUB_OUTPUT"
           elif [[ "${{ needs.test-batch.result }}" == "failure" ]]; then
-            echo "status=❌ Failed" >> $GITHUB_OUTPUT
-            echo "color=15158332" >> $GITHUB_OUTPUT
+            echo "status=❌ Failed" >> "$GITHUB_OUTPUT"
+            echo "color=15158332" >> "$GITHUB_OUTPUT"
           else
-            echo "status=⚠️ Partial" >> $GITHUB_OUTPUT
-            echo "color=16776960" >> $GITHUB_OUTPUT
+            echo "status=⚠️ Partial" >> "$GITHUB_OUTPUT"
+            echo "color=16776960" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Send Discord notification
-        if: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
         run: |
-          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+          curl -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d '{
               "embeds": [{

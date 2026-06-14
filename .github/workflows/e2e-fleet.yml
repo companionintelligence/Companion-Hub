@@ -70,23 +70,23 @@ jobs:
         id: server-ip
         run: |
           SERVER="${{ github.event.inputs.server || 'core-6' }}"
-          case $SERVER in
-            core-1)   echo "ip=${{ env.CORE_1_IP }}" >> $GITHUB_OUTPUT ;;
-            core-2)   echo "ip=${{ env.CORE_2_IP }}" >> $GITHUB_OUTPUT ;;
-            core-5)   echo "ip=${{ env.CORE_5_IP }}" >> $GITHUB_OUTPUT ;;
-            core-6)     echo "ip=${{ env.CORE_6_IP }}" >> $GITHUB_OUTPUT ;;
-            core-8)     echo "ip=${{ env.CORE_8_IP }}" >> $GITHUB_OUTPUT ;;
-            core-9)     echo "ip=${{ env.CORE_9_IP }}" >> $GITHUB_OUTPUT ;;
-            core-10)    echo "ip=${{ env.CORE_10_IP }}" >> $GITHUB_OUTPUT ;;
-            core-13)    echo "ip=${{ env.CORE_13_IP }}" >> $GITHUB_OUTPUT ;;
-            beta-1)     echo "ip=${{ env.BETA_1_IP }}" >> $GITHUB_OUTPUT ;;
-            beta-red)   echo "ip=${{ env.BETA_RED_IP }}" >> $GITHUB_OUTPUT ;;
+          case "$SERVER" in
+            core-1)   echo "ip=${{ env.CORE_1_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-2)   echo "ip=${{ env.CORE_2_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-5)   echo "ip=${{ env.CORE_5_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-6)   echo "ip=${{ env.CORE_6_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-8)   echo "ip=${{ env.CORE_8_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-9)   echo "ip=${{ env.CORE_9_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-10)  echo "ip=${{ env.CORE_10_IP }}" >> "$GITHUB_OUTPUT" ;;
+            core-13)  echo "ip=${{ env.CORE_13_IP }}" >> "$GITHUB_OUTPUT" ;;
+            beta-1)   echo "ip=${{ env.BETA_1_IP }}" >> "$GITHUB_OUTPUT" ;;
+            beta-red) echo "ip=${{ env.BETA_RED_IP }}" >> "$GITHUB_OUTPUT" ;;
           esac
-          echo "server=$SERVER" >> $GITHUB_OUTPUT
+          echo "server=$SERVER" >> "$GITHUB_OUTPUT"
 
       - name: Verify Tailscale connectivity
         run: |
-          ping -c 3 ${{ steps.server-ip.outputs.ip }} || exit 1
+          ping -c 3 "${{ steps.server-ip.outputs.ip }}" || exit 1
           echo "Successfully connected to ${{ steps.server-ip.outputs.server }}"
 
       - name: Install dependencies
@@ -94,7 +94,9 @@ jobs:
 
       - name: Get installed playwright version
         id: playwright-version
-        run: echo "version=$(node -e "console.log(require('./package.json').devDependencies['@playwright/test'])")" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="$(node -p "require('./package.json').devDependencies['@playwright/test']")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright binaries
         uses: actions/cache@v4
@@ -126,18 +128,18 @@ jobs:
         run: |
           SUITE="${{ github.event.inputs.test_suite || 'all' }}"
           case $SUITE in
-            all)          echo "pattern=e2e/*.spec.ts" >> $GITHUB_OUTPUT ;;
-            ftue)         echo "pattern=e2e/ftue.spec.ts" >> $GITHUB_OUTPUT ;;
-            platform)     echo "pattern=e2e/platform/*.spec.ts" >> $GITHUB_OUTPUT ;;
-            cloudflare)   echo "pattern=e2e/cloudflare.spec.ts" >> $GITHUB_OUTPUT ;;
-            tailscale)    echo "pattern=e2e/tailscale.spec.ts" >> $GITHUB_OUTPUT ;;
-            cloud-account) echo "pattern=e2e/cloud-account.spec.ts" >> $GITHUB_OUTPUT ;;
-            app-lifecycle) echo "pattern=e2e/app-lifecycle.spec.ts" >> $GITHUB_OUTPUT ;;
+            all)           echo "pattern=e2e/*.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            ftue)          echo "pattern=e2e/ftue.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            platform)      echo "pattern=e2e/platform/*.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            cloudflare)    echo "pattern=e2e/cloudflare.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            tailscale)     echo "pattern=e2e/tailscale.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            cloud-account) echo "pattern=e2e/cloud-account.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            app-lifecycle) echo "pattern=e2e/app-lifecycle.spec.ts" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Run Playwright tests
         run: |
-          pnpm exec playwright test ${{ steps.test-pattern.outputs.pattern }} --workers=1
+          pnpm exec playwright test "${{ steps.test-pattern.outputs.pattern }}" --workers=1
         env:
           SERVER_IP: ${{ steps.server-ip.outputs.ip }}
 
@@ -164,13 +166,15 @@ jobs:
     if: always()
     steps:
       - name: Send Discord notification
-        if: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
         run: |
           STATUS="${{ needs.e2e-fleet.result }}"
           SERVER="${{ github.event.inputs.server || 'core-6' }}"
           COLOR=$([[ "$STATUS" == "success" ]] && echo "3066993" || echo "15158332")
 
-          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+          curl -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{
               \"embeds\": [{
