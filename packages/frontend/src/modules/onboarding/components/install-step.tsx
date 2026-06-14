@@ -14,6 +14,8 @@ interface InstallStepProps {
   apps: OnboardingApp[];
   /** Exposure mode to use for all onboarding installs. Defaults to 'cloudflare'. */
   defaultExposureMode?: 'cloudflare' | 'tailscale' | 'local';
+  /** Operator email/username used for sensible app-specific install defaults. */
+  operatorUsername?: string;
   /** AI setup configuration from the previous step. */
   aiSetupConfig?: AiSetupConfig;
   onComplete: (summary: InstallSummary) => void;
@@ -53,7 +55,14 @@ interface AiPhaseState {
   error?: string;
 }
 
-export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete, start = true }: InstallStepProps) => {
+export const InstallStep = ({
+  apps,
+  defaultExposureMode = 'cloudflare',
+  operatorUsername,
+  aiSetupConfig,
+  onComplete,
+  start = true,
+}: InstallStepProps) => {
   const { t } = useTranslation();
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
   const [done, setDone] = useState(false);
@@ -68,6 +77,21 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const queryClient = useQueryClient();
+
+  const buildInstallBody = (app: OnboardingApp) => {
+    const body: Record<string, unknown> = {
+      localSubdomain: app.localSubdomain || app.appSlug,
+      exposureMode: defaultExposureMode,
+      exposedLocal: defaultExposureMode === 'cloudflare',
+      openPort: defaultExposureMode === 'local',
+    };
+
+    if (app.appSlug === 'ci-hermes' && operatorUsername?.trim()) {
+      body.GATEWAY_ALLOWED_USERS = operatorUsername.trim();
+    }
+
+    return body;
+  };
 
   // While the install is deferred (start === false), mirror the live selection so the
   // review list below the app picker reflects what the user has chosen.
@@ -312,12 +336,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                localSubdomain: app.localSubdomain || app.appSlug,
-                exposureMode: defaultExposureMode,
-                exposedLocal: defaultExposureMode === 'cloudflare',
-                openPort: defaultExposureMode === 'local',
-              }),
+              body: JSON.stringify(buildInstallBody(app)),
             }),
             minDelay(500),
           ]);
@@ -406,7 +425,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
     };
 
     installAll();
-  }, [apps, start]);
+  }, [apps, defaultExposureMode, operatorUsername, start]);
 
   const statusIcon = (status: AppInstallStatus) => {
     switch (status) {
