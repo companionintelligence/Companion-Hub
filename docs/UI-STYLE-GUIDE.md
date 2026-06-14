@@ -106,8 +106,7 @@ most likely to drift — guard it.
 | `--input`                | `#6992a2`     | Input borders                    |
 | `--ring`                 | `#58ebbf`     | Focus ring (mint)                |
 
-Full values, including `--chart-*` and `--sidebar-*`, are in the **Appendix** as a copy-paste
-`globals.css` block.
+Full values, including `--chart-*` and `--sidebar-*`, are in the **Appendix** as a copy-pasteable **hex reference** token block (source `globals.css` authors in `oklch()`).
 
 ### 3.3 Color notation
 
