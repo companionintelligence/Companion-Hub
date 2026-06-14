@@ -344,6 +344,48 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_SCHEME')).toBe('http');
     });
 
+    it('should normalize the listen-all internal IP (0.0.0.0) to loopback for URL/origin vars', async () => {
+      // Regression: origin-strict apps (e.g. AirTrail / SvelteKit adapter-node) derive
+      // their CSRF ORIGIN from ${APP_DOMAIN}. With the shipped default INTERNAL_IP=0.0.0.0
+      // the browser actually reaches the app at 127.0.0.1, so an ORIGIN of
+      // http://0.0.0.0:PORT never matches the request Origin and the first-run setup POST
+      // is rejected ("Cross-site POST form submissions are forbidden"). The URL/origin
+      // vars must expose the browser-reachable host, matching how the Hub builds the
+      // app "Open" URL (resolveBrowserHost). APP_HOSTNAME stays raw for bind-address use.
+      // Arrange
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '0.0.0.0',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          ciHubApiKey: 'hub-api-key',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+      const port = 9091;
+
+      // Act
+      await appHelpers.generateEnvFile(testAppUrn, { port });
+
+      // Assert — URL/origin-purpose vars resolve to the browser-reachable loopback
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_HOST')).toBe('127.0.0.1');
+      expect(envMap.get('APP_URL')).toBe('http://127.0.0.1:9091');
+      // ...and never leak the unreachable listen-all address into a browser-facing value
+      expect(envMap.get('APP_DOMAIN')).not.toContain('0.0.0.0');
+      expect(envMap.get('APP_HOST')).not.toContain('0.0.0.0');
+      expect(envMap.get('APP_URL')).not.toContain('0.0.0.0');
+      // APP_HOSTNAME is intentionally left raw — apps use it as a bind/listen address.
+      expect(envMap.get('APP_HOSTNAME')).toBe('0.0.0.0');
+    });
+
     it('should throw error for required form fields', async () => {
       // Arrange
       const appInfoWithRequired = {
