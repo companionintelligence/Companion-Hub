@@ -7,7 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import axios, { type AxiosRequestConfig } from 'axios';
+import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
@@ -130,15 +130,16 @@ export class ReposHelpers {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
-  private getHeaderValue(value: string | string[] | undefined): string {
+  private getHeaderValue(value: AxiosHeaderValue | undefined): string {
     if (Array.isArray(value)) {
-      return value[0] ?? '';
+      const first = value[0];
+      return typeof first === 'string' ? first : typeof first === 'number' || typeof first === 'boolean' ? String(first) : '';
     }
 
-    return value ?? '';
+    return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
   }
 
-  private isAcceptedDescriptionContentType(contentTypeHeader: string | string[] | undefined): boolean {
+  private isAcceptedDescriptionContentType(contentTypeHeader: AxiosHeaderValue | undefined): boolean {
     const contentType = this.getHeaderValue(contentTypeHeader).split(';')[0]?.trim().toLowerCase() ?? '';
 
     if (!contentType) {
