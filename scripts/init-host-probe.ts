@@ -85,9 +85,13 @@ function pickPrimaryFilesystem(filesystems: si.Systeminformation.FsSizeData[]) {
   if (filesystems.length === 0) return null;
 
   if (process.platform === 'win32') {
+    // `fs`/`mount` are typed as required, but real systeminformation output can omit
+    // them for unusual volumes. Optional-chain the string ops so a single sparse drive
+    // entry can't crash the whole host probe — it simply won't match and we fall back
+    // to the first filesystem (and diskMount defaults to 'C:' downstream).
     return (
-      filesystems.find((entry) => entry.mount === 'C:' || entry.fs.toUpperCase().startsWith('C:')) ??
-      filesystems.find((entry) => entry.mount.toUpperCase().startsWith('C')) ??
+      filesystems.find((entry) => entry.mount === 'C:' || entry.fs?.toUpperCase().startsWith('C:')) ??
+      filesystems.find((entry) => entry.mount?.toUpperCase().startsWith('C')) ??
       filesystems[0]
     );
   }
