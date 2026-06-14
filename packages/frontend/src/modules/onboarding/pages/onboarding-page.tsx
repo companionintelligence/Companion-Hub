@@ -139,6 +139,7 @@ function OnboardingWizard() {
           apps={installApps}
           start={true}
           defaultExposureMode={installExposureMode}
+          operatorUsername={user.username}
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
             try {

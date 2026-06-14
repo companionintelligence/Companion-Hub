@@ -106,7 +106,7 @@ describe('InstallStep', () => {
   });
 
   it('flags continuedInBackground when installs end incomplete but are still converging', async () => {
-    mockApiFetch.mockImplementation(async (url: string) => {
+    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
       if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
         return { ok: true, json: async () => ({}) };
       }
@@ -376,6 +376,85 @@ describe('InstallStep', () => {
     expect(await screen.findByTestId('status-failed', {}, { timeout: 12000 })).toBeInTheDocument();
     await waitFor(() => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['installed-apps'] });
+    });
+  });
+
+  it('defaults Hermes allowed users to the operator username during onboarding installs', async () => {
+    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: true, json: async () => ({ requestId: '1' }) };
+      }
+      if (url === '/api/apps/installed') {
+        return {
+          ok: true,
+          json: async () => ({
+            installed: [
+              {
+                info: { urn: 'ci-hermes:store1', name: 'Hermes' },
+                app: { status: 'running' },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(
+      <InstallStep apps={[makeApp('ci-hermes', 'Hermes', 'ci-hermes:store1')]} operatorUsername="operator@example.com" onComplete={onComplete} />,
+    );
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/app-lifecycle/ci-hermes%3Astore1/install',
+        expect.objectContaining({
+          body: JSON.stringify({
+            localSubdomain: 'ci-hermes',
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+            GATEWAY_ALLOWED_USERS: 'operator@example.com',
+          }),
+        }),
+      );
+    });
+  });
+
+  it('does not inject Hermes defaults for other apps', async () => {
+    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: true, json: async () => ({ requestId: '1' }) };
+      }
+      if (url === '/api/apps/installed') {
+        return {
+          ok: true,
+          json: async () => ({
+            installed: [
+              {
+                info: { urn: 'plane:store1', name: 'Plane' },
+                app: { status: 'running' },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} operatorUsername="operator@example.com" onComplete={onComplete} />);
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/app-lifecycle/plane%3Astore1/install',
+        expect.objectContaining({
+          body: JSON.stringify({
+            localSubdomain: 'plane',
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+          }),
+        }),
+      );
     });
   });
 });
