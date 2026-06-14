@@ -60,20 +60,20 @@
  */
 :root {
   --radius: 0.625rem;
-  --background: #f3f3f3;
-  --foreground: #010f16;
-  --card: #f7f7f9;
-  --card-foreground: #041620;
+  --background: oklch(96.415% 0 0);
+  --foreground: oklch(15.775% 0.028 227.251);
+  --card: oklch(97.67% 0.003 286.351);
+  --card-foreground: oklch(19.008% 0.032 234.379);
   --popover: oklch(100% 0 0);
-  --popover-foreground: #041620;
-  --primary: #0f717a;
+  --popover-foreground: oklch(19.008% 0.032 234.379);
+  --primary: oklch(50.2043% 0.0822 204.9225);
   --primary-foreground: oklch(98.4% 0.003 247.858);
   --secondary: oklch(96.8% 0.007 247.896);
-  --secondary-foreground: #0a222e;
+  --secondary-foreground: oklch(23.937% 0.038 233.156);
   --muted: oklch(96.8% 0.007 247.896);
   --muted-foreground: oklch(55.4% 0.046 257.417);
   --accent: oklch(96.8% 0.007 247.896);
-  --accent-foreground: #0a222e;
+  --accent-foreground: oklch(23.937% 0.038 233.156);
   --destructive: oklch(62% 0.22 27);
   --destructive-foreground: oklch(98.4% 0.003 247.858);
   --border: oklch(92.9% 0.013 255.508);
@@ -89,9 +89,9 @@
   --sidebar-primary: oklch(20.8% 0.042 265.755);
   --sidebar-primary-foreground: oklch(98.4% 0.003 247.858);
   --sidebar-accent: oklch(96.8% 0.007 247.896);
-  --sidebar-accent-foreground: #0a222e;
+  --sidebar-accent-foreground: oklch(23.937% 0.038 233.156);
   --sidebar-border: oklch(92.9% 0.013 255.508);
-  --sidebar-ring: #70a6af;
+  --sidebar-ring: oklch(69.074% 0.058 208.988);
 }
 
 /*
@@ -100,47 +100,47 @@
  * Teal accents #2c676d / #409b9b, mint #58ebbf; body copy neutral grey
  */
 .dark {
-  --background: #041620;
-  --foreground: #88a29e;
+  --background: oklch(19.008% 0.032 234.379);
+  --foreground: oklch(69.112% 0.03 185.201);
 
-  --card: #0a222e;
-  --card-foreground: #88a29e;
-  --popover: #0a222e;
-  --popover-foreground: #88a29e;
+  --card: oklch(23.937% 0.038 233.156);
+  --card-foreground: oklch(69.112% 0.03 185.201);
+  --popover: oklch(23.937% 0.038 233.156);
+  --popover-foreground: oklch(69.112% 0.03 185.201);
 
-  --primary: #abd4d8;
-  --primary-foreground: #041620;
+  --primary: oklch(84.195% 0.043 203.701);
+  --primary-foreground: oklch(19.008% 0.032 234.379);
 
-  --secondary: #0a222e;
-  --secondary-foreground: #f5f8fa;
+  --secondary: oklch(23.937% 0.038 233.156);
+  --secondary-foreground: oklch(97.742% 0.004 236.496);
 
-  --muted: #0a222e;
-  --muted-foreground: #8f98a3;
+  --muted: oklch(23.937% 0.038 233.156);
+  --muted-foreground: oklch(67.595% 0.019 253.397);
 
-  --accent: #2c676d;
-  --accent-foreground: #f5f8fa;
+  --accent: oklch(47.7468% 0.0615 204.345);
+  --accent-foreground: oklch(97.742% 0.004 236.496);
 
-  --destructive: #ef7070;
-  --destructive-foreground: #f5f8fa;
+  --destructive: oklch(69.638% 0.157 21.99);
+  --destructive-foreground: oklch(97.742% 0.004 236.496);
 
-  --border: #2c676d;
-  --input: #6992a2;
-  --ring: #58ebbf;
+  --border: oklch(47.7468% 0.0615 204.345);
+  --input: oklch(63.571% 0.051 224.103);
+  --ring: oklch(84.973% 0.141 169.678);
 
-  --chart-1: #58ebbf;
-  --chart-2: #409b9b;
-  --chart-3: #079d99;
-  --chart-4: #70a6af;
-  --chart-5: #2c676d;
+  --chart-1: oklch(84.973% 0.141 169.678);
+  --chart-2: oklch(63.5528% 0.0856 195.2151);
+  --chart-3: oklch(62.9189% 0.1072 191.5661);
+  --chart-4: oklch(69.074% 0.058 208.988);
+  --chart-5: oklch(47.7468% 0.0615 204.345);
 
-  --sidebar: #041620;
-  --sidebar-foreground: #f5f8fa;
-  --sidebar-primary: #abd4d8;
-  --sidebar-primary-foreground: #041620;
-  --sidebar-accent: #1d293d;
-  --sidebar-accent-foreground: #f5f8fa;
-  --sidebar-border: #2c676d;
-  --sidebar-ring: #58ebbf;
+  --sidebar: oklch(19.008% 0.032 234.379);
+  --sidebar-foreground: oklch(97.742% 0.004 236.496);
+  --sidebar-primary: oklch(84.195% 0.043 203.701);
+  --sidebar-primary-foreground: oklch(19.008% 0.032 234.379);
+  --sidebar-accent: oklch(27.989% 0.041 260.329);
+  --sidebar-accent-foreground: oklch(97.742% 0.004 236.496);
+  --sidebar-border: oklch(47.7468% 0.0615 204.345);
+  --sidebar-ring: oklch(84.973% 0.141 169.678);
 
   --tblr-bg-surface: #1d293d;
   --tblr-border-color: #2c676d;
