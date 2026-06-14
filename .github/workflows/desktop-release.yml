@@ -167,7 +167,7 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             CLI_OUT="${CLI_OUT}.exe"
           fi
-          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT"
+          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
           ls -lh "$CLI_OUT"
       - name: Upload frontend source maps to Sentry
         if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED

@@ -1,12 +1,19 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const { DEFAULT_OUTDIR, artifactFilename, detectHostRustTarget, parseArgs, resolveOutputPath, resolveStandaloneTarget } =
+const { DEFAULT_OUTDIR, artifactFilename, bunTargetCandidates, detectHostRustTarget, parseArgs, resolveOutputPath, resolveStandaloneTarget } =
   require('../build-standalone-cli.cjs') as {
     DEFAULT_OUTDIR: string;
     artifactFilename: (target: { platformKey: string; archKey: string; extension: string }) => string;
+    bunTargetCandidates: (
+      target: {
+        bunTarget: string;
+        bunTargets: string[];
+      },
+      allowFallback?: boolean,
+    ) => string[];
     detectHostRustTarget: () => string;
-    parseArgs: (args: string[]) => { target?: string; outdir: string; outfile?: string; help?: boolean };
+    parseArgs: (args: string[]) => { target?: string; outdir: string; outfile?: string; bundleResource?: boolean; help?: boolean };
     resolveOutputPath: (
       target: {
         platformKey: string;
@@ -53,11 +60,26 @@ describe('build-standalone-cli target mapping', () => {
     expect(parsed.outfile).toBe(path.resolve(process.cwd(), 'packages/desktop/src-tauri/resources/cihub'));
   });
 
+  it('accepts the bundle-resource flag', () => {
+    const parsed = parseArgs(['--outfile', 'packages/desktop/src-tauri/resources/cihub', '--bundle-resource']);
+    expect(parsed.bundleResource).toBe(true);
+  });
+
   it('rejects a missing outfile value passed as a separate argument', () => {
     expect(() => parseArgs(['--outfile'])).toThrow('--outfile requires a path value');
   });
 
   it('rejects an empty outfile value passed with equals syntax', () => {
     expect(() => parseArgs(['--outfile='])).toThrow('--outfile requires a path value');
+  });
+
+  it('keeps the preferred bun target first and adds fallbacks afterward', () => {
+    const target = resolveStandaloneTarget('x86_64-pc-windows-msvc');
+    expect(bunTargetCandidates(target)).toEqual(['bun-windows-x64-baseline', 'bun-windows-x64', 'bun-windows-x64-modern']);
+  });
+
+  it('can disable bun target fallbacks for explicit bun-target requests', () => {
+    const target = resolveStandaloneTarget('bun-windows-x64-modern');
+    expect(bunTargetCandidates(target, false)).toEqual(['bun-windows-x64-modern']);
   });
 });

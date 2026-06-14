@@ -50,7 +50,7 @@ if (!existsSync(frontendDist)) {
   execSync('pnpm --dir ../frontend run build', options);
 }
 
-execSync(`node ../../scripts/build-standalone-cli.cjs --outfile "${standaloneCliOut}"`, options);
+execSync(`node ../../scripts/build-standalone-cli.cjs --outfile "${standaloneCliOut}" --bundle-resource`, options);
 
 execSync('cargo tauri build', options);
 

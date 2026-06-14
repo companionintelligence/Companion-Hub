@@ -1,4 +1,4 @@
-const { existsSync, mkdirSync, readFileSync, rmSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -102,6 +102,14 @@ function resolveOutputPath(target, outdir = DEFAULT_OUTDIR) {
   return path.join(outdir, artifactFilename(target));
 }
 
+function bunTargetCandidates(target, allowFallback = true) {
+  if (!allowFallback) {
+    return [target.bunTarget];
+  }
+
+  return [target.bunTarget, ...target.bunTargets.filter((candidate) => candidate !== target.bunTarget)];
+}
+
 function requireOptionValue(argv, index, optionName) {
   const value = argv[index + 1];
   if (!value || value.startsWith('--')) {
@@ -114,6 +122,7 @@ function parseArgs(argv) {
   let target;
   let outdir = DEFAULT_OUTDIR;
   let outfile;
+  let bundleResource = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -155,28 +164,33 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') {
       return { help: true };
     }
+    if (arg === '--bundle-resource') {
+      bundleResource = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { target, outdir, outfile };
+  return { target, outdir, outfile, bundleResource };
 }
 
 function printHelp() {
   console.log(`Build a standalone Companion Hub CLI binary with Bun.
 
 Usage:
-  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>] [--outfile <file>]
+  node scripts/build-standalone-cli.cjs [--target <rust-target|bun-target>] [--outdir <dir>] [--outfile <file>] [--bundle-resource]
 
 Options:
   --target <rust-target|bun-target>  Build for a specific standalone target
   --outdir <dir>                     Write the default artifact name into this directory
   --outfile <file>                  Write the binary to an explicit output path
+  --bundle-resource                 Strip Unix execute bits so Tauri bundles the CLI as data
 
 Examples:
   node scripts/build-standalone-cli.cjs
   node scripts/build-standalone-cli.cjs --target x86_64-unknown-linux-gnu
   node scripts/build-standalone-cli.cjs --target bun-darwin-arm64 --outdir packages/desktop/src-tauri/resources/cli
-  node scripts/build-standalone-cli.cjs --outfile packages/desktop/src-tauri/resources/cihub
+  node scripts/build-standalone-cli.cjs --outfile packages/desktop/src-tauri/resources/cihub --bundle-resource
 `);
 }
 
@@ -184,6 +198,8 @@ function buildStandaloneCli(options = {}) {
   const target = resolveStandaloneTarget(options.target);
   const outdir = options.outdir || DEFAULT_OUTDIR;
   const outfile = options.outfile || resolveOutputPath(target, outdir);
+  const allowFallback = !options.target || options.target === target.rustTarget;
+  const candidates = bunTargetCandidates(target, allowFallback);
   const version = readPackageVersion();
 
   mkdirSync(path.dirname(outfile), { recursive: true });
@@ -191,40 +207,48 @@ function buildStandaloneCli(options = {}) {
     rmSync(outfile, { force: true });
   }
 
-  const result = spawnSync(
-    'bun',
-    [
-      'build',
-      '--compile',
-      `--target=${target.bunTarget}`,
-      '--outfile',
-      outfile,
-      '--define',
-      `CIHUB_BUILD_VERSION=${JSON.stringify(version)}`,
-      ENTRYPOINT,
-    ],
-    {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-      env: process.env,
-    },
-  );
+  let builtTarget = target.bunTarget;
 
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(`bun build failed for ${target.bunTarget} with exit code ${result.status}`);
+  for (const bunTarget of candidates) {
+    const result = spawnSync(
+      'bun',
+      ['build', '--compile', `--target=${bunTarget}`, '--outfile', outfile, '--define', `CIHUB_BUILD_VERSION=${JSON.stringify(version)}`, ENTRYPOINT],
+      {
+        cwd: REPO_ROOT,
+        stdio: 'inherit',
+        env: process.env,
+      },
+    );
+
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status === 0) {
+      builtTarget = bunTarget;
+      break;
+    }
+
+    rmSync(outfile, { force: true });
+    if (allowFallback && bunTarget !== candidates[candidates.length - 1]) {
+      console.warn(`bun build failed for ${bunTarget}; trying fallback target...`);
+      continue;
+    }
+
+    throw new Error(`bun build failed for ${bunTarget} with exit code ${result.status}`);
   }
   if (!existsSync(outfile)) {
     throw new Error(`Standalone CLI build completed without producing ${outfile}`);
+  }
+
+  if (options.bundleResource && target.extension !== '.exe') {
+    chmodSync(outfile, 0o644);
   }
 
   return {
     version,
     outfile,
     artifactFilename: artifactFilename(target),
-    target,
+    target: { ...target, bunTarget: builtTarget },
   };
 }
 
@@ -247,6 +271,7 @@ module.exports = {
   DEFAULT_OUTDIR,
   SUPPORTED_TARGETS,
   artifactFilename,
+  bunTargetCandidates,
   buildStandaloneCli,
   detectHostRustTarget,
   parseArgs,
