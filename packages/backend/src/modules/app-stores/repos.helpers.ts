@@ -220,16 +220,12 @@ export class ReposHelpers {
                 validateStatus: () => true,
               });
               if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
-                const contentTypeHeader = descriptionRes.headers['content-type'];
-                const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
-                if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-                  const descriptionText = descriptionRes.data;
-                  if (descriptionText.trim().length > 0) {
-                    markdownDescription = descriptionText;
-                    const metadataDir = path.join(appDir, 'metadata');
-                    await this.ensureDirectoryWithPermissions(metadataDir);
-                    await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
-                  }
+                const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
+                if (descriptionText.trim().length > 0) {
+                  markdownDescription = descriptionText;
+                  const metadataDir = path.join(appDir, 'metadata');
+                  await this.ensureDirectoryWithPermissions(metadataDir);
+                  await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
                 }
               }
             } catch {

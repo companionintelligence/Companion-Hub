@@ -133,6 +133,42 @@ describe('ReposHelpers', () => {
       expect(writtenConfig).toHaveProperty('supported_architectures', ['amd64', 'arm64']);
     });
 
+    it('uses metadata/description.md for the full app description', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', description: 'Config fallback description' }],
+      });
+
+      axiosMock.get.mockImplementation(async (url: string) => {
+        if (url === 'http://cloud.api/store/app1/metadata/description.md') {
+          return {
+            status: 200,
+            statusText: 'OK',
+            headers: { 'content-type': 'image/jpeg' },
+            data: '# Markdown description',
+          };
+        }
+
+        return {
+          status: 404,
+          statusText: 'Not Found',
+          headers: {},
+          data: '',
+        };
+      });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const descriptionCall = calls.find((call: any[]) => call[0].includes('app1/metadata/description.md'));
+      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+
+      expect(descriptionCall).toBeDefined();
+      expect(descriptionCall[1]).toBe('# Markdown description');
+      expect(JSON.parse(configCall[1]).description).toBe('# Markdown description');
+    });
+
     it('retries transient CI Cloud HTTP failures before succeeding', async () => {
       axiosMock.request
         .mockResolvedValueOnce({ status: 503, statusText: 'Service Unavailable', data: {} })
