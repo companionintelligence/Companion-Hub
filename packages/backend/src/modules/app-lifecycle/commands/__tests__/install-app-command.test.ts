@@ -141,6 +141,71 @@ describe('InstallAppCommand — pull policy', () => {
     } as any);
   });
 
+  it('keeps browser-facing env vars reachable after port allocation (no 0.0.0.0 reintroduced)', async () => {
+    // Regression for the port-allocation rewrite: APP_HOSTNAME stays the raw listen IP
+    // (0.0.0.0) for bind use, but APP_INTERNAL_AUTHORITY / APP_DOMAIN / APP_URL must be
+    // rebuilt from the browser-reachable host. Otherwise allocation overwrites the
+    // loopback host that generateEnvFile wrote and re-breaks CSRF on origin-strict apps.
+    const moduleRef = (command as any).moduleRef;
+    const config = moduleRef.get(ConfigurationService);
+    const afm = moduleRef.get(AppFilesManager);
+    const portManager = moduleRef.get(PortManagerService);
+    // EnvUtils is wired as a real instance in this harness, so its (pure) serializers
+    // run for real — the command rewrites the env map and we parse the captured write.
+    const realEnv = new EnvUtils();
+
+    // Appliance left at the shipped listen-all default.
+    config.getConfig.mockReturnValue({
+      internalIp: '0.0.0.0',
+      directories: { dataDir: '/tmp', appDataDir: '/tmp/app-data' },
+      domain: 'test.local',
+      localDomain: 'local',
+    });
+
+    // Simulate what generateEnvFile already wrote: APP_HOSTNAME raw, browser-facing
+    // vars normalized to loopback, internal (non-exposed) install.
+    afm.getAppEnv.mockResolvedValue({
+      path: '/tmp/.env',
+      content: [
+        'APP_HOSTNAME=0.0.0.0',
+        'APP_EXPOSED=false',
+        'APP_PORT=8080',
+        'APP_INTERNAL_AUTHORITY=127.0.0.1:8080',
+        'APP_DOMAIN=127.0.0.1:8080',
+        'APP_HOST=127.0.0.1',
+        'APP_URL=http://127.0.0.1:8080',
+      ].join('\n'),
+    });
+
+    // Allocate the main port on a DIFFERENT host port than the seed (8090 vs 8080) so the
+    // test also proves the derived URL/origin vars are re-synced to the allocated port,
+    // not just left at their stale value.
+    portManager.allocatePorts.mockResolvedValue([{ label: 'main', hostPort: 8090, containerPort: 8080, protocol: 'tcp' }]);
+
+    const writes: string[] = [];
+    afm.writeAppEnv.mockImplementation(async (_urn: string, content: string) => {
+      writes.push(content);
+    });
+
+    await command.execute(appUrn, {});
+
+    expect(portManager.allocatePorts).toHaveBeenCalled();
+    expect(writes.length).toBeGreaterThan(0);
+    // The first write is the port-allocation rewrite.
+    const written = realEnv.envStringToMap(writes[0]);
+    // Host normalized to loopback (not the raw 0.0.0.0) AND port synced to the allocation.
+    expect(written.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:8090');
+    expect(written.get('APP_DOMAIN')).toBe('127.0.0.1:8090');
+    expect(written.get('APP_URL')).toBe('http://127.0.0.1:8090');
+    expect(written.get('APP_PORT')).toBe('8090');
+    // The bind/listen address is intentionally left raw...
+    expect(written.get('APP_HOSTNAME')).toBe('0.0.0.0');
+    // ...but the unreachable listen-all addr must never leak into a browser-facing value.
+    expect(writes[0]).not.toContain('APP_INTERNAL_AUTHORITY=0.0.0.0');
+    expect(writes[0]).not.toContain('APP_DOMAIN=0.0.0.0');
+    expect(writes[0]).not.toContain('APP_URL=http://0.0.0.0');
+  });
+
   it('MUST NOT include --pull never in compose args', async () => {
     const result = await command.execute(appUrn, {});
 

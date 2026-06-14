@@ -12,6 +12,7 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -214,9 +215,24 @@ export class InstallAppCommand extends AppLifecycleCommand {
               const envMap = envUtils.envStringToMap(appEnvData.content);
               envMap.set('APP_PORT', String(mainAlloc.hostPort));
 
-              // Update APP_INTERNAL_AUTHORITY with allocated port
-              const internalIp = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
-              envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${mainAlloc.hostPort}`);
+              // Rebuild APP_INTERNAL_AUTHORITY with the allocated port. Normalize the host
+              // through resolveBrowserHost so the listen-all sentinel (0.0.0.0 / ::) that
+              // APP_HOSTNAME intentionally preserves for bind/listen use is NOT reintroduced
+              // into a browser-facing value. Without this, port allocation would overwrite
+              // the loopback host that generateEnvFile wrote and re-break CSRF/origin checks
+              // on origin-strict apps (e.g. AirTrail / SvelteKit).
+              const browserHost = resolveBrowserHost(envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp);
+              const internalAuthority = `${browserHost}:${mainAlloc.hostPort}`;
+              envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
+
+              // Keep the derived URL/origin vars in sync with the (possibly reallocated)
+              // port — but only for internal/non-exposed installs. In exposed mode
+              // APP_DOMAIN/APP_HOST/APP_URL hold the public FQDN and must not be clobbered.
+              if (envMap.get('APP_EXPOSED') !== 'true') {
+                envMap.set('APP_HOST', browserHost);
+                envMap.set('APP_DOMAIN', internalAuthority);
+                envMap.set('APP_URL', `http://${internalAuthority}`);
+              }
 
               // Also update form.port so ensureAppDir uses the right port
               form.port = mainAlloc.hostPort;

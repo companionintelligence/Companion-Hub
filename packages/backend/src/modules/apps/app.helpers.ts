@@ -244,12 +244,14 @@ export class AppHelpers {
     envMap.set('APP_HOSTNAME', internalIp);
 
     // Browser-reachable form of the internal IP, used for every URL/origin-purpose
-    // variable below (APP_INTERNAL_AUTHORITY, APP_HOST, APP_DOMAIN, APP_URL). The
-    // listen-all sentinels (0.0.0.0 / :: / empty) are rewritten to 127.0.0.1 because a
-    // browser can never send those as an Origin. This mirrors how the Hub builds the
-    // app "Open" URL (resolveBrowserHost in apps.service), so the ORIGIN we inject into
-    // origin-strict apps (SvelteKit, etc.) matches the URL the browser actually uses and
-    // their POST/CSRF checks pass. Exposed mode is unaffected — it uses the public FQDN.
+    // variable below (APP_INTERNAL_AUTHORITY, APP_HOST, APP_DOMAIN, APP_URL).
+    // resolveBrowserHost() rewrites the listen-all sentinels (0.0.0.0 / :: / empty) to
+    // 127.0.0.1 — a browser can never send those as an Origin — and wraps IPv6 literals
+    // in brackets (e.g. ::1 -> [::1]) so they remain valid inside a URL authority. This
+    // mirrors how the Hub builds the app "Open" URL (same helper in apps.service), so the
+    // ORIGIN we inject into origin-strict apps (SvelteKit, etc.) matches the URL the
+    // browser actually uses and their POST/CSRF checks pass. Exposed mode is unaffected —
+    // it uses the public FQDN.
     const browserHost = resolveBrowserHost(internalIp);
 
     // 2. APP_PORT (Already set earlier): The internal port
