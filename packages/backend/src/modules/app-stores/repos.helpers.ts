@@ -7,7 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import axios, { type AxiosRequestConfig } from 'axios';
+import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
@@ -130,6 +130,33 @@ export class ReposHelpers {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
+  private getHeaderValue(value: AxiosHeaderValue | undefined): string {
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : typeof first === 'number' || typeof first === 'boolean' ? String(first) : '';
+    }
+
+    return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
+  }
+
+  private isAcceptedDescriptionContentType(contentTypeHeader: AxiosHeaderValue | undefined): boolean {
+    const contentType = this.getHeaderValue(contentTypeHeader).split(';')[0]?.trim().toLowerCase() ?? '';
+
+    if (!contentType) {
+      return true;
+    }
+
+    if (contentType === 'text/markdown' || contentType === 'text/x-markdown' || contentType === 'text/plain') {
+      return true;
+    }
+
+    if (contentType === 'text/html' || contentType.startsWith('image/')) {
+      return false;
+    }
+
+    return false;
+  }
+
   /**
    * Given a repo url, clone it to the repos folder if it doesn't exist
    *
@@ -221,15 +248,19 @@ export class ReposHelpers {
               });
               if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
                 const contentTypeHeader = descriptionRes.headers['content-type'];
-                const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : '';
-                if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-                  const descriptionText = descriptionRes.data;
+
+                if (this.isAcceptedDescriptionContentType(contentTypeHeader)) {
+                  const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
                   if (descriptionText.trim().length > 0) {
                     markdownDescription = descriptionText;
                     const metadataDir = path.join(appDir, 'metadata');
                     await this.ensureDirectoryWithPermissions(metadataDir);
                     await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
                   }
+                } else {
+                  this.logger.warn(
+                    `Skipping marketplace description for ${appSlug}: unsupported content-type ${this.getHeaderValue(contentTypeHeader) || '(missing)'}`,
+                  );
                 }
               }
             } catch {
