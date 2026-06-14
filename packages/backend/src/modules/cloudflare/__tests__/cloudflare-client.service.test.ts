@@ -7,6 +7,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import axios from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
+import path from 'node:path';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -86,10 +87,10 @@ describe('CloudflareClientService', () => {
 
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
-      expect(fsSync.existsSync).toHaveBeenCalledWith(`${DATA_DIR}/docker-compose.yml`);
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
+      expect(fsSync.existsSync).toHaveBeenCalledWith(path.join(DATA_DIR, 'docker-compose.yml'));
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${DATA_DIR}/docker-compose.yml`,
+        composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
         profile: 'cloudflare',
       });
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
@@ -101,7 +102,7 @@ describe('CloudflareClientService', () => {
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${APP_DIR}/docker-compose.prod.yml`,
+        composeFile: path.join(APP_DIR, 'docker-compose.prod.yml'),
         profile: 'cloudflare',
       });
     });
@@ -113,7 +114,7 @@ describe('CloudflareClientService', () => {
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${APP_DIR}/docker-compose.local.yml`,
+        composeFile: path.join(APP_DIR, 'docker-compose.local.yml'),
         profile: 'cloudflare',
       });
     });
@@ -134,7 +135,7 @@ describe('CloudflareClientService', () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       // Token file should still be written
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
       // Docker container should NOT be started
       expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
       // Should still return credentials

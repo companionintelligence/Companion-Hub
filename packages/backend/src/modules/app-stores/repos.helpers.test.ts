@@ -8,6 +8,7 @@ import axios from 'axios';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import fs from 'node:fs';
+import path from 'node:path';
 
 // Mock fs module
 vi.mock('node:fs', async () => {
@@ -97,7 +98,10 @@ describe('ReposHelpers', () => {
       // Verify it creates directories and writes files
       expect(fs.promises.mkdir).toHaveBeenCalled();
       // We expect writes for each app's config.json
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('app1/config.json'), expect.stringContaining('"slug": "app1"'));
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.normalize('app1/config.json')),
+        expect.stringContaining('"slug": "app1"'),
+      );
     });
 
     it('should enrich missing metadata for CI Cloud apps', async () => {
@@ -119,7 +123,7 @@ describe('ReposHelpers', () => {
       expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url: 'http://cloud.api/store' }));
 
       const calls = (fs.promises.writeFile as any).mock.calls;
-      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
       expect(configCall).toBeDefined();
 
       const writtenConfig = JSON.parse(configCall[1]);
@@ -161,8 +165,8 @@ describe('ReposHelpers', () => {
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
       const calls = (fs.promises.writeFile as any).mock.calls;
-      const descriptionCall = calls.find((call: any[]) => call[0].includes('app1/metadata/description.md'));
-      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+      const descriptionCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/metadata/description.md')));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
 
       expect(descriptionCall).toBeDefined();
       expect(descriptionCall[1]).toBe('# Markdown description');
@@ -197,8 +201,8 @@ describe('ReposHelpers', () => {
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
       const calls = (fs.promises.writeFile as any).mock.calls;
-      const descriptionCall = calls.find((call: any[]) => call[0].includes('app1/metadata/description.md'));
-      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+      const descriptionCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/metadata/description.md')));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
 
       expect(descriptionCall).toBeUndefined();
       expect(JSON.parse(configCall[1]).description).toBe('Config fallback description');
@@ -287,15 +291,18 @@ describe('ReposHelpers', () => {
       expect(result.success).toBe(true);
       expect(fs.promises.writeFile).toHaveBeenCalledTimes(3);
       expect(fs.promises.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('multi-file-app/docker-compose.yml'),
+        expect.stringContaining(path.normalize('multi-file-app/docker-compose.yml')),
         'services:\n  app:\n    image: nginx',
       );
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/config.json'), '{"name":"multi"}');
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/data/settings.json'), '{"key":"value"}');
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.normalize('multi-file-app/config.json')), '{"name":"multi"}');
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.normalize('multi-file-app/data/settings.json')),
+        '{"key":"value"}',
+      );
 
       // Verify mkdir is called for nested paths (data/ subdirectory)
       const mkdirCalls = (fs.promises.mkdir as any).mock.calls.map((c: any[]) => c[0]);
-      expect(mkdirCalls).toContainEqual(expect.stringContaining('multi-file-app/data'));
+      expect(mkdirCalls).toContainEqual(expect.stringContaining(path.normalize('multi-file-app/data')));
     });
 
     it('should reject responses that do not contain a files object', async () => {
@@ -373,7 +380,7 @@ describe('ReposHelpers', () => {
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'exact-app');
 
       expect(result.success).toBe(true);
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('exact-app/exact.txt'), exactContent);
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.normalize('exact-app/exact.txt')), exactContent);
     });
 
     it('should create directories before writing files', async () => {

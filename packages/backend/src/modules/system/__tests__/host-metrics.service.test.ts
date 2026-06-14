@@ -18,13 +18,26 @@ describe('HostMetricsService', () => {
     filesystemService = mock<FilesystemService>();
     loggerService = mock<LoggerService>();
 
-    (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024 }]);
     (si.mem as any) = vi.fn().mockResolvedValue({
       total: 8 * 1024 * 1024 * 1024,
       available: 4 * 1024 * 1024 * 1024,
     });
     (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Test CPU', manufacturer: 'Test' });
-    (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024, mount: '/' }]);
+    // Realistic systeminformation.fsSize() entry — real data always includes `fs` and
+    // `mount`. The init-host-probe win32 branch reads entry.fs/entry.mount, so omitting
+    // `fs` crashed only on Windows (`entry.fs.toUpperCase()` on undefined).
+    (si.fsSize as any) = vi.fn().mockResolvedValue([
+      {
+        fs: '/dev/sda1',
+        type: 'ext4',
+        size: 100 * 1024 * 1024 * 1024,
+        used: 50 * 1024 * 1024 * 1024,
+        available: 50 * 1024 * 1024 * 1024,
+        use: 50,
+        mount: '/',
+        rw: true,
+      },
+    ]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

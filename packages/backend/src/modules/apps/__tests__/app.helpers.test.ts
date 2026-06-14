@@ -13,6 +13,11 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 
+// APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
+// `\` on Windows. Normalize to POSIX separators before asserting so these path tests
+// stay stable cross-platform (they encode a Linux/container bind-mount contract).
+const toPosix = (p: string) => p.replace(/\\/g, '/');
+
 describe('AppHelpers', () => {
   let appHelpers: AppHelpers;
   let appFilesManager = mock<AppFilesManager>();
@@ -111,7 +116,7 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_PORT')).toBe('9091');
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
-      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
+      expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
       expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
     });
@@ -165,7 +170,7 @@ describe('AppHelpers', () => {
 
       // APP_DATA_DIR must be under ROOT_FOLDER_HOST/app-data so that the bind mount
       // ${ROOT_FOLDER_HOST}/app-data:/app-data aligns with container path /app-data
-      expect(envMap.get('APP_DATA_DIR')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
+      expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
     });
 
     it('should align APP_DATA_DIR host path with container seeded data path', async () => {
@@ -191,12 +196,16 @@ describe('AppHelpers', () => {
 
       await appHelpers.generateEnvFile(testAppUrn, {});
 
-      const appDataDir = envMap.get('APP_DATA_DIR');
-      expect(appDataDir).toBeDefined();
+      const appDataDirRaw = envMap.get('APP_DATA_DIR');
+      expect(appDataDirRaw).toBeDefined();
 
-      if (!appDataDir) {
+      if (!appDataDirRaw) {
         throw new Error('APP_DATA_DIR was not generated');
       }
+
+      // Normalize to POSIX separators — the production path is built with path.join, so
+      // it uses `\` on Windows even though it encodes a Linux bind-mount contract.
+      const appDataDir = toPosix(appDataDirRaw);
 
       // The host path must be: ${ROOT_FOLDER_HOST}/app-data/{storeId}/{appName}
       // The container path is: /app-data/{storeId}/{appName}
