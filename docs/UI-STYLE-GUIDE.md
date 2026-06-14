@@ -259,7 +259,7 @@ also packaged as a Tauri 2 desktop app.
 | UI primitives                   | `packages/frontend/src/components/ui/`                                                               |
 | Button                          | `packages/frontend/src/components/ui/Button/Button.tsx`                                              |
 | Theme provider                  | `packages/frontend/src/components/providers/theme/theme-provider.tsx`                                |
-| Auto/seasonal theme             | `packages/frontend/src/components/providers/theme/auto-theme-provider.tsx`, `src/lib/theme/theme.ts` |
+| Auto/seasonal theme             | `packages/frontend/src/components/providers/theme/auto-theme-provider.tsx`, `packages/frontend/src/lib/theme/theme.ts` |
 | Theme-base selector             | `packages/frontend/src/modules/settings/components/theme-base-selector/`                             |
 | Font load                       | `packages/frontend/src/root.tsx` (Google Fonts `links`)                                              |
 
