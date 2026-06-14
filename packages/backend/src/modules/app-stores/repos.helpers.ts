@@ -130,6 +130,32 @@ export class ReposHelpers {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
+  private getHeaderValue(value: string | string[] | undefined): string {
+    if (Array.isArray(value)) {
+      return value[0] ?? '';
+    }
+
+    return value ?? '';
+  }
+
+  private isAcceptedDescriptionContentType(contentTypeHeader: string | string[] | undefined): boolean {
+    const contentType = this.getHeaderValue(contentTypeHeader).split(';')[0]?.trim().toLowerCase() ?? '';
+
+    if (!contentType) {
+      return true;
+    }
+
+    if (contentType === 'text/markdown' || contentType === 'text/x-markdown' || contentType === 'text/plain') {
+      return true;
+    }
+
+    if (contentType === 'text/html' || contentType.startsWith('image/')) {
+      return false;
+    }
+
+    return false;
+  }
+
   /**
    * Given a repo url, clone it to the repos folder if it doesn't exist
    *
@@ -220,12 +246,20 @@ export class ReposHelpers {
                 validateStatus: () => true,
               });
               if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
-                const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
-                if (descriptionText.trim().length > 0) {
-                  markdownDescription = descriptionText;
-                  const metadataDir = path.join(appDir, 'metadata');
-                  await this.ensureDirectoryWithPermissions(metadataDir);
-                  await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                const contentTypeHeader = descriptionRes.headers['content-type'];
+
+                if (this.isAcceptedDescriptionContentType(contentTypeHeader)) {
+                  const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
+                  if (descriptionText.trim().length > 0) {
+                    markdownDescription = descriptionText;
+                    const metadataDir = path.join(appDir, 'metadata');
+                    await this.ensureDirectoryWithPermissions(metadataDir);
+                    await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                  }
+                } else {
+                  this.logger.warn(
+                    `Skipping marketplace description for ${appSlug}: unsupported content-type ${this.getHeaderValue(contentTypeHeader) || '(missing)'}`,
+                  );
                 }
               }
             } catch {

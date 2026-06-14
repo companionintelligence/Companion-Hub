@@ -145,7 +145,7 @@ describe('ReposHelpers', () => {
           return {
             status: 200,
             statusText: 'OK',
-            headers: { 'content-type': 'image/jpeg' },
+            headers: { 'content-type': 'text/markdown; charset=utf-8' },
             data: '# Markdown description',
           };
         }
@@ -167,6 +167,41 @@ describe('ReposHelpers', () => {
       expect(descriptionCall).toBeDefined();
       expect(descriptionCall[1]).toBe('# Markdown description');
       expect(JSON.parse(configCall[1]).description).toBe('# Markdown description');
+    });
+
+    it('falls back to config description for unsupported description content-types', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', description: 'Config fallback description' }],
+      });
+
+      axiosMock.get.mockImplementation(async (url: string) => {
+        if (url === 'http://cloud.api/store/app1/metadata/description.md') {
+          return {
+            status: 200,
+            statusText: 'OK',
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+            data: '<html>wrong payload</html>',
+          };
+        }
+
+        return {
+          status: 404,
+          statusText: 'Not Found',
+          headers: {},
+          data: '',
+        };
+      });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const descriptionCall = calls.find((call: any[]) => call[0].includes('app1/metadata/description.md'));
+      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+
+      expect(descriptionCall).toBeUndefined();
+      expect(JSON.parse(configCall[1]).description).toBe('Config fallback description');
     });
 
     it('retries transient CI Cloud HTTP failures before succeeding', async () => {
