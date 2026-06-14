@@ -118,7 +118,7 @@ jobs:
           cd packages/desktop
           args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            args+=(-b deb,rpm,appimage)
+            args+=(-b "deb,rpm,appimage")
           fi
           npx --yes @tauri-apps/cli@2 build "${args[@]}"
 

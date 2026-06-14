@@ -29,8 +29,8 @@ jobs:
 
       - name: Add tools to PATH
         run: |
-          echo "$HOME/.bun/bin" >> $GITHUB_PATH
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Build test app images
         run: |
@@ -76,7 +76,7 @@ jobs:
           HUB_DATA=""
           HUB_PID=$(pgrep -f "ci-os-hub-desktop\|ci-hub-desktop\|main\.js" | head -1 || true)
           if [ -n "$HUB_PID" ]; then
-            HUB_DATA=$(tr '\0' '\n' < /proc/$HUB_PID/environ 2>/dev/null \
+            HUB_DATA=$(tr '\0' '\n' < "/proc/$HUB_PID/environ" 2>/dev/null \
               | grep "^CI_HUB_DATA_DIR=" | cut -d= -f2 || true)
           fi
           if [ -z "$HUB_DATA" ]; then
@@ -109,7 +109,7 @@ jobs:
             -d '{"E2E_TEXT_FIELD":"hello-e2e","E2E_PASSWORD":"secret123","E2E_EMAIL":"e2e@test.com","E2E_NUMBER":"42","E2E_URL":"https://example.com","E2E_BOOLEAN":"true"}'
 
           # Wait for running
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             sleep 5
             STATUS=$(docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}" | wc -l)
             echo "Running containers: $STATUS"
