@@ -90,8 +90,8 @@ function pickPrimaryFilesystem(filesystems: si.Systeminformation.FsSizeData[]) {
     // entry can't crash the whole host probe — it simply won't match and we fall back
     // to the first filesystem (and diskMount defaults to 'C:' downstream).
     return (
-      filesystems.find((entry) => entry.mount === 'C:' || entry.fs?.toUpperCase().startsWith('C:')) ??
-      filesystems.find((entry) => entry.mount?.toUpperCase().startsWith('C')) ??
+      filesystems.find((entry) => entry.mount === 'C:' || entry.fs?.toUpperCase()?.startsWith('C:')) ??
+      filesystems.find((entry) => entry.mount?.toUpperCase()?.startsWith('C')) ??
       filesystems[0]
     );
   }
