@@ -165,15 +165,18 @@ jobs:
       - name: Run catalog tests
         id: run-tests
         run: |
-          BATCH="${{ matrix.batch }}"
-          
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 "${{ env.SSH_USER }}@${{ matrix.ip }}" "BATCH='$BATCH' E2E_TEST_PASSWORD='${{ secrets.E2E_TEST_PASSWORD }}' bash -s" << 'ENDSSH'
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 "${{ env.SSH_USER }}@${{ matrix.ip }}" 'bash -s' << 'ENDSSH'
             cd ~/devel/CI-Hub
             
             # Set environment
-            export BATCH="$BATCH"
+            export BATCH='${{ matrix.batch }}'
             export TEST_DOMAIN=test.ci.computer
             export E2E_TEST_EMAIL=e2e-test@ci.computer
+            E2E_TEST_PASSWORD="$(cat <<'__CI_HUB_E2E_PASSWORD__'
+            ${{ secrets.E2E_TEST_PASSWORD }}
+            __CI_HUB_E2E_PASSWORD__
+            )"
+            export E2E_TEST_PASSWORD
             mkdir -p e2e/results
             
             # Determine test file
