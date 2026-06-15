@@ -130,6 +130,47 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vramMb).toBe(24564);
     });
 
+    it('SHALL correct WMI-capped VRAM (4095 MB) for >4 GB NVIDIA cards via nvidia-smi', async () => {
+      // On Windows, systeminformation reads VRAM from WMI AdapterRAM (32-bit, saturates at 4095 MB),
+      // so an 8 GB RTX 3080 Laptop GPU reports ~4 GB — 1 MB under the 4096 MB tier threshold.
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=memory.total')) {
+          return { stdout: '8192\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.tier).toBe('medium');
+    });
+
+    it('SHALL keep the systeminformation VRAM when it already exceeds the nvidia-smi reading', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=memory.total')) {
+          return { stdout: '24564\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24576);
+    });
+
     it('SHALL fallback to nvidia-smi when systeminformation omits controllers', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
       execAsyncMock.mockImplementation(async (command: string) => {

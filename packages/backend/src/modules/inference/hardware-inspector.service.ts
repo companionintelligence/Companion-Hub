@@ -383,8 +383,19 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let vramMb = best.vramMb;
-      if (best.vendor === 'nvidia' && vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
-        vramMb = await this.detectNvidiaVram();
+      if (best.vendor === 'nvidia') {
+        // systeminformation derives VRAM from WMI Win32_VideoController.AdapterRAM on Windows,
+        // a 32-bit field that saturates at 4095 MB — so any card with >4 GB (e.g. an 8 GB RTX 3080
+        // Laptop GPU) reports ~4 GB. That also lands 1 MB below the 4096 MB tier threshold, mislabeling
+        // the host as "CPU Only". nvidia-smi reports the true memory, so prefer it whenever it returns a
+        // larger (or any plausible) value.
+        const smiVramMb = await this.detectNvidiaVram();
+        // Prefer nvidia-smi when it reports more memory (WMI cap), and always defer to it for
+        // implausibly small SI readings (PCIe BAR/framebuffer) — even when it reports 0, so the
+        // unreliable value is discarded and the profile is flagged for re-detection.
+        if (smiVramMb > vramMb || vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+          vramMb = smiVramMb;
+        }
         if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !best.model) {
           const fromSmi = await this.detectNvidiaFallback();
           if (fromSmi.available) {
