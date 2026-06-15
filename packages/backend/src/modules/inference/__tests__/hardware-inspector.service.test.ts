@@ -216,6 +216,25 @@ describe('HardwareInspectorService', () => {
       expect(smiSpy).not.toHaveBeenCalled();
     });
 
+    it('SHALL trust a 4096 MB Windows reading as a real 4 GB GPU without cross-checking', async () => {
+      // NVIDIA saturates the WMI cap at 4095 MB, so a 4096 MB reading comes from the reliable 64-bit
+      // registry path (a genuine 4 GB card) and must not trigger the nvidia-smi cross-check.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce GTX 1650', vram: 4096, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(4096);
+      expect(profile.tier).toBe('low');
+      expect(smiSpy).not.toHaveBeenCalled();
+    });
+
     it('SHALL fallback to nvidia-smi when systeminformation omits controllers', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
       execAsyncMock.mockImplementation(async (command: string) => {

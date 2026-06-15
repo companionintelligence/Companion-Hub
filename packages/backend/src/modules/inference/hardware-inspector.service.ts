@@ -14,11 +14,12 @@ const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
-// Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that saturates near 4 GB, so any
-// NVIDIA GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are treated
-// as suspect and cross-checked against nvidia-smi; values above it are trusted as-is.
+// Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that NVIDIA saturates at exactly
+// 4095 MB, so any GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are
+// treated as suspect and cross-checked against nvidia-smi. A reading of 4096+ MB instead comes from
+// the reliable 64-bit registry path (a genuine >=4 GB card), so it is trusted as-is.
 const WMI_VRAM_CAP_MIN_MB = 4000;
-const WMI_VRAM_CAP_MAX_MB = 4096;
+const WMI_VRAM_CAP_MAX_MB = 4095;
 
 type IntegratedGpuInference = {
   vendor: 'amd' | 'intel';
