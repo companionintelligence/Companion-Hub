@@ -22,7 +22,9 @@ function Invoke-CleanupCommand {
 
 function Remove-IfExists {
     param([string]$PathToDelete)
-    if (Test-Path $PathToDelete) {
+    # SilentlyContinue: when cleaning other users' profiles the existence check can hit
+    # a locked-down AppData; stay quiet here (removal failures still log via WARN below).
+    if (Test-Path $PathToDelete -ErrorAction SilentlyContinue) {
         try {
             Remove-Item -Path $PathToDelete -Recurse -Force -ErrorAction Stop
             Write-CleanupLog 'INFO' "Removed $PathToDelete"
