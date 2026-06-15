@@ -14,6 +14,11 @@ const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
+// Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that saturates near 4 GB, so any
+// NVIDIA GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are treated
+// as suspect and cross-checked against nvidia-smi; values above it are trusted as-is.
+const WMI_VRAM_CAP_MIN_MB = 4000;
+const WMI_VRAM_CAP_MAX_MB = 4096;
 
 type IntegratedGpuInference = {
   vendor: 'amd' | 'intel';
@@ -385,12 +390,16 @@ export class HardwareInspectorService implements OnModuleInit {
       let vramMb = best.vramMb;
       let model = best.model;
       let driverVersion = best.driverVersion;
-      if (best.vendor === 'nvidia') {
-        // systeminformation derives VRAM from WMI Win32_VideoController.AdapterRAM on Windows,
-        // a 32-bit field that saturates at 4095 MB — so any card with >4 GB (e.g. an 8 GB RTX 3080
-        // Laptop GPU) reports ~4 GB. That also lands 1 MB below the 4096 MB tier threshold, mislabeling
-        // the host as "CPU Only". nvidia-smi reports the true memory, so cross-check against the most
-        // capable GPU it lists (as a unit, since multiple WMI-capped controllers can tie at 4095 MB).
+      // Only cross-check NVIDIA VRAM against nvidia-smi when the systeminformation reading looks
+      // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), or a value in the Windows WMI
+      // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
+      // tier threshold and mislabels the host as "CPU Only". A plausible reading is trusted as-is,
+      // avoiding the external nvidia-smi call (and its 5s timeout) on the common path.
+      const siVramLooksUnreliable =
+        vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB || (platform === 'win32' && vramMb >= WMI_VRAM_CAP_MIN_MB && vramMb <= WMI_VRAM_CAP_MAX_MB);
+      if (best.vendor === 'nvidia' && siVramLooksUnreliable) {
+        // nvidia-smi reports true memory; cross-check against the most capable GPU it lists (as a unit,
+        // since multiple WMI-capped controllers can tie at 4095 MB).
         const smiGpu = await this.detectLargestNvidiaGpuViaSmi();
         // Prefer nvidia-smi when it reports more memory than systeminformation (WMI cap), and always
         // defer to it for implausibly small SI readings (PCIe BAR/framebuffer) — even when it reports 0,

@@ -136,6 +136,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
       });
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
       vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
       execAsyncMock.mockImplementation(async (command: string) => {
         if (command.includes('--query-gpu=name,memory.total,driver_version')) {
@@ -157,6 +158,7 @@ describe('HardwareInspectorService', () => {
       // Multi-GPU Windows host: both controllers are WMI-capped to 4095 MB so they tie, and SI happens
       // to surface the lower-end card. The corrected VRAM and the reported model must come from the
       // same (most capable) GPU rather than pairing the 4090's VRAM with the 3060's name.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3060', vram: 4095, driverVersion: '581.80' }],
       });
@@ -193,6 +195,25 @@ describe('HardwareInspectorService', () => {
       const profile = await service.detect();
 
       expect(profile.gpu.vramMb).toBe(24576);
+    });
+
+    it('SHALL NOT spawn nvidia-smi when systeminformation reports a plausible NVIDIA VRAM', async () => {
+      // A plausible reading (not sub-512 MB, not in the Windows WMI cap band) is trusted as-is, so the
+      // 5s-timeout nvidia-smi call is skipped on the common path — even on Windows.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3070', vram: 8192, driverVersion: '535.129.03' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.tier).toBe('medium');
+      expect(smiSpy).not.toHaveBeenCalled();
     });
 
     it('SHALL fallback to nvidia-smi when systeminformation omits controllers', async () => {
