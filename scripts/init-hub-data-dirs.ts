@@ -8,7 +8,8 @@
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { parseEnvFile, upsertEnvVar } from './cihub-cli';
+import { fileURLToPath } from 'node:url';
+import { parseEnvFile, upsertEnvVar } from './env-file';
 import {
   ensureHubBindMountsWritable,
   isDockerAvailable,
@@ -109,7 +110,7 @@ function ensureContainerIdentityInEnvFile(cwd: string): void {
   if (typeof userGid === 'number') upsertEnvVar(envFile, 'CI_HUB_CONTAINER_GID', String(userGid));
 }
 
-function main(): void {
+export function initHubDataDirs(): void {
   const cwd = process.cwd();
   healPoisonedEnvMount(cwd);
   ensureContainerIdentityInEnvFile(cwd);
@@ -136,4 +137,8 @@ function main(): void {
   console.log(`init-hub-data-dirs: ensured bind-mount tree under ${root}`);
 }
 
-main();
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  initHubDataDirs();
+}

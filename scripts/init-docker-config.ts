@@ -33,7 +33,8 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { parseEnvFile } from './cihub-cli';
+import { fileURLToPath } from 'node:url';
+import { parseEnvFile } from './env-file';
 
 const HOST_CONFIG_PATH = path.join(os.homedir(), '.docker', 'config.json');
 
@@ -112,7 +113,7 @@ async function migrateLegacyConfig(root: string, outputPath: string): Promise<vo
   }
 }
 
-async function main(): Promise<void> {
+export async function initDockerConfig(): Promise<void> {
   const root = resolveRootFolderHost();
   const dockerDir = path.join(root, '.docker');
   const cliPluginsDir = path.join(dockerDir, 'cli-plugins');
@@ -147,7 +148,11 @@ async function main(): Promise<void> {
   console.log(`init-docker-config: ready ${outputPath}${summary.length > 0 ? ` (${summary.join(', ')})` : ''}`);
 }
 
-main().catch((err) => {
-  console.error('init-docker-config failed:', err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  initDockerConfig().catch((err) => {
+    console.error('init-docker-config failed:', err);
+    process.exit(1);
+  });
+}

@@ -7,6 +7,8 @@
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Mirrors the device ID logic from packages/backend/src/modules/registration/registration.service.ts
@@ -14,7 +16,7 @@ import { readFileSync } from 'node:fs';
  * 1. Try `dmidecode -s system-serial-number` (requires root)
  * 2. Fall back to /sys/class/dmi/id/product_uuid (same source systeminformation uses)
  */
-function getDeviceId(): string {
+export function getDeviceId(): string {
   // macOS: ioreg IOPlatformUUID
   if (process.platform === 'darwin') {
     try {
@@ -64,4 +66,8 @@ function getDeviceId(): string {
   }
 }
 
-console.log(getDeviceId());
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  console.log(getDeviceId());
+}

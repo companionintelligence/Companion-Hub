@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type OsFamily = 'debian' | 'rpm' | 'arch' | 'unknown';
 
@@ -378,7 +379,7 @@ function warnCpuFallback(reason: string) {
   console.warn('init-gpu-runtime: Continuing startup in CPU-only mode.');
 }
 
-function main() {
+export function initGpuRuntime() {
   if (process.env.CI_HUB_SKIP_GPU_TOOLKIT === 'true') {
     console.log('init-gpu-runtime: Skipping GPU toolkit setup (CI_HUB_SKIP_GPU_TOOLKIT=true).');
     return;
@@ -485,8 +486,12 @@ function main() {
   console.log(`init-gpu-runtime: Platform ${platform} is not supported for automatic NVIDIA toolkit setup.`);
 }
 
-try {
-  main();
-} catch (error) {
-  warnCpuFallback(`Unexpected GPU setup error: ${String(error)}`);
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  try {
+    initGpuRuntime();
+  } catch (error) {
+    warnCpuFallback(`Unexpected GPU setup error: ${String(error)}`);
+  }
 }

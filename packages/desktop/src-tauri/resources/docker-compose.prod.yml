@@ -197,11 +197,19 @@ services:
     container_name: hub-tailscale
     restart: unless-stopped
     hostname: hub-tailscale
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+          export TS_AUTHKEY="$TAILSCALE_AUTHKEY"
+        fi
+        exec /usr/local/bin/containerboot
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
     environment:
-      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
+      TAILSCALE_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
       TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
