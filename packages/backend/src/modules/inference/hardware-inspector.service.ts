@@ -391,7 +391,8 @@ export class HardwareInspectorService implements OnModuleInit {
         const smiVramMb = await this.detectNvidiaVram();
         // Prefer nvidia-smi when it reports more memory than systeminformation (WMI cap), and always
         // defer to it for implausibly small SI readings (PCIe BAR/framebuffer) — even when it reports 0,
-        // so the unreliable value is discarded and the profile is flagged for re-detection.
+        // so the unreliable value is discarded. When the runtime is available, that sub-512 MB value also
+        // marks the profile incomplete (see hasIncompleteDiscreteGpuProfile), triggering a later refresh.
         if (smiVramMb > vramMb || vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
           vramMb = smiVramMb;
         }
@@ -684,12 +685,20 @@ export class HardwareInspectorService implements OnModuleInit {
     return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
   }
 
-  /** Detect NVIDIA VRAM using nvidia-smi */
+  /** Detect NVIDIA VRAM using nvidia-smi. Returns the largest VRAM across all GPUs. */
   private async detectNvidiaVram(): Promise<number> {
     try {
       const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', { timeout: 5000 });
-      const vramMb = Number.parseInt(stdout.trim(), 10);
-      return Number.isNaN(vramMb) ? 0 : vramMb;
+      // One line per GPU — take the largest so the cross-check tracks the most capable card on
+      // multi-GPU hosts rather than whichever GPU nvidia-smi happens to list first.
+      let largestVramMb = 0;
+      for (const line of stdout.split('\n')) {
+        const vramMb = Number.parseInt(line.trim(), 10);
+        if (Number.isFinite(vramMb) && vramMb > largestVramMb) {
+          largestVramMb = vramMb;
+        }
+      }
+      return largestVramMb;
     } catch {
       return 0;
     }

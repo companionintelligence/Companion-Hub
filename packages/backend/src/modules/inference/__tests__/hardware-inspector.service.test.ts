@@ -153,6 +153,28 @@ describe('HardwareInspectorService', () => {
       expect(profile.tier).toBe('medium');
     });
 
+    it('SHALL use the largest nvidia-smi VRAM across multiple GPUs when correcting a WMI-capped reading', async () => {
+      // Multi-GPU Windows host: SI caps the selected controller at 4095 MB, and nvidia-smi lists
+      // GPUs in an order where the most capable card is not first.
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 4090', vram: 4095, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=memory.total')) {
+          return { stdout: '8192\n24564\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24564);
+      expect(profile.tier).toBe('high');
+    });
+
     it('SHALL keep the systeminformation VRAM when it already exceeds the nvidia-smi reading', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
