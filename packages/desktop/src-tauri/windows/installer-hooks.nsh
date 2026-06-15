@@ -15,11 +15,23 @@
 ; failures never block the uninstall. See distribution/scripts/uninstall-cleanup.ps1.
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Push $0
+  Push $1
   DetailPrint "Companion Hub: running uninstall cleanup (Docker resources + app data)..."
-  ; Use a label (not a relative +N jump): `nsExec::ExecToLog` compiles to a Push plus
-  ; the plugin call, so a counted offset over it is fragile.
-  IfFileExists "$INSTDIR\resources\uninstall-cleanup.ps1" 0 ci_hub_skip_cleanup
-    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\resources\uninstall-cleanup.ps1"'
-    Pop $0
+  ; Tauri resource bundling can place the script nested (resources\) or flat, so check
+  ; both layouts — mirrors the dual-path lookup in hub_manager.rs — and run whichever
+  ; exists, preferring the nested (explicitly mapped) path. The +2 skips below jump over
+  ; one StrCpy each; the only plugin call (nsExec) is reached via a label, never a counted
+  ; offset (nsExec compiles to a Push plus the call, so counting over it is fragile).
+  StrCpy $0 ""
+  IfFileExists "$INSTDIR\uninstall-cleanup.ps1" 0 +2
+    StrCpy $0 "$INSTDIR\uninstall-cleanup.ps1"
+  IfFileExists "$INSTDIR\resources\uninstall-cleanup.ps1" 0 +2
+    StrCpy $0 "$INSTDIR\resources\uninstall-cleanup.ps1"
+  StrCmp $0 "" ci_hub_skip_cleanup 0
+    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$0"'
+    Pop $1
   ci_hub_skip_cleanup:
+  Pop $1
+  Pop $0
 !macroend
