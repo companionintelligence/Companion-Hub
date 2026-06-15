@@ -213,6 +213,25 @@ describe('OllamaBackend', () => {
       expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
     });
 
+    it('reassembles JSON lines split across chunk boundaries', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: {} });
+      (axios.post as any) = vi.fn().mockImplementation(async () => {
+        const stream = new EventEmitter();
+        const successLine = `${JSON.stringify({ status: 'success' })}\n`;
+        const mid = Math.floor(successLine.length / 2);
+        setImmediate(() => {
+          // Split the terminal success line across two chunks.
+          stream.emit('data', Buffer.from(`${JSON.stringify({ status: 'pulling manifest' })}\n${successLine.slice(0, mid)}`));
+          stream.emit('data', Buffer.from(successLine.slice(mid)));
+          stream.emit('end');
+        });
+        return { data: stream };
+      });
+
+      await expect(backend.pullModel('phi4-mini')).resolves.toBeUndefined();
+      expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
+    });
+
     it('rejects when the stream reports an error (e.g. Ollama 412 manifest failure)', async () => {
       const state = inspectable();
       state.resolvedUrl = 'http://cached:11434';

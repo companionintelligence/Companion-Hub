@@ -160,13 +160,23 @@ export class OllamaBackend implements InferenceBackend {
           });
         };
 
+        // A single JSON object can be split across chunk boundaries, so buffer partial lines
+        // and only parse complete (newline-terminated) ones — otherwise a split `success`/`error`
+        // line would be dropped and silently flip the resolve/reject decision.
+        let buffer = '';
         response.data.on('data', (chunk: Buffer) => {
-          const lines = chunk.toString().split('\n').filter(Boolean);
-          for (const line of lines) {
-            handleLine(line);
+          buffer += chunk.toString();
+          const segments = buffer.split('\n');
+          // The last segment may be an incomplete line — keep it buffered for the next chunk.
+          buffer = segments.pop() ?? '';
+          for (const segment of segments) {
+            const line = segment.trim();
+            if (line) handleLine(line);
           }
         });
         response.data.on('end', () => {
+          const remaining = buffer.trim();
+          if (remaining) handleLine(remaining);
           if (streamError) {
             reject(new Error(streamError));
             return;
