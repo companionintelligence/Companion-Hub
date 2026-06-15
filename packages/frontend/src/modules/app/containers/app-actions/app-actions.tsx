@@ -96,6 +96,8 @@ const GRACE_POLL_MS = 3_000;
 const NORMAL_POLL_MS = 10_000;
 const MAX_POLL_MS = 5 * 60_000;
 
+const INSTALL_FINALIZING_PROGRESS = 99;
+
 export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -155,21 +157,30 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressText = progress === null ? '' : ` ${progress}%`;
+    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
 
-    let stageText = '';
+    let stageText = t('APP_ACTION_PREPARING');
     if (progress !== null) {
-      if (progress < 20) stageText = t('APP_ACTION_PREPARING');
-      else if (progress < 40) stageText = t('APP_ACTION_DOWNLOADING');
-      else if (progress < 70) stageText = t('APP_ACTION_SETTING_UP');
-      else if (progress < 90) stageText = t('COMMON_STARTING');
-      else stageText = t('APP_ACTION_ALMOST_READY');
+      if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
+      else if (progress >= 60) stageText = t('APP_ACTION_DOWNLOADING');
+      else stageText = t('APP_ACTION_PREPARING');
     }
 
     return (
-      <div key="loading" className="flex flex-col items-start gap-1">
-        <ActionButton disabled intent="success" title={`${t('COMMON_INSTALLING')}${progressText}`} className="installation-progress-button" />
-        {stageText && <p className="text-xs text-muted-foreground">{stageText}</p>}
+      <div key="loading" className="installation-progress-shell">
+        <ActionButton disabled intent="success" title={t('COMMON_INSTALLING')} className="installation-progress-button" />
+        <div
+          className="installation-progress-track"
+          role="progressbar"
+          aria-label={t('COMMON_INSTALLING')}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress ?? undefined}
+          aria-valuetext={stageText}
+        >
+          <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />
+        </div>
+        <p className="installation-progress-stage">{stageText}</p>
       </div>
     );
   })();

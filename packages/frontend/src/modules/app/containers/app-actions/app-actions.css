@@ -10,6 +10,34 @@
   font-weight: 500;
 }
 
+.installation-progress-shell {
+  display: flex;
+  min-width: 120px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+
+.installation-progress-track {
+  height: 0.25rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.installation-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--color-primary);
+  transition: width 200ms ease-out;
+}
+
+.installation-progress-stage {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+}
+
 .more-button {
   width: 100%;
 

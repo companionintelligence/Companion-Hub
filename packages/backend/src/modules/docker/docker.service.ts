@@ -34,6 +34,23 @@ interface DockerStatsSnapshot {
   memory_stats?: DockerMemoryStatsSnapshot;
 }
 
+interface DockerPullProgressDetail {
+  current?: number;
+  total?: number;
+}
+
+interface DockerPullProgressEventMessage {
+  id?: string;
+  status?: string;
+  progressDetail?: DockerPullProgressDetail;
+}
+
+interface DockerPullLayerSnapshot {
+  current: number;
+  total: number;
+  status: string;
+}
+
 export interface AppContainerRuntimeStats {
   containerId: string;
   name: string;
@@ -43,6 +60,15 @@ export interface AppContainerRuntimeStats {
   cpuPercent: number;
   memoryUsageBytes: number;
   memoryLimitBytes: number;
+}
+
+export interface DockerPullProgressEvent {
+  activeImage: string;
+  completedBytes: number;
+  totalBytes: number;
+  completedImages: number;
+  totalImages: number;
+  stage: 'downloading' | 'extracting' | 'complete';
 }
 
 @Injectable()
@@ -381,6 +407,155 @@ export class DockerService {
         throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
       });
     }
+  }
+
+  private async imageExistsLocally(image: string): Promise<boolean> {
+    try {
+      await this.docker.getImage(image).inspect();
+      return true;
+    } catch (error) {
+      if (this.isResourceMissingError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private summarizePullLayers(layers: Map<string, DockerPullLayerSnapshot>): {
+    completedBytes: number;
+    totalBytes: number;
+    stage: DockerPullProgressEvent['stage'];
+  } {
+    let completedBytes = 0;
+    let totalBytes = 0;
+    let hasExtractingLayer = false;
+    let hasActiveLayer = false;
+
+    for (const layer of layers.values()) {
+      const total = Math.max(layer.total, layer.current);
+      totalBytes += total;
+
+      const normalizedStatus = layer.status.toLowerCase();
+      const isComplete = normalizedStatus.includes('pull complete') || normalizedStatus.includes('already exists');
+      const isExtracting = normalizedStatus.includes('extract');
+
+      if (isExtracting) {
+        hasExtractingLayer = true;
+      }
+
+      if (!isComplete) {
+        hasActiveLayer = true;
+      }
+
+      completedBytes += isComplete ? total : Math.min(layer.current, total);
+    }
+
+    const stage: DockerPullProgressEvent['stage'] = hasActiveLayer ? (hasExtractingLayer ? 'extracting' : 'downloading') : 'complete';
+    return { completedBytes, totalBytes, stage };
+  }
+
+  public async pullImages(
+    imageRefs: string[],
+    options: {
+      forcePull?: boolean;
+      onProgress?: (event: DockerPullProgressEvent) => void;
+    } = {},
+  ): Promise<void> {
+    const uniqueImages = [...new Set(imageRefs.map((image) => image.trim()).filter(Boolean))];
+
+    if (uniqueImages.length === 0) {
+      return;
+    }
+
+    const completedImages = new Set<string>();
+    const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
+
+    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
+      if (!options.onProgress) {
+        return;
+      }
+
+      const summary = this.summarizePullLayers(layerSnapshots);
+      options.onProgress({
+        activeImage,
+        completedBytes: summary.completedBytes,
+        totalBytes: summary.totalBytes,
+        completedImages: completedImages.size,
+        totalImages: uniqueImages.length,
+        stage: stageOverride ?? summary.stage,
+      });
+    };
+
+    await Promise.all(
+      uniqueImages.map(async (image) => {
+        if (!options.forcePull && (await this.imageExistsLocally(image))) {
+          completedImages.add(image);
+          emitProgress(image, 'complete');
+          return;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          this.docker.pull(image, (pullError: Error | null, stream?: NodeJS.ReadableStream) => {
+            if (pullError) {
+              reject(pullError);
+              return;
+            }
+
+            if (!stream) {
+              reject(new Error(`Docker did not provide a pull stream for ${image}`));
+              return;
+            }
+
+            const modem = (
+              this.docker as Dockerode & {
+                modem?: {
+                  followProgress?: (
+                    stream: NodeJS.ReadableStream,
+                    onFinished: (error: Error | null, output: unknown[]) => void,
+                    onProgress?: (event: DockerPullProgressEventMessage) => void,
+                  ) => void;
+                };
+              }
+            ).modem;
+
+            if (!modem?.followProgress) {
+              reject(new Error('Docker pull progress tracking is unavailable'));
+              return;
+            }
+
+            modem.followProgress(
+              stream,
+              (followError) => {
+                if (followError) {
+                  reject(followError);
+                  return;
+                }
+
+                completedImages.add(image);
+                emitProgress(image, 'complete');
+                resolve();
+              },
+              (event) => {
+                if (event?.id) {
+                  const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
+                  const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
+                  const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
+                  layerSnapshots.set(event.id, {
+                    current,
+                    total,
+                    status: event.status ?? snapshot.status,
+                  });
+                }
+
+                emitProgress(image);
+              },
+            );
+          });
+        }).catch((error) => {
+          throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }),
+    );
   }
 
   // Plugin availability doesn't change at runtime; probe once and reuse so

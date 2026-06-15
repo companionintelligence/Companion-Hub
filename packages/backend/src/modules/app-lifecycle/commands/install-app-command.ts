@@ -21,6 +21,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'yaml';
 
+const DOWNLOAD_PROGRESS_START = 60;
+const DOWNLOAD_PROGRESS_END = 99;
+const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
+const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
+
+export function extractComposeImages(composeContent: string): string[] {
+  const { services } = parseComposeJson(composeContent);
+  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+}
+
+export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
+  if (totalBytes <= 0) {
+    return DOWNLOAD_PROGRESS_START;
+  }
+
+  const normalized = Math.max(0, Math.min(1, completedBytes / totalBytes));
+  const mapped = DOWNLOAD_PROGRESS_START + Math.floor(normalized * (DOWNLOAD_PROGRESS_END - DOWNLOAD_PROGRESS_START));
+  return Math.max(DOWNLOAD_PROGRESS_START, Math.min(DOWNLOAD_PROGRESS_MAX_DURING_PULL, mapped));
+}
+
 /**
  * Load the Openclaw fallback entrypoint script from file.
  * This script is used as a last resort if the original ci-entrypoint.sh
@@ -124,15 +144,21 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
     };
 
+    let composeToInstallContent = '';
     try {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseComposeJson(composeToInstall.content);
+      if (typeof composeToInstall.content !== 'string') {
+        throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
+      }
+      composeToInstallContent = composeToInstall.content;
+      parseComposeJson(composeToInstallContent);
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
     }
 
     try {
+      const appImages = extractComposeImages(composeToInstallContent);
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -399,12 +425,40 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       await emitProgress(60);
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
-      await emitProgress(80);
+      if (appImages.length > 0) {
+        let lastPullProgress = DOWNLOAD_PROGRESS_START;
+        let lastPullProgressAt = 0;
+        dockerService.pullImages
+          ? await dockerService.pullImages(appImages, {
+              forcePull,
+              onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
+                const nextProgress =
+                  totalBytes > 0
+                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                    : totalImages > 0
+                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                      : DOWNLOAD_PROGRESS_START;
+                const now = Date.now();
+                if (
+                  nextProgress > lastPullProgress &&
+                  (nextProgress - lastPullProgress >= 2 ||
+                    now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL)
+                ) {
+                  lastPullProgress = nextProgress;
+                  lastPullProgressAt = now;
+                  void emitProgress(nextProgress);
+                }
+              },
+            })
+          : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
+      }
+
+      await emitProgress(99);
+      await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Post-start health check: fire-and-forget — don't block install completion
-      await emitProgress(85);
       setTimeout(async () => {
         try {
           const diagResults = await dockerService.diagnoseAppContainers(appUrn);

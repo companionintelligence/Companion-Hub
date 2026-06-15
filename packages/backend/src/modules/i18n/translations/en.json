@@ -10,6 +10,7 @@
   "APP_ACTION_RETRY_INSTALL": "Retry install",
   "APP_ACTION_PREPARING": "Preparing...",
   "APP_ACTION_DOWNLOADING": "Downloading...",
+  "APP_ACTION_FINALIZING": "Finalizing install...",
   "APP_ACTION_SETTING_UP": "Setting up...",
   "APP_ACTION_ALMOST_READY": "Almost ready...",
   "APP_ACTION_COULD_NOT_REACH_HUB": "Couldn't reach the Hub — please try again in a moment.",
