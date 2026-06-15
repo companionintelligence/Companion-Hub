@@ -383,20 +383,29 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let vramMb = best.vramMb;
+      let model = best.model;
+      let driverVersion = best.driverVersion;
       if (best.vendor === 'nvidia') {
         // systeminformation derives VRAM from WMI Win32_VideoController.AdapterRAM on Windows,
         // a 32-bit field that saturates at 4095 MB — so any card with >4 GB (e.g. an 8 GB RTX 3080
         // Laptop GPU) reports ~4 GB. That also lands 1 MB below the 4096 MB tier threshold, mislabeling
-        // the host as "CPU Only". nvidia-smi reports the true memory.
-        const smiVramMb = await this.detectNvidiaVram();
+        // the host as "CPU Only". nvidia-smi reports the true memory, so cross-check against the most
+        // capable GPU it lists (as a unit, since multiple WMI-capped controllers can tie at 4095 MB).
+        const smiGpu = await this.detectLargestNvidiaGpuViaSmi();
         // Prefer nvidia-smi when it reports more memory than systeminformation (WMI cap), and always
         // defer to it for implausibly small SI readings (PCIe BAR/framebuffer) — even when it reports 0,
         // so the unreliable value is discarded. When the runtime is available, that sub-512 MB value also
         // marks the profile incomplete (see hasIncompleteDiscreteGpuProfile), triggering a later refresh.
-        if (smiVramMb > vramMb || vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
-          vramMb = smiVramMb;
+        if (smiGpu.vramMb > vramMb || vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+          vramMb = smiGpu.vramMb;
+          // Adopt the matching GPU's identity so model/driver stay consistent with the corrected VRAM —
+          // otherwise `best` may still point at a different (tied) controller than the one we now report.
+          if (smiGpu.model) {
+            model = smiGpu.model;
+            driverVersion = smiGpu.driverVersion || driverVersion;
+          }
         }
-        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !best.model) {
+        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !model) {
           const fromSmi = await this.detectNvidiaFallback();
           if (fromSmi.available) {
             return fromSmi;
@@ -407,11 +416,11 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       return {
-        available: vramMb > 0 || !!best.model,
+        available: vramMb > 0 || !!model,
         vendor: best.vendor,
-        model: best.model,
+        model,
         vramMb,
-        driverVersion: best.driverVersion,
+        driverVersion,
       };
     } catch (err) {
       this.logger.warn(
@@ -685,22 +694,29 @@ export class HardwareInspectorService implements OnModuleInit {
     return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
   }
 
-  /** Detect NVIDIA VRAM using nvidia-smi. Returns the largest VRAM across all GPUs. */
-  private async detectNvidiaVram(): Promise<number> {
+  /**
+   * Query each NVIDIA GPU's identity + VRAM via nvidia-smi and return the one with the largest VRAM.
+   * Selecting the GPU as a unit keeps model/VRAM/driver consistent on multi-GPU hosts rather than
+   * pairing the largest VRAM with whichever GPU nvidia-smi happens to list first.
+   */
+  private async detectLargestNvidiaGpuViaSmi(): Promise<{ model: string; vramMb: number; driverVersion: string }> {
     try {
-      const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', { timeout: 5000 });
-      // One line per GPU — take the largest so the cross-check tracks the most capable card on
-      // multi-GPU hosts rather than whichever GPU nvidia-smi happens to list first.
-      let largestVramMb = 0;
+      const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits', {
+        timeout: 5000,
+      });
+      let largest = { model: '', vramMb: 0, driverVersion: '' };
       for (const line of stdout.split('\n')) {
-        const vramMb = Number.parseInt(line.trim(), 10);
-        if (Number.isFinite(vramMb) && vramMb > largestVramMb) {
-          largestVramMb = vramMb;
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const [modelRaw, memoryRaw, driverRaw] = trimmed.split(',').map((part) => part?.trim() ?? '');
+        const vramMb = Number.parseInt(memoryRaw ?? '', 10);
+        if (Number.isFinite(vramMb) && vramMb > largest.vramMb) {
+          largest = { model: modelRaw || '', vramMb, driverVersion: driverRaw || '' };
         }
       }
-      return largestVramMb;
+      return largest;
     } catch {
-      return 0;
+      return { model: '', vramMb: 0, driverVersion: '' };
     }
   }
 

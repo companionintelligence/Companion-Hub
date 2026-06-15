@@ -138,8 +138,8 @@ describe('HardwareInspectorService', () => {
       });
       vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
       execAsyncMock.mockImplementation(async (command: string) => {
-        if (command.includes('--query-gpu=memory.total')) {
-          return { stdout: '8192\n' };
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 3080 Laptop GPU, 8192, 581.80\n' };
         }
         return { stdout: '{}' };
       });
@@ -153,16 +153,17 @@ describe('HardwareInspectorService', () => {
       expect(profile.tier).toBe('medium');
     });
 
-    it('SHALL use the largest nvidia-smi VRAM across multiple GPUs when correcting a WMI-capped reading', async () => {
-      // Multi-GPU Windows host: SI caps the selected controller at 4095 MB, and nvidia-smi lists
-      // GPUs in an order where the most capable card is not first.
+    it('SHALL select the most capable NVIDIA GPU as a unit when correcting WMI-capped readings', async () => {
+      // Multi-GPU Windows host: both controllers are WMI-capped to 4095 MB so they tie, and SI happens
+      // to surface the lower-end card. The corrected VRAM and the reported model must come from the
+      // same (most capable) GPU rather than pairing the 4090's VRAM with the 3060's name.
       (si.graphics as any) = vi.fn().mockResolvedValue({
-        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 4090', vram: 4095, driverVersion: '581.80' }],
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3060', vram: 4095, driverVersion: '581.80' }],
       });
       vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
       execAsyncMock.mockImplementation(async (command: string) => {
-        if (command.includes('--query-gpu=memory.total')) {
-          return { stdout: '8192\n24564\n' };
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 3060, 8192, 581.80\nNVIDIA GeForce RTX 4090, 24564, 581.80\n' };
         }
         return { stdout: '{}' };
       });
@@ -172,6 +173,7 @@ describe('HardwareInspectorService', () => {
       const profile = await service.detect();
 
       expect(profile.gpu.vramMb).toBe(24564);
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 4090');
       expect(profile.tier).toBe('high');
     });
 
@@ -180,8 +182,8 @@ describe('HardwareInspectorService', () => {
         controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
       });
       execAsyncMock.mockImplementation(async (command: string) => {
-        if (command.includes('--query-gpu=memory.total')) {
-          return { stdout: '24564\n' };
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 4090, 24564, 535.129.03\n' };
         }
         return { stdout: '{}' };
       });
@@ -541,7 +543,7 @@ describe('HardwareInspectorService', () => {
         return { stdout: '{}' };
       });
 
-      // SI returns 32 MB (PCIe BAR), detectNvidiaVram() fires but mock returns 0
+      // SI returns 32 MB (PCIe BAR), the nvidia-smi cross-check fires but mock returns 0
       // → initial profile records 0 MB (unreliable reading discarded)
       const initial = await service.detect();
       expect(initial.gpu.vramMb).toBe(0);
