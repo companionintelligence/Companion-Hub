@@ -29,7 +29,9 @@
   IfFileExists "$INSTDIR\resources\uninstall-cleanup.ps1" 0 +2
     StrCpy $0 "$INSTDIR\resources\uninstall-cleanup.ps1"
   StrCmp $0 "" ci_hub_skip_cleanup 0
-    nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$0"'
+    ; Absolute path to system PowerShell ($SYSDIR resolves to System32, or SysWOW64 under
+    ; WOW64 — both have powershell.exe) to avoid PATH/CWD hijacking during uninstall.
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$0"'
     Pop $1
   ci_hub_skip_cleanup:
   Pop $1
