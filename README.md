@@ -184,10 +184,10 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 ### Uninstall Cleanup Behavior
 
 > **Uninstall is a full purge.** Unlike most package managers, where `remove` keeps
-> your data and only `purge` deletes it, uninstalling Companion Hub through **any**
+> your data and only `purge` deletes it, uninstalling Companion Hub through nearly every
 > channel (`apt remove`, `dnf remove`, `pacman -R`, `choco uninstall`, `snap remove`,
-> AUR removal, the Windows `-setup.exe` uninstaller, WinGet, etc.)
-> **permanently deletes all Hub data** — including the Postgres
+> AUR removal, the Windows `-setup.exe` uninstaller, WinGet, etc. — Scoop is the one
+> exception, see below) **permanently deletes all Hub data** — including the Postgres
 > database (`ci_hub_pgdata`), app data (`ci_hub_app_data`), and Tailscale state
 > (`hub_tailscale_state`). This is intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)).
 > **Back up anything you need before uninstalling — there is no undo and no prompt.**

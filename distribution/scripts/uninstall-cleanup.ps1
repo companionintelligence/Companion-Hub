@@ -169,6 +169,9 @@ $profilePaths = @()
 try {
     $profilePaths = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction Stop |
         ForEach-Object { (Get-ItemProperty $_.PSPath -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath } |
+        # ProfileImagePath is REG_EXPAND_SZ and may hold unexpanded vars (e.g. %SystemDrive%);
+        # expand before Test-Path so those profiles aren't silently skipped. No-op if already literal.
+        ForEach-Object { if ($_) { [Environment]::ExpandEnvironmentVariables($_) } } |
         Where-Object { $_ -and (Test-Path $_ -ErrorAction SilentlyContinue) }
 }
 catch {
