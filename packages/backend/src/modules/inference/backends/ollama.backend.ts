@@ -119,29 +119,47 @@ export class OllamaBackend implements InferenceBackend {
   async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
     this.logger.info(`[Ollama] Pulling model: ${modelId}`);
 
-    const handleLine = (line: string) => {
-      try {
-        const data = JSON.parse(line);
-        const total = data.total || 0;
-        const completed = data.completed || 0;
-        const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-        onProgress?.({
-          status: data.status || 'pulling',
-          digest: data.digest,
-          total,
-          completed,
-          percent,
-        });
-      } catch {
-        // Ignore parse errors in stream
-      }
-    };
-
     try {
       const url = await this.resolveUrl();
       const response = await axios.post(`${url}/api/pull`, { name: modelId, stream: true }, { responseType: 'stream', timeout: 0 });
 
       await new Promise<void>((resolve, reject) => {
+        // Ollama's /api/pull streams NDJSON with HTTP 200 even on failure: a failed pull is
+        // delivered as a line like {"error":"pull model manifest: 412: ..."} rather than an HTTP
+        // error, and a successful pull terminates with {"status":"success"}. We must inspect the
+        // stream — resolving purely on 'end' reports a failed pull as success.
+        let streamError: string | null = null;
+        let sawSuccess = false;
+
+        const handleLine = (line: string) => {
+          let data: { status?: string; error?: string; digest?: string; total?: number; completed?: number };
+          try {
+            data = JSON.parse(line);
+          } catch {
+            return; // Ignore parse errors in stream
+          }
+
+          if (typeof data.error === 'string' && data.error.length > 0) {
+            streamError = data.error;
+            return;
+          }
+
+          if (data.status === 'success') {
+            sawSuccess = true;
+          }
+
+          const total = data.total || 0;
+          const completed = data.completed || 0;
+          const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+          onProgress?.({
+            status: data.status || 'pulling',
+            digest: data.digest,
+            total,
+            completed,
+            percent,
+          });
+        };
+
         response.data.on('data', (chunk: Buffer) => {
           const lines = chunk.toString().split('\n').filter(Boolean);
           for (const line of lines) {
@@ -149,6 +167,14 @@ export class OllamaBackend implements InferenceBackend {
           }
         });
         response.data.on('end', () => {
+          if (streamError) {
+            reject(new Error(streamError));
+            return;
+          }
+          if (!sawSuccess) {
+            reject(new Error(`Ollama pull stream ended without a success status for ${modelId}`));
+            return;
+          }
           this.logger.info(`[Ollama] Model pulled: ${modelId}`);
           resolve();
         });
