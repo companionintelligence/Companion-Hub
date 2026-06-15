@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Companion Hub — WiX fragment: run uninstall cleanup for the MSI bundle.
+
+  The NSIS `-setup.exe` self-cleans via windows/installer-hooks.nsh, but `installerHooks`
+  is NSIS-only. The WiX `.msi` is a separately shipped (and release-notes "recommended")
+  Windows artifact — and the WinGet manifest has an `InstallerType: msi` entry — so it
+  needs its own teardown. This fragment runs the same bundled cleanup script the NSIS
+  hook and the Chocolatey/Scoop/Linux channels use.
+
+  Wiring (packages/desktop/src-tauri/tauri.conf.json):
+      "bundle": { "windows": { "wix": {
+        "fragmentPaths": ["windows/cleanup-on-uninstall.wxs"],
+        "componentGroupRefs": ["CompanionHubCleanupGroup"]
+      } } }
+  The empty <ComponentGroup> exists only so componentGroupRefs gives WiX a symbol to
+  reference — that forces this fragment (and with it the CustomAction + sequencing) to
+  be linked into the package.
+
+  Behavior:
+    - Immediate (not deferred) custom action, so [INSTALLDIR] / [System64Folder] expand
+      and the per-machine uninstall runs it as the (UAC-elevated) invoking user — the
+      same context the NSIS uninstaller uses to run the script.
+    - Sequenced Before="RemoveFiles" so resources\uninstall-cleanup.ps1 still exists.
+    - Condition (REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE): runs only on a real,
+      full uninstall — never on a major-upgrade's RemoveExistingProducts pass or a
+      repair. Keeps the "updates never purge" guarantee.
+    - Return="ignore": best-effort; cleanup failure never blocks the uninstall.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <ComponentGroup Id="CompanionHubCleanupGroup" />
+
+    <CustomAction Id="CompanionHubUninstallCleanup"
+                  Directory="INSTALLDIR"
+                  Execute="immediate"
+                  Return="ignore"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLDIR]resources\uninstall-cleanup.ps1&quot;" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CompanionHubUninstallCleanup" Before="RemoveFiles">
+        <![CDATA[(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)]]>
+      </Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

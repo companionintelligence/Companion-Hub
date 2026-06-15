@@ -190,6 +190,13 @@ pnpm run build:desktop
 
 On Linux, the desktop build patches generated `.deb` bundles with a Debian `postrm` maintainer script so uninstall can remove Hub runtime state and related Docker resources.
 
+On Windows, both packaged installers run the same cleanup before removing the app, invoking the bundled `resources/uninstall-cleanup.ps1` (sourced from `distribution/scripts/uninstall-cleanup.ps1` and shipped as a Tauri resource):
+
+- **NSIS `-setup.exe`** — `src-tauri/windows/installer-hooks.nsh` (`NSIS_HOOK_PREUNINSTALL`, wired via `bundle.windows.nsis.installerHooks`), run before `$INSTDIR` is removed.
+- **WiX `.msi`** — `src-tauri/windows/cleanup-on-uninstall.wxs` (a custom action wired via `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`), sequenced `Before="RemoveFiles"` and gated to real uninstalls via `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
+
+Either way, uninstalling the packaged build tears down Hub + marketplace-app Docker containers/volumes/images and deletes Hub state under `%APPDATA%`/`%LOCALAPPDATA%`. WinGet is covered transitively (its manifest installs one of these two).
+
 **Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
 
 ```bash

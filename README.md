@@ -186,7 +186,8 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 > **Uninstall is a full purge.** Unlike most package managers, where `remove` keeps
 > your data and only `purge` deletes it, uninstalling Companion Hub through **any**
 > channel (`apt remove`, `dnf remove`, `pacman -R`, `choco uninstall`, `snap remove`,
-> AUR removal, etc.) **permanently deletes all Hub data** — including the Postgres
+> AUR removal, the Windows `-setup.exe` uninstaller, WinGet, etc.)
+> **permanently deletes all Hub data** — including the Postgres
 > database (`ci_hub_pgdata`), app data (`ci_hub_app_data`), and Tailscale state
 > (`hub_tailscale_state`). This is intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)).
 > **Back up anything you need before uninstalling — there is no undo and no prompt.**
@@ -195,8 +196,10 @@ A Companion Hub uninstall removes, by default:
 
 - Docker resources for Hub stacks — containers, **data volumes** (DB/app/tailscale state), networks, **and pulled/built images**
 - **All installed marketplace apps** — every app Hub installed runs as its own Compose project (`<app>_<store>`, tagged `ci-os-hub.managed=true`); uninstall tears down each app's containers, networks, volumes, **and images** too
-- Hub state under user data/config/cache directories
+- Hub state under user data/config/cache directories (`%APPDATA%`/`%LOCALAPPDATA%` on Windows)
 - Registry/deep-link entries where package managers support it
+
+On Windows, both packaged installers run this cleanup before removing the app, invoking the bundled [`uninstall-cleanup.ps1`](distribution/scripts/uninstall-cleanup.ps1): the `-setup.exe` (NSIS) via an uninstall hook ([`installer-hooks.nsh`](packages/desktop/src-tauri/windows/installer-hooks.nsh)), and the `.msi` (WiX) via a custom action ([`cleanup-on-uninstall.wxs`](packages/desktop/src-tauri/windows/cleanup-on-uninstall.wxs)) sequenced before file removal and gated to real uninstalls (not upgrades). WinGet is covered through whichever of the two its manifest installs.
 
 Image removal is best-effort: an image still referenced by another (non-Hub) container is skipped, so a base image shared with an unrelated workload is left alone.
 

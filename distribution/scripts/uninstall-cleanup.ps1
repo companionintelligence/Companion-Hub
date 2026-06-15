@@ -149,11 +149,35 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
 
 $appData = [Environment]::GetFolderPath('ApplicationData')
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-$stateNames = @('Companion Hub', 'companion-hub', 'CI-Hub', 'computer.ci.app.hub')
+# Mirror the Debian postrm name list exactly (note the lowercase 'ci-hub').
+$stateNames = @('Companion Hub', 'companion-hub', 'ci-hub', 'CI-Hub', 'computer.ci.app.hub')
 
+# Current user — GetFolderPath honors relocated/roaming AppData.
 foreach ($name in $stateNames) {
     Remove-IfExists (Join-Path $appData $name)
     Remove-IfExists (Join-Path $localAppData $name)
+}
+
+# All user profiles — parity with the Debian postrm, which cleans every user's home
+# (root + uid>=1000), not just the one running the uninstall. Profile paths come from
+# the registry (authoritative even when a profile is relocated). Other users' profiles
+# are only reachable when the uninstaller runs elevated (per-machine installs), so this
+# is best-effort; Remove-IfExists is idempotent, so re-touching the current user is a no-op.
+$profilePaths = @()
+try {
+    $profilePaths = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction Stop |
+        ForEach-Object { (Get-ItemProperty $_.PSPath -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath } |
+        Where-Object { $_ -and (Test-Path $_ -ErrorAction SilentlyContinue) }
+}
+catch {
+    Write-CleanupLog 'WARN' 'Unable to enumerate user profiles; cleaned current user only'
+}
+
+foreach ($profilePath in $profilePaths) {
+    foreach ($name in $stateNames) {
+        Remove-IfExists (Join-Path $profilePath "AppData\Roaming\$name")
+        Remove-IfExists (Join-Path $profilePath "AppData\Local\$name")
+    }
 }
 
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
