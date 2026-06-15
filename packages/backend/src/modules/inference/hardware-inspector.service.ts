@@ -14,6 +14,12 @@ const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
+// Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that NVIDIA saturates at exactly
+// 4095 MB, so any GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are
+// treated as suspect and cross-checked against nvidia-smi. A reading of 4096+ MB instead comes from
+// the reliable 64-bit registry path (a genuine >=4 GB card), so it is trusted as-is.
+const WMI_VRAM_CAP_MIN_MB = 4000;
+const WMI_VRAM_CAP_MAX_MB = 4095;
 
 type IntegratedGpuInference = {
   vendor: 'amd' | 'intel';
@@ -383,9 +389,39 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let vramMb = best.vramMb;
-      if (best.vendor === 'nvidia' && vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
-        vramMb = await this.detectNvidiaVram();
-        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !best.model) {
+      let model = best.model;
+      let driverVersion = best.driverVersion;
+      // Only cross-check NVIDIA VRAM against nvidia-smi when the systeminformation reading looks
+      // unreliable: a sub-512 MB PCIe BAR/framebuffer (any platform), or a value in the Windows WMI
+      // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
+      // tier threshold and mislabels the host as "CPU Only". A plausible reading is trusted as-is,
+      // avoiding the external nvidia-smi call (and its 5s timeout) on the common path.
+      const inWmiCapBand = platform === 'win32' && vramMb >= WMI_VRAM_CAP_MIN_MB && vramMb <= WMI_VRAM_CAP_MAX_MB;
+      const siVramLooksUnreliable = vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB || inWmiCapBand;
+      if (best.vendor === 'nvidia' && siVramLooksUnreliable) {
+        // nvidia-smi reports true memory; cross-check against the most capable GPU it lists (as a unit,
+        // since multiple WMI-capped controllers can tie at 4095 MB).
+        const smiGpu = await this.detectLargestNvidiaGpuViaSmi();
+        // Prefer nvidia-smi when it reports more memory than systeminformation (WMI cap), and always
+        // defer to it for implausibly small SI readings (PCIe BAR/framebuffer) — even when it reports 0,
+        // so the unreliable value is discarded. When the runtime is available, that sub-512 MB value also
+        // marks the profile incomplete (see hasIncompleteDiscreteGpuProfile), triggering a later refresh.
+        if (smiGpu.vramMb > vramMb || vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+          vramMb = smiGpu.vramMb;
+          // Adopt the matching GPU's identity so model/driver stay consistent with the corrected VRAM —
+          // otherwise `best` may still point at a different (tied) controller than the one we now report.
+          if (smiGpu.model) {
+            model = smiGpu.model;
+            driverVersion = smiGpu.driverVersion || driverVersion;
+          }
+        }
+        // A reading in the WMI cap band means the field saturated, so the card has at least ~4 GB. If the
+        // cross-check couldn't recover the true value (nvidia-smi missing/slow), clamp to the 4 GB floor so
+        // tiering degrades to `low` rather than mislabeling a detected GPU as cpu-only at the 4096 threshold.
+        if (inWmiCapBand && vramMb <= WMI_VRAM_CAP_MAX_MB) {
+          vramMb = WMI_VRAM_CAP_MAX_MB + 1;
+        }
+        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !model) {
           const fromSmi = await this.detectNvidiaFallback();
           if (fromSmi.available) {
             return fromSmi;
@@ -396,11 +432,11 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       return {
-        available: vramMb > 0 || !!best.model,
+        available: vramMb > 0 || !!model,
         vendor: best.vendor,
-        model: best.model,
+        model,
         vramMb,
-        driverVersion: best.driverVersion,
+        driverVersion,
       };
     } catch (err) {
       this.logger.warn(
@@ -674,14 +710,29 @@ export class HardwareInspectorService implements OnModuleInit {
     return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
   }
 
-  /** Detect NVIDIA VRAM using nvidia-smi */
-  private async detectNvidiaVram(): Promise<number> {
+  /**
+   * Query each NVIDIA GPU's identity + VRAM via nvidia-smi and return the one with the largest VRAM.
+   * Selecting the GPU as a unit keeps model/VRAM/driver consistent on multi-GPU hosts rather than
+   * pairing the largest VRAM with whichever GPU nvidia-smi happens to list first.
+   */
+  private async detectLargestNvidiaGpuViaSmi(): Promise<{ model: string; vramMb: number; driverVersion: string }> {
     try {
-      const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', { timeout: 5000 });
-      const vramMb = Number.parseInt(stdout.trim(), 10);
-      return Number.isNaN(vramMb) ? 0 : vramMb;
+      const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits', {
+        timeout: 5000,
+      });
+      let largest = { model: '', vramMb: 0, driverVersion: '' };
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const [modelRaw, memoryRaw, driverRaw] = trimmed.split(',').map((part) => part?.trim() ?? '');
+        const vramMb = Number.parseInt(memoryRaw ?? '', 10);
+        if (Number.isFinite(vramMb) && vramMb > largest.vramMb) {
+          largest = { model: modelRaw || '', vramMb, driverVersion: driverRaw || '' };
+        }
+      }
+      return largest;
     } catch {
-      return 0;
+      return { model: '', vramMb: 0, driverVersion: '' };
     }
   }
 
