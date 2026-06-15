@@ -57,7 +57,7 @@
     "semver": "^7.7.1",
     "slugify": "^1.6.6",
     "swagger-ui-dist": "^5.21.0",
-    "systeminformation": "github:companionintelligence/systeminformation#master",
+    "systeminformation": "companionintelligence/systeminformation#master",
     "validator": "^13.15.20",
     "web-push": "^3.6.7",
     "winston": "^3.17.0",
