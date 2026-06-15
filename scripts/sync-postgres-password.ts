@@ -11,8 +11,9 @@
  * inside the container (no old password required).
  */
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import path, { isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const DB_CONTAINER = 'ci-hub-db';
 const DOCKER_NETWORK = 'ci-os-hub_network';
@@ -124,8 +125,7 @@ function syncPostgresPassword(password: string): boolean {
   return result.status === 0;
 }
 
-async function main() {
-  const envFile = process.argv[2] || process.env.ENV_FILE || '.env.local';
+export async function syncPostgresPasswordFromEnv(envFile = process.env.ENV_FILE || '.env.local') {
   const vars = parseEnvFile(envFile);
   const password = process.env.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD;
 
@@ -140,7 +140,7 @@ async function main() {
   }
 
   if (!(await waitForContainerHealthy(DB_CONTAINER))) {
-    process.exit(1);
+    throw new Error(`${DB_CONTAINER} did not become healthy`);
   }
 
   if (postgresTcpAuthWorks(password)) {
@@ -150,16 +150,21 @@ async function main() {
 
   console.log('sync-postgres-password: TCP auth failed — syncing Postgres role password to match env');
   if (!syncPostgresPassword(password)) {
-    console.error('sync-postgres-password: failed to ALTER USER companion');
-    process.exit(1);
+    throw new Error('failed to ALTER USER companion');
   }
 
   if (!postgresTcpAuthWorks(password)) {
-    console.error('sync-postgres-password: password sync did not fix TCP authentication');
-    process.exit(1);
+    throw new Error('password sync did not fix TCP authentication');
   }
 
   console.log('sync-postgres-password: Postgres password synced successfully');
 }
 
-void main();
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  void syncPostgresPasswordFromEnv(process.argv[2] || process.env.ENV_FILE || '.env.local').catch((error) => {
+    console.error(`sync-postgres-password: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}

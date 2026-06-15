@@ -5,9 +5,16 @@ import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
+import { parseEnvFile, upsertEnvVar } from './env-file';
+import { getDeviceId } from './get-device-id';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { runHubCleanup } from './hub-cleanup-lib';
+import { initDockerConfig } from './init-docker-config';
+import { initGpuRuntime } from './init-gpu-runtime';
+import { initHubDataDirs } from './init-hub-data-dirs';
+import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
+import { syncPostgresPasswordFromEnv } from './sync-postgres-password';
 
 declare const CIHUB_BUILD_VERSION: string | undefined;
 
@@ -56,6 +63,7 @@ const envFileMap: Record<HubEnv, string> = {
 };
 
 const PACKAGE_JSON_URL = new URL('../package.json', import.meta.url);
+export { parseEnvFile, upsertEnvVar };
 
 function packageVersion(): string {
   const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
@@ -307,50 +315,6 @@ export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local')
   return (found || defaultEnv) as HubEnv;
 }
 
-// ─── env file parsing ─────────────────────────────────────────────────────────
-
-export function parseEnvFile(envFileName: string): Record<string, string> {
-  const abs = join(process.cwd(), envFileName);
-  const vars: Record<string, string> = {};
-  let fileContent = '';
-  try {
-    fileContent = readFileSync(abs, 'utf-8');
-  } catch {
-    return vars;
-  }
-  for (const line of fileContent.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    vars[key] = value;
-  }
-  return vars;
-}
-
-export function upsertEnvVar(envFileName: string, key: string, value: string) {
-  const abs = envFileName.startsWith('/') ? envFileName : join(process.cwd(), envFileName);
-  const line = `${key}=${value}`;
-  const current = existsSync(abs) ? readFileSync(abs, 'utf-8') : '';
-  const lines = current.length > 0 ? current.split(/\r?\n/) : [];
-  let replaced = false;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i]?.trimStart().startsWith(`${key}=`)) {
-      lines[i] = line;
-      replaced = true;
-      break;
-    }
-  }
-  if (!replaced) lines.push(line);
-  const finalContent = `${lines.filter((e, i, all) => !(i === all.length - 1 && e === '')).join('\n')}\n`;
-  writeFileSync(abs, finalContent, 'utf-8');
-}
-
 function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}) {
   console.log(colorize(`▶ ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
   const result = spawnSync(cmd, args, {
@@ -363,6 +327,34 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
     process.exit(1);
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}): Promise<T> {
+  console.log(colorize(`▶ ${label}`, 'dim'));
+  const previousValues = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(extraEnv)) {
+    previousValues.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await fn();
+  } catch (error) {
+    console.error(colorize(`Failed to run ${label}: ${String(error)}`, 'red'));
+    process.exit(1);
+  } finally {
+    for (const [key, value] of previousValues) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 function runCapture(cmd: string, args: string[]): { stdout: string; ok: boolean } {
@@ -673,9 +665,9 @@ async function startHub(mode: StartMode, env: HubEnv) {
     usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
   }
   const envFileName = getEnvFileOrExit(env);
-  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
-  run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
+  await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
 
   if (mode === 'local-dev') {
     ensureLocalDevPortsAvailable();
@@ -702,12 +694,12 @@ async function startHub(mode: StartMode, env: HubEnv) {
       ],
       envOverrides,
     );
-    run('tsx', ['scripts/sync-postgres-password.ts', envFileName], envOverrides);
+    await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
     run('pnpm', ['run', 'dev:app'], { ...runtimeVars, ...envOverrides });
     return;
   }
 
-  if (env !== 'local') run('tsx', ['scripts/init-traefik.ts'], envOverrides);
+  if (env !== 'local') await runScript('scripts/init-traefik.ts', () => initTraefik(), envOverrides);
 
   try {
     const portHeal = healHubPortsBeforeStartup(envFileName, (message) => {
@@ -733,13 +725,13 @@ async function startHub(mode: StartMode, env: HubEnv) {
   await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
-function setupHub(env: HubEnv) {
+async function setupHub(env: HubEnv) {
   requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
-  run('tsx', ['scripts/init-hub-data-dirs.ts'], { ENV_FILE: envFileName });
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
-  run('tsx', ['scripts/init-traefik.ts'], envOverrides);
-  run('tsx', ['scripts/init-docker-config.ts'], envOverrides);
+  await runScript('scripts/init-traefik.ts', () => initTraefik(), envOverrides);
+  await runScript('scripts/init-docker-config.ts', () => initDockerConfig(), envOverrides);
   printMessageBox('Setup complete', [`Host assets prepared for ${env}.`, `Next: ${BASE_COMMAND} register ${env}`], 'green');
 }
 
@@ -747,13 +739,15 @@ function printConfig(env: HubEnv) {
   printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
 }
 
-function registerHub(env: HubEnv) {
+async function registerHub(env: HubEnv) {
   requireRepoRoot('cihub register');
   const envFileName = getEnvFileOrExit(env);
   const fileVars = parseEnvFile(envFileName);
   const cloudUrl = process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
-  const result = spawnSync('tsx', ['scripts/get-device-id.ts'], { encoding: 'utf-8', stdio: 'pipe' });
-  if (result.status !== 0) {
+  let deviceId: string;
+  try {
+    deviceId = getDeviceId();
+  } catch {
     printMessageBox(
       'Device ID unavailable',
       [
@@ -768,7 +762,6 @@ function registerHub(env: HubEnv) {
     );
     return;
   }
-  const deviceId = (result.stdout || '').trim();
   const registrationUrl = `${cloudUrl.replace(/\/$/, '')}/register?deviceId=${encodeURIComponent(deviceId)}`;
   printMessageBox(
     'Device registration',
@@ -1428,13 +1421,13 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       // ── Step 3: setup ──────────────────────────────────────────────────
       console.log();
       console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets…', 'active'));
-      setupHub(env);
+      await setupHub(env);
       console.log(renderStep(3, FTUE_STEPS, 'Host initialized', 'done'));
 
       // ── Step 4: register ──────────────────────────────────────────────
       console.log();
       console.log(renderStep(4, FTUE_STEPS, 'Registering with CI Cloud…', 'active'));
-      registerHub(env);
+      await registerHub(env);
       console.log(renderStep(4, FTUE_STEPS, 'Open the URL above to pair this device, then continue', 'done'));
       const cont = await rl.question('  Press Enter once you have registered, or Ctrl+C to exit: ');
       void cont;
@@ -1503,12 +1496,12 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     const actionAnswer = await rl.question('  Action [1-10, default 1]: ');
     const action = resolveWizardActionInput(actionAnswer);
 
-    if (action === 'setup') return setupHub(env);
+    if (action === 'setup') return await setupHub(env);
     if (action === 'up') {
       const detached = (await rl.question('  Detached mode? [y/N]: ')).trim().toLowerCase();
       return await startHub(env === 'local' ? 'local-dev' : detached === 'y' || detached === 'yes' ? 'detached' : 'attached', env);
     }
-    if (action === 'register') return registerHub(env);
+    if (action === 'register') return await registerHub(env);
     if (action === 'config') return printConfig(env);
     if (action === 'mcp-setup') return setMcpState(env, true);
     if (action === 'mcp-shutdown') return setMcpState(env, false);
@@ -1611,12 +1604,12 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'setup') {
-    setupHub(resolveEnvFromArgs(args.slice(1)));
+    await setupHub(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 
   if (first === 'register') {
-    registerHub(resolveEnvFromArgs(args.slice(1)));
+    await registerHub(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 

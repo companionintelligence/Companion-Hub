@@ -10,12 +10,13 @@
 import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
 const TRAEFIK_DIR = path.join(STATE_DIR, 'traefik');
 
-async function initTraefik() {
+export async function initTraefik() {
   console.log('Initializing Traefik configuration...');
 
   // Create directory structure
@@ -110,19 +111,23 @@ async function initTraefik() {
   console.log('Traefik initialization complete.');
 }
 
-initTraefik().catch((err) => {
-  if (err.code === 'EACCES' || err.code === 'EPERM') {
-    console.error('Failed to initialize Traefik: Permission denied');
-    console.error('');
-    console.error('The .internal directory appears to be owned by root or another user.');
-    console.error('This commonly happens when Docker containers create directories.');
-    console.error('');
-    console.error('To fix this, run the following command in your terminal:');
-    console.error(`  sudo chown -R $USER:$USER ${process.env.CI_HUB_STATE_PATH || '.internal'}`);
-    console.error('');
-    console.error('Original error:', err.message);
-  } else {
-    console.error('Failed to initialize Traefik:', err);
-  }
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+
+if (isDirectRun) {
+  initTraefik().catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      console.error('Failed to initialize Traefik: Permission denied');
+      console.error('');
+      console.error('The .internal directory appears to be owned by root or another user.');
+      console.error('This commonly happens when Docker containers create directories.');
+      console.error('');
+      console.error('To fix this, run the following command in your terminal:');
+      console.error(`  sudo chown -R $USER:$USER ${process.env.CI_HUB_STATE_PATH || '.internal'}`);
+      console.error('');
+      console.error('Original error:', err.message);
+    } else {
+      console.error('Failed to initialize Traefik:', err);
+    }
+    process.exit(1);
+  });
+}
