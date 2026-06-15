@@ -396,8 +396,8 @@ export class HardwareInspectorService implements OnModuleInit {
       // 32-bit AdapterRAM cap band (~4095 MB). Such a capped >4 GB card also lands below the 4096 MB
       // tier threshold and mislabels the host as "CPU Only". A plausible reading is trusted as-is,
       // avoiding the external nvidia-smi call (and its 5s timeout) on the common path.
-      const siVramLooksUnreliable =
-        vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB || (platform === 'win32' && vramMb >= WMI_VRAM_CAP_MIN_MB && vramMb <= WMI_VRAM_CAP_MAX_MB);
+      const inWmiCapBand = platform === 'win32' && vramMb >= WMI_VRAM_CAP_MIN_MB && vramMb <= WMI_VRAM_CAP_MAX_MB;
+      const siVramLooksUnreliable = vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB || inWmiCapBand;
       if (best.vendor === 'nvidia' && siVramLooksUnreliable) {
         // nvidia-smi reports true memory; cross-check against the most capable GPU it lists (as a unit,
         // since multiple WMI-capped controllers can tie at 4095 MB).
@@ -414,6 +414,12 @@ export class HardwareInspectorService implements OnModuleInit {
             model = smiGpu.model;
             driverVersion = smiGpu.driverVersion || driverVersion;
           }
+        }
+        // A reading in the WMI cap band means the field saturated, so the card has at least ~4 GB. If the
+        // cross-check couldn't recover the true value (nvidia-smi missing/slow), clamp to the 4 GB floor so
+        // tiering degrades to `low` rather than mislabeling a detected GPU as cpu-only at the 4096 threshold.
+        if (inWmiCapBand && vramMb <= WMI_VRAM_CAP_MAX_MB) {
+          vramMb = WMI_VRAM_CAP_MAX_MB + 1;
         }
         if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !model) {
           const fromSmi = await this.detectNvidiaFallback();

@@ -216,6 +216,31 @@ describe('HardwareInspectorService', () => {
       expect(smiSpy).not.toHaveBeenCalled();
     });
 
+    it('SHALL clamp a WMI-capped reading to the 4 GB floor when nvidia-smi cannot recover the true VRAM', async () => {
+      // Windows host: SI reports the capped 4095 MB and nvidia-smi is unavailable. The field saturated,
+      // so the card has >=4 GB — it must degrade to `low`, not be mislabeled cpu-only at the threshold.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(4096);
+      expect(profile.tier).toBe('low');
+    });
+
     it('SHALL trust a 4096 MB Windows reading as a real 4 GB GPU without cross-checking', async () => {
       // NVIDIA saturates the WMI cap at 4095 MB, so a 4096 MB reading comes from the reliable 64-bit
       // registry path (a genuine 4 GB card) and must not trigger the nvidia-smi cross-check.
