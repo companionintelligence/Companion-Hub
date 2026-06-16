@@ -3,6 +3,20 @@
   min-width: 120px;
 }
 
+.retry-install-action-button {
+  min-height: 3rem;
+  border-color: color-mix(in srgb, rgb(245 158 11) 30%, transparent);
+  background: color-mix(in srgb, rgb(245 158 11) 12%, var(--color-card));
+  color: color-mix(in srgb, rgb(245 158 11) 72%, var(--color-foreground));
+  box-shadow: 0 8px 24px color-mix(in srgb, rgb(245 158 11) 14%, transparent);
+  font-weight: 600;
+}
+
+.retry-install-action-button:hover {
+  background: color-mix(in srgb, rgb(245 158 11) 16%, var(--color-card));
+  color: color-mix(in srgb, rgb(245 158 11) 80%, var(--color-foreground));
+}
+
 .install-action-button {
   flex: 1 1 100%;
   width: 100%;
@@ -51,10 +65,32 @@
   padding: 0.25rem;
 }
 
+.hero-actions-layout {
+  width: 100%;
+}
+
+.hero-inline-install-error {
+  flex: 1 1 18rem;
+  max-width: 32rem;
+}
+
 .hero-action-icon {
   border-radius: calc(var(--radius) - 2px);
   width: 2.5rem;
   height: 2.5rem;
+}
+
+@media (min-width: 1280px) {
+  .hero-actions-layout {
+    align-items: flex-start;
+    justify-content: flex-end;
+  }
+
+  .hero-action-bar,
+  .hero-actions-layout > .action-button,
+  .hero-actions-layout > .installation-progress-shell {
+    flex-shrink: 0;
+  }
 }
 
 .installation-progress-button {
