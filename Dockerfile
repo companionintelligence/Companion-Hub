@@ -70,6 +70,8 @@ COPY ./package.json ./
 COPY ./packages/backend/package.json ./packages/backend/package.json
 COPY ./packages/frontend/package.json ./packages/frontend/package.json
 COPY ./packages/common/package.json ./packages/common/package.json
+COPY ./packages/desktop/package.json ./packages/desktop/package.json
+COPY ./packages/openclaw-plugin/package.json ./packages/openclaw-plugin/package.json
 COPY ./packages/frontend/public ./packages/frontend/public
 
 RUN corepack enable && \
