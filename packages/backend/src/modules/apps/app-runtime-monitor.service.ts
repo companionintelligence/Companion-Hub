@@ -3,6 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
+import si from 'systeminformation';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.service';
@@ -66,6 +67,8 @@ export type AppRuntimeMonitorSnapshot = {
   history: AppRuntimeHistorySample[];
 };
 
+const HUB_RUNTIME_URN = 'ci-hub:system';
+
 @Injectable()
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly samples = new Map<string, RuntimeSample[]>();
@@ -117,12 +120,14 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       return this.latestSnapshot;
     }
 
+    const sampledAt = new Date().toISOString();
     const apps = await this.appsRepository.getApps();
     const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
-    const sampledAt = new Date().toISOString();
+    const hubRuntime = await this.collectHubRuntimeHealth(sampledAt);
+    const entities = hubRuntime ? [...snapshots, hubRuntime] : snapshots;
     const historySample: AppRuntimeHistorySample = {
       sampledAt,
-      apps: snapshots.map((app) => ({
+      apps: entities.map((app) => ({
         appUrn: app.appUrn,
         appName: app.appName,
         status: app.status,
@@ -139,11 +144,65 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
     this.latestSnapshot = {
       sampledAt,
-      apps: snapshots.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
+      apps: entities.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
       history: [...this.history],
     };
     this.latestSnapshotAtMs = Date.now();
     return this.latestSnapshot;
+  }
+
+  private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
+    try {
+      const processList = await si.processes();
+      const backendProcess = processList.list.find((entry) => entry.pid === process.pid);
+      if (!backendProcess) {
+        return null;
+      }
+
+      const cpuPercent = Number((backendProcess.cpu ?? 0).toFixed(2));
+      const memoryUsageBytes = Math.max(Math.round((backendProcess.memRss ?? 0) * 1024), 0);
+      const recentSamples = this.rememberSample(HUB_RUNTIME_URN, {
+        sampledAtMs: Date.now(),
+        cpuPercent,
+        responsive: true,
+      });
+      const sustainedHighCpu =
+        recentSamples.length >= HIGH_CPU_SAMPLE_COUNT &&
+        recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
+
+      const processRuntime: AppContainerRuntimeStats = {
+        containerId: `pid:${process.pid}`,
+        name: 'backend-api',
+        state: backendProcess.state || 'running',
+        status: 'Node process',
+        health: null,
+        cpuPercent,
+        memoryUsageBytes,
+        memoryLimitBytes: 0,
+      };
+
+      return {
+        appUrn: HUB_RUNTIME_URN,
+        appName: 'Companion Hub API',
+        status: 'running',
+        cpuPercent,
+        memoryUsageBytes,
+        memoryLimitBytes: 0,
+        highCpu: cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT,
+        sustainedHighCpu,
+        responsive: true,
+        degraded: false,
+        forceStopEligible: false,
+        reason: null,
+        cpuLimit: null,
+        usesDefaultCpuLimit: false,
+        sampledAt,
+        containers: [processRuntime],
+      };
+    } catch (error) {
+      this.logger.warn(`Failed to collect Hub runtime metrics: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {

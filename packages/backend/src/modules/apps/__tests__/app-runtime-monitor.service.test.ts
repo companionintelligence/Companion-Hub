@@ -7,6 +7,9 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppsRepository } from '../apps.repository';
 import { AppsService } from '../apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import si from 'systeminformation';
+
+vi.mock('systeminformation');
 
 describe('AppRuntimeMonitorService', () => {
   let logger: MockProxy<LoggerService>;
@@ -29,6 +32,16 @@ describe('AppRuntimeMonitorService', () => {
         return {} as any;
       }
       return undefined as any;
+    });
+    (si.processes as any) = vi.fn().mockResolvedValue({
+      list: [
+        {
+          pid: process.pid,
+          cpu: 7.5,
+          memRss: 2048,
+          state: 'running',
+        },
+      ],
     });
 
     service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerService);
@@ -181,16 +194,43 @@ describe('AppRuntimeMonitorService', () => {
 
     expect(first.history).toHaveLength(1);
     expect(second.history).toHaveLength(2);
-    expect(second.history[0]?.apps[0]).toMatchObject({
+    expect(second.history[0]?.apps.find((app) => app.appUrn === 'test-app:store')).toMatchObject({
       appUrn: 'test-app:store',
       appName: 'test-app',
       cpuPercent: 12,
       memoryUsageBytes: 100,
       containerCount: 1,
     });
-    expect(second.history[1]?.apps[0]).toMatchObject({
+    expect(second.history[1]?.apps.find((app) => app.appUrn === 'test-app:store')).toMatchObject({
       cpuPercent: 18,
       memoryUsageBytes: 120,
     });
+  });
+
+  it('includes the companion hub api in monitor snapshots', async () => {
+    appsRepository.getApps.mockResolvedValue([]);
+
+    const snapshot = await service.getRuntimeMonitorSnapshot();
+
+    expect(snapshot.apps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          appUrn: 'ci-hub:system',
+          appName: 'Companion Hub API',
+          cpuPercent: 7.5,
+          memoryUsageBytes: 2048 * 1024,
+        }),
+      ]),
+    );
+    expect(snapshot.history[0]?.apps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          appUrn: 'ci-hub:system',
+          appName: 'Companion Hub API',
+          cpuPercent: 7.5,
+          memoryUsageBytes: 2048 * 1024,
+        }),
+      ]),
+    );
   });
 });

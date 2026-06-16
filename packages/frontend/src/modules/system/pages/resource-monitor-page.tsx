@@ -177,7 +177,7 @@ export default function ResourceMonitorPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOTAL_APP_CPU')}</CardTitle>
+            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOTAL_WORKLOAD_CPU')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold">{totalCpuPercent.toFixed(1)}%</div>
@@ -185,7 +185,7 @@ export default function ResourceMonitorPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOTAL_APP_MEMORY')}</CardTitle>
+            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOTAL_WORKLOAD_MEMORY')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-semibold">{formatBytes(totalMemoryUsageBytes)}</div>
@@ -193,7 +193,7 @@ export default function ResourceMonitorPage() {
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOP_CPU_APP')}</CardTitle>
+            <CardTitle className="text-sm">{t('RESOURCE_MONITOR_TOP_CPU_WORKLOAD')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="font-semibold">{topCpuApp?.appName ?? '—'}</div>
