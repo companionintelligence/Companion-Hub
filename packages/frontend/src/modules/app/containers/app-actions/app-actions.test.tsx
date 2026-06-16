@@ -104,31 +104,63 @@ vi.mock('../../components/dialogs/update-settings-dialog/update-settings-dialog'
   UpdateSettingsDialog: () => null,
 }));
 
-const info: AppInfo = {
-  id: 'test-app',
-  urn: 'test-app:community',
-  name: 'Test App',
-  short_desc: 'Short description',
-  description: 'Long description',
-  categories: [],
-  form_fields: [],
-  no_gui: true,
-  deprecated: false,
-  replacesNames: [],
-  version: '1.0.0',
-} as AppInfo;
+function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
+  return {
+    urn: 'test-app:community',
+    id: 'test-app',
+    name: 'Test App',
+    short_desc: 'Short description',
+    description: 'Long description',
+    author: 'Test Author',
+    source: 'https://github.com/test/test-app',
+    version: '1.0.0',
+    cihub_app_version: 1,
+    available: true,
+    deprecated: false,
+    port: 3000,
+    force_expose: false,
+    generate_vapid_keys: false,
+    categories: ['utilities'],
+    form_fields: [],
+    https: false,
+    exposable: true,
+    no_gui: true,
+    supported_architectures: ['amd64', 'arm64'],
+    dynamic_config: true,
+    created_at: 0,
+    updated_at: 1700000000000,
+    force_pull: false,
+    ...overrides,
+  };
+}
+
+function makeApp(overrides: Partial<AppDetails> = {}): AppDetails {
+  return {
+    id: 1,
+    domain: null,
+    exposed: false,
+    exposedLocal: false,
+    ignoredVersion: null,
+    isVisibleOnGuestDashboard: false,
+    openPort: false,
+    pendingRestart: false,
+    port: 3000,
+    status: 'running',
+    version: 1,
+    config: {},
+    localSubdomain: 'test-app',
+    ...overrides,
+  };
+}
+
+const info = makeInfo();
 
 const metadata: AppMetadata = {
   latestVersion: 1,
-} as AppMetadata;
+  localSubdomain: 'test-app',
+};
 
-const runningApp: AppDetails = {
-  status: 'running',
-  version: 1,
-  config: {},
-  ignoredVersion: null,
-  exposureMode: 'local',
-} as AppDetails;
+const runningApp = makeApp();
 
 describe('AppActions', () => {
   it('keeps install errors inline in hero layout with constrained width', () => {
@@ -147,7 +179,7 @@ describe('AppActions', () => {
   it('uses the taller amber retry install button styling for failed installs', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
 
-    render(<AppActions app={{ ...runningApp, status: 'install_failed' }} metadata={metadata} info={info} layout="hero" />);
+    render(<AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} layout="hero" />);
 
     expect(screen.getByTestId('action-app_action_retry_install')).toHaveClass('retry-install-action-button');
   });
