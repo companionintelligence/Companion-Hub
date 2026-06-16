@@ -164,6 +164,7 @@ describe('AppAccessPoints', () => {
 
     expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
     expect(screen.getAllByText('APP_ACTION_OPEN')).toHaveLength(3);
+    expect(screen.queryByText('COMMON_HOSTNAME')).not.toBeInTheDocument();
     expect(screen.getByText('https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login')).toBeInTheDocument();
     expect(screen.getByText('http://127.0.0.1:3000/login')).toBeInTheDocument();
   });

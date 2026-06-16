@@ -124,7 +124,7 @@ export default () => {
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
-                  <span className="rounded-xl bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
+                  <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
                     {t('APP_PRICE_FREE')}
                   </span>
                 </div>

@@ -253,10 +253,6 @@ export const AppAccessPoints = ({ app, info }: Props) => {
 
                 <div className="mt-4 space-y-2">
                   <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('COMMON_HOSTNAME')}</div>
-                    <div className="min-w-0 break-all text-sm leading-5">{entry.host || t('COMMON_UNKNOWN')}</div>
-                  </div>
-                  <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
                     <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
                     <div className="min-w-0 break-all text-sm leading-5">{entry.url || t('COMMON_UNKNOWN')}</div>
                   </div>

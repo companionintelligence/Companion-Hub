@@ -70,7 +70,7 @@ vi.mock('@ci-hub/common/types', () => {
     const cleanAppSubdomain = sanitizeAppSubdomain(appSubdomain);
     if (!orgSlug) {
       const hostname = `${cleanAppSubdomain}.${publicDomainRoot}`;
-      return { hostname, publicUrl: `https://${hostname}`, originServerName: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
+      return { hostname, publicUrl: `https://${hostname}`, publicDnsHostname: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
     }
 
     const withoutPrefix = (hubSubdomain ?? '').replace(/^hub-/, '');
@@ -78,7 +78,7 @@ vi.mock('@ci-hub/common/types', () => {
     const deviceSlug = withoutPrefix.endsWith(orgSuffix) ? withoutPrefix.slice(0, -orgSuffix.length) : withoutPrefix;
     const fqdnSubdomain = deviceSlug && deviceSlug !== orgSlug ? `${cleanAppSubdomain}-${deviceSlug}-${orgSlug}` : `${cleanAppSubdomain}-${orgSlug}`;
     const hostname = `${fqdnSubdomain}.${publicDomainRoot}`;
-    return { hostname, publicUrl: `https://${hostname}`, originServerName: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
+    return { hostname, publicUrl: `https://${hostname}`, publicDnsHostname: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
   };
 
   const buildTailscalePortHost = (nodeFqdn?: string | null, port?: number | null) => {
@@ -237,6 +237,49 @@ describe('InstallForm', () => {
     expect(link).toHaveAttribute('href', '/settings?tab=network');
   });
 
+  it('renders exposure mode buttons in local, private vpn, public order', () => {
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: false },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((button) =>
+        ['APP_INSTALL_FORM_EXPOSURE_LOCAL', 'COMMON_PRIVATE_VPN', 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE'].includes(button.textContent ?? ''),
+      );
+
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'APP_INSTALL_FORM_EXPOSURE_LOCAL',
+      'COMMON_PRIVATE_VPN',
+      'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE',
+    ]);
+  });
+
   it('shows advanced settings toggle in simple mode when optional fields exist', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
@@ -339,6 +382,52 @@ describe('InstallForm', () => {
     expect(screen.getByText('DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com')).toBeInTheDocument();
   });
 
+  it('passes the current app urn when validating DNS inside the settings dialog flow', async () => {
+    vi.useFakeTimers();
+    apiFetch.mockResolvedValue(
+      new Response(JSON.stringify({ available: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} editingAppUrn="ci-openclaw:store" />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('appUrn=ci-openclaw%3Astore'), expect.objectContaining({ credentials: 'include' }));
+  });
+
   it('shows optional fields by default and hides toggle in advanced mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
 
@@ -359,6 +448,116 @@ describe('InstallForm', () => {
 
     expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
     expect(screen.getByText('Optional field')).toBeInTheDocument();
+  });
+
+  it('does not run DNS availability checks for Private VPN exposure mode', async () => {
+    vi.useFakeTimers();
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 3000,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} initialValues={{ exposureMode: 'tailscale' }} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+      await Promise.resolve();
+    });
+
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('hides the subdomain field for Private VPN exposure mode', () => {
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 3000,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} initialValues={{ exposureMode: 'tailscale' }} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByLabelText('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')).not.toBeInTheDocument();
+    expect(screen.getByText('COMMON_HOSTNAME')).toBeInTheDocument();
+  });
+
+  it('shows a localhost hostname preview for This machine only exposure mode', () => {
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 3001,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} initialValues={{ exposureMode: 'local' }} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('COMMON_HOSTNAME')).toBeInTheDocument();
+    expect(screen.getByText('localhost:3001')).toBeInTheDocument();
   });
 
   it('does not show advanced settings toggle when there are no optional fields', () => {
