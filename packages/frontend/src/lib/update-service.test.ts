@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  checkForUpdates,
   getInstalledDesktopVersion,
   isHubUpdateAvailable,
   isStackUpdateAvailable,
@@ -11,9 +12,16 @@ import {
 
 const mockInvoke = vi.fn();
 const mockOpenExternal = vi.fn();
+const mockPlatform = vi.fn();
+const mockArch = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-os', () => ({
+  arch: (...args: unknown[]) => mockArch(...args),
+  platform: (...args: unknown[]) => mockPlatform(...args),
 }));
 
 vi.mock('@/lib/helpers/open-external', () => ({
@@ -23,6 +31,7 @@ vi.mock('@/lib/helpers/open-external', () => ({
 describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -57,6 +66,31 @@ describe('update-service', () => {
 
     await expect(getInstalledDesktopVersion()).resolves.toBe('0.2.24');
     expect(mockInvoke).toHaveBeenCalledWith('get_desktop_release_version_command');
+  });
+
+  it('prefers the provided desktop version without invoking Tauri again', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockPlatform.mockResolvedValue('linux');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ version: 'v0.2.24' }),
+      }),
+    );
+
+    await expect(checkForUpdates('0.2.24')).resolves.toEqual({
+      currentVersion: '0.2.24',
+      latestVersion: '0.2.24',
+      downloadUrl: '',
+      updateAvailable: false,
+      platform: 'linux',
+      manualDownload: true,
+    });
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('accepts dl.ci.computer HTTPS URLs', () => {

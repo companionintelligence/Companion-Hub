@@ -153,7 +153,7 @@ export function requiresManualDesktopUpdate(platform: DesktopPlatform | null): b
 }
 
 export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
-  const currentVersion = (await getCurrentVersion()) ?? fallbackCurrentVersion ?? null;
+  const currentVersion = fallbackCurrentVersion ?? (await getCurrentVersion()) ?? null;
   if (!currentVersion || !semver.valid(currentVersion)) return null;
 
   try {

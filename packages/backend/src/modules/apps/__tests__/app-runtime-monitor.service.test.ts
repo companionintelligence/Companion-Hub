@@ -12,6 +12,7 @@ import si from 'systeminformation';
 vi.mock('systeminformation');
 
 describe('AppRuntimeMonitorService', () => {
+  const originalHostname = process.env.HOSTNAME;
   let logger: MockProxy<LoggerService>;
   let config: MockProxy<ConfigurationService>;
   let appsRepository: MockProxy<AppsRepository>;
@@ -50,6 +51,11 @@ describe('AppRuntimeMonitorService', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    if (originalHostname === undefined) {
+      delete process.env.HOSTNAME;
+    } else {
+      process.env.HOSTNAME = originalHostname;
+    }
   });
 
   it('does not probe healthy running apps in the hot path', async () => {
@@ -243,6 +249,38 @@ describe('AppRuntimeMonitorService', () => {
           appName: 'Companion Hub',
           cpuPercent: 10,
           memoryUsageBytes: 2048 * 1024 + 4096,
+        }),
+      ]),
+    );
+  });
+
+  it('does not double-count the backend process when its container is already tracked', async () => {
+    process.env.HOSTNAME = 'hub-api-container';
+    appsRepository.getApps.mockResolvedValue([]);
+    dockerService.getHubRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'hub-api-container-123456',
+        name: 'ci-os-hub',
+        state: 'running',
+        status: 'Up',
+        health: null,
+        cpuPercent: 4.25,
+        memoryUsageBytes: 8192,
+        memoryLimitBytes: 16384,
+      },
+    ]);
+
+    const snapshot = await service.getRuntimeMonitorSnapshot();
+
+    expect(si.processes).not.toHaveBeenCalled();
+    expect(snapshot.apps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          appUrn: 'ci-hub:system',
+          appName: 'Companion Hub',
+          cpuPercent: 4.25,
+          memoryUsageBytes: 8192,
+          memoryLimitBytes: 16384,
         }),
       ]),
     );

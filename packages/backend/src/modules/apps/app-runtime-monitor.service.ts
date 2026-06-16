@@ -154,8 +154,9 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
     try {
       const hubContainers = await this.dockerService.getHubRuntimeStats();
-      const processList = await si.processes();
-      const backendProcess = processList.list.find((entry) => entry.pid === process.pid);
+      const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
+        ? null
+        : await si.processes().then((processList) => processList.list.find((entry) => entry.pid === process.pid));
       if (!backendProcess && hubContainers.length === 0) {
         return null;
       }
@@ -210,6 +211,19 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Failed to collect Hub runtime metrics: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
+  }
+
+  private isCurrentProcessRepresentedByHubContainers(containers: AppContainerRuntimeStats[]): boolean {
+    const hostname = process.env.HOSTNAME?.trim().toLowerCase();
+    if (!hostname) {
+      return false;
+    }
+
+    return containers.some((container) => {
+      const containerId = container.containerId.toLowerCase();
+      const containerName = container.name.toLowerCase();
+      return containerId === hostname || containerId.startsWith(hostname) || containerName === hostname;
+    });
   }
 
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
