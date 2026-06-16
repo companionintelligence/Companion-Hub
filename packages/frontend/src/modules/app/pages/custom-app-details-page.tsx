@@ -87,7 +87,7 @@ export const CustomAppDetailsPage = () => {
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
             <div className="mb-1">
-              <AppStatus status={app?.status ?? 'missing'} />
+              <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
             </div>
             <AppActions
               app={app}
@@ -96,6 +96,7 @@ export const CustomAppDetailsPage = () => {
               localDomain={userSettings.localDomain}
               sslPort={userSettings.sslPort}
               runtimeHealth={runtimeHealth.data}
+              layout="hero"
             />
           </div>
         </CardHeader>

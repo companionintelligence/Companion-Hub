@@ -1,24 +1,9 @@
-import {
-  AlertTriangle,
-  Ban,
-  CheckCircle,
-  MoreHorizontal,
-  Download,
-  Edit,
-  Eraser,
-  ExternalLink,
-  Pause,
-  Play,
-  RotateCw,
-  Settings,
-  Trash,
-} from 'lucide-react';
+import { AlertTriangle, Ban, CheckCircle, Download, Edit, Eraser, ExternalLink, Pause, Play, RotateCw, Settings, Trash } from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +13,7 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
+import { Tooltip } from 'react-tooltip';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
@@ -37,7 +23,6 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
@@ -52,10 +37,16 @@ interface IProps {
   localDomain?: string;
   sslPort?: number;
   runtimeHealth?: AppRuntimeHealth;
+  layout?: 'default' | 'hero';
 }
 
 interface BtnProps extends ButtonProps {
   IconComponent?: typeof Download;
+}
+
+interface IconBtnProps extends ButtonProps {
+  icon: typeof Download;
+  label: string;
 }
 
 const ActionButton: React.FC<BtnProps> = (props) => {
@@ -75,6 +66,23 @@ const ActionButton: React.FC<BtnProps> = (props) => {
     </Button>
   );
 };
+
+const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className, ...props }) => (
+  <Button
+    type="button"
+    size="icon"
+    variant="ghost"
+    aria-label={label}
+    title={label}
+    data-testid={`icon-action-${label.toLowerCase().replace(/\s+/g, '-')}`}
+    data-tooltip-id="app-actions-tooltip"
+    data-tooltip-content={label}
+    className={clsx('hero-action-icon', className)}
+    {...props}
+  >
+    <Icon size={16} />
+  </Button>
+);
 
 const ERROR_MESSAGE_KEYS: Record<string, string> = {
   CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
@@ -98,7 +106,7 @@ const MAX_POLL_MS = 5 * 60_000;
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
-export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
+export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const forceStopDisclosure = useDisclosure();
@@ -168,7 +176,7 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
 
     return (
       <div key="loading" className="installation-progress-shell">
-        <ActionButton disabled intent="success" title={t('COMMON_INSTALLING')} className="installation-progress-button" />
+        <ActionButton disabled variant="outline" title={t('COMMON_INSTALLING')} className="installation-progress-button" />
         <div
           className="installation-progress-track"
           role="progressbar"
@@ -184,82 +192,6 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
       </div>
     );
   })();
-
-  const RemoveListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
-      <Trash className="mr-2" size={16} />
-      {t('COMMON_REMOVE')}
-    </DropdownMenuItem>
-  );
-  const SettingsListItem = (
-    <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
-      <Settings className="mr-2" size={16} />
-      {t('COMMON_SETTINGS')}
-    </DropdownMenuItem>
-  );
-  const RestartListItem = (
-    <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
-      <RotateCw className="mr-2" size={16} />
-      {t('COMMON_RESTART')}
-      {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
-    </DropdownMenuItem>
-  );
-  const UpdateListItem = (
-    <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
-      <Download className="mr-2" size={16} />
-      {t('COMMON_UPDATE')}
-      <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
-    </DropdownMenuItem>
-  );
-  const IgnoreVersionListItem = (
-    <DropdownMenuItem
-      onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
-      key="ignore-version"
-      disabled={ignoreVersionMutation.isPending}
-    >
-      <Ban className="mr-2" size={16} />
-      {t('APP_ACTION_IGNORE_VERSION')}
-    </DropdownMenuItem>
-  );
-  const UnignoreVersionListItem = (
-    <DropdownMenuItem
-      onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
-      key="unignore-version"
-      disabled={unignoreVersionMutation.isPending}
-    >
-      <CheckCircle className="mr-2" size={16} />
-      {t('APP_ACTION_UNIGNORE_VERSION')}
-    </DropdownMenuItem>
-  );
-  const CancelListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
-      <Pause className="mr-2" size={16} />
-      {t('COMMON_CANCEL')}
-    </DropdownMenuItem>
-  );
-  const ResetListItem = (
-    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-destructive focus:text-destructive">
-      <Eraser className="mr-2" size={16} />
-      {t('APP_INSTALL_FORM_RESET')}
-    </DropdownMenuItem>
-  );
-  const ForceStopListItem = (
-    <DropdownMenuItem onClick={forceStopDisclosure.open} key="force-stop" className="text-destructive focus:text-destructive">
-      <AlertTriangle className="mr-2" size={16} />
-      {t('APP_FORCE_STOP_ACTION')}
-    </DropdownMenuItem>
-  );
-
-  const EditConfigListItem = (
-    <DropdownMenuItem
-      onClick={() => navigate(`/apps/${info.id}/edit`)}
-      key="edit-config"
-      disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
-    >
-      <Edit className="mr-2" size={16} />
-      {t('CUSTOM_APP_EDIT_CONFIG')}
-    </DropdownMenuItem>
-  );
 
   const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('COMMON_STOP')} intent="default" />;
   const InstallButton = (
@@ -472,6 +404,9 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
             }
           }}
           title={t('APP_ACTION_OPEN')}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
         />
       );
     }
@@ -490,6 +425,9 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
           onClick={() => appUrl && openExternalUrl(appUrl)}
           title={t('APP_ACTION_OPEN')}
           disabled={!appUrl}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
         />
       );
     }
@@ -562,42 +500,106 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
   ) : null;
 
   const buttons: React.JSX.Element[] = [];
-  const listItems: React.JSX.Element[] = [];
-  const listItemsDestructive: React.JSX.Element[] = [];
-
-  if (info.urn.split(':')[1] === '_user') {
-    listItems.push(EditConfigListItem);
-  }
+  const secondaryActions: React.JSX.Element[] = [];
 
   switch (app?.status ?? 'missing') {
     case 'stopped':
       buttons.push(StartButton);
-      listItems.push(SettingsListItem);
-      listItemsDestructive.push(ResetListItem);
-      listItemsDestructive.push(RemoveListItem);
+      secondaryActions.push(
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
       if (updateAvailable && !versionIsIgnored) {
-        listItems.push(UpdateListItem);
-        listItems.push(IgnoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="update"
+            icon={Download}
+            label={t('COMMON_UPDATE')}
+            onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
+          />,
+          <IconActionButton
+            key="ignore-version"
+            icon={Ban}
+            label={t('APP_ACTION_IGNORE_VERSION')}
+            onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={ignoreVersionMutation.isPending}
+          />,
+        );
       } else if (versionIsIgnored) {
-        listItems.push(UnignoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="unignore-version"
+            icon={CheckCircle}
+            label={t('APP_ACTION_UNIGNORE_VERSION')}
+            onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={unignoreVersionMutation.isPending}
+          />,
+        );
       }
       break;
     case 'running': {
-      buttons.push(StopButton);
-      listItems.push(SettingsListItem);
-      listItems.push(RestartListItem);
-      listItemsDestructive.push(ResetListItem);
-      listItemsDestructive.push(RemoveListItem);
+      secondaryActions.push(
+        <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} onClick={stopDisclosure.open} />,
+        <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} onClick={restartDisclosure.open} />,
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
 
       // Open button area for running apps with a GUI
       const openArea = renderOpenButtonArea();
       if (openArea) buttons.push(openArea);
 
       if (updateAvailable && !versionIsIgnored) {
-        listItems.push(UpdateListItem);
-        listItems.push(IgnoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="update"
+            icon={Download}
+            label={t('COMMON_UPDATE')}
+            onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
+          />,
+          <IconActionButton
+            key="ignore-version"
+            icon={Ban}
+            label={t('APP_ACTION_IGNORE_VERSION')}
+            onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={ignoreVersionMutation.isPending}
+          />,
+        );
       } else if (versionIsIgnored) {
-        listItems.push(UnignoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="unignore-version"
+            icon={CheckCircle}
+            label={t('APP_ACTION_UNIGNORE_VERSION')}
+            onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={unignoreVersionMutation.isPending}
+          />,
+        );
+      }
+      if (runtimeHealth?.forceStopEligible) {
+        secondaryActions.push(
+          <IconActionButton
+            key="force-stop"
+            icon={AlertTriangle}
+            label={t('APP_FORCE_STOP_ACTION')}
+            onClick={forceStopDisclosure.open}
+            className="text-destructive hover:text-destructive"
+          />,
+        );
       }
       break;
     }
@@ -611,20 +613,48 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
     case 'backing_up':
     case 'restoring':
       buttons.push(LoadingButton);
-      listItems.push(CancelListItem);
+      secondaryActions.push(<IconActionButton key="cancel" icon={Pause} label={t('COMMON_CANCEL')} onClick={uninstallDisclosure.open} />);
       break;
     case 'install_failed':
       buttons.push(RetryInstallButton);
-      listItems.push(SettingsListItem);
-      listItemsDestructive.push(RemoveListItem);
+      secondaryActions.push(
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
       break;
     case 'missing':
       buttons.push(InstallButton);
       if (info.urn.split(':')[1] === '_user') {
-        listItemsDestructive.push(RemoveListItem);
+        secondaryActions.push(
+          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+          <IconActionButton
+            key="remove"
+            icon={Trash}
+            label={t('COMMON_REMOVE')}
+            onClick={uninstallDisclosure.open}
+            className="text-destructive hover:text-destructive"
+          />,
+        );
       }
       break;
     default:
+      if (info.urn.split(':')[1] === '_user') {
+        secondaryActions.push(
+          <IconActionButton
+            key="edit-config"
+            icon={Edit}
+            label={t('CUSTOM_APP_EDIT_CONFIG')}
+            onClick={() => navigate(`/apps/${info.id}/edit`)}
+            disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
+          />,
+        );
+      }
       break;
   }
 
@@ -643,34 +673,17 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
         config={app?.config ?? {}}
         status={app?.status}
       />
-      <div className="mt-1 space-y-1">
-        <div className="flex flex-wrap items-start gap-2">
+      <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>
+        <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'w-full lg:justify-end')}>
+          {secondaryActions.length > 0 ? <div className="hero-action-bar">{secondaryActions}</div> : null}
           {buttons.map((button) => {
             return createElement(button.type, {
               ...button.props,
               key: button.key,
             });
           })}
-          {listItems.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" name="more" className="more-button relative">
-                  <MoreHorizontal size={14} />
-                  {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
-                    <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
-                  )}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuGroup>{listItems}</DropdownMenuGroup>
-                {runtimeHealth?.forceStopEligible ? <DropdownMenuSeparator /> : null}
-                {runtimeHealth?.forceStopEligible ? <DropdownMenuGroup>{[ForceStopListItem]}</DropdownMenuGroup> : null}
-                {listItemsDestructive.length > 0 ? <DropdownMenuSeparator /> : null}
-                <DropdownMenuGroup>{listItemsDestructive}</DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
         </div>
+        <Tooltip id="app-actions-tooltip" className="tooltip" />
         {InstallErrorMessage}
       </div>
     </>

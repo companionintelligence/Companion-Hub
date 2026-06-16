@@ -65,21 +65,17 @@ export default () => {
   const logoUrn = info?.urn ?? appUrn;
   const logoUrl = getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
+  const showStatusPill = Boolean(app?.status && app.status !== 'missing');
   const headerStats = [
     {
       key: 'rating',
       value: (
-        <span className="flex items-center gap-1">
-          <span>0.0</span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-sm font-semibold">0.0</span>
           <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
         </span>
       ),
       label: t('APP_DETAILS_ZERO_RATINGS'),
-    },
-    {
-      key: 'price',
-      value: <span className="text-emerald-500">{t('APP_PRICE_FREE')}</span>,
-      label: t('APP_DETAILS_PRICE_LABEL'),
     },
     ...(primaryCategory
       ? [
@@ -105,52 +101,53 @@ export default () => {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 pb-20 sm:space-y-8">
+    <div className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8">
       <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
       <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
-        <CardContent className="space-y-6 p-5 sm:p-6">
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-            <div className="min-w-0 space-y-4">
-              <div className="flex flex-row items-start gap-4">
-                <div className="flex shrink-0 justify-start">
-                  <img
-                    src={logoUrl}
-                    alt={info?.name}
-                    className="h-20 w-20 rounded-3xl object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
-                    onError={(e) => {
-                      e.currentTarget.src = '/app-not-found.jpg';
-                    }}
-                  />
-                </div>
-
-                <div className="min-w-0 flex-1 space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">{info?.name}</h1>
-                    {primaryCategory && (
-                      <div className="pt-2">
-                        <span className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
-                          {getCategoryLabel(t, primaryCategory)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-sm text-muted-foreground sm:text-base">{info?.author}</p>
-                  {info.short_desc && <p className="max-w-3xl text-sm leading-6 text-foreground/85 sm:text-base">{info.short_desc}</p>}
-                </div>
+        <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
+          <div className="space-y-4 sm:space-y-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
+              <div className="flex shrink-0 justify-start">
+                <img
+                  src={logoUrl}
+                  alt={info?.name}
+                  className="h-24 w-24 rounded-[2rem] object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
+                  onError={(e) => {
+                    e.currentTarget.src = '/app-not-found.jpg';
+                  }}
+                />
               </div>
 
-              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                {headerStats.map((stat) => (
-                  <div key={stat.key} className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
-                    <div className="text-sm font-semibold">{stat.value}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{stat.label}</div>
+              <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-2">
+                    <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
+                    {info?.author ? <p className="text-base font-medium text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
-                ))}
+                  <span className="rounded-xl bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
+                    {t('APP_PRICE_FREE')}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                  {headerStats.map((stat) => (
+                    <div
+                      key={stat.key}
+                      className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 sm:px-3 sm:py-1.5"
+                    >
+                      <span className="text-foreground">{stat.value}</span>
+                      <span className="text-xs text-muted-foreground">{stat.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {info.short_desc && <p className="max-w-4xl text-sm leading-6 text-foreground/85 sm:text-base">{info.short_desc}</p>}
               </div>
             </div>
 
-            <div className="flex min-w-0 flex-col items-stretch gap-3 lg:min-w-[220px] lg:items-end">
-              <div className="flex w-full flex-wrap gap-3 lg:justify-end">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              {app && app.status !== 'missing' ? <AppStatus status={app.status} runtimeHealth={runtimeHealth.data} variant="pill" /> : null}
+              <div className="min-w-0 xl:flex-1">
                 <AppActions
                   app={app}
                   metadata={metadata}
@@ -158,13 +155,9 @@ export default () => {
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}
+                  layout="hero"
                 />
               </div>
-              {app?.status && app.status !== 'missing' && (
-                <div className="rounded-full border border-border/70 bg-muted/20 px-3 py-1.5">
-                  <AppStatus status={app.status} />
-                </div>
-              )}
             </div>
           </div>
         </CardContent>
