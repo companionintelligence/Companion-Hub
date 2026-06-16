@@ -150,7 +150,7 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       force: false,
-      include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', 'js-cookie', '@tanstack/react-query'],
+      include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', '@tanstack/react-query'],
     },
     preview: {
       port: Number(process.env.FRONTEND_PORT || 5005),
