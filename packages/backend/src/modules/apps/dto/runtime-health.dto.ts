@@ -12,6 +12,15 @@ const containerRuntimeStatsSchema = z.object({
   memoryLimitBytes: z.number(),
 });
 
+const appRuntimeHistoryPointSchema = z.object({
+  appUrn: z.string(),
+  appName: z.string(),
+  status: z.string(),
+  cpuPercent: z.number(),
+  memoryUsageBytes: z.number(),
+  containerCount: z.number(),
+});
+
 const appRuntimeHealthSchema = z.object({
   appUrn: z.string(),
   appName: z.string(),
@@ -31,9 +40,15 @@ const appRuntimeHealthSchema = z.object({
   containers: z.array(containerRuntimeStatsSchema),
 });
 
+const appRuntimeHistorySampleSchema = z.object({
+  sampledAt: z.string(),
+  apps: z.array(appRuntimeHistoryPointSchema),
+});
+
 const appRuntimeMonitorSchema = z.object({
   sampledAt: z.string(),
   apps: z.array(appRuntimeHealthSchema),
+  history: z.array(appRuntimeHistorySampleSchema),
 });
 
 export class AppRuntimeHealthDto extends createZodDto(appRuntimeHealthSchema) {}

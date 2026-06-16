@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppRuntimeMonitorService } from '../app-runtime-monitor.service';
@@ -32,6 +32,10 @@ describe('AppRuntimeMonitorService', () => {
     });
 
     service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerService);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('does not probe healthy running apps in the hot path', async () => {
@@ -100,5 +104,93 @@ describe('AppRuntimeMonitorService', () => {
     appsRepository.getAppByUrn.mockResolvedValue(null);
 
     await expect(service.getAppRuntimeHealth('missing:store' as any)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('returns cached monitor snapshots without re-polling Docker immediately', async () => {
+    vi.useFakeTimers();
+    appsRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'test-app',
+        appStoreSlug: 'store',
+        status: 'running',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any,
+    ]);
+    dockerService.getAppRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'abc',
+        name: 'svc',
+        state: 'running',
+        status: 'Up',
+        health: 'healthy',
+        cpuPercent: 12,
+        memoryUsageBytes: 100,
+        memoryLimitBytes: 1000,
+      },
+    ]);
+
+    await service.getRuntimeMonitorSnapshot();
+    await service.getRuntimeMonitorSnapshot();
+
+    expect(dockerService.getAppRuntimeStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes rolling history gathered before the page is opened', async () => {
+    vi.useFakeTimers();
+    appsRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'test-app',
+        appStoreSlug: 'store',
+        status: 'running',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any,
+    ]);
+    dockerService.getAppRuntimeStats
+      .mockResolvedValueOnce([
+        {
+          containerId: 'abc',
+          name: 'svc',
+          state: 'running',
+          status: 'Up',
+          health: 'healthy',
+          cpuPercent: 12,
+          memoryUsageBytes: 100,
+          memoryLimitBytes: 1000,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          containerId: 'abc',
+          name: 'svc',
+          state: 'running',
+          status: 'Up',
+          health: 'healthy',
+          cpuPercent: 18,
+          memoryUsageBytes: 120,
+          memoryLimitBytes: 1000,
+        },
+      ]);
+
+    const first = await service.getRuntimeMonitorSnapshot();
+    vi.advanceTimersByTime(31_000);
+    const second = await service.getRuntimeMonitorSnapshot();
+
+    expect(first.history).toHaveLength(1);
+    expect(second.history).toHaveLength(2);
+    expect(second.history[0]?.apps[0]).toMatchObject({
+      appUrn: 'test-app:store',
+      appName: 'test-app',
+      cpuPercent: 12,
+      memoryUsageBytes: 100,
+      containerCount: 1,
+    });
+    expect(second.history[1]?.apps[0]).toMatchObject({
+      cpuPercent: 18,
+      memoryUsageBytes: 120,
+    });
   });
 });

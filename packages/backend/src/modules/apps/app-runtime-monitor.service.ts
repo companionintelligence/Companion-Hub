@@ -10,6 +10,8 @@ import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.s
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
 const MONITOR_INTERVAL_MS = 60_000;
+const MONITOR_HISTORY_LIMIT = 24;
+const SNAPSHOT_CACHE_TTL_MS = 30_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
 
@@ -44,11 +46,34 @@ export type AppRuntimeHealth = {
   containers: AppContainerRuntimeStats[];
 };
 
+export type AppRuntimeHistoryPoint = {
+  appUrn: string;
+  appName: string;
+  status: string;
+  cpuPercent: number;
+  memoryUsageBytes: number;
+  containerCount: number;
+};
+
+export type AppRuntimeHistorySample = {
+  sampledAt: string;
+  apps: AppRuntimeHistoryPoint[];
+};
+
+export type AppRuntimeMonitorSnapshot = {
+  sampledAt: string;
+  apps: AppRuntimeHealth[];
+  history: AppRuntimeHistorySample[];
+};
+
 @Injectable()
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
+  private readonly history: AppRuntimeHistorySample[] = [];
   private intervalHandle: NodeJS.Timeout | null = null;
+  private latestSnapshot: AppRuntimeMonitorSnapshot | null = null;
+  private latestSnapshotAtMs = 0;
   private summaryInFlight = false;
 
   constructor(
@@ -60,6 +85,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    void this.collectRuntimeMonitorSnapshot(true).catch((error) => {
+      this.logger.warn(`App runtime monitor warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+
     this.intervalHandle = setInterval(() => {
       if (this.summaryInFlight) {
         return;
@@ -79,14 +108,42 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getRuntimeMonitorSnapshot(): Promise<{ sampledAt: string; apps: AppRuntimeHealth[] }> {
+  async getRuntimeMonitorSnapshot(): Promise<AppRuntimeMonitorSnapshot> {
+    return this.collectRuntimeMonitorSnapshot();
+  }
+
+  private async collectRuntimeMonitorSnapshot(force = false): Promise<AppRuntimeMonitorSnapshot> {
+    if (!force && this.latestSnapshot && Date.now() - this.latestSnapshotAtMs < SNAPSHOT_CACHE_TTL_MS) {
+      return this.latestSnapshot;
+    }
+
     const apps = await this.appsRepository.getApps();
     const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
-
-    return {
-      sampledAt: new Date().toISOString(),
-      apps: snapshots.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
+    const sampledAt = new Date().toISOString();
+    const historySample: AppRuntimeHistorySample = {
+      sampledAt,
+      apps: snapshots.map((app) => ({
+        appUrn: app.appUrn,
+        appName: app.appName,
+        status: app.status,
+        cpuPercent: app.cpuPercent,
+        memoryUsageBytes: app.memoryUsageBytes,
+        containerCount: app.containers.length,
+      })),
     };
+
+    this.history.push(historySample);
+    while (this.history.length > MONITOR_HISTORY_LIMIT) {
+      this.history.shift();
+    }
+
+    this.latestSnapshot = {
+      sampledAt,
+      apps: snapshots.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
+      history: [...this.history],
+    };
+    this.latestSnapshotAtMs = Date.now();
+    return this.latestSnapshot;
   }
 
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
@@ -206,7 +263,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   private async logRuntimeSummary() {
     try {
-      const { apps } = await this.getRuntimeMonitorSnapshot();
+      const { apps } = await this.collectRuntimeMonitorSnapshot();
       const activeApps = apps.filter((app) => app.status === 'running' || app.status === 'stopping' || app.cpuPercent > 0);
       if (activeApps.length === 0) {
         return;

@@ -30,9 +30,24 @@ export interface AppRuntimeHealth {
   containers: AppContainerRuntimeStats[];
 }
 
+export interface AppRuntimeHistoryPoint {
+  appUrn: string;
+  appName: string;
+  status: string;
+  cpuPercent: number;
+  memoryUsageBytes: number;
+  containerCount: number;
+}
+
+export interface AppRuntimeHistorySample {
+  sampledAt: string;
+  apps: AppRuntimeHistoryPoint[];
+}
+
 export interface AppRuntimeMonitorSnapshot {
   sampledAt: string;
   apps: AppRuntimeHealth[];
+  history: AppRuntimeHistorySample[];
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
