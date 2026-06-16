@@ -262,7 +262,16 @@ export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
   );
 
   const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('COMMON_STOP')} intent="default" />;
-  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('COMMON_INSTALL')} intent="success" />;
+  const InstallButton = (
+    <ActionButton
+      key="install"
+      onClick={installDisclosure.open}
+      title={t('COMMON_INSTALL')}
+      variant="default"
+      size="lg"
+      className="install-action-button"
+    />
+  );
   const RetryInstallButton = (
     <ActionButton
       key="retry-install"

@@ -108,34 +108,36 @@ export default () => {
     <div className="mx-auto max-w-6xl space-y-6 pb-20 sm:space-y-8">
       <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
       <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
-        <CardContent className="p-5 sm:p-6">
-          <div className="grid gap-6 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-start">
-            <div className="flex justify-center lg:justify-start">
-              <img
-                src={logoUrl}
-                alt={info?.name}
-                className="h-24 w-24 rounded-3xl object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
-                onError={(e) => {
-                  e.currentTarget.src = '/app-not-found.jpg';
-                }}
-              />
-            </div>
-
+        <CardContent className="space-y-6 p-5 sm:p-6">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
             <div className="min-w-0 space-y-4">
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">{info?.name}</h1>
-                  {primaryCategory && (
-                    <span className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
-                      {getCategoryLabel(t, primaryCategory)}
-                    </span>
-                  )}
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                <div className="flex justify-center sm:justify-start">
+                  <img
+                    src={logoUrl}
+                    alt={info?.name}
+                    className="h-24 w-24 rounded-3xl object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
+                    onError={(e) => {
+                      e.currentTarget.src = '/app-not-found.jpg';
+                    }}
+                  />
                 </div>
-                <p className="text-sm text-muted-foreground sm:text-base">{info?.author}</p>
-                {info.short_desc && <p className="max-w-3xl text-sm leading-6 text-foreground/85 sm:text-base">{info.short_desc}</p>}
+
+                <div className="min-w-0 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">{info?.name}</h1>
+                    {primaryCategory && (
+                      <span className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 pt-2 text-xs font-medium text-muted-foreground">
+                        {getCategoryLabel(t, primaryCategory)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-muted-foreground sm:text-base">{info?.author}</p>
+                  {info.short_desc && <p className="max-w-3xl text-sm leading-6 text-foreground/85 sm:text-base">{info.short_desc}</p>}
+                </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 {headerStats.map((stat) => (
                   <div key={stat.key} className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3">
                     <div className="text-sm font-semibold">{stat.value}</div>
