@@ -132,6 +132,17 @@ function CpuUsageHistoryChart({ history, apps }: { history: AppRuntimeHistorySam
   );
 }
 
+function WorkloadResponsiveness({ app }: { app: AppRuntimeHealth }) {
+  const { t } = useTranslation();
+
+  return (
+    <div className={app.degraded ? 'text-destructive font-medium' : app.responsive ? 'text-emerald-600' : 'text-amber-600'}>
+      {app.degraded ? t('RESOURCE_MONITOR_DEGRADED_BADGE') : app.responsive ? t('RESOURCE_MONITOR_RESPONSIVE') : t('RESOURCE_MONITOR_UNRESPONSIVE')}
+      {app.reason ? <div className="text-xs text-muted-foreground">{app.reason}</div> : null}
+    </div>
+  );
+}
+
 export default function ResourceMonitorPage() {
   const { t } = useTranslation();
   const monitor = useQuery({
@@ -234,90 +245,175 @@ export default function ResourceMonitorPage() {
           </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t('COMMON_APP')}</TableHead>
-                <TableHead>{t('COMMON_STATUS')}</TableHead>
-                <TableHead>{t('COMMON_CPU')}</TableHead>
-                <TableHead>{t('COMMON_MEMORY')}</TableHead>
-                <TableHead>{t('RESOURCE_MONITOR_CPU_CAP')}</TableHead>
-                <TableHead>{t('RESOURCE_MONITOR_RESPONSIVENESS')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {apps.map((app) => (
-                <Fragment key={app.appUrn}>
-                  <TableRow>
-                    <TableCell>
-                      <div className="font-medium">{app.appName}</div>
-                      <div className="text-xs text-muted-foreground">{app.appUrn}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {t('RESOURCE_MONITOR_ACTIVE_CONTAINERS')}: {app.containers.length}
-                      </div>
-                    </TableCell>
-                    <TableCell>{app.status}</TableCell>
-                    <TableCell className={app.highCpu ? 'text-amber-600 font-medium' : ''}>{app.cpuPercent.toFixed(1)}%</TableCell>
-                    <TableCell>
+          <div className="space-y-4 md:hidden">
+            {apps.map((app) => (
+              <div key={app.appUrn} className="rounded-xl border border-border/60 bg-background/60 p-4">
+                <div className="min-w-0">
+                  <div className="font-medium">{app.appName}</div>
+                  <div className="truncate text-xs text-muted-foreground">{app.appUrn}</div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('COMMON_STATUS')}</div>
+                    <div className="mt-1">{app.status}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('COMMON_CPU')}</div>
+                    <div className={app.highCpu ? 'mt-1 text-amber-600 font-medium' : 'mt-1'}>{app.cpuPercent.toFixed(1)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('COMMON_MEMORY')}</div>
+                    <div className="mt-1">
                       {formatBytes(app.memoryUsageBytes)}
                       {app.memoryLimitBytes > 0 ? <span className="text-muted-foreground"> / {formatBytes(app.memoryLimitBytes)}</span> : null}
-                    </TableCell>
-                    <TableCell>{formatCpuLimitLabel(app.cpuLimit, app.usesDefaultCpuLimit)}</TableCell>
-                    <TableCell className={app.degraded ? 'text-destructive font-medium' : app.responsive ? 'text-emerald-600' : 'text-amber-600'}>
-                      {app.degraded
-                        ? t('RESOURCE_MONITOR_DEGRADED_BADGE')
-                        : app.responsive
-                          ? t('RESOURCE_MONITOR_RESPONSIVE')
-                          : t('RESOURCE_MONITOR_UNRESPONSIVE')}
-                      {app.reason ? <div className="text-xs text-muted-foreground">{app.reason}</div> : null}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell colSpan={6} className="bg-muted/20">
-                      <div className="space-y-3">
-                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                          {t('RESOURCE_MONITOR_CONTAINER_BREAKDOWN')}
-                        </div>
-                        {app.containers.length > 0 ? (
-                          <div className="grid gap-3 lg:grid-cols-2">
-                            {app.containers.map((container) => (
-                              <div key={container.containerId} className="rounded-lg border border-border/60 bg-background/80 p-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="truncate font-medium">{container.name}</div>
-                                    <div className="text-xs text-muted-foreground">{container.status}</div>
-                                  </div>
-                                  <div className="text-right text-xs text-muted-foreground">
-                                    <div>{container.cpuPercent.toFixed(1)}%</div>
-                                    <div>{formatBytes(container.memoryUsageBytes)}</div>
-                                  </div>
-                                </div>
-                                <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                                  <span className="rounded-full border border-border/60 px-2 py-1">
-                                    {t('COMMON_STATUS')}: {container.state}
-                                  </span>
-                                  {container.health ? (
-                                    <span className="rounded-full border border-border/60 px-2 py-1">health: {container.health}</span>
-                                  ) : null}
-                                  {container.memoryLimitBytes > 0 ? (
-                                    <span className="rounded-full border border-border/60 px-2 py-1">
-                                      {t('COMMON_MEMORY')}: {formatBytes(container.memoryUsageBytes)} / {formatBytes(container.memoryLimitBytes)}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
-                            ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('RESOURCE_MONITOR_CPU_CAP')}</div>
+                    <div className="mt-1">{formatCpuLimitLabel(app.cpuLimit, app.usesDefaultCpuLimit)}</div>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('RESOURCE_MONITOR_RESPONSIVENESS')}</div>
+                  <div className="mt-1">
+                    <WorkloadResponsiveness app={app} />
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      {t('RESOURCE_MONITOR_CONTAINER_BREAKDOWN')}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {t('RESOURCE_MONITOR_ACTIVE_CONTAINERS')}: {app.containers.length}
+                    </div>
+                  </div>
+                  {app.containers.length > 0 ? (
+                    <div className="space-y-3">
+                      {app.containers.map((container) => (
+                        <div key={container.containerId} className="rounded-lg border border-border/60 bg-muted/20 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium">{container.name}</div>
+                              <div className="text-xs text-muted-foreground">{container.status}</div>
+                            </div>
+                            <div className="text-right text-xs text-muted-foreground">
+                              <div>{container.cpuPercent.toFixed(1)}%</div>
+                              <div>{formatBytes(container.memoryUsageBytes)}</div>
+                            </div>
                           </div>
-                        ) : (
-                          <div className="text-sm text-muted-foreground">{t('RESOURCE_MONITOR_NO_CONTAINER_BREAKDOWN')}</div>
-                        )}
-                      </div>
-                    </TableCell>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <span className="rounded-full border border-border/60 px-2 py-1">
+                              {t('COMMON_STATUS')}: {container.state}
+                            </span>
+                            {container.health ? (
+                              <span className="rounded-full border border-border/60 px-2 py-1">health: {container.health}</span>
+                            ) : null}
+                            {container.memoryLimitBytes > 0 ? (
+                              <span className="rounded-full border border-border/60 px-2 py-1">
+                                {t('COMMON_MEMORY')}: {formatBytes(container.memoryUsageBytes)} / {formatBytes(container.memoryLimitBytes)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">{t('RESOURCE_MONITOR_NO_CONTAINER_BREAKDOWN')}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden md:block">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="min-w-64">{t('COMMON_APP')}</TableHead>
+                    <TableHead>{t('COMMON_STATUS')}</TableHead>
+                    <TableHead>{t('COMMON_CPU')}</TableHead>
+                    <TableHead>{t('COMMON_MEMORY')}</TableHead>
+                    <TableHead>{t('RESOURCE_MONITOR_CPU_CAP')}</TableHead>
+                    <TableHead className="min-w-56">{t('RESOURCE_MONITOR_RESPONSIVENESS')}</TableHead>
                   </TableRow>
-                </Fragment>
-              ))}
-            </TableBody>
-          </Table>
+                </TableHeader>
+                <TableBody>
+                  {apps.map((app) => (
+                    <Fragment key={app.appUrn}>
+                      <TableRow>
+                        <TableCell className="align-top">
+                          <div className="font-medium">{app.appName}</div>
+                          <div className="text-xs text-muted-foreground">{app.appUrn}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {t('RESOURCE_MONITOR_ACTIVE_CONTAINERS')}: {app.containers.length}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">{app.status}</TableCell>
+                        <TableCell className={app.highCpu ? 'align-top text-amber-600 font-medium' : 'align-top'}>
+                          {app.cpuPercent.toFixed(1)}%
+                        </TableCell>
+                        <TableCell className="align-top">
+                          {formatBytes(app.memoryUsageBytes)}
+                          {app.memoryLimitBytes > 0 ? <span className="text-muted-foreground"> / {formatBytes(app.memoryLimitBytes)}</span> : null}
+                        </TableCell>
+                        <TableCell className="align-top">{formatCpuLimitLabel(app.cpuLimit, app.usesDefaultCpuLimit)}</TableCell>
+                        <TableCell className="align-top">
+                          <WorkloadResponsiveness app={app} />
+                        </TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell colSpan={6} className="bg-muted/20">
+                          <div className="space-y-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                              {t('RESOURCE_MONITOR_CONTAINER_BREAKDOWN')}
+                            </div>
+                            {app.containers.length > 0 ? (
+                              <div className="grid gap-3 lg:grid-cols-2">
+                                {app.containers.map((container) => (
+                                  <div key={container.containerId} className="rounded-lg border border-border/60 bg-background/80 p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="truncate font-medium">{container.name}</div>
+                                        <div className="text-xs text-muted-foreground">{container.status}</div>
+                                      </div>
+                                      <div className="text-right text-xs text-muted-foreground">
+                                        <div>{container.cpuPercent.toFixed(1)}%</div>
+                                        <div>{formatBytes(container.memoryUsageBytes)}</div>
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                      <span className="rounded-full border border-border/60 px-2 py-1">
+                                        {t('COMMON_STATUS')}: {container.state}
+                                      </span>
+                                      {container.health ? (
+                                        <span className="rounded-full border border-border/60 px-2 py-1">health: {container.health}</span>
+                                      ) : null}
+                                      {container.memoryLimitBytes > 0 ? (
+                                        <span className="rounded-full border border-border/60 px-2 py-1">
+                                          {t('COMMON_MEMORY')}: {formatBytes(container.memoryUsageBytes)} / {formatBytes(container.memoryLimitBytes)}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-sm text-muted-foreground">{t('RESOURCE_MONITOR_NO_CONTAINER_BREAKDOWN')}</div>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </Fragment>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
           {apps.length === 0 && !monitor.isLoading ? (
             <div className="py-10 text-center text-sm text-muted-foreground">{t('RESOURCE_MONITOR_EMPTY')}</div>
           ) : null}

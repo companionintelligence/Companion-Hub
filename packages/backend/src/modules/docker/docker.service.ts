@@ -168,6 +168,14 @@ export class DockerService {
 
   public async getAppRuntimeStats(appUrn: AppUrn): Promise<AppContainerRuntimeStats[]> {
     const projectName = this.getComposeProjectName(appUrn);
+    return this.getComposeProjectRuntimeStats(projectName, appUrn);
+  }
+
+  public async getHubRuntimeStats(): Promise<AppContainerRuntimeStats[]> {
+    return this.getComposeProjectRuntimeStats('ci-hub', 'ci-hub');
+  }
+
+  private async getComposeProjectRuntimeStats(projectName: string, logLabel: string): Promise<AppContainerRuntimeStats[]> {
     const containers = await this.docker.listContainers({
       all: true,
       filters: { label: [`com.docker.compose.project=${projectName}`] },
@@ -194,7 +202,7 @@ export class DockerService {
           };
         })().catch((error) => {
           if (this.isResourceMissingError(error)) {
-            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${appUrn}): ${error}`);
+            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${logLabel}): ${error}`);
             return null;
           }
 

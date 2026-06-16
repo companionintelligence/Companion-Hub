@@ -153,14 +153,32 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
     try {
+      const hubContainers = await this.dockerService.getHubRuntimeStats();
       const processList = await si.processes();
       const backendProcess = processList.list.find((entry) => entry.pid === process.pid);
-      if (!backendProcess) {
+      if (!backendProcess && hubContainers.length === 0) {
         return null;
       }
 
-      const cpuPercent = Number((backendProcess.cpu ?? 0).toFixed(2));
-      const memoryUsageBytes = Math.max(Math.round((backendProcess.memRss ?? 0) * 1024), 0);
+      const processRuntime: AppContainerRuntimeStats[] = backendProcess
+        ? [
+            {
+              containerId: `pid:${process.pid}`,
+              name: 'backend-api',
+              state: backendProcess.state || 'running',
+              status: 'Node process',
+              health: null,
+              cpuPercent: Number((backendProcess.cpu ?? 0).toFixed(2)),
+              memoryUsageBytes: Math.max(Math.round((backendProcess.memRss ?? 0) * 1024), 0),
+              memoryLimitBytes: 0,
+            },
+          ]
+        : [];
+
+      const containers = [...hubContainers, ...processRuntime];
+      const cpuPercent = Number(containers.reduce((sum, container) => sum + container.cpuPercent, 0).toFixed(2));
+      const memoryUsageBytes = containers.reduce((sum, container) => sum + container.memoryUsageBytes, 0);
+      const memoryLimitBytes = containers.reduce((sum, container) => sum + container.memoryLimitBytes, 0);
       const recentSamples = this.rememberSample(HUB_RUNTIME_URN, {
         sampledAtMs: Date.now(),
         cpuPercent,
@@ -170,24 +188,13 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
         recentSamples.length >= HIGH_CPU_SAMPLE_COUNT &&
         recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
 
-      const processRuntime: AppContainerRuntimeStats = {
-        containerId: `pid:${process.pid}`,
-        name: 'backend-api',
-        state: backendProcess.state || 'running',
-        status: 'Node process',
-        health: null,
-        cpuPercent,
-        memoryUsageBytes,
-        memoryLimitBytes: 0,
-      };
-
       return {
         appUrn: HUB_RUNTIME_URN,
-        appName: 'Companion Hub API',
+        appName: 'Companion Hub',
         status: 'running',
         cpuPercent,
         memoryUsageBytes,
-        memoryLimitBytes: 0,
+        memoryLimitBytes,
         highCpu: cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT,
         sustainedHighCpu,
         responsive: true,
@@ -197,7 +204,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
         cpuLimit: null,
         usesDefaultCpuLimit: false,
         sampledAt,
-        containers: [processRuntime],
+        containers,
       };
     } catch (error) {
       this.logger.warn(`Failed to collect Hub runtime metrics: ${error instanceof Error ? error.message : String(error)}`);

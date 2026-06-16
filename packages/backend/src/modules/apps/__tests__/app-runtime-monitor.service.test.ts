@@ -43,6 +43,7 @@ describe('AppRuntimeMonitorService', () => {
         },
       ],
     });
+    dockerService.getHubRuntimeStats.mockResolvedValue([]);
 
     service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerService);
   });
@@ -209,6 +210,18 @@ describe('AppRuntimeMonitorService', () => {
 
   it('includes the companion hub api in monitor snapshots', async () => {
     appsRepository.getApps.mockResolvedValue([]);
+    dockerService.getHubRuntimeStats.mockResolvedValue([
+      {
+        containerId: 'hub-db',
+        name: 'ci-hub-db',
+        state: 'running',
+        status: 'Up',
+        health: null,
+        cpuPercent: 2.5,
+        memoryUsageBytes: 4096,
+        memoryLimitBytes: 8192,
+      },
+    ]);
 
     const snapshot = await service.getRuntimeMonitorSnapshot();
 
@@ -216,9 +229,10 @@ describe('AppRuntimeMonitorService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           appUrn: 'ci-hub:system',
-          appName: 'Companion Hub API',
-          cpuPercent: 7.5,
-          memoryUsageBytes: 2048 * 1024,
+          appName: 'Companion Hub',
+          cpuPercent: 10,
+          memoryUsageBytes: 2048 * 1024 + 4096,
+          memoryLimitBytes: 8192,
         }),
       ]),
     );
@@ -226,9 +240,9 @@ describe('AppRuntimeMonitorService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           appUrn: 'ci-hub:system',
-          appName: 'Companion Hub API',
-          cpuPercent: 7.5,
-          memoryUsageBytes: 2048 * 1024,
+          appName: 'Companion Hub',
+          cpuPercent: 10,
+          memoryUsageBytes: 2048 * 1024 + 4096,
         }),
       ]),
     );
