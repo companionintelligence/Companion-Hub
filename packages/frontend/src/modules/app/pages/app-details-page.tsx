@@ -65,7 +65,6 @@ export default () => {
   const logoUrn = info?.urn ?? appUrn;
   const logoUrl = getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
-  const showStatusPill = Boolean(app?.status && app.status !== 'missing');
   const headerStats = [
     {
       key: 'rating',
