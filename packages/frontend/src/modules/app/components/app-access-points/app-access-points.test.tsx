@@ -171,9 +171,11 @@ describe('AppAccessPoints', () => {
       />,
     );
 
-    const [copyButton] = screen.getAllByTitle('SETTINGS_GENERAL_COPY');
-    expect(copyButton).toBeDefined();
-    fireEvent.click(copyButton!);
+    const copyButton = screen.getAllByTitle('SETTINGS_GENERAL_COPY')[0];
+    if (!copyButton) {
+      throw new Error('Expected a copy button to be rendered');
+    }
+    fireEvent.click(copyButton);
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalled();

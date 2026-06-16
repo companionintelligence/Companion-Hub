@@ -16,7 +16,7 @@ export class CloudflareController {
   ) {}
 
   private parseOptionalAppUrn(appUrn?: string) {
-    if (!appUrn || !appUrn.includes(':') || appUrn.startsWith(':') || appUrn.endsWith(':')) {
+    if (!appUrn?.includes(':') || appUrn.startsWith(':') || appUrn.endsWith(':')) {
       return undefined;
     }
 
