@@ -26,7 +26,7 @@ const DOWNLOAD_PROGRESS_END = 99;
 const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
 const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
 
-export function extractComposeImages(composeContent: string): string[] {
+export function extractComposeImages(composeContent: unknown): string[] {
   const { services } = parseComposeJson(composeContent);
   return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
 }
@@ -144,10 +144,10 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
     };
 
-    let composeToInstallContent = '';
+    let composeToInstallContent: unknown;
     try {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      if (typeof composeToInstall.content !== 'string') {
+      if (!composeToInstall.content) {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
