@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+const HOST_PROBE_REFRESH_CHECK_COOLDOWN_MS = 30 * 1000;
 // systeminformation can return the PCIe BAR/framebuffer size (e.g. 32 MB) instead
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
@@ -42,6 +43,8 @@ interface MacOsHostProbe {
 export class HardwareInspectorService implements OnModuleInit {
   private cachedProfile: HardwareProfile | null = null;
   private lastIncompleteDiscreteGpuRefreshAt = 0;
+  private hostProbeRefreshResolved = false;
+  private lastHostProbeRefreshCheckAt = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -66,9 +69,18 @@ export class HardwareInspectorService implements OnModuleInit {
       return this.updateCachedProfile(await this.detect());
     }
 
-    const hostProbe = await this.hostMetrics.readHostProbe();
-    if (this.shouldRefreshForHostProbe(this.cachedProfile, hostProbe)) {
-      return this.updateCachedProfile(await this.detect());
+    if (this.shouldCheckForHostProbeRefresh()) {
+      const now = Date.now();
+      if (now - this.lastHostProbeRefreshCheckAt >= HOST_PROBE_REFRESH_CHECK_COOLDOWN_MS) {
+        this.lastHostProbeRefreshCheckAt = now;
+        const hostProbe = await this.hostMetrics.readHostProbe();
+        if (this.shouldRefreshForHostProbe(this.cachedProfile, hostProbe)) {
+          return this.updateCachedProfile(await this.detect());
+        }
+        if (hostProbe && (hostProbe.platform === 'darwin' || hostProbe.platform === 'win32')) {
+          this.hostProbeRefreshResolved = true;
+        }
+      }
     }
 
     if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
@@ -108,6 +120,7 @@ export class HardwareInspectorService implements OnModuleInit {
 
     // Read cross-platform host probe (init-host-probe, Tauri desktop, or legacy macOS file).
     const hostProbe = await this.hostMetrics.readHostProbe();
+    this.hostProbeRefreshResolved ||= hostProbe?.platform === 'darwin' || hostProbe?.platform === 'win32';
     const macOsProbe = hostProbe?.platform === 'darwin' ? this.toMacOsHostProbe(hostProbe) : null;
     if (macOsProbe) {
       this.logger.info(
@@ -871,5 +884,14 @@ export class HardwareInspectorService implements OnModuleInit {
     }
 
     return profile.ram.totalMb !== hostProbe.host.totalRamMb;
+  }
+
+  private shouldCheckForHostProbeRefresh(): boolean {
+    if (this.hostProbeRefreshResolved) {
+      return false;
+    }
+
+    const hostPlatform = this.getHostPlatform();
+    return hostPlatform === 'darwin' || hostPlatform === 'win32';
   }
 }

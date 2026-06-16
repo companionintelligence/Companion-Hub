@@ -25,6 +25,7 @@ vi.mock('node:util', async (importOriginal) => {
 
 describe('HardwareInspectorService', () => {
   let service: HardwareInspectorService;
+  let hostMetricsService: HostMetricsService;
   let loggerService: MockProxy<LoggerService>;
   let filesystemService: MockProxy<FilesystemService>;
   const originalHostPlatform = process.env.CI_HUB_HOST_PLATFORM;
@@ -45,6 +46,7 @@ describe('HardwareInspectorService', () => {
     }).compile();
 
     service = module.get<HardwareInspectorService>(HardwareInspectorService);
+    hostMetricsService = module.get<HostMetricsService>(HostMetricsService);
   });
 
   afterEach(() => {
@@ -1044,6 +1046,7 @@ describe('HardwareInspectorService', () => {
     });
 
     it('refreshes a stale cached container-only profile once the macOS host probe becomes available', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
       (service as any).cachedProfile = {
         gpu: { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
         npu: { available: false, model: '' },
@@ -1083,6 +1086,39 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.unifiedMemory).toBe(true);
       expect(profile.gpu.vramMb).toBe(16384);
       expect(profile.tier).toBe('high');
+    });
+
+    it('stops rereading the host probe once a host-probe-backed profile is cached', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      const hostProbeSpy = vi.spyOn(hostMetricsService, 'readHostProbe');
+
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 12288,
+              cpuCores: 10,
+              cpuModel: 'Apple M1 Pro',
+              diskTotalGb: 494,
+              diskUsedGb: 320,
+              diskMount: '/',
+            },
+          });
+        }
+        return null;
+      });
+
+      await service.rescan();
+      await service.getProfile();
+      await service.getProfile();
+
+      expect(hostProbeSpy).toHaveBeenCalledTimes(1);
     });
   });
 

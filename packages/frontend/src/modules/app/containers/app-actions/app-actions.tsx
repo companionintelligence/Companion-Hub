@@ -2,7 +2,7 @@ import { AlertTriangle, Ban, CheckCircle, Download, Edit, Eraser, ExternalLink, 
 import type React from 'react';
 import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import toast from 'react-hot-toast';
@@ -11,7 +11,6 @@ import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
