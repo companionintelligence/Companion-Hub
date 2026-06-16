@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Сбрасывается",
   "APP_STATUS_RUNNING": "Выполняется",
   "APP_STATUS_STARTING": "Запускается",
+  "APP_STATUS_INITIALIZING": "Инициализация",
   "APP_STATUS_STOPPED": "Остановлено",
+  "APP_STATUS_DEGRADED": "Требует внимания",
   "APP_STATUS_STOPPING": "Останавливается",
   "APP_STATUS_RESTARTING": "Перезапуск",
   "APP_STATUS_UNINSTALLING": "Удаляется",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "У вас есть несохраненные изменения. Вы уверены, что хотите выйти?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Конфигурация сервиса успешно обновлена",
   "MULTI_SERVICE_JSON_REFERENCE": "Справочник по динамическому Compose",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Удалить все данные"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Удалить все данные",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не удалось установить приложение {{id}}. См. <logsLink>{{logsLabel}}</logsLink> для подробностей"
 }

@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Återställer",
   "APP_STATUS_RUNNING": "Körs",
   "APP_STATUS_STARTING": "Startar",
+  "APP_STATUS_INITIALIZING": "Initialiserar",
   "APP_STATUS_STOPPED": "Stoppad",
+  "APP_STATUS_DEGRADED": "Kräver uppmärksamhet",
   "APP_STATUS_STOPPING": "Stoppar",
   "APP_STATUS_RESTARTING": "Startar om",
   "APP_STATUS_UNINSTALLING": "Avinstallerar",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Ta bort all data"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Ta bort all data",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Det gick inte att installera app {{id}}, se <logsLink>{{logsLabel}}</logsLink> för mer information"
 }

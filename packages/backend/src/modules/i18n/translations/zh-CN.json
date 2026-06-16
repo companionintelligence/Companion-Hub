@@ -234,7 +234,9 @@
   "APP_STATUS_RESETTING": "重置中",
   "APP_STATUS_RUNNING": "运行中",
   "APP_STATUS_STARTING": "正在启动",
+  "APP_STATUS_INITIALIZING": "初始化中",
   "APP_STATUS_STOPPED": "已停止",
+  "APP_STATUS_DEGRADED": "需要注意",
   "APP_STATUS_STOPPING": "正在停止",
   "APP_STATUS_RESTARTING": "重启中",
   "APP_STATUS_UNINSTALLING": "正在卸载",
@@ -645,5 +647,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "删除所有数据"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "删除所有数据",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "安装应用程序 {{id}} 失败，查看<logsLink>{{logsLabel}}</logsLink>获取更多详细信息"
 }

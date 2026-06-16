@@ -269,8 +269,11 @@
   "APP_STATUS_INSTALL_FAILED": "Error en la instalación",
   "APP_STATUS_MISSING": "Falta",
   "APP_STATUS_RESETTING": "Restableciendo",
+  "APP_STATUS_RUNNING": "En ejecución",
   "APP_STATUS_STARTING": "Iniciando",
+  "APP_STATUS_INITIALIZING": "Inicializando",
   "APP_STATUS_STOPPED": "Detenido",
+  "APP_STATUS_DEGRADED": "Necesita atención",
   "APP_STATUS_STOPPING": "Deteniendo",
   "APP_STATUS_RESTARTING": "Reiniciando",
   "APP_STATUS_UNINSTALLING": "Desinstalando",
@@ -1274,5 +1277,6 @@
   "HUB_STATUS_RESTART_HUB": "Reiniciar Hub",
   "HUB_STATUS_RECENT_LOGS": "Registros recientes",
   "HUB_STATUS_HIDE": "Ocultar",
-  "HUB_STATUS_NO_LOGS_AVAILABLE": "No hay registros disponibles."
+  "HUB_STATUS_NO_LOGS_AVAILABLE": "No hay registros disponibles.",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Error al instalar la aplicación {{id}}, consulta <logsLink>{{logsLabel}}</logsLink> para más detalles"
 }

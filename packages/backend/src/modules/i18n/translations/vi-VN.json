@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Đang đặt lại",
   "APP_STATUS_RUNNING": "Đang hoạt động",
   "APP_STATUS_STARTING": "Đang khởi động",
+  "APP_STATUS_INITIALIZING": "Đang khởi tạo",
   "APP_STATUS_STOPPED": "Đã dừng",
+  "APP_STATUS_DEGRADED": "Cần chú ý",
   "APP_STATUS_STOPPING": "Đang dừng",
   "APP_STATUS_RESTARTING": "Khởi động lại",
   "APP_STATUS_UNINSTALLING": "Đang gỡ cài đặt",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Xóa toàn bộ dữ liệu"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Xóa toàn bộ dữ liệu",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Cài đặt ứng dụng {{id}} thất bại, xem <logsLink>{{logsLabel}}</logsLink> để biết chi tiết"
 }

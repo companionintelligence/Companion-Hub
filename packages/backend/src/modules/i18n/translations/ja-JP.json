@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "リセット中",
   "APP_STATUS_RUNNING": "実行中",
   "APP_STATUS_STARTING": "開始中",
+  "APP_STATUS_INITIALIZING": "初期化中",
   "APP_STATUS_STOPPED": "停止中",
+  "APP_STATUS_DEGRADED": "要確認",
   "APP_STATUS_STOPPING": "停止中",
   "APP_STATUS_RESTARTING": "Restarting",
   "APP_STATUS_UNINSTALLING": "アンインストール中",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "すべてのデータを削除"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "すべてのデータを削除",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "アプリ {{id}} のインストールに失敗しました。詳細は<logsLink>{{logsLabel}}</logsLink>を参照してください。"
 }

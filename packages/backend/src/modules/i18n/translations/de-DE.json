@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Wird zurückgesetzt",
   "APP_STATUS_RUNNING": "Aktiv",
   "APP_STATUS_STARTING": "Startet",
+  "APP_STATUS_INITIALIZING": "Initialisiert",
   "APP_STATUS_STOPPED": "Gestoppt",
+  "APP_STATUS_DEGRADED": "Benötigt Aufmerksamkeit",
   "APP_STATUS_STOPPING": "Stoppen",
   "APP_STATUS_RESTARTING": "Wird neu gestartet",
   "APP_STATUS_UNINSTALLING": "Deinstallieren",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Alle Daten löschen"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Alle Daten löschen",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Installieren der App {{id}} fehlgeschlagen, schau dir <logsLink>{{logsLabel}}</logsLink> an für weitere Informationen"
 }

@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Alaphelyzetbe állítás",
   "APP_STATUS_RUNNING": "Fut",
   "APP_STATUS_STARTING": "Indítás",
+  "APP_STATUS_INITIALIZING": "Inicializálás",
   "APP_STATUS_STOPPED": "Megállítva",
+  "APP_STATUS_DEGRADED": "Figyelmet igényel",
   "APP_STATUS_STOPPING": "Leállítás",
   "APP_STATUS_RESTARTING": "Újraindítás",
   "APP_STATUS_UNINSTALLING": "Eltávolítás",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Az összes adat törlése"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Az összes adat törlése",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Nem sikerült telepíteni az {{id}} alkalmazást. További részletekért tekintse meg a <logsLink>{{logsLabel}}</logsLink>"
 }

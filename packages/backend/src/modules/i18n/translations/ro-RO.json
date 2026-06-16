@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Resetting",
   "APP_STATUS_RUNNING": "Rulează",
   "APP_STATUS_STARTING": "Pornire",
+  "APP_STATUS_INITIALIZING": "Se inițializează",
   "APP_STATUS_STOPPED": "Oprit",
+  "APP_STATUS_DEGRADED": "Necesită atenție",
   "APP_STATUS_STOPPING": "Se oprește",
   "APP_STATUS_RESTARTING": "Restarting",
   "APP_STATUS_UNINSTALLING": "Se dezinstalează",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Șterge toate datele"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Șterge toate datele",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Instalarea aplicației {{id}} a eșuat, vezi <logsLink>{{logsLabel}}</logsLink> pentru mai multe detalii"
 }

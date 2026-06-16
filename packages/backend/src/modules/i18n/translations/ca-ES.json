@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Resetting",
   "APP_STATUS_RUNNING": "En execució",
   "APP_STATUS_STARTING": "Iniciant",
+  "APP_STATUS_INITIALIZING": "Inicialitzant",
   "APP_STATUS_STOPPED": "Aturat",
+  "APP_STATUS_DEGRADED": "Necessita atenció",
   "APP_STATUS_STOPPING": "Aturant",
   "APP_STATUS_RESTARTING": "Restarting",
   "APP_STATUS_UNINSTALLING": "Desinstal·lant",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Suprimeix totes les dades"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Suprimeix totes les dades",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Ha fallat la instal·lació de l'aplicació {{id}}, consulta <logsLink>{{logsLabel}}</logsLink> pels detalls"
 }
