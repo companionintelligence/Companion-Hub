@@ -66,6 +66,11 @@ export class HardwareInspectorService implements OnModuleInit {
       return this.updateCachedProfile(await this.detect());
     }
 
+    const hostProbe = await this.hostMetrics.readHostProbe();
+    if (this.shouldRefreshForHostProbe(this.cachedProfile, hostProbe)) {
+      return this.updateCachedProfile(await this.detect());
+    }
+
     if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
       const now = Date.now();
       if (now - this.lastIncompleteDiscreteGpuRefreshAt >= INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS) {
@@ -143,15 +148,14 @@ export class HardwareInspectorService implements OnModuleInit {
     // Host probe platform is authoritative on Docker Desktop (macOS/Windows); the container reports linux.
     const hostPlatform = hostProbe?.platform;
     const platform = hostPlatform ?? this.getHostPlatform();
-    const isAppleSilicon =
-      macOsProbe?.isAppleSilicon === true ||
-      (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64' && (hostProbe.host.cpuModel?.startsWith('Apple') ?? false));
+    const isAppleSilicon = macOsProbe?.isAppleSilicon === true || (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64');
+    const appleGpuModel = cpuInfo.model ? `${cpuInfo.model} (Apple Silicon)` : 'Apple Silicon';
 
     let gpu: HardwareProfile['gpu'] = {
       // Apple Silicon always has an integrated GPU; don't rely on container detection.
       available: isAppleSilicon ? true : effectiveGpuInfo.available,
       vendor: isAppleSilicon ? 'apple' : effectiveGpuInfo.vendor,
-      model: isAppleSilicon ? `${cpuInfo.model} (Apple Silicon)` : effectiveGpuInfo.model,
+      model: isAppleSilicon ? appleGpuModel : effectiveGpuInfo.model,
       vramMb: isAppleSilicon ? ramInfo.totalMb : effectiveGpuInfo.vramMb,
       unifiedMemory: isAppleSilicon,
       driverVersion: effectiveGpuInfo.driverVersion,
@@ -623,7 +627,7 @@ export class HardwareInspectorService implements OnModuleInit {
       cpuCores: hostProbe.host.cpuCores,
       totalRamMb: hostProbe.host.totalRamMb,
       availableRamMb: hostProbe.host.availableRamMb,
-      isAppleSilicon: hostProbe.cpuArch === 'arm64' && cpuModel.startsWith('Apple'),
+      isAppleSilicon: hostProbe.cpuArch === 'arm64',
       source: hostProbe.source,
     };
   }
@@ -847,5 +851,25 @@ export class HardwareInspectorService implements OnModuleInit {
       (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
       profile.gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB
     );
+  }
+
+  private shouldRefreshForHostProbe(profile: HardwareProfile, hostProbe: Awaited<ReturnType<HostMetricsService['readHostProbe']>>): boolean {
+    if (!hostProbe || (hostProbe.platform !== 'darwin' && hostProbe.platform !== 'win32')) {
+      return false;
+    }
+
+    if (hostProbe.platform === 'darwin' && hostProbe.cpuArch === 'arm64' && (profile.gpu.vendor !== 'apple' || !profile.gpu.unifiedMemory)) {
+      return true;
+    }
+
+    if (profile.cpu.arch !== hostProbe.cpuArch) {
+      return true;
+    }
+
+    if (hostProbe.host.cpuModel && profile.cpu.model !== hostProbe.host.cpuModel) {
+      return true;
+    }
+
+    return profile.ram.totalMb !== hostProbe.host.totalRamMb;
   }
 }

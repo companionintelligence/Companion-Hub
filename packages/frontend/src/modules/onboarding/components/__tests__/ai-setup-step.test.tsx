@@ -211,6 +211,35 @@ describe('AiSetupStep', () => {
     expect(screen.queryByText('No GPU detected.')).not.toBeInTheDocument();
   });
 
+  it('shows Apple Silicon with unified memory instead of no-GPU warnings', async () => {
+    api.profile = {
+      ...highTierProfile,
+      tier: 'medium',
+      hardware: {
+        ...highTierProfile.hardware,
+        tier: 'medium',
+        cpu: { arch: 'arm64', cores: 10, model: 'Apple M1 Pro' },
+        ram: { totalMb: 16384, availableMb: 12288 },
+        gpu: {
+          available: true,
+          vendor: 'apple',
+          model: 'Apple M1 Pro (Apple Silicon)',
+          vramMb: 16384,
+          unifiedMemory: true,
+          driverVersion: '',
+          runtimeAvailable: true,
+        },
+        effectiveInferenceMemoryMb: 12288,
+      },
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect(screen.getByTestId('tier-badge')).toHaveTextContent('Apple Silicon');
+    expect(screen.getByTestId('hw-gpu')).toHaveTextContent('Apple M1 Pro (Apple Silicon)');
+    expect(screen.getByText('Unified Memory')).toBeInTheDocument();
+    expect(screen.queryByText('No GPU detected.')).not.toBeInTheDocument();
+  });
+
   it('shows no GPU warning copy when gpu.available is false', async () => {
     api.profile = {
       ...highTierProfile,

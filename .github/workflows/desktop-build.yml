@@ -182,7 +182,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: companion-hub-windows-x64-msi
+          name: companion-hub-${{ matrix.target }}-msi
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: error
 
@@ -190,6 +190,6 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: companion-hub-windows-x64-setup
+          name: companion-hub-${{ matrix.target }}-setup
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

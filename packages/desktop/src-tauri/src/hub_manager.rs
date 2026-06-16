@@ -132,9 +132,12 @@ pub(crate) fn default_hub_image() -> &'static str {
     }
 }
 
-#[cfg(target_os = "windows")]
-const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
+#[cfg(any(test, target_os = "windows"))]
+const DOCKER_DESKTOP_WINDOWS_INTEL_INSTALLER_URL: &str =
     "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe";
+#[cfg(any(test, target_os = "windows"))]
+const DOCKER_DESKTOP_WINDOWS_ARM_INSTALLER_URL: &str =
+    "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe";
 #[cfg(target_os = "macos")]
 const DOCKER_DESKTOP_MACOS_INTEL_URL: &str = "https://desktop.docker.com/mac/main/amd64/Docker.dmg";
 #[cfg(target_os = "macos")]
@@ -5807,7 +5810,8 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(
-            docker_desktop_windows_install_script(DOCKER_DESKTOP_WINDOWS_INSTALLER_URL).as_bytes(),
+            docker_desktop_windows_install_script(docker_desktop_windows_download_url())
+                .as_bytes(),
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
@@ -5849,6 +5853,7 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
                 ),
             })
         }
+
         Some(100) => Ok(DockerInstallResult {
             state: DockerInstallState::NeedsRestart,
             detail: Some(
@@ -5864,6 +5869,15 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
             output.status.code()
         )),
         _ => Err(format!("Docker Desktop installation failed: {}", combined)),
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn docker_desktop_windows_download_url() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        DOCKER_DESKTOP_WINDOWS_ARM_INSTALLER_URL
+    } else {
+        DOCKER_DESKTOP_WINDOWS_INTEL_INSTALLER_URL
     }
 }
 
@@ -7044,6 +7058,8 @@ mod tests {
     #[cfg(any(test, target_os = "macos"))]
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_download_url;
+    #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_outer_launch_command;
@@ -7491,6 +7507,23 @@ mod tests {
 
         clear_traefik_recreate_required(tempdir.path()).expect("clear recreate required");
         assert!(!is_traefik_recreate_required(tempdir.path()));
+    }
+
+    #[test]
+    fn windows_docker_desktop_download_url_matches_build_architecture() {
+        let url = docker_desktop_windows_download_url();
+
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(
+                url,
+                "https://desktop.docker.com/win/main/arm64/Docker%20Desktop%20Installer.exe"
+            );
+        } else {
+            assert_eq!(
+                url,
+                "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            );
+        }
     }
 
     #[test]
