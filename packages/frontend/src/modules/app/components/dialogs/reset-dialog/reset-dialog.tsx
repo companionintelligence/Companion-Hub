@@ -37,9 +37,9 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           <DialogTitle>{t('APP_RESET_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
-          <AlertTriangle className="icon mb-2 text-warning icon-lg" />
+          <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
-          <div className="text-muted">{t('COMMON_ALL_DATA_LOST')}</div>
+          <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
         </DialogDescription>
         <DialogFooter>
           <Button loading={resetMutation.isPending} onClick={() => resetMutation.mutate({ path: { urn: info.urn } })} intent="danger">
