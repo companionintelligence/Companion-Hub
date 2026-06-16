@@ -235,7 +235,9 @@
   "APP_STATUS_RESETTING": "Redefinindo",
   "APP_STATUS_RUNNING": "Em execução",
   "APP_STATUS_STARTING": "Iniciando",
+  "APP_STATUS_INITIALIZING": "Inicializando",
   "APP_STATUS_STOPPED": "Parado",
+  "APP_STATUS_DEGRADED": "Precisa de atenção",
   "APP_STATUS_STOPPING": "Parando",
   "APP_STATUS_RESTARTING": "Reiniciando",
   "APP_STATUS_UNINSTALLING": "Desinstalando",
@@ -647,5 +649,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Excluir todos os dados"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Excluir todos os dados",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Falha ao instalar o aplicativo {{id}}. Consulte os <logsLink>{{logsLabel}}</logsLink> para obter mais detalhes"
 }

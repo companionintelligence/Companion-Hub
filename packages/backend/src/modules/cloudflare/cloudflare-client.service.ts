@@ -17,7 +17,7 @@ export interface AppInfo {
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
-  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
+  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.ci.lan)
   /**
    * Discriminator for infrastructure entries that CI-Cloud must preserve
    * across regular app sync. Unset/undefined means a regular user app

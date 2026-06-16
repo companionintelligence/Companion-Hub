@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { InstallAppCommand } from '../install-app-command';
+import { InstallAppCommand, extractComposeImages, mapPullProgressToInstallProgress } from '../install-app-command';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -39,6 +39,27 @@ vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
 }));
 
+describe('install progress helpers', () => {
+  it('extracts unique images from compose content', () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [
+        { name: 'app', image: 'ghcr.io/example/app:latest' },
+        { name: 'worker', image: 'ghcr.io/example/app:latest' },
+        { name: 'db', image: 'postgres:16' },
+      ],
+      overrides: [],
+    } as any);
+
+    expect(extractComposeImages('services: {}')).toEqual(['ghcr.io/example/app:latest', 'postgres:16']);
+  });
+
+  it('maps pull byte progress into the reserved install range', () => {
+    expect(mapPullProgressToInstallProgress(0, 100)).toBe(60);
+    expect(mapPullProgressToInstallProgress(50, 100)).toBeGreaterThan(60);
+    expect(mapPullProgressToInstallProgress(100, 100)).toBe(98);
+  });
+});
+
 describe('InstallAppCommand — pull policy', () => {
   let command: InstallAppCommand;
   let dockerService: any;
@@ -55,6 +76,7 @@ describe('InstallAppCommand — pull policy', () => {
       composeApp: vi.fn(async (_urn: string, args: string) => {
         composeArgs.push(args);
       }),
+      pullImages: vi.fn().mockResolvedValue(undefined),
       diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
     };
 
@@ -159,7 +181,7 @@ describe('InstallAppCommand — pull policy', () => {
     expect(upCommand).not.toContain('--pull');
   });
 
-  it('MUST include --pull always when force_pull is true', async () => {
+  it('MUST pre-pull images when force_pull is true and still omit --pull from compose up', async () => {
     // Get moduleRef to update appFilesManager mock
     const moduleRef = (command as any).moduleRef;
     const afm = moduleRef.get(AppFilesManager);
@@ -174,13 +196,18 @@ describe('InstallAppCommand — pull policy', () => {
       available: true,
       force_pull: true,
     } as any);
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'app', image: 'ghcr.io/example/app:latest' }],
+      overrides: [],
+    } as any);
 
     const result = await command.execute(appUrn, {});
 
     expect(result.success).toBe(true);
+    expect(dockerService.pullImages).toHaveBeenCalled();
     const upCommand = composeArgs.find((a) => a.includes('up'));
     expect(upCommand).toBeDefined();
-    expect(upCommand).toContain('--pull always');
+    expect(upCommand).not.toContain('--pull');
   });
 
   it('SHOULD pass through other compose arguments unchanged', async () => {

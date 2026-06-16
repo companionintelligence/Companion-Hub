@@ -79,9 +79,9 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
       </Alert>
 
       {/* Two-column portal-style layout */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-6 md:gap-8">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_280px] md:gap-8">
         {/* Left column - About this app */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <div>
             {isUserApp && (
               <div className="flex justify-between items-center mb-3">
@@ -131,10 +131,10 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
         </div>
 
         {/* Right column - Information */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <div>
             <h2 className="text-lg font-semibold mb-4">{t('COMMON_INFORMATION')}</h2>
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
                 <span className="text-sm font-medium text-right">{info.author}</span>
@@ -211,13 +211,13 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           </div>
 
           {/* App Privacy card */}
-          <div className="rounded-xl border border-border/50 bg-muted/20 p-4">
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-3 sm:p-4">
             <div className="flex items-center gap-2 mb-2">
               <Shield className="h-4 w-4 text-blue-400" />
               <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>
             </div>
             <p className="text-xs text-muted-foreground mb-3">{t('APP_DETAILS_APP_PRIVACY_DESC')}</p>
-            <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2.5">
+            <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
               <Shield className="h-3.5 w-3.5 text-muted-foreground" />
               <div>
                 <p className="text-xs font-medium">{t('APP_DETAILS_DATA_COLLECTION')}</p>

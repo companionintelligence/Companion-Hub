@@ -227,18 +227,18 @@ export default () => {
   }
 
   return (
-    <>
-      <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center gap-2">
+    <div className="min-w-0 overflow-x-hidden">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           {appStores?.appStores && appStores.appStores.length > 1 ? (
-            <div className="flex items-center gap-1" data-testid="store-switcher">
-              <Store className="h-4 w-4 text-muted-foreground mr-1" />
+            <div className="flex flex-wrap items-center gap-1" data-testid="store-switcher">
+              <Store className="mr-1 h-4 w-4 shrink-0 text-muted-foreground" />
               {appStores.appStores.map((s) => (
                 <Button
                   key={s.slug}
                   variant={storeId === s.slug ? 'default' : 'outline'}
                   size="sm"
-                  className="rounded-full"
+                  className="max-w-full rounded-full"
                   onClick={() => handleStoreSwitch(s.slug)}
                 >
                   {s.name}
@@ -252,7 +252,7 @@ export default () => {
             </div>
           ) : null}
         </div>
-        <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="gap-2">
+        <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="w-full gap-2 sm:w-auto">
           <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
           {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
         </Button>
@@ -312,7 +312,7 @@ export default () => {
       </div>
 
       {isAlternativesView ? (
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {isAlternativesDataLoading && (
             <div className="space-y-4 py-8">
               <div className="h-8 max-w-md w-[60%] animate-pulse rounded bg-muted" />
@@ -413,7 +413,7 @@ export default () => {
       ) : !apps?.length && !isLoading ? (
         <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+        <div className="grid min-w-0 grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           {isLoading && !apps.length
             ? SKELETONS.map((key) => (
                 <AppCard
@@ -438,6 +438,6 @@ export default () => {
           )}
         </div>
       )}
-    </>
+    </div>
   );
 };

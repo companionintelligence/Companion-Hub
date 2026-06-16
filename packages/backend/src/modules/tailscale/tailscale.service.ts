@@ -7,6 +7,7 @@ export interface TailscaleStatus {
   connected: boolean;
   version: string | null;
   hostname: string | null;
+  nodeFqdn: string | null;
   tailnet: string | null;
   ip: string | null;
   supportsServices: boolean;
@@ -19,6 +20,8 @@ export interface TailscaleServeEntry {
   proto: string;
   mountPoint: string;
   dest: string;
+  listenPort?: number;
+  rawServiceName?: string;
 }
 
 interface TailscaleServeServiceConfig {
@@ -39,6 +42,15 @@ type ExecStrategy = 'host' | 'sidecar';
 
 const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
 const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes', '--advertise-routes=172.18.0.0/16'];
+
+function normalizeDnsName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.replace(/\.+$/, '') || null;
+}
 
 @Injectable()
 export class TailscaleService {
@@ -227,6 +239,7 @@ export class TailscaleService {
       connected: false,
       version: null,
       hostname: null,
+      nodeFqdn: null,
       tailnet: null,
       ip: null,
       supportsServices: false,
@@ -257,7 +270,10 @@ export class TailscaleService {
         connected,
         version,
         hostname: (self.HostName as string) || null,
-        tailnet: ((status.CurrentTailnet as Record<string, unknown>)?.Name as string) || null,
+        nodeFqdn: normalizeDnsName((self.DNSName as string) || ((status.CertDomains as string[] | undefined)?.[0] ?? null)),
+        tailnet:
+          normalizeDnsName((status.MagicDNSSuffix as string) || ((status.CurrentTailnet as Record<string, unknown>)?.MagicDNSSuffix as string)) ??
+          null,
         ip: (self.TailscaleIPs as string[])?.[0] || null,
         supportsServices,
         backendState: (status.BackendState as string) || null,
@@ -275,6 +291,7 @@ export class TailscaleService {
       connected: false,
       version: null,
       hostname: null,
+      nodeFqdn: null,
       tailnet: null,
       ip: null,
       supportsServices: false,
@@ -296,6 +313,7 @@ export class TailscaleService {
       connected: false,
       version: null,
       hostname: null,
+      nodeFqdn: null,
       tailnet: null,
       ip: null,
       supportsServices: false,
@@ -504,49 +522,40 @@ export class TailscaleService {
   private async getServeUpstreamTarget(localPort: number): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
-      return this.serveUpstreamSidecar.includes(':') ? this.serveUpstreamSidecar : `${this.serveUpstreamSidecar}:${localPort}`;
+      const sidecarTarget = this.serveUpstreamSidecar.includes(':') ? this.serveUpstreamSidecar : `${this.serveUpstreamSidecar}:${localPort}`;
+      return sidecarTarget.includes('://') ? sidecarTarget : `http://${sidecarTarget}`;
     }
-    return `localhost:${localPort}`;
+    return `http://localhost:${localPort}`;
   }
 
   /**
-   * Serve an app via Tailscale Serve (path-based)
+   * Serve an app via Tailscale Serve on a dedicated HTTPS port.
    */
-  async serveApp(params: { subdomain: string; localPort: number }): Promise<void> {
-    const { subdomain, localPort } = params;
-    const upstream = await this.getServeUpstreamTarget(localPort);
-
-    const status = await this.getStatus();
-
-    if (status.supportsServices) {
-      try {
-        await this.execTailscale(['serve', '--bg', '--yes', `--service=${subdomain}`, '--https=443', upstream]);
-        this.logger.log(`Tailscale Serve (service): ${subdomain} → ${upstream}`);
-        return;
-      } catch (error) {
-        this.logger.warn(`Tailscale Services failed, falling back to path-based: ${error}`);
-      }
-    }
-
-    await this.execTailscale(['serve', '--bg', '--yes', `--set-path=/${subdomain}`, upstream]);
-    this.logger.log(`Tailscale Serve (path): /${subdomain} → ${upstream}`);
+  async serveApp(params: { appName: string; httpsPort: number; upstreamUrl?: string; localPort?: number }): Promise<void> {
+    const { appName, httpsPort, upstreamUrl, localPort = httpsPort } = params;
+    const upstream = upstreamUrl || (await this.getServeUpstreamTarget(localPort));
+    await this.execTailscale(['serve', '--bg', '--yes', `--https=${httpsPort}`, upstream]);
+    this.logger.log(`Tailscale Serve (port): ${appName} on :${httpsPort} → ${upstream}`);
   }
 
   /**
-   * Remove a served app
+   * Remove a served app from a dedicated HTTPS port.
    */
-  async unserveApp(subdomain: string): Promise<void> {
-    const status = await this.getStatus();
-
+  async unservePort(httpsPort: number): Promise<void> {
     try {
-      if (status.supportsServices) {
-        await this.execTailscale(['serve', `--service=${subdomain}`, 'off']);
-      } else {
-        await this.execTailscale(['serve', `--set-path=/${subdomain}`, 'off']);
-      }
-      this.logger.log(`Tailscale Serve removed: ${subdomain}`);
+      await this.execTailscale(['serve', `--https=${httpsPort}`, 'off']);
+      this.logger.log(`Tailscale Serve removed from :${httpsPort}`);
     } catch (error) {
-      this.logger.warn(`Failed to remove Tailscale serve for ${subdomain}: ${error}`);
+      this.logger.warn(`Failed to remove Tailscale serve for :${httpsPort}: ${error}`);
+    }
+  }
+
+  async clearService(serviceName: string): Promise<void> {
+    try {
+      await this.execTailscale(['serve', 'clear', serviceName]);
+      this.logger.log(`Tailscale Service removed: ${serviceName}`);
+    } catch (error) {
+      this.logger.warn(`Failed to remove Tailscale Service ${serviceName}: ${error}`);
     }
   }
 
@@ -563,22 +572,26 @@ export class TailscaleService {
       if (data.Services) {
         for (const [name, config] of Object.entries(data.Services as Record<string, TailscaleServeServiceConfig>)) {
           entries.push({
-            service: name,
+            service: name.replace(/^svc:/, ''),
             proto: 'https',
             mountPoint: '/',
             dest: config.Dest || '',
+            rawServiceName: name,
           });
         }
       }
 
       if (data.Web) {
-        for (const [, handlers] of Object.entries(data.Web as Record<string, Record<string, TailscaleServeWebHandler>>)) {
+        for (const [listener, handlers] of Object.entries(data.Web as Record<string, Record<string, TailscaleServeWebHandler>>)) {
+          const portMatch = listener.match(/:(\d+)$/);
+          const listenPort = portMatch ? Number.parseInt(portMatch[1] || '', 10) : undefined;
           for (const [path, config] of Object.entries(handlers)) {
             entries.push({
-              service: path.replace(/^\//, ''),
+              service: listenPort ? String(listenPort) : path.replace(/^\//, ''),
               proto: 'https',
               mountPoint: path,
               dest: config.Proxy || config.Path || '',
+              listenPort,
             });
           }
         }

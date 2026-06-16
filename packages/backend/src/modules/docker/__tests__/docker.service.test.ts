@@ -479,4 +479,39 @@ describe('DockerService', () => {
       expect(loggerService.warn).toHaveBeenCalled();
     });
   });
+
+  describe('getAppNetworkTarget', () => {
+    it('returns the direct container target using the Traefik service port label', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'abc123' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: {
+            Labels: {
+              'traefik.enable': 'true',
+              'traefik.http.services.anything-llm-ci-marketplace.loadbalancer.server.port': '3001',
+            },
+          },
+          NetworkSettings: {
+            Networks: {
+              'ci-os-hub_network': {
+                IPAddress: '172.18.0.10',
+              },
+            },
+          },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('anything-llm:ci-marketplace' as any)).resolves.toEqual({
+        url: 'http://172.18.0.10:3001',
+        internalPort: 3001,
+      });
+
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: false,
+        filters: {
+          label: ['ci-os-hub.appurn=anything-llm:ci-marketplace', 'traefik.enable=true'],
+        },
+      });
+    });
+  });
 });

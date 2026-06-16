@@ -4,8 +4,8 @@ exports[`App lifecycle > install app > should not delete an existing app-data fo
 {
   "/app-data/test/test2/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
-DOMAIN=undefined
-LOCAL_DOMAIN=undefined
+DOMAIN=ci.test
+LOCAL_DOMAIN=ci.lan
 APP_PORT=9040
 APP_URN=test2:test
 APP_ID=test2-test
@@ -159,8 +159,8 @@ exports[`App lifecycle > install app > should successfully install app and creat
 {
   "/app-data/test/test/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
-DOMAIN=undefined
-LOCAL_DOMAIN=undefined
+DOMAIN=ci.test
+LOCAL_DOMAIN=ci.lan
 APP_PORT=3041
 APP_URN=test:test
 APP_ID=test-test
@@ -314,8 +314,8 @@ exports[`App lifecycle > update all apps > should update multiple apps that have
 {
   "/app-data/test/app1/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
-DOMAIN=undefined
-LOCAL_DOMAIN=undefined
+DOMAIN=ci.test
+LOCAL_DOMAIN=ci.lan
 APP_PORT=1227
 APP_URN=app1:test
 APP_ID=app1-test
@@ -335,8 +335,8 @@ APP_URL=http://127.0.0.1:1227
   "/app-data/test/app1/data": null,
   "/app-data/test/app2/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
-DOMAIN=undefined
-LOCAL_DOMAIN=undefined
+DOMAIN=ci.test
+LOCAL_DOMAIN=ci.lan
 APP_PORT=2100
 APP_URN=app2:test
 APP_ID=app2-test
@@ -356,8 +356,8 @@ APP_URL=http://127.0.0.1:2100
   "/app-data/test/app2/data": null,
   "/app-data/test/app3/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
-DOMAIN=undefined
-LOCAL_DOMAIN=undefined
+DOMAIN=ci.test
+LOCAL_DOMAIN=ci.lan
 APP_PORT=4868
 APP_URN=app3:test
 APP_ID=app3-test

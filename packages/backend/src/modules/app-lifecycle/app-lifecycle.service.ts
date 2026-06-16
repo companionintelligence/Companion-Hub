@@ -6,7 +6,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity } from '@ci-hub/common/types';
+import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -36,11 +36,11 @@ import { DockerService } from '../docker/docker.service';
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
 
-/** Trimmed subdomain when Cloudflare or Private VPN routing requires it to be globally unique on this Hub. */
+/** Trimmed subdomain when Cloudflare routing requires it to be globally unique on this Hub. */
 function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
   const trimmed = parsedForm.localSubdomain?.trim();
   if (!trimmed) return undefined;
-  if (parsedForm.exposedLocal || parsedForm.exposureMode === 'tailscale' || parsedForm.exposureMode === 'cloudflare') {
+  if (parsedForm.exposedLocal || parsedForm.exposureMode === 'cloudflare') {
     return trimmed;
   }
   return undefined;
@@ -52,6 +52,15 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   }
 
   return parsedForm;
+}
+
+function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
+  return buildPublicWebIdentity({
+    appSubdomain: params.appSubdomain,
+    hubSubdomain: params.hubSubdomain,
+    orgSlug: params.orgSlug,
+    publicDomainRoot: params.publicDomainRoot,
+  }).hostname;
 }
 
 @Injectable()
@@ -839,38 +848,76 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
       // Apps that should be Tailscale-served
       const shouldServe = apps.filter(
-        (app) =>
-          (app as Record<string, unknown>).exposureMode === 'tailscale' &&
-          ['running', 'starting', 'restarting'].includes(app.status) &&
-          app.localSubdomain,
+        (app) => (app as Record<string, unknown>).exposureMode === 'tailscale' && ['running', 'starting', 'restarting'].includes(app.status),
       );
 
-      // Get current serve state
       const serveStatus = await tailscaleService.getServeStatus();
-      const currentlyServed = new Set(serveStatus.entries.map((e) => e.service));
+      const desiredPorts = new Map<
+        number,
+        {
+          appName: string;
+          appUrn: AppUrn;
+          port: number;
+          upstreamUrl: string;
+        }
+      >();
 
-      // Add missing
       for (const app of shouldServe) {
-        const subdomain = app.localSubdomain || '';
-        if (subdomain && !currentlyServed.has(subdomain)) {
+        if (!app.port) {
+          this.logger.error(`[Tailscale] Skipping ${app.appName}:${app.appStoreSlug}: missing app port for Private VPN publishing`);
+          continue;
+        }
+
+        const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+        const target = await this.dockerService.getAppNetworkTarget(appUrn);
+
+        if (!target) {
+          this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
+          continue;
+        }
+
+        desiredPorts.set(app.port, {
+          appName: app.localSubdomain || app.appName,
+          appUrn,
+          port: app.port,
+          upstreamUrl: target.url,
+        });
+      }
+
+      const currentlyServedByPort = new Map(
+        serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
+      );
+
+      for (const desired of desiredPorts.values()) {
+        const currentEntry = currentlyServedByPort.get(desired.port);
+        if (!currentEntry || currentEntry.dest !== desired.upstreamUrl || currentEntry.mountPoint !== '/') {
           await tailscaleService
             .serveApp({
-              subdomain,
-              localPort: 80, // Traefik
+              appName: desired.appName,
+              httpsPort: desired.port,
+              upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${subdomain}: ${e}`));
+            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${desired.appName} on :${desired.port}: ${e}`));
         }
       }
 
-      // Remove stale
-      const shouldServeNames = new Set(shouldServe.map((a) => a.localSubdomain).filter(Boolean));
-      for (const served of currentlyServed) {
-        if (!shouldServeNames.has(served)) {
-          await tailscaleService.unserveApp(served).catch((e) => this.logger.error(`[Tailscale] Failed to unserve ${served}: ${e}`));
+      for (const served of serveStatus.entries) {
+        if (served.rawServiceName) {
+          await tailscaleService
+            .clearService(served.rawServiceName)
+            .catch((e) => this.logger.error(`[Tailscale] Failed to clear ${served.rawServiceName}: ${e}`));
+          continue;
         }
+
+        const listenPort = served.listenPort;
+        if (!listenPort || desiredPorts.has(listenPort)) {
+          continue;
+        }
+
+        await tailscaleService.unservePort(listenPort).catch((e) => this.logger.error(`[Tailscale] Failed to unserve :${listenPort}: ${e}`));
       }
 
-      this.logger.debug(`[Tailscale] Sync complete: ${shouldServe.length} apps served`);
+      this.logger.debug(`[Tailscale] Sync complete: ${desiredPorts.size} apps served`);
     } catch (error) {
       this.logger.error(`[Tailscale] Sync failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -927,6 +974,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const apps = await this.appRepository.getApps();
       const userSettings = this.config.getConfig().userSettings;
       const defaultPublicDomain = userSettings.domain || this.config.getConfig().domain;
+      const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
 
       type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
 
@@ -938,13 +986,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
             const appPublicDomain = app.publicDomain || defaultPublicDomain;
-            const identity = buildPublicWebIdentity({
-              appSubdomain: subdomain,
-              hubSubdomain: orgInfo.hubSubdomain,
-              orgSlug: orgInfo.slug,
-              publicDomainRoot: appPublicDomain,
-            });
-
             return {
               name: app.appName,
               subdomain,
@@ -952,7 +993,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               localPort: 80,
               protocol: 'http' as const,
               hostname: 'traefik',
-              originServerName: identity.originServerName,
+              originServerName: buildOriginServerName({
+                appSubdomain: subdomain,
+                hubSubdomain: orgInfo.hubSubdomain,
+                orgSlug: orgInfo.slug,
+                localDomain,
+              }),
             };
           }),
       );
@@ -1000,7 +1046,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             }
             return {
               appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: entry.originServerName ?? entry.subdomain,
+              hostname: buildPublicHostname({
+                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
+                hubSubdomain: orgInfo.hubSubdomain,
+                orgSlug: orgInfo.slug,
+                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
+              }),
             };
           })
           .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
@@ -1021,7 +1072,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             }
             return {
               appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: entry.originServerName ?? entry.subdomain,
+              hostname: buildPublicHostname({
+                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
+                hubSubdomain: orgInfo.hubSubdomain,
+                orgSlug: orgInfo.slug,
+                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
+              }),
             };
           })
           .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
@@ -1036,7 +1092,17 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         // Only log success once the sync fully completed (ok and no per-app
         // failures); otherwise the failure branches above own the messaging.
         this.logger.info(
-          `[Cloudflare] Public hostnames synced: ${appEntries.map((entry) => `${entry.name} -> ${entry.originServerName}`).join(', ')}`,
+          `[Cloudflare] Public hostnames synced: ${appEntries
+            .map(
+              (entry) =>
+                `${entry.name} -> ${buildPublicHostname({
+                  appSubdomain: entry.subdomain,
+                  hubSubdomain: orgInfo.hubSubdomain,
+                  orgSlug: orgInfo.slug,
+                  publicDomainRoot: entry.publicDomain || defaultPublicDomain,
+                })}`,
+            )
+            .join(', ')}`,
         );
       }
     } catch (error) {

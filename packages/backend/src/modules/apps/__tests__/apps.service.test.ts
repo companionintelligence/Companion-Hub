@@ -23,6 +23,8 @@ import { MarketplaceService } from '../../marketplace/marketplace.service';
 import { RegistrationService } from '../../registration/registration.service';
 import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import { ModuleRef } from '@nestjs/core';
+import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../../tailscale/tailscale.service';
 
 describe('AppsService', () => {
   let service: AppsService;
@@ -60,7 +62,24 @@ describe('AppsService', () => {
     configService = module.get(ConfigurationService);
     registrationService = module.get(RegistrationService);
     moduleRef = module.get(ModuleRef);
-    moduleRef.get.mockReturnValue({ getTunnelToken: () => 'token' } as any);
+    moduleRef.get.mockImplementation((token: unknown) => {
+      if (token === CloudflareClientService) {
+        return { getTunnelToken: () => 'token' } as any;
+      }
+      if (token === TailscaleService) {
+        return {
+          getStatus: vi.fn().mockResolvedValue({
+            installed: true,
+            connected: true,
+            hostname: 'hub-tailscale-1',
+            nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+            tailnet: 'capybara-ulmer.ts.net',
+            supportsServices: true,
+          }),
+        } as any;
+      }
+      return undefined as any;
+    });
   });
 
   it('should be defined', () => {
@@ -221,8 +240,8 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
     });
 
-    it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists', async () => {
-      setupApp({ exposureMode: 'cloudflare', openPort: false, port: 8080 });
+    it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists and a host port is published', async () => {
+      setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 });
       moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
@@ -453,16 +472,34 @@ describe('AppsService', () => {
       expect(mockRestart).toHaveBeenCalledWith('test-app');
     });
 
-    it('SHOULD call tailscaleService.serveApp for tailscale + CONNECTION_REFUSED', async () => {
-      const mockServeApp = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({
-        serveApp: mockServeApp,
-        restartContainer: vi.fn().mockResolvedValue(undefined),
-      })) as any);
+    it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {
+      const mockSync = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation(((token: unknown) => {
+        if (token === TailscaleService) {
+          return {
+            getStatus: vi.fn().mockResolvedValue({
+              installed: true,
+              connected: true,
+              hostname: 'hub-tailscale-1',
+              nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+              tailnet: 'capybara-ulmer.ts.net',
+              supportsServices: true,
+            }),
+          };
+        }
+        if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
+          return {
+            syncExposurePublic: mockSync,
+          };
+        }
+        return {
+          restartContainer: vi.fn().mockResolvedValue(undefined),
+        };
+      }) as any);
 
       setupForResolve('connrefused', { exposureMode: 'tailscale' });
       await service.resolveAppAvailability(appUrn);
-      expect(mockServeApp).toHaveBeenCalled();
+      expect(mockSync).toHaveBeenCalled();
     });
   });
 });

@@ -326,7 +326,7 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     builder = new DockerComposeBuilder('example.com', 'ci.lan');
   });
 
-  it('uses computed hostname passed to getDockerCompose (not env-file parsing)', async () => {
+  it('uses the cloudflare origin hostname passed to getDockerCompose', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
       { exposureMode: 'cloudflare' },
@@ -335,16 +335,16 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       'example.com',
       'ci.lan',
       undefined,
-      'myapp-dev1-org.example.com',
+      'myapp-dev1-org.ci.lan',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
     const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
-    expect(hostRule).toBe('Host(`myapp-dev1-org.example.com`)');
+    expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
   });
 
-  it('uses multi-label domain hostname when provided', async () => {
+  it('keeps the same origin hostname even when the public domain has multiple labels', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
       { exposureMode: 'cloudflare' },
@@ -353,13 +353,13 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       'my.lifescope.io',
       'ci.lan',
       undefined,
-      'myapp-dev1-org.my.lifescope.io',
+      'myapp-dev1-org.ci.lan',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
     const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
-    expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
+    expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
   });
 });
 

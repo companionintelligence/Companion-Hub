@@ -13,7 +13,7 @@ import { expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 
-const BASE_URL = process.env.HUB_URL || 'http://localhost:3000';
+const BASE_URL = process.env.HUB_URL || 'http://localhost:5005';
 const TEST_DOMAIN = process.env.TEST_DOMAIN || 'test.ci.computer';
 const SCREENSHOTS_DIR = 'e2e/screenshots';
 

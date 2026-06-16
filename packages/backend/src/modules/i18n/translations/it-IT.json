@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Reset in corso",
   "APP_STATUS_RUNNING": "In esecuzione",
   "APP_STATUS_STARTING": "Avvio in corso",
+  "APP_STATUS_INITIALIZING": "Inizializzazione",
   "APP_STATUS_STOPPED": "Arrestato",
+  "APP_STATUS_DEGRADED": "Richiede attenzione",
   "APP_STATUS_STOPPING": "Arresto in corso",
   "APP_STATUS_RESTARTING": "Riavvio in corso",
   "APP_STATUS_UNINSTALLING": "Disinstallazione in corso",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Le modifiche non sono state salvate. Vuoi davvero non salvarle?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Configurazione del servizio aggiornata correttamente",
   "MULTI_SERVICE_JSON_REFERENCE": "Riferimento Dynamic Compose",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Elimina tutti i dati"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Elimina tutti i dati",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Non possibile installare l'app {{id}}, guarda i <logsLink>{{logsLabel}}</logsLink> per maggiori dettagli"
 }

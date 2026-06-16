@@ -66,6 +66,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             formId={formId}
             appStatus={status}
             scrollable
+            editingAppUrn={info.urn}
           />
         </div>
         <DialogFooter>

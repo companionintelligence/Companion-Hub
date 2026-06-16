@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Réinitialisation en cours",
   "APP_STATUS_RUNNING": "En cours d'exécution",
   "APP_STATUS_STARTING": "Démarrage en cours",
+  "APP_STATUS_INITIALIZING": "Initialisation",
   "APP_STATUS_STOPPED": "Arrêté",
+  "APP_STATUS_DEGRADED": "Nécessite une attention",
   "APP_STATUS_STOPPING": "Arrêt en cours",
   "APP_STATUS_RESTARTING": "Redémarrage",
   "APP_STATUS_UNINSTALLING": "Désinstallation en cours",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Vous avez des modifications non enregistrées. Êtes-vous sûr de vouloir quitter sans enregistrer ?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Configuration du service mise à jour avec succès",
   "MULTI_SERVICE_JSON_REFERENCE": "Référence de composition dynamique",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Supprimer toutes les données"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Supprimer toutes les données",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Impossible d'installer l'application {{id}}, voir les <logsLink>{{logsLabel}}</logsLink> pour plus de détails"
 }

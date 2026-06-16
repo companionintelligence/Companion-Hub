@@ -200,7 +200,7 @@ the existing filter groups them; `triage.mjs` buckets an MCP **drift** `warn` as
 
 ## Layer 2 in practice (`scripts/qa-mcp-bridge.ts`)
 
-Env-gated regression of the real bridge: `HUB_URL` (default `http://localhost:3000`) + `MCP_API_KEY`
+Env-gated regression of the real bridge: `HUB_URL` (default `http://localhost:5004`) + `MCP_API_KEY`
 (the Hub's Bearer key). It opens `GET /api/mcp/sse` for the `event: endpoint` line, then
 `POST /api/mcp/messages` `initialize` and `tools/list`, asserting `protocolVersion`+`serverInfo`, a
 non-empty tool set, and `<appUrn>__<tool>` namespacing on any bridged tool. A down Hub or a missing

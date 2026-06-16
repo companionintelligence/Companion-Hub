@@ -290,9 +290,10 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      // The selected (non-default) domain wins over the hub's default domain.
+      // The selected (non-default) domain wins for public DNS, but the origin
+      // Host header still targets Traefik on the local domain.
       const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
-      expect(syncedApps.some((app) => app.originServerName === 'anything-llm-laptop-cid.companionintel.com')).toBe(true);
+      expect(syncedApps.some((app) => app.originServerName === 'anything-llm-laptop-cid.lan')).toBe(true);
 
       // The partial failure is surfaced, not swallowed.
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintel.com'));
@@ -454,14 +455,14 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale' }));
     });
 
-    it('MUST reject duplicate localSubdomain for tailscale when exposedLocal is false', async () => {
+    it('does not treat localSubdomain as a tailscale conflict key', async () => {
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ appName: 'taken' }] as any);
-      await expect(
-        service.installApp({
-          appUrn,
-          form: { exposureMode: 'tailscale', exposedLocal: false, localSubdomain: 'mysvc' },
-        }),
-      ).rejects.toThrow('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE');
+      await service.installApp({
+        appUrn,
+        form: { exposureMode: 'tailscale', exposedLocal: false, localSubdomain: 'mysvc' },
+      });
+
+      expect(appsRepository.getAppsByLocalSubdomain).not.toHaveBeenCalled();
     });
 
     it('MUST default exposureMode to local when not provided', async () => {
@@ -540,7 +541,8 @@ describe('AppLifecycleService', () => {
         tunnelToken: 'token',
       } as any);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'example.com' },
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        localDomain: 'ci.lan',
         domain: 'example.com',
       } as any);
       appsRepository.getApps.mockResolvedValue([
@@ -560,7 +562,7 @@ describe('AppLifecycleService', () => {
         'org-1',
         expect.arrayContaining([
           expect.objectContaining({
-            originServerName: 'element-test1-myorg.example.com',
+            originServerName: 'element-test1-myorg.ci.lan',
           }),
         ]),
         'tunnel-123',
@@ -576,7 +578,8 @@ describe('AppLifecycleService', () => {
         tunnelToken: 'token',
       } as any);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'example.com' },
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        localDomain: 'ci.lan',
         domain: 'example.com',
       } as any);
       appsRepository.getApps.mockResolvedValue([
@@ -596,7 +599,7 @@ describe('AppLifecycleService', () => {
         'org-1',
         expect.arrayContaining([
           expect.objectContaining({
-            originServerName: 'element-myorg.example.com',
+            originServerName: 'element-myorg.ci.lan',
           }),
         ]),
         'tunnel-123',

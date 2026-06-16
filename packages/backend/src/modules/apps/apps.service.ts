@@ -17,8 +17,18 @@ import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../tailscale/tailscale.service';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
+
+function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, suffix = ''): string | null {
+  const cleanNodeFqdn = nodeFqdn?.trim();
+  if (!cleanNodeFqdn || !port) {
+    return null;
+  }
+
+  return `https://${cleanNodeFqdn}:${port}${suffix}`;
+}
 
 @Injectable()
 export class AppsService {
@@ -202,11 +212,12 @@ export class AppsService {
     const exposureMode = app.exposureMode || 'local';
     const baseSubdomain = app.localSubdomain;
     const urlSuffix = info.url_suffix || '';
+    const hasDirectLocalAccess = exposureMode === 'local' || app.exposedLocal || app.openPort;
 
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      if (!app.port) {
+      if (!app.port || !hasDirectLocalAccess) {
         return { available: false, appUrl: undefined, stage: 'error' };
       }
 
@@ -214,40 +225,60 @@ export class AppsService {
       appUrl = `http://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };
     }
-    const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
-    const hasTunnelToken = Boolean(
-      cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
-    );
-    if (exposureMode === 'cloudflare' && !hasTunnelToken && app.port) {
-      const host = resolveBrowserHost(userSettings.internalIp);
-      appUrl = `http://${host}:${app.port}${urlSuffix}`;
-      return { available: true, appUrl, stage: 'ready' };
-    }
-    // Cloudflare/Tailscale: use public domain
-    const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
-    if (!organizationSlug || !resolvedDomain) {
-      return { available: false, appUrl, stage: 'error' };
-    }
+    if (exposureMode === 'tailscale') {
+      const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
+      const tailscaleStatus = tailscaleService ? await tailscaleService.getStatus().catch(() => null) : null;
+      const appPort = app.port ?? info.port ?? null;
+      const vpnUrl =
+        tailscaleStatus?.connected && tailscaleStatus.nodeFqdn ? buildTailscalePortUrl(tailscaleStatus.nodeFqdn, appPort, urlSuffix) : null;
 
-    // Always include deviceSlug for correct subdomain construction
-    if (!org?.hubSubdomain) {
-      return {
-        available: false,
-        appUrl: undefined,
-        stage: 'error',
-        errorCode: 'NO_DEVICE_REGISTRATION',
-        detail: 'Device not registered with an organization.',
-        resolvable: false,
-      };
-    }
+      if (!vpnUrl) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'TAILSCALE_NOT_READY',
+          detail: 'Tailscale is not connected or this app does not have a published Private VPN port yet.',
+          resolvable: true,
+        };
+      }
 
-    const identity = buildPublicWebIdentity({
-      appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
-      hubSubdomain: org.hubSubdomain,
-      orgSlug: organizationSlug,
-      publicDomainRoot: resolvedDomain,
-    });
-    appUrl = `${identity.publicUrl}${urlSuffix}`;
+      appUrl = vpnUrl;
+    } else {
+      const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
+      const hasTunnelToken = Boolean(
+        cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
+      );
+      if (!hasTunnelToken && app.port && hasDirectLocalAccess) {
+        const host = resolveBrowserHost(userSettings.internalIp);
+        appUrl = `http://${host}:${app.port}${urlSuffix}`;
+        return { available: true, appUrl, stage: 'ready' };
+      }
+
+      const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
+      if (!organizationSlug || !resolvedDomain) {
+        return { available: false, appUrl, stage: 'error' };
+      }
+
+      if (!org?.hubSubdomain) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'NO_DEVICE_REGISTRATION',
+          detail: 'Device not registered with an organization.',
+          resolvable: false,
+        };
+      }
+
+      const identity = buildPublicWebIdentity({
+        appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
+        hubSubdomain: org.hubSubdomain,
+        orgSlug: organizationSlug,
+        publicDomainRoot: resolvedDomain,
+      });
+      appUrl = `${identity.publicUrl}${urlSuffix}`;
+    }
 
     // Helper to determine stage from error code
     const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);
@@ -257,7 +288,7 @@ export class AppsService {
       const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
 
-      if (isCloudflare) {
+      if (exposureMode === 'cloudflare' && isCloudflare) {
         const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
         const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : response.status;
 
@@ -434,11 +465,11 @@ export class AppsService {
 
       // For Tailscale errors: re-add serve entry
       if (exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR')) {
-        const { TailscaleService } = await import('../tailscale/tailscale.service');
-        const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
-        if (tailscaleService && app.localSubdomain) {
-          await tailscaleService.serveApp({ subdomain: app.localSubdomain, localPort: 80 });
-          actions.push('Re-added Tailscale Serve entry');
+        const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+        const lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
+        if (lifecycleService) {
+          await lifecycleService.syncExposurePublic();
+          actions.push('Re-synced Private VPN publishing');
         }
       }
 

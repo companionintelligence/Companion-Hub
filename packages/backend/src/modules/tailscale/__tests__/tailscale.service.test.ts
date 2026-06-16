@@ -17,8 +17,9 @@ import { TailscaleService } from '../tailscale.service';
 const runningStatusJson = JSON.stringify({
   Version: '1.82.0',
   BackendState: 'Running',
-  Self: { HostName: 'hub', TailscaleIPs: ['100.1.1.1'] },
-  CurrentTailnet: { Name: 'test.ts.net' },
+  Self: { HostName: 'hub', DNSName: 'hub-1.capybara-ulmer.ts.net.', TailscaleIPs: ['100.1.1.1'] },
+  MagicDNSSuffix: 'capybara-ulmer.ts.net',
+  CurrentTailnet: { Name: 'liam.broza@gmail.com', MagicDNSSuffix: 'capybara-ulmer.ts.net' },
 });
 
 describe('TailscaleService', () => {
@@ -51,6 +52,8 @@ describe('TailscaleService', () => {
     expect(status.installed).toBe(true);
     expect(status.connected).toBe(true);
     expect(status.ip).toBe('100.1.1.1');
+    expect(status.nodeFqdn).toBe('hub-1.capybara-ulmer.ts.net');
+    expect(status.tailnet).toBe('capybara-ulmer.ts.net');
     expect(execFileMock).toHaveBeenCalledWith(
       'docker',
       ['exec', 'hub-tailscale', 'tailscale', 'status', '--json'],
@@ -542,5 +545,107 @@ describe('TailscaleService', () => {
     await service.disconnect();
 
     expect(execFileMock).toHaveBeenCalledWith('/usr/bin/tailscale', ['down'], expect.any(Object), expect.any(Function));
+  });
+
+  it('serveApp publishes a dedicated https port to the provided upstream', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.98.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('serve') && args.includes('--https=3001')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.serveApp({
+      appName: 'anything-llm',
+      httpsPort: 3001,
+      upstreamUrl: 'http://172.18.0.10:3001',
+    });
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      ['exec', 'hub-tailscale', 'tailscale', 'serve', '--bg', '--yes', '--https=3001', 'http://172.18.0.10:3001'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('unservePort removes a dedicated https port mapping', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.98.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('serve') && args.includes('--https=3001') && args.includes('off')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.unservePort(3001);
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      ['exec', 'hub-tailscale', 'tailscale', 'serve', '--https=3001', 'off'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('getServeStatus parses direct-port and service entries', async () => {
+    const serveStatusJson = JSON.stringify({
+      Web: {
+        'hub-tailscale-1.capybara-ulmer.ts.net:3001': {
+          '/': { Proxy: 'http://172.18.0.10:3001' },
+        },
+      },
+      Services: {
+        'svc:bitboard': {
+          Dest: 'http://172.18.0.11:3711',
+        },
+      },
+    });
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.98.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('serve') && args.includes('status') && args.includes('--json')) {
+          process.nextTick(() => cb(null, serveStatusJson, ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await expect(service.getServeStatus()).resolves.toEqual({
+      entries: [
+        {
+          service: 'bitboard',
+          proto: 'https',
+          mountPoint: '/',
+          dest: 'http://172.18.0.11:3711',
+          rawServiceName: 'svc:bitboard',
+        },
+        {
+          service: '3001',
+          proto: 'https',
+          mountPoint: '/',
+          dest: 'http://172.18.0.10:3001',
+          listenPort: 3001,
+        },
+      ],
+    });
   });
 });

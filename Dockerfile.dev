@@ -55,6 +55,7 @@ COPY ./tsconfig.json ./tsconfig.json
 COPY ./packages ./packages
 COPY ./packages/backend/assets ./assets
 COPY ./packages/backend/src/core/database/drizzle ./assets/migrations
+RUN mkdir -p /app/.turbo/cache && chown -R 1000:1000 /app
 
 EXPOSE 3000
 

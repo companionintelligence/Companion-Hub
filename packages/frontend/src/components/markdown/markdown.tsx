@@ -12,7 +12,12 @@ export const Markdown: React.FC<{ content: string; className: string }> = ({ con
       rehypePlugins={[rehypeRaw]}
       components={{
         a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer">
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-primary underline decoration-primary/50 underline-offset-4 transition-colors hover:text-primary/80"
+          >
             {children}
           </a>
         ),

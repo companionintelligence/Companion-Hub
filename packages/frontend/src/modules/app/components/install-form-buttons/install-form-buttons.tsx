@@ -13,7 +13,7 @@ export const InstallFormButtons: React.FC<IProps> = ({ isEdit, loading, formId, 
   const { t } = useTranslation();
 
   return (
-    <Button loading={loading} disabled={disabled} type="submit" intent="success" form={formId}>
+    <Button loading={loading} disabled={disabled} type="submit" form={formId}>
       {isEdit ? t('COMMON_UPDATE') : t('COMMON_INSTALL')}
     </Button>
   );

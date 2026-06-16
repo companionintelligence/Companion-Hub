@@ -16,6 +16,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
 import { TailscaleService } from './modules/tailscale/tailscale.service';
 import { AppStoreService } from './modules/app-stores/app-store.service';
+import { buildTailscaleNodeFqdn } from '@ci-hub/common/types';
 
 @Controller()
 export class AppController {
@@ -198,7 +199,9 @@ export class AppController {
       this.registrationService.getDeviceRegistrationInfo(),
       this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
-      this.tailscaleService.getStatus().catch(() => ({ installed: false, connected: false })),
+      this.tailscaleService
+        .getStatus()
+        .catch(() => ({ installed: false, connected: false, hostname: null, nodeFqdn: null, tailnet: null, supportsServices: false })),
     ]);
 
     const updatesAvailable = installedApps.filter(({ app, metadata }) => {
@@ -213,6 +216,9 @@ export class AppController {
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
     const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected;
+    const tailscaleNodeFqdn = tailscaleAvailable
+      ? tailscaleStatus.nodeFqdn || buildTailscaleNodeFqdn(tailscaleStatus.hostname, tailscaleStatus.tailnet)
+      : null;
 
     return AppContextDto.parse(
       {
@@ -224,6 +230,8 @@ export class AppController {
         isProduction,
         cloudflareAvailable,
         tailscaleAvailable,
+        tailscaleNodeFqdn,
+        tailscaleSupportsServices: Boolean(tailscaleStatus.supportsServices),
       },
       { reportOnly: true },
     );

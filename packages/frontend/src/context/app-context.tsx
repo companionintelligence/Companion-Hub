@@ -22,6 +22,8 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
   isProduction: true,
   cloudflareAvailable: false,
   tailscaleAvailable: false,
+  tailscaleNodeFqdn: null,
+  tailscaleSupportsServices: false,
 };
 
 // Optimistically prefetch pages that are likely to be visited

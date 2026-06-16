@@ -25,7 +25,7 @@ export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
   private localDomain: string;
-  private publicWebHostname?: string;
+  private cloudflareOriginHostname?: string;
   private defaultCpuLimit?: string;
   private defaultMemoryLimit?: string;
 
@@ -174,7 +174,7 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: form.enableAuth,
-        publicWebHostname: this.publicWebHostname,
+        cloudflareOriginHostname: this.cloudflareOriginHostname,
         localDomain: this.localDomain,
         httpsBackend: params.httpsBackend,
       });
@@ -197,14 +197,14 @@ export class DockerComposeBuilder {
     _domain?: string,
     localDomain?: string,
     envFile?: string,
-    publicWebHostname?: string,
+    cloudflareOriginHostname?: string,
     defaultCpuLimit?: string,
     defaultMemoryLimit?: string,
   ) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
-    this.publicWebHostname = publicWebHostname;
+    this.cloudflareOriginHostname = cloudflareOriginHostname;
     this.defaultCpuLimit = defaultCpuLimit?.trim() || undefined;
     this.defaultMemoryLimit = defaultMemoryLimit?.trim() || undefined;
 

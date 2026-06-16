@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Скидання налаштувань",
   "APP_STATUS_RUNNING": "Мчить",
   "APP_STATUS_STARTING": "Запускається",
+  "APP_STATUS_INITIALIZING": "Ініціалізація",
   "APP_STATUS_STOPPED": "Зупинено",
+  "APP_STATUS_DEGRADED": "Потребує уваги",
   "APP_STATUS_STOPPING": "Зупинення",
   "APP_STATUS_RESTARTING": "Перезавантаження",
   "APP_STATUS_UNINSTALLING": "Видалення",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Видалити всі дані"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Видалити всі дані",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не вдалося встановити додаток {{id}}, див. <logsLink>{{logsLabel}}</logsLink> для отримання додаткових відомостей"
 }

@@ -236,7 +236,9 @@
   "APP_STATUS_RESETTING": "Sıfırlanıyor",
   "APP_STATUS_RUNNING": "Çalışıyor",
   "APP_STATUS_STARTING": "Başlatılıyor",
+  "APP_STATUS_INITIALIZING": "İlklendiriliyor",
   "APP_STATUS_STOPPED": "Durduruldu",
+  "APP_STATUS_DEGRADED": "Dikkat gerekiyor",
   "APP_STATUS_STOPPING": "Durduruluyor",
   "APP_STATUS_RESTARTING": "Yeniden Başlatılıyor",
   "APP_STATUS_UNINSTALLING": "Kaldırılıyor",
@@ -648,5 +650,6 @@
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Kaydedilmemiş değişiklikleriniz var. Kaydetmeden ayrılmak istediğinizden emin misiniz?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Servis yapılandırması başarıyla güncellendi",
   "MULTI_SERVICE_JSON_REFERENCE": "Dinamik Compose Referansı",
-  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Tüm verileri sil"
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Tüm verileri sil",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "{{id}} uygulaması yüklenemedi, daha fazla ayrıntı için <logsLink>{{logsLabel}}</logsLink> bakın"
 }
