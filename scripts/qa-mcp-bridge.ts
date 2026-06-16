@@ -29,10 +29,10 @@
  * container's main process. So tools/list here returns the Hub's OWN tools; bridged-app namespacing
  * is asserted only when such an app is present. Wiring catalog apps through the bridge is future work.
  *
- * Usage:  HUB_URL=http://localhost:3000 MCP_API_KEY=… tsx scripts/qa-mcp-bridge.ts
- * Env:    HUB_URL (default http://localhost:3000) · MCP_API_KEY · QA_BRIDGE_TIMEOUT_MS (default 15000)
+ * Usage:  HUB_URL=http://localhost:5004 MCP_API_KEY=… tsx scripts/qa-mcp-bridge.ts
+ * Env:    HUB_URL (default http://localhost:5004) · MCP_API_KEY · QA_BRIDGE_TIMEOUT_MS (default 15000)
  */
-const HUB_URL = (process.env.HUB_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+const HUB_URL = (process.env.HUB_URL ?? 'http://localhost:5004').replace(/\/$/, '');
 const API_KEY = process.env.MCP_API_KEY ?? '';
 const TIMEOUT_MS = Number(process.env.QA_BRIDGE_TIMEOUT_MS) || 15_000;
 const APP_ID = 'hub-mcp-bridge';
