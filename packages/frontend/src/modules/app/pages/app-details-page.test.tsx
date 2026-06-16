@@ -37,7 +37,16 @@ vi.mock('@/api-client/client.gen', () => ({
 
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({
-    userSettings: { localDomain: 'local.test', sslPort: 443 },
+    userSettings: {
+      localDomain: 'local.test',
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      domain: 'companionintelligence.com',
+      ciHubOrganizationSlug: 'companion',
+      ciHubDeviceSlug: 'studio',
+    },
+    cloudflareAvailable: true,
+    tailscaleAvailable: true,
   }),
 }));
 
@@ -78,6 +87,7 @@ describe('AppDetailsPage', () => {
             urn: 'test-app:community',
             name: 'Test App',
             author: 'CI',
+            short_desc: 'A clean desktop summary for installs.',
             categories: ['utilities'],
           },
           app: { status: 'running' },
@@ -103,6 +113,15 @@ describe('AppDetailsPage', () => {
     fireEvent.error(image);
 
     expect(screen.getByRole('img', { name: 'Test App' })).toHaveAttribute('src', '/app-not-found.jpg');
+  });
+
+  it('keeps the summary card content and actions visible', () => {
+    render(<AppDetailsPage />);
+
+    expect(screen.getByText('A clean desktop summary for installs.')).toBeInTheDocument();
+    expect(screen.getByTestId('app-actions')).toBeInTheDocument();
+    expect(screen.getByTestId('app-status')).toBeInTheDocument();
+    expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
   });
 
   it('disables runtime-health polling while an app is uninstalling', () => {
