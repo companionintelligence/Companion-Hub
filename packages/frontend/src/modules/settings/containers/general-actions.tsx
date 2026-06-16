@@ -63,11 +63,15 @@ export const GeneralActionsContainer = () => {
 
     const installedVersion = await getInstalledDesktopVersion();
     setDesktopVersion(installedVersion);
+    if (!installedVersion) {
+      setDesktopUpdate(null);
+      return null;
+    }
 
-    const info = await checkForUpdates(installedVersion ?? version.current);
+    const info = await checkForUpdates(installedVersion);
     setDesktopUpdate(info);
     return info;
-  }, [desktop, version.current]);
+  }, [desktop]);
 
   useEffect(() => {
     if (!desktop) return;

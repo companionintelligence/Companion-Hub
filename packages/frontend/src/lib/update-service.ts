@@ -253,7 +253,7 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
   if (isTauri()) {
     try {
       if (info.manualDownload) {
-        if (!info.downloadUrl) {
+        if (!info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
           return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
         }
 

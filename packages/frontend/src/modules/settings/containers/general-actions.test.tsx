@@ -47,6 +47,7 @@ const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
 const mockToastSuccess = vi.mocked(toast.success);
+const mockToastError = vi.mocked(toast.error);
 
 describe('GeneralActionsContainer', () => {
   beforeEach(() => {
@@ -113,5 +114,20 @@ describe('GeneralActionsContainer', () => {
       expect(mockToastSuccess).toHaveBeenCalledWith('Installer download opened in your browser.');
     });
     expect(screen.getByText('Installer download opened in your browser.')).toBeInTheDocument();
+  });
+
+  it('treats missing desktop version detection as a failed desktop update check', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockGetInstalledDesktopVersion.mockResolvedValue(null);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
+
+    await waitFor(() => {
+      expect(mockCheckForUpdates).not.toHaveBeenCalled();
+      expect(mockToastError).toHaveBeenCalledWith('Could not check for updates.');
+    });
+    expect(screen.getByText('Current version: Unknown')).toBeInTheDocument();
   });
 });

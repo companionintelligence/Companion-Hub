@@ -4,20 +4,48 @@ import {
   isHubUpdateAvailable,
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
+  performUpdate,
   platformManifestKey,
   requiresManualDesktopUpdate,
 } from '@/lib/update-service';
 
 const mockInvoke = vi.fn();
+const mockOpenExternal = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+vi.mock('@/lib/helpers/open-external', () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
 describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('rejects untrusted manual download URLs before opening them', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+
+    await expect(
+      performUpdate({
+        currentVersion: '0.2.23',
+        latestVersion: '0.2.24',
+        downloadUrl: 'https://evil.example.com/file.dmg',
+        updateAvailable: true,
+        platform: 'linux',
+        manualDownload: true,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL',
+    });
+    expect(mockOpenExternal).not.toHaveBeenCalled();
   });
 
   it('reads the desktop release version from Tauri for update checks', async () => {
