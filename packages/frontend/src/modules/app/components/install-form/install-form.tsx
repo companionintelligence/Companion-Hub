@@ -341,7 +341,6 @@ export const InstallForm: React.FC<IProps> = ({
     enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare',
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
-    editingAppUrn,
     checkDnsAvailability,
     setError,
     clearErrors,

@@ -208,8 +208,12 @@ export const AppAccessPoints = ({ app, info }: Props) => {
   const canOpen = installedApp.status === 'running';
 
   const copyToClipboard = async (value: string) => {
-    await navigator.clipboard.writeText(value);
-    toast.success(t('SETTINGS_NETWORK_COPIED'));
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
   };
 
   const iconByKey = {

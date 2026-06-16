@@ -6,7 +6,6 @@ interface UseDnsAvailabilityParams<TFormValues extends FieldValues> {
   enabled: boolean;
   subdomain: string;
   selectedDomain?: string;
-  editingAppUrn?: string;
   checkDnsAvailability: (subdomain: string, selectedDomain?: string) => Promise<Response>;
   setError: UseFormSetError<TFormValues>;
   clearErrors: UseFormClearErrors<TFormValues>;
@@ -17,7 +16,6 @@ export function useDnsAvailability<TFormValues extends FieldValues>({
   enabled,
   subdomain,
   selectedDomain,
-  editingAppUrn: _editingAppUrn,
   checkDnsAvailability,
   setError,
   clearErrors,

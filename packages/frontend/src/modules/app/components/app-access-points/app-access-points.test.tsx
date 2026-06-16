@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AppAccessPoints, buildAppAccessPoints } from './app-access-points';
 
@@ -27,6 +27,7 @@ vi.mock('@/context/app-context', () => ({
 vi.mock('react-hot-toast', () => ({
   default: {
     success: vi.fn(),
+    error: vi.fn(),
   },
 }));
 
@@ -134,6 +135,52 @@ describe('buildAppAccessPoints', () => {
 });
 
 describe('AppAccessPoints', () => {
+  it('shows a failure toast when clipboard copy fails', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('clipboard unavailable'));
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    const toast = (await import('react-hot-toast')).default;
+
+    render(
+      <AppAccessPoints
+        app={
+          {
+            status: 'running',
+            port: 3000,
+            localSubdomain: 'openwebui',
+            domain: 'openwebui-studio-companion.companionintelligence.com',
+            exposed: true,
+            exposedLocal: true,
+          } as any
+        }
+        info={
+          {
+            urn: 'openwebui:community',
+            name: 'Open WebUI',
+            no_gui: false,
+            https: false,
+            url_suffix: '/login',
+            port: 3000,
+            dynamic_config: true,
+            exposable: true,
+          } as any
+        }
+      />,
+    );
+
+    const [copyButton] = screen.getAllByTitle('SETTINGS_GENERAL_COPY');
+    expect(copyButton).toBeDefined();
+    fireEvent.click(copyButton!);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith('SETTINGS_GENERAL_COPY_FAILED');
+    });
+  });
+
   it('renders the installed access panel', () => {
     render(
       <AppAccessPoints
