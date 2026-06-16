@@ -15,6 +15,14 @@ export class CloudflareController {
     private readonly cloudflareHostnameService: CloudflareHostnameService,
   ) {}
 
+  private parseOptionalAppUrn(appUrn?: string) {
+    if (!appUrn || !appUrn.includes(':') || appUrn.startsWith(':') || appUrn.endsWith(':')) {
+      return undefined;
+    }
+
+    return castAppUrn(appUrn);
+  }
+
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
   async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string, @Query('appUrn') appUrn?: string) {
@@ -22,7 +30,7 @@ export class CloudflareController {
       return { available: true };
     }
 
-    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, appUrn ? castAppUrn(appUrn) : undefined)) {
+    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, this.parseOptionalAppUrn(appUrn))) {
       return { available: true };
     }
 

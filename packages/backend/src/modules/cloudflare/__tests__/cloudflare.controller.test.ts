@@ -71,6 +71,19 @@ describe('CloudflareController', () => {
       expect(cfService.checkDnsAvailability).toHaveBeenCalledWith('changed', 'companionintelligence.com');
       expect(result.available).toBe(false);
     });
+
+    it('treats an invalid appUrn query as absent instead of throwing', async () => {
+      hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
+      cfService.checkDnsAvailability.mockResolvedValue({
+        available: true,
+      });
+
+      const result = await controller.checkDnsAvailability('changed', 'companionintelligence.com', 'not-a-urn');
+
+      expect(hostnameService.resolvesToExistingAppHostname).toHaveBeenCalledWith('changed', 'companionintelligence.com', undefined);
+      expect(cfService.checkDnsAvailability).toHaveBeenCalledWith('changed', 'companionintelligence.com');
+      expect(result.available).toBe(true);
+    });
   });
 
   describe('getStatus', () => {

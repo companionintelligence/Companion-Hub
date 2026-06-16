@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { CloudflareClientService } from './cloudflare-client.service';
 import { CloudflareController } from './cloudflare.controller';
 import { ConfigurationModule } from '@/core/config/configuration.module';
@@ -9,7 +9,7 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { CloudflareHostnameService } from './cloudflare-hostname.service';
 
 @Module({
-  imports: [ConfigurationModule, DatabaseModule, DockerModule],
+  imports: [ConfigurationModule, DatabaseModule, forwardRef(() => DockerModule)],
   controllers: [CloudflareController],
   providers: [CloudflareClientService, CloudflareHostnameService, AppsRepository, DeviceRegistrationRepository],
   exports: [CloudflareClientService],
