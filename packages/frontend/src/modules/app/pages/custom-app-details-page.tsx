@@ -86,18 +86,22 @@ export const CustomAppDetailsPage = () => {
               <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
-            <div className="mb-1">
-              <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
+            <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+              <div className="mb-1">
+                <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
+              </div>
+              <div className="min-w-0 xl:flex-1">
+                <AppActions
+                  app={app}
+                  metadata={metadata}
+                  info={info}
+                  localDomain={userSettings.localDomain}
+                  sslPort={userSettings.sslPort}
+                  runtimeHealth={runtimeHealth.data}
+                  layout="hero"
+                />
+              </div>
             </div>
-            <AppActions
-              app={app}
-              metadata={metadata}
-              info={info}
-              localDomain={userSettings.localDomain}
-              sslPort={userSettings.sslPort}
-              runtimeHealth={runtimeHealth.data}
-              layout="hero"
-            />
           </div>
         </CardHeader>
         <AppDetailsTabs info={info} app={app} metadata={metadata} />

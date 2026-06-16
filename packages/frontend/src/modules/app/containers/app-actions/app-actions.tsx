@@ -2,7 +2,7 @@ import { AlertTriangle, Ban, CheckCircle, Download, Edit, Eraser, ExternalLink, 
 import type React from 'react';
 import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
-import { useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import toast from 'react-hot-toast';
@@ -11,7 +11,6 @@ import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
@@ -209,7 +208,9 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
       IconComponent={RotateCw}
       onClick={installDisclosure.open}
       title={t('APP_ACTION_RETRY_INSTALL')}
-      intent="warning"
+      variant="outline"
+      size="lg"
+      className="retry-install-action-button"
     />
   );
 
@@ -228,7 +229,12 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
 
   // Show install errors surfaced from SSE via query cache
   const queryClient = useQueryClient();
-  const installError = queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null;
+  const { data: installError } = useQuery({
+    queryKey: ['app-install-error', info.urn],
+    queryFn: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
+    initialData: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const exposureMode = ((app as Record<string, unknown> | null)?.exposureMode as string) || 'local';
   const isLocal = exposureMode === 'local';
@@ -493,9 +499,23 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
 
   // If there was an install error for this app, show it under the open/action area
   const InstallErrorMessage = installError?.message ? (
-    <p className="mt-1 text-sm text-destructive" role="alert">
-      {installError.message}
-    </p>
+    <div
+      className={clsx(
+        'min-w-0 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive',
+        layout === 'hero' && 'hero-inline-install-error',
+      )}
+      role="alert"
+      title={installError.message}
+    >
+      {layout === 'hero' ? (
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="min-w-0 flex-1 break-words line-clamp-2">{installError.message}</p>
+        </div>
+      ) : (
+        installError.message
+      )}
+    </div>
   ) : null;
 
   const buttons: React.JSX.Element[] = [];
@@ -673,7 +693,8 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
         status={app?.status}
       />
       <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>
-        <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'w-full lg:justify-end')}>
+        <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'hero-actions-layout')}>
+          {layout === 'hero' ? InstallErrorMessage : null}
           {secondaryActions.length > 0 ? <div className="hero-action-bar">{secondaryActions}</div> : null}
           {buttons.map((button) => {
             return createElement(button.type, {
@@ -683,7 +704,7 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
           })}
         </div>
         <Tooltip id="app-actions-tooltip" className="tooltip" />
-        {InstallErrorMessage}
+        {layout === 'hero' ? null : InstallErrorMessage}
       </div>
     </>
   );

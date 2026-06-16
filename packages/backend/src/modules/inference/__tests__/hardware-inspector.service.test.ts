@@ -25,6 +25,7 @@ vi.mock('node:util', async (importOriginal) => {
 
 describe('HardwareInspectorService', () => {
   let service: HardwareInspectorService;
+  let hostMetricsService: HostMetricsService;
   let loggerService: MockProxy<LoggerService>;
   let filesystemService: MockProxy<FilesystemService>;
   const originalHostPlatform = process.env.CI_HUB_HOST_PLATFORM;
@@ -45,6 +46,7 @@ describe('HardwareInspectorService', () => {
     }).compile();
 
     service = module.get<HardwareInspectorService>(HardwareInspectorService);
+    hostMetricsService = module.get<HostMetricsService>(HostMetricsService);
   });
 
   afterEach(() => {
@@ -841,6 +843,39 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vendor).toBe('apple');
     });
 
+    it('should treat darwin arm64 probes as Apple Silicon even when cpuModel omits the Apple prefix', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 12288,
+              cpuCores: 10,
+              cpuModel: 'M1 Pro',
+              diskTotalGb: 494,
+              diskUsedGb: 320,
+              diskMount: '/',
+            },
+          });
+        }
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('apple');
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.model).toBe('M1 Pro (Apple Silicon)');
+      expect(profile.gpu.vramMb).toBe(16384);
+      expect(profile.tier).toBe('high');
+    });
+
     it('should use effective inference memory equal to available RAM for unified memory', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
         if (filePath === '/data/state/hardware/host_metrics.json') {
@@ -1008,6 +1043,82 @@ describe('HardwareInspectorService', () => {
       const profile = await service.detect();
 
       expect(profile.ram.totalMb).toBe(7712);
+    });
+
+    it('refreshes a stale cached container-only profile once the macOS host probe becomes available', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      (service as any).cachedProfile = {
+        gpu: { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 7712, availableMb: 6656 },
+        cpu: { arch: 'x86_64', cores: 12, model: 'VirtualApple @ 2.50GHz' },
+        effectiveInferenceMemoryMb: 6656,
+        tier: 'insufficient',
+      };
+
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 12288,
+              cpuCores: 10,
+              cpuModel: 'Apple M1 Pro',
+              diskTotalGb: 494,
+              diskUsedGb: 320,
+              diskMount: '/',
+            },
+          });
+        }
+        return null;
+      });
+
+      const profile = await service.getProfile();
+
+      expect(profile.cpu.arch).toBe('arm64');
+      expect(profile.cpu.model).toBe('Apple M1 Pro');
+      expect(profile.gpu.vendor).toBe('apple');
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.vramMb).toBe(16384);
+      expect(profile.tier).toBe('high');
+    });
+
+    it('stops rereading the host probe once a host-probe-backed profile is cached', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      const hostProbeSpy = vi.spyOn(hostMetricsService, 'readHostProbe');
+
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 12288,
+              cpuCores: 10,
+              cpuModel: 'Apple M1 Pro',
+              diskTotalGb: 494,
+              diskUsedGb: 320,
+              diskMount: '/',
+            },
+          });
+        }
+        return null;
+      });
+
+      await service.rescan();
+      await service.getProfile();
+      await service.getProfile();
+
+      expect(hostProbeSpy).toHaveBeenCalledTimes(1);
     });
   });
 
