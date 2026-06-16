@@ -103,6 +103,8 @@ describe('update-service', () => {
         latestVersion: '1.2.0',
         downloadUrl: 'https://dl.ci.computer/file.dmg',
         updateAvailable: true,
+        platform: 'macos' as const,
+        manualDownload: false,
       };
       expect(isHubUpdateAvailable(true, desktopUpdate, '1.0.0', '1.0.0')).toBe(true);
       expect(isHubUpdateAvailable(true, null, '1.0.0', '1.2.0')).toBe(false);

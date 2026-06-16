@@ -60,7 +60,7 @@ describe('GeneralActionsContainer', () => {
         releases: [],
       },
       refreshAppContext: vi.fn(),
-    } as ReturnType<typeof useAppContext>);
+    } as unknown as ReturnType<typeof useAppContext>);
 
     mockApiFetch.mockResolvedValue({
       ok: true,
