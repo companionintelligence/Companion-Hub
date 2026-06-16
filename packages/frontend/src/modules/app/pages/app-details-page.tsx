@@ -111,19 +111,19 @@ export default () => {
         <CardContent className="space-y-6 p-5 sm:p-6">
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
             <div className="min-w-0 space-y-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                <div className="flex justify-center sm:justify-start">
+              <div className="flex flex-row items-start gap-4">
+                <div className="flex shrink-0 justify-start">
                   <img
                     src={logoUrl}
                     alt={info?.name}
-                    className="h-24 w-24 rounded-3xl object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
+                    className="h-20 w-20 rounded-3xl object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
                     onError={(e) => {
                       e.currentTarget.src = '/app-not-found.jpg';
                     }}
                   />
                 </div>
 
-                <div className="min-w-0 space-y-2">
+                <div className="min-w-0 flex-1 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">{info?.name}</h1>
                     {primaryCategory && (
