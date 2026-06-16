@@ -7,8 +7,8 @@ export interface PublicWebIdentity {
   hostname: string;
   /** HTTPS URL for the app. */
   publicUrl: string;
-  /** Same as hostname — explicit for tunnel sync payloads. */
-  originServerName: string;
+  /** Public DNS hostname for the app; distinct from the internal origin Host header. */
+  publicDnsHostname: string;
 }
 
 export interface BuildPublicWebIdentityInput {
@@ -22,6 +22,13 @@ export interface ResolvePublicDomainRootInput {
   selectedPublicDomain?: string | null;
   envDomain?: string | null;
   configDomain: string;
+}
+
+export interface BuildOriginServerNameInput {
+  appSubdomain: string;
+  hubSubdomain?: string | null;
+  orgSlug?: string | null;
+  localDomain: string;
 }
 
 /**
@@ -67,6 +74,19 @@ export function buildFqdnSubdomain(appSubdomain: string, hubSubdomain: string | 
   return `${cleanAppSub}-${orgSlug}`;
 }
 
+export function buildOriginServerName(input: BuildOriginServerNameInput): string {
+  const localDomain = input.localDomain.trim();
+  const appSubdomain = sanitizeAppSubdomain(input.appSubdomain);
+  const orgSlug = input.orgSlug?.trim();
+
+  if (!orgSlug) {
+    return `${appSubdomain}.${localDomain}`;
+  }
+
+  const fqdnSubdomain = buildFqdnSubdomain(appSubdomain, input.hubSubdomain, orgSlug);
+  return `${fqdnSubdomain}.${localDomain}`;
+}
+
 export function buildPublicWebIdentity(input: BuildPublicWebIdentityInput): PublicWebIdentity {
   const publicDomainRoot = input.publicDomainRoot.trim();
   const appSubdomain = sanitizeAppSubdomain(input.appSubdomain);
@@ -79,7 +99,7 @@ export function buildPublicWebIdentity(input: BuildPublicWebIdentityInput): Publ
       publicDomainRoot,
       hostname,
       publicUrl: `https://${hostname}`,
-      originServerName: hostname,
+      publicDnsHostname: hostname,
     };
   }
 
@@ -91,6 +111,6 @@ export function buildPublicWebIdentity(input: BuildPublicWebIdentityInput): Publ
     publicDomainRoot,
     hostname,
     publicUrl: `https://${hostname}`,
-    originServerName: hostname,
+    publicDnsHostname: hostname,
   };
 }

@@ -14,7 +14,7 @@ import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
+import { buildOriginServerName } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
@@ -83,23 +83,17 @@ export class AppLifecycleCommand {
       }
 
       const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
-      let publicWebHostname: string | undefined;
+      let cloudflareOriginHostname: string | undefined;
       if (effectiveExposureMode === 'cloudflare' && !form.openPort) {
         const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
         const org = await registrationService.getDeviceRegistrationInfo();
         const { appName, appStoreId } = extractAppUrn(appUrn);
-        const publicDomainRoot = resolvePublicDomainRoot({
-          selectedPublicDomain: typeof form.publicDomain === 'string' ? form.publicDomain : undefined,
-          envDomain: envMap.get('DOMAIN'),
-          configDomain: fullConfig.domain,
-        });
-        const identity = buildPublicWebIdentity({
+        cloudflareOriginHostname = buildOriginServerName({
           appSubdomain: form.localSubdomain || `${appName}-${appStoreId}`,
           hubSubdomain: org?.hubSubdomain,
           orgSlug: org?.slug,
-          publicDomainRoot,
+          localDomain,
         });
-        publicWebHostname = identity.hostname;
       }
 
       const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
@@ -113,7 +107,7 @@ export class AppLifecycleCommand {
         domain,
         localDomain,
         appEnv.path,
-        publicWebHostname,
+        cloudflareOriginHostname,
         defaultCpuLimit,
         defaultMemoryLimit,
       );

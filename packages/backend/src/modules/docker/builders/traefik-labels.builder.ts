@@ -6,7 +6,7 @@ interface TraefikLabelsArgs {
   exposureMode: ExposureMode;
   storeId: string;
   enableAuth?: boolean;
-  publicWebHostname?: string;
+  cloudflareOriginHostname?: string;
   localDomain?: string;
   tailscaleHostname?: string;
   httpsBackend?: boolean;
@@ -33,11 +33,11 @@ export class TraefikLabelsBuilder {
   }
 
   addCloudflareLabels() {
-    if (this.effectiveMode !== 'cloudflare' || !this.params.publicWebHostname) {
+    if (this.effectiveMode !== 'cloudflare' || !this.params.cloudflareOriginHostname) {
       return this;
     }
 
-    const hostRule = `Host(\`${this.params.publicWebHostname}\`)`;
+    const hostRule = `Host(\`${this.params.cloudflareOriginHostname}\`)`;
 
     Object.assign(this.labels, {
       'traefik.enable': true,

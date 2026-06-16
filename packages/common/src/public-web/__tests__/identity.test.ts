@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '../identity.js';
+import { buildFqdnSubdomain, buildOriginServerName, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '../identity.js';
 
 describe('sanitizeAppSubdomain', () => {
   it('strips dots and sanitizes invalid characters', () => {
@@ -50,7 +50,7 @@ describe('buildPublicWebIdentity', () => {
       publicDomainRoot: 'companionintelligence.com',
       hostname: 'nextcloud-dev-acme-myorg.companionintelligence.com',
       publicUrl: 'https://nextcloud-dev-acme-myorg.companionintelligence.com',
-      originServerName: 'nextcloud-dev-acme-myorg.companionintelligence.com',
+      publicDnsHostname: 'nextcloud-dev-acme-myorg.companionintelligence.com',
     });
   });
 
@@ -121,7 +121,7 @@ describe('buildPublicWebIdentity', () => {
       publicDomainRoot: 'companionintel.com',
       hostname: 'anything-llm-laptop-cid.companionintel.com',
       publicUrl: 'https://anything-llm-laptop-cid.companionintel.com',
-      originServerName: 'anything-llm-laptop-cid.companionintel.com',
+      publicDnsHostname: 'anything-llm-laptop-cid.companionintel.com',
     });
   });
 });
@@ -129,5 +129,18 @@ describe('buildPublicWebIdentity', () => {
 describe('buildFqdnSubdomain', () => {
   it('matches Portal-style sanitized subdomain', () => {
     expect(buildFqdnSubdomain('DocMostp.red', 'hub-test1-myorg', 'myorg')).toBe('docmostp-test1-myorg');
+  });
+});
+
+describe('buildOriginServerName', () => {
+  it('builds a local-domain origin hostname for alternate public domains', () => {
+    expect(
+      buildOriginServerName({
+        appSubdomain: 'anything-llm',
+        hubSubdomain: 'hub-laptop-cid',
+        orgSlug: 'cid',
+        localDomain: 'ci.lan',
+      }),
+    ).toBe('anything-llm-laptop-cid.ci.lan');
   });
 });

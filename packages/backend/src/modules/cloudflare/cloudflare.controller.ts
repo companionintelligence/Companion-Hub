@@ -1,6 +1,8 @@
+import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { CloudflareClientService } from './cloudflare-client.service';
+import { CloudflareHostnameService } from './cloudflare-hostname.service';
 import { ApiResponse } from '@nestjs/swagger';
 import axios from 'axios';
 import * as https from 'node:https';
@@ -8,12 +10,19 @@ import * as https from 'node:https';
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
 export class CloudflareController {
-  constructor(private readonly cloudflareClientService: CloudflareClientService) {}
+  constructor(
+    private readonly cloudflareClientService: CloudflareClientService,
+    private readonly cloudflareHostnameService: CloudflareHostnameService,
+  ) {}
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
-  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string) {
+  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string, @Query('appUrn') appUrn?: string) {
     if (!subdomain) {
+      return { available: true };
+    }
+
+    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, appUrn ? castAppUrn(appUrn) : undefined)) {
       return { available: true };
     }
 

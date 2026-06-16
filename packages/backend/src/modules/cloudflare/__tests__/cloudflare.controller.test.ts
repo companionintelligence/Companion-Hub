@@ -3,23 +3,27 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { CloudflareController } from '../cloudflare.controller';
 import { CloudflareClientService } from '../cloudflare-client.service';
+import { CloudflareHostnameService } from '../cloudflare-hostname.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 describe('CloudflareController', () => {
   let controller: CloudflareController;
   let cfService: MockProxy<CloudflareClientService>;
+  let hostnameService: MockProxy<CloudflareHostnameService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CloudflareController],
       providers: [
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
+        { provide: CloudflareHostnameService, useValue: mock<CloudflareHostnameService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
 
     controller = moduleRef.get(CloudflareController);
     cfService = moduleRef.get(CloudflareClientService);
+    hostnameService = moduleRef.get(CloudflareHostnameService);
   });
 
   it('should be defined', () => {
@@ -33,6 +37,7 @@ describe('CloudflareController', () => {
     });
 
     it('should delegate to CI-Cloud for non-empty subdomain', async () => {
+      hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
       cfService.checkDnsAvailability.mockResolvedValue({
         available: true,
         message: 'Availability check delegated to CI-Cloud',
@@ -43,6 +48,28 @@ describe('CloudflareController', () => {
       expect(cfService.checkDnsAvailability).toHaveBeenCalledWith('test', undefined);
       expect(result.available).toBe(true);
       expect(result.message).toContain('CI-Cloud');
+    });
+
+    it('allows the current app to keep its existing hostname without delegating', async () => {
+      hostnameService.resolvesToExistingAppHostname.mockResolvedValue(true);
+
+      const result = await controller.checkDnsAvailability('dropgate', 'companionintelligence.com', 'dropgate:store');
+
+      expect(result).toEqual({ available: true });
+      expect(cfService.checkDnsAvailability).not.toHaveBeenCalled();
+    });
+
+    it('still delegates when the requested hostname changes during edit', async () => {
+      hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
+      cfService.checkDnsAvailability.mockResolvedValue({
+        available: false,
+        message: 'DNS record already exists for changed-nvda-devben.companionintelligence.com',
+      });
+
+      const result = await controller.checkDnsAvailability('changed', 'companionintelligence.com', 'dropgate:store');
+
+      expect(cfService.checkDnsAvailability).toHaveBeenCalledWith('changed', 'companionintelligence.com');
+      expect(result.available).toBe(false);
     });
   });
 

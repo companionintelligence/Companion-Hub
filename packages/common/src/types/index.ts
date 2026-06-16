@@ -13,12 +13,13 @@ export type {
   AvailableDomain,
   AvailableDomainsResponse,
 } from './domains.js';
-export type { PublicWebIdentity, BuildPublicWebIdentityInput } from '../public-web/identity.js';
+export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
 export type { BuildTailscalePortUrlInput, BuildTailscaleWebIdentityInput, TailscaleWebIdentity } from '../tailscale/identity.js';
 // biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
 export {
   buildPublicWebIdentity,
   buildFqdnSubdomain,
+  buildOriginServerName,
   extractDeviceSlug,
   resolvePublicDomainRoot,
   sanitizeAppSubdomain,
