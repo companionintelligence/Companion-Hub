@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AppsService } from '../apps.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../../tailscale/tailscale.service';
 
 // Mock axios
 vi.mock('axios', () => ({
@@ -55,7 +57,24 @@ const createMockService = () => {
   const getAppMock = vi.fn().mockResolvedValue({ app: mockApp, info: mockInfo });
   const getConfigMock = vi.fn().mockReturnValue(mockConfig);
   const getDeviceRegMock = vi.fn().mockResolvedValue(mockOrg);
-  const moduleRefMock = { get: vi.fn().mockReturnValue({ getTunnelToken: () => 'token' }) };
+  const cloudflareClient = { getTunnelToken: () => 'token' };
+  const tailscaleService = {
+    getStatus: vi.fn().mockResolvedValue({
+      installed: true,
+      connected: true,
+      hostname: 'hub-tailscale-1',
+      nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailnet: 'capybara-ulmer.ts.net',
+      supportsServices: true,
+    }),
+  };
+  const moduleRefMock = {
+    get: vi.fn((token: unknown) => {
+      if (token === CloudflareClientService) return cloudflareClient;
+      if (token === TailscaleService) return tailscaleService;
+      return undefined;
+    }),
+  };
 
   // Assign mocked private dependencies
   (service as any).configurationService = { getConfig: getConfigMock };
@@ -65,7 +84,7 @@ const createMockService = () => {
   // Override getApp
   (service as any).getApp = getAppMock;
 
-  return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock, moduleRefMock };
+  return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock, moduleRefMock, tailscaleService };
 };
 
 describe('AppsService.checkAppAvailability', () => {
@@ -156,6 +175,7 @@ describe('AppsService.checkAppAvailability', () => {
   it('cloudflare mode without tunnel token falls back to local app URL when a host port exists', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';
     ctx.mockApp.localSubdomain = 'myapp';
+    ctx.mockApp.exposedLocal = true;
     ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
@@ -164,6 +184,22 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.stage).toBe('ready');
     expect(result.appUrl).toBe('http://192.168.1.100:8080');
     expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
+  it('cloudflare mode without tunnel token does not fall back to localhost when no host port is published', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = 'myapp';
+    ctx.mockApp.exposedLocal = false;
+    ctx.mockApp.openPort = false;
+    ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.stage).toBe('ready');
+    expect(result.appUrl).toBe('https://myapp-device1-myorg.example.com');
+    expect(mockedAxiosGet).toHaveBeenCalledWith('https://myapp-device1-myorg.example.com', expect.any(Object));
   });
 
   it('cloudflare mode falls back to appName-storeSlug when localSubdomain is missing', async () => {
@@ -260,6 +296,17 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.resolvable).toBe(true);
     expect(result.appUrl).toBeDefined();
     expect(result.stage).toBe('propagating');
+  });
+
+  it('tailscale mode → uses node MagicDNS hostname with the app vpn port', async () => {
+    ctx.mockApp.exposureMode = 'tailscale';
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'ok' } as never);
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(ctx.tailscaleService.getStatus).toHaveBeenCalled();
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toBe('https://hub-tailscale-1.capybara-ulmer.ts.net:8080');
   });
 
   // Test 10: connection refused = CONNECTION_REFUSED

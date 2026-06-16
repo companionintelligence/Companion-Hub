@@ -71,6 +71,11 @@ export interface DockerPullProgressEvent {
   stage: 'downloading' | 'extracting' | 'complete';
 }
 
+export interface AppNetworkTarget {
+  url: string;
+  internalPort: number;
+}
+
 @Injectable()
 export class DockerService {
   constructor(
@@ -199,6 +204,49 @@ export class DockerService {
     );
 
     return results.filter((result): result is AppContainerRuntimeStats => result !== null);
+  }
+
+  public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
+    const containers = await this.docker.listContainers({
+      all: false,
+      filters: {
+        label: [`ci-os-hub.appurn=${appUrn}`, 'traefik.enable=true'],
+      },
+    });
+
+    for (const containerInfo of containers) {
+      const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
+      const labels = inspect.Config?.Labels || {};
+      const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
+      const containerIP = networkSettings?.IPAddress;
+
+      if (!containerIP) {
+        continue;
+      }
+
+      const portEntry = Object.entries(labels).find(([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'));
+
+      if (!portEntry) {
+        continue;
+      }
+
+      const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
+      const internalPort = Number.parseInt(String(portEntry[1]), 10);
+
+      if (Number.isNaN(internalPort)) {
+        continue;
+      }
+
+      const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
+      const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
+
+      return {
+        url: `${scheme}://${containerIP}:${internalPort}`,
+        internalPort,
+      };
+    }
+
+    return null;
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {

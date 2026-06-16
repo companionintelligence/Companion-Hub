@@ -20,6 +20,7 @@ vi.mock('@/context/app-context', () => ({
     },
     cloudflareAvailable: true,
     tailscaleAvailable: true,
+    tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
   }),
 }));
 
@@ -51,12 +52,12 @@ describe('buildAppAccessPoints', () => {
         exposedLocal: true,
       } as any,
       info,
-      localDomain: 'ci.lan',
       sslPort: 443,
       internalIp: '0.0.0.0',
       publicDomain: 'companionintelligence.com',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
       organizationSlug: 'companion',
       deviceSlug: 'studio',
     });
@@ -69,11 +70,65 @@ describe('buildAppAccessPoints', () => {
     });
     expect(accessPoints[1]).toMatchObject({
       key: 'vpn',
-      url: 'https://openwebui.ci.lan/login',
+      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login',
+      host: 'hub-tailscale-1.capybara-ulmer.ts.net:3000',
     });
     expect(accessPoints[2]).toMatchObject({
       key: 'local',
       url: 'http://127.0.0.1:3000/login',
+    });
+  });
+
+  it('keeps tailscale links on the app vpn port instead of the hub ssl port', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 3000,
+        localSubdomain: 'openwebui',
+        exposedLocal: true,
+      } as any,
+      info,
+      sslPort: 8443,
+      internalIp: '0.0.0.0',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+    });
+
+    expect(accessPoints[1]).toMatchObject({
+      key: 'vpn',
+      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login',
+    });
+  });
+
+  it('does not mark local access active for tailscale-only apps without a published host port', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8311,
+        localSubdomain: 'bitboard',
+        exposureMode: 'tailscale',
+        exposedLocal: false,
+        openPort: false,
+      } as any,
+      info,
+      sslPort: 8443,
+      internalIp: '0.0.0.0',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+    });
+
+    expect(accessPoints[1]).toMatchObject({
+      key: 'vpn',
+      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:8311/login',
+      state: 'active',
+    });
+    expect(accessPoints[2]).toMatchObject({
+      key: 'local',
+      url: null,
+      host: null,
+      state: 'unavailable',
     });
   });
 });
@@ -109,7 +164,7 @@ describe('AppAccessPoints', () => {
 
     expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
     expect(screen.getAllByText('APP_ACTION_OPEN')).toHaveLength(3);
-    expect(screen.getByText('https://openwebui.ci.lan/login')).toBeInTheDocument();
+    expect(screen.getByText('https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login')).toBeInTheDocument();
     expect(screen.getByText('http://127.0.0.1:3000/login')).toBeInTheDocument();
   });
 

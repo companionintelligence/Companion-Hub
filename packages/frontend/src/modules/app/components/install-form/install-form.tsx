@@ -57,6 +57,15 @@ export type FormValues = {
 const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
+function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
+  const cleanNodeFqdn = nodeFqdn?.trim();
+  if (!cleanNodeFqdn || !port) {
+    return null;
+  }
+
+  return `${cleanNodeFqdn}:${port}`;
+}
+
 const ConfigSection: React.FC<{ scrollable?: boolean; children: React.ReactNode }> = ({ scrollable, children }) => {
   if (scrollable) {
     return (
@@ -80,7 +89,7 @@ export const InstallForm: React.FC<IProps> = ({
   scrollable,
 }) => {
   const { t } = useTranslation();
-  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
   const globalCpuLimit = userSettings.defaultAppCpuLimit ?? '';
   const isAdvancedMode = user.advancedMode;
@@ -105,6 +114,7 @@ export const InstallForm: React.FC<IProps> = ({
   const _watchExposedLocal = watch('exposedLocal', false);
   const watchLocalSubdomain = watch('localSubdomain', '');
   const watchExposureMode = watch('exposureMode');
+  const watchPort = watch('port', info.port ? info.port.toString() : '');
   const watchPublicDomainRaw = watch('publicDomain');
   const watchPublicDomain = watchPublicDomainRaw || domain;
 
@@ -118,6 +128,17 @@ export const InstallForm: React.FC<IProps> = ({
       publicDomainRoot: watchPublicDomain || domain || 'example.com',
     });
   }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, watchPublicDomain, domain]);
+
+  const tailscalePreviewHost = useMemo(() => {
+    if (watchExposureMode !== 'tailscale') return '';
+    const requestedPort = Number.parseInt(watchPort || '', 10);
+    return buildTailscalePortHost(tailscaleNodeFqdn, Number.isNaN(requestedPort) ? (info.port ?? null) : requestedPort) || '';
+  }, [watchExposureMode, watchPort, tailscaleNodeFqdn, info.port]);
+
+  const previewHostname =
+    watchExposureMode === 'cloudflare'
+      ? publicWebPreview?.hostname || ''
+      : tailscalePreviewHost || `${tailscaleNodeFqdn || 'tailnet'}${watchPort ? `:${watchPort}` : ''}`;
 
   const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
@@ -484,50 +505,50 @@ export const InstallForm: React.FC<IProps> = ({
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
         <div className="mb-3">
           <InputGroup
-            groupPrefix="https://"
+            groupPrefix={watchExposureMode === 'cloudflare' ? 'https://' : undefined}
             groupClassName={watchExposureMode === 'cloudflare' ? 'overflow-hidden' : undefined}
             groupSuffixClassName={
               watchExposureMode === 'cloudflare' ? 'shrink min-w-0 max-w-[55%] flex-1 basis-0 overflow-hidden items-stretch' : undefined
             }
             groupSuffix={
-              watchExposureMode === 'tailscale' ? (
-                `.${localDomain || 'tailnet'}`
-              ) : availableDomains.length > 0 ? (
-                <Controller
-                  control={control}
-                  name="publicDomain"
-                  render={({ field: { onChange, value } }) => {
-                    const prefixText = `-${cloudflareSuffix}.`;
-                    const selectedDomain = value || watchPublicDomain || domain || '';
+              watchExposureMode === 'cloudflare' ? (
+                availableDomains.length > 0 ? (
+                  <Controller
+                    control={control}
+                    name="publicDomain"
+                    render={({ field: { onChange, value } }) => {
+                      const prefixText = `-${cloudflareSuffix}.`;
+                      const selectedDomain = value || watchPublicDomain || domain || '';
 
-                    return (
-                      <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
-                        <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
-                          <span className="block w-full min-w-0 truncate">{prefixText}</span>
+                      return (
+                        <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
+                          <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
+                            <span className="block w-full min-w-0 truncate">{prefixText}</span>
+                          </div>
+                          <Select value={value || ''} onValueChange={onChange}>
+                            <SelectTrigger
+                              title={selectedDomain}
+                              aria-label={t('COMMON_PUBLIC_DOMAIN')}
+                              className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
+                            >
+                              <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {availableDomains.map((entry) => (
+                                <SelectItem key={entry.id} value={entry.domain}>
+                                  {entry.domain}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
-                        <Select value={value || ''} onValueChange={onChange}>
-                          <SelectTrigger
-                            title={selectedDomain}
-                            aria-label={t('COMMON_PUBLIC_DOMAIN')}
-                            className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
-                          >
-                            <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {availableDomains.map((entry) => (
-                              <SelectItem key={entry.id} value={entry.domain}>
-                                {entry.domain}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    );
-                  }}
-                />
-              ) : (
-                `-${cloudflareSuffix}.${watchPublicDomain || domain}`
-              )
+                      );
+                    }}
+                  />
+                ) : (
+                  `-${cloudflareSuffix}.${watchPublicDomain || domain}`
+                )
+              ) : undefined
             }
             {...register('localSubdomain')}
             label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
@@ -539,43 +560,26 @@ export const InstallForm: React.FC<IProps> = ({
         </div>
         <div className="mb-3 rounded-lg border border-border/60 bg-muted/20 p-3">
           <div className="mb-2 text-sm font-medium text-foreground">{t('COMMON_HOSTNAME')}</div>
-          <div className="space-y-2">
-            {[
-              { label: t('COMMON_APP'), value: displayAppName },
-              { label: t('COMMON_DEVICE'), value: ciHubDeviceSlug || '' },
-              { label: t('COMMON_ORGANIZATION'), value: ciHubOrganizationSlug || '' },
-              { label: t('COMMON_PUBLIC_DOMAIN'), value: watchExposureMode === 'cloudflare' ? watchPublicDomain || domain || '' : localDomain || '' },
-              {
-                label: t('COMMON_HOSTNAME'),
-                value:
-                  watchExposureMode === 'cloudflare'
-                    ? publicWebPreview?.hostname || ''
-                    : `${sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain)}.${localDomain || 'tailnet'}`,
-              },
-            ]
-              .filter((entry) => entry.value)
-              .map((entry) => (
-                <div key={entry.label} className="flex items-center gap-2 rounded-md bg-background/70 px-2 py-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{entry.label}</div>
-                    <div title={entry.value} className="truncate text-sm text-foreground">
-                      {entry.value}
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                    onClick={() => void copyToClipboard(entry.value)}
-                    aria-label={`Copy ${entry.label}`}
-                    title={`Copy ${entry.label}`}
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
+          {previewHostname && (
+            <div className="flex items-center gap-2 rounded-md bg-background/70 px-2 py-2">
+              <div className="min-w-0 flex-1">
+                <div title={previewHostname} className="truncate text-sm text-foreground">
+                  {previewHostname}
                 </div>
-              ))}
-          </div>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={() => void copyToClipboard(previewHostname)}
+                aria-label={`Copy ${t('COMMON_HOSTNAME')}`}
+                title={`Copy ${t('COMMON_HOSTNAME')}`}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
         </div>
       </>
     );

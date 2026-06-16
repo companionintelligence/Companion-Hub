@@ -845,32 +845,73 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           app.localSubdomain,
       );
 
-      // Get current serve state
       const serveStatus = await tailscaleService.getServeStatus();
-      const currentlyServed = new Set(serveStatus.entries.map((e) => e.service));
+      const desiredPorts = new Map<
+        number,
+        {
+          appName: string;
+          appUrn: AppUrn;
+          port: number;
+          upstreamUrl: string;
+        }
+      >();
 
-      // Add missing
       for (const app of shouldServe) {
-        const subdomain = app.localSubdomain || '';
-        if (subdomain && !currentlyServed.has(subdomain)) {
+        if (!app.port) {
+          this.logger.error(`[Tailscale] Skipping ${app.appName}:${app.appStoreSlug}: missing app port for Private VPN publishing`);
+          continue;
+        }
+
+        const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+        const target = await this.dockerService.getAppNetworkTarget(appUrn);
+
+        if (!target) {
+          this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
+          continue;
+        }
+
+        desiredPorts.set(app.port, {
+          appName: app.localSubdomain || app.appName,
+          appUrn,
+          port: app.port,
+          upstreamUrl: target.url,
+        });
+      }
+
+      const currentlyServedByPort = new Map(
+        serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
+      );
+
+      for (const desired of desiredPorts.values()) {
+        const currentEntry = currentlyServedByPort.get(desired.port);
+        if (!currentEntry || currentEntry.dest !== desired.upstreamUrl || currentEntry.mountPoint !== '/') {
           await tailscaleService
             .serveApp({
-              subdomain,
-              localPort: 80, // Traefik
+              appName: desired.appName,
+              httpsPort: desired.port,
+              upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${subdomain}: ${e}`));
+            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${desired.appName} on :${desired.port}: ${e}`));
         }
       }
 
-      // Remove stale
-      const shouldServeNames = new Set(shouldServe.map((a) => a.localSubdomain).filter(Boolean));
-      for (const served of currentlyServed) {
-        if (!shouldServeNames.has(served)) {
-          await tailscaleService.unserveApp(served).catch((e) => this.logger.error(`[Tailscale] Failed to unserve ${served}: ${e}`));
+      for (const served of serveStatus.entries) {
+        if (served.rawServiceName) {
+          await tailscaleService
+            .clearService(served.rawServiceName)
+            .catch((e) => this.logger.error(`[Tailscale] Failed to clear ${served.rawServiceName}: ${e}`));
+          continue;
         }
+
+        const listenPort = served.listenPort;
+        if (!listenPort || desiredPorts.has(listenPort)) {
+          continue;
+        }
+
+        await tailscaleService.unservePort(listenPort).catch((e) => this.logger.error(`[Tailscale] Failed to unserve :${listenPort}: ${e}`));
       }
 
-      this.logger.debug(`[Tailscale] Sync complete: ${shouldServe.length} apps served`);
+      this.logger.debug(`[Tailscale] Sync complete: ${desiredPorts.size} apps served`);
     } catch (error) {
       this.logger.error(`[Tailscale] Sync failed: ${error instanceof Error ? error.message : String(error)}`);
     }

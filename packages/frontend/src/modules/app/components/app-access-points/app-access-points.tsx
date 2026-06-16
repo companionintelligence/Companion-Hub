@@ -38,19 +38,38 @@ function buildHttpsUrl(hostname: string, sslPort: number, suffix: string): strin
   return `https://${hostname}${sslPort === 443 ? '' : `:${sslPort}`}${suffix}`;
 }
 
+function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
+  const cleanNodeFqdn = nodeFqdn?.trim();
+  if (!cleanNodeFqdn || !port) {
+    return null;
+  }
+
+  return `${cleanNodeFqdn}:${port}`;
+}
+
+function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, suffix = ''): string | null {
+  const host = buildTailscalePortHost(nodeFqdn, port);
+  return host ? `https://${host}${suffix}` : null;
+}
+
+function hasDirectLocalAccess(record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean }): boolean {
+  return record.exposureMode === 'local' || Boolean(record.exposedLocal) || Boolean(record.openPort);
+}
+
 export function buildAppAccessPoints(input: {
   app?: AppDetails | null;
   info: AppInfo;
-  localDomain: string;
   sslPort: number;
   internalIp?: string;
   publicDomain?: string;
   cloudflareAvailable: boolean;
   tailscaleAvailable: boolean;
+  tailscaleNodeFqdn?: string | null;
   organizationSlug?: string;
   deviceSlug?: string;
 }): AppAccessPoint[] {
-  const { app, info, localDomain, sslPort, internalIp, publicDomain, cloudflareAvailable, tailscaleAvailable, organizationSlug, deviceSlug } = input;
+  const { app, info, sslPort, internalIp, publicDomain, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, organizationSlug, deviceSlug } =
+    input;
 
   if (!app || info.no_gui) {
     return [];
@@ -72,9 +91,10 @@ export function buildAppAccessPoints(input: {
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
-  const directUrl = directPort ? `${info.https ? 'https' : 'http'}://${browserHost}:${directPort}${urlSuffix}` : null;
-  const vpnHost = cleanSubdomain && localDomain ? `${cleanSubdomain}.${localDomain}` : null;
-  const vpnUrl = vpnHost ? buildHttpsUrl(vpnHost, sslPort, urlSuffix) : null;
+  const localEnabled = hasDirectLocalAccess(record);
+  const directUrl = directPort && localEnabled ? `${info.https ? 'https' : 'http'}://${browserHost}:${directPort}${urlSuffix}` : null;
+  const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, app.port ?? null);
+  const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, app.port ?? null, urlSuffix);
 
   const configuredPublicDomain = record.domain?.trim() || null;
   const resolvedPublicDomain = (record.publicDomain?.trim() || publicDomain || '').trim();
@@ -141,7 +161,7 @@ export function buildAppAccessPoints(input: {
       title: 'APP_DETAILS_ACCESS_LOCAL',
       caption: 'APP_DETAILS_ACCESS_LOCAL_HINT',
       url: directUrl,
-      host: directPort ? `${browserHost}:${directPort}` : null,
+      host: directPort && localEnabled ? `${browserHost}:${directPort}` : null,
       state: localState,
       stateLabel: localState === 'active' ? 'APP_DETAILS_ACCESS_ENABLED' : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
     },
@@ -161,17 +181,17 @@ interface Props {
 
 export const AppAccessPoints = ({ app, info }: Props) => {
   const { t } = useTranslation();
-  const { userSettings, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn } = useAppContext();
 
   const accessPoints = buildAppAccessPoints({
     app,
     info,
-    localDomain: userSettings.localDomain,
     sslPort: userSettings.sslPort,
     internalIp: userSettings.internalIp,
     publicDomain: userSettings.domain,
     cloudflareAvailable,
     tailscaleAvailable,
+    tailscaleNodeFqdn,
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
   });

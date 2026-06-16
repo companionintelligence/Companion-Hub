@@ -76,6 +76,8 @@ const appContextSchema = z.object({
   isProduction: z.boolean(),
   cloudflareAvailable: z.boolean(),
   tailscaleAvailable: z.boolean(),
+  tailscaleNodeFqdn: z.string().trim().nullable().optional(),
+  tailscaleSupportsServices: z.boolean().optional(),
 });
 
 export class UserSettingsBody extends createZodDto(settingsSchema.partial()) {}

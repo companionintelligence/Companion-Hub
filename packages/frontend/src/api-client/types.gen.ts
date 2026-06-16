@@ -43,6 +43,8 @@ export type AppContextDto = {
     isProduction: boolean;
     cloudflareAvailable: boolean;
     tailscaleAvailable: boolean;
+    tailscaleNodeFqdn?: string | null;
+    tailscaleSupportsServices?: boolean;
     user: {
         hasCompletedOnboarding: boolean;
         id: number;

@@ -81,8 +81,14 @@ vi.mock('@ci-hub/common/types', () => {
     return { hostname, publicUrl: `https://${hostname}`, originServerName: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
   };
 
+  const buildTailscalePortHost = (nodeFqdn?: string | null, port?: number | null) => {
+    if (!nodeFqdn || !port) return null;
+    return `${nodeFqdn}:${port}`;
+  };
+
   return {
     buildPublicWebIdentity,
+    buildTailscalePortHost,
     sanitizeAppSubdomain,
   };
 });
@@ -457,10 +463,6 @@ describe('InstallForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('OpenClaw WebCLI')).toBeInTheDocument();
-    expect(screen.getByText('blaptop')).toBeInTheDocument();
-    expect(screen.getByText('bc')).toBeInTheDocument();
-    expect(screen.getAllByText('companionintelligence.com').length).toBeGreaterThan(0);
     expect(screen.getAllByText('ci-openclaw-blaptop-bc.companionintelligence.com').length).toBeGreaterThan(0);
 
     await act(async () => {
