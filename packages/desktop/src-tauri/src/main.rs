@@ -214,6 +214,14 @@ async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, St
 }
 
 #[tauri::command]
+fn get_desktop_release_version_command() -> String {
+    option_env!("CI_HUB_BUILD_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .trim_start_matches('v')
+        .to_string()
+}
+
+#[tauri::command]
 async fn perform_desktop_update_command(download_url: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let current = option_env!("CI_HUB_BUILD_VERSION")
@@ -294,6 +302,7 @@ pub fn run() {
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             check_desktop_update_command,
+            get_desktop_release_version_command,
             perform_desktop_update_command,
             get_update_progress_command,
             trigger_host_update_command,
