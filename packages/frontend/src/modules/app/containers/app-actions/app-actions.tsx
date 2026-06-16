@@ -193,7 +193,6 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
     );
   })();
 
-  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('COMMON_STOP')} intent="default" />;
   const InstallButton = (
     <ActionButton
       key="install"

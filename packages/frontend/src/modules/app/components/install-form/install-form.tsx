@@ -1,5 +1,4 @@
 import { apiFetch } from '@/lib/api-fetch';
-import { Button } from '@/components/ui/Button';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { getAvailableDomainsQueryOptions } from '@/api-client/domains-query';
@@ -99,7 +98,6 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
-  const displayAppName = info.name || defaultAppSubdomain;
 
   const {
     register,

@@ -102,6 +102,13 @@ describe('App lifecycle', () => {
     username: 'guest',
     port: Number(process.env.RABBITMQ_PORT) || 5672,
   });
+  configurationService.get.calledWith('domain').mockReturnValue('ci.test');
+  configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
+  configurationService.get.calledWith('userSettings').mockReturnValue({
+    appDataPath: '/opt/ci-hub',
+    domain: 'ci.test',
+    localDomain: 'ci.lan',
+  });
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
@@ -259,12 +266,16 @@ describe('App lifecycle', () => {
       fromPartial({
         demoMode: false,
         architecture: 'amd64',
+        domain: 'ci.test',
+        localDomain: 'ci.lan',
         directories: { dataDir: DATA_DIR, appDir: APP_DIR, appDataDir: APP_DATA_DIR },
         internalIp: '127.0.0.1',
         envFilePath: '/data/.env',
         rootFolderHost: '/opt/ci-hub',
         userSettings: {
           appDataPath: '/opt/ci-hub',
+          domain: 'ci.test',
+          localDomain: 'ci.lan',
         },
       }),
     );
