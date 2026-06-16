@@ -127,9 +127,11 @@ export default () => {
                   <div className="flex flex-wrap items-center gap-2">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">{info?.name}</h1>
                     {primaryCategory && (
-                      <span className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 pt-2 text-xs font-medium text-muted-foreground">
-                        {getCategoryLabel(t, primaryCategory)}
-                      </span>
+                      <div className="pt-2">
+                        <span className="rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                          {getCategoryLabel(t, primaryCategory)}
+                        </span>
+                      </div>
                     )}
                   </div>
                   <p className="text-sm text-muted-foreground sm:text-base">{info?.author}</p>
