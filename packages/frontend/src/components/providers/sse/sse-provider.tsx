@@ -5,8 +5,10 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PropsWithChildren } from 'react';
 import toast from 'react-hot-toast';
-import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
+import { Trans, useTranslation } from 'react-i18next';
+import { Link, useNavigate } from 'react-router';
+
+const logsPageHref = '/settings?tab=logs';
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
@@ -49,7 +51,17 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_INSTALL_SUCCESS', { id: appName }));
           break;
         case 'install_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_INSTALL', { id: appName }));
+          toast.error((toastInstance) => (
+            <span className="text-sm">
+              <Trans
+                i18nKey="APP_ERROR_APP_FAILED_TO_INSTALL_TOAST"
+                values={{ id: appName, logsLabel: t('COMMON_LOGS') }}
+                components={{
+                  logsLink: <Link to={logsPageHref} className="font-medium underline" onClick={() => toast.dismiss(toastInstance.id)} />,
+                }}
+              />
+            </span>
+          ));
           break;
         case 'start_success':
           toast.success(t('APP_START_SUCCESS', { id: appName }));
