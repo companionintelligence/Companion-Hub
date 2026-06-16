@@ -23,7 +23,19 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/*"],
+    "resources": {
+      "resources/*": "resources/",
+      "../../../distribution/scripts/uninstall-cleanup.ps1": "resources/uninstall-cleanup.ps1"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["windows/cleanup-on-uninstall.wxs"],
+        "componentGroupRefs": ["CompanionHubCleanupGroup"]
+      }
+    },
     "linux": {
       "deb": {
         "desktopTemplate": "deep-link.desktop"

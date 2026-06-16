@@ -130,6 +130,136 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vramMb).toBe(24564);
     });
 
+    it('SHALL correct WMI-capped VRAM (4095 MB) for >4 GB NVIDIA cards via nvidia-smi', async () => {
+      // On Windows, systeminformation reads VRAM from WMI AdapterRAM (32-bit, saturates at 4095 MB),
+      // so an 8 GB RTX 3080 Laptop GPU reports ~4 GB — 1 MB under the 4096 MB tier threshold.
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
+      });
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 3080 Laptop GPU, 8192, 581.80\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.tier).toBe('medium');
+    });
+
+    it('SHALL select the most capable NVIDIA GPU as a unit when correcting WMI-capped readings', async () => {
+      // Multi-GPU Windows host: both controllers are WMI-capped to 4095 MB so they tie, and SI happens
+      // to surface the lower-end card. The corrected VRAM and the reported model must come from the
+      // same (most capable) GPU rather than pairing the 4090's VRAM with the 3060's name.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3060', vram: 4095, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 3060, 8192, 581.80\nNVIDIA GeForce RTX 4090, 24564, 581.80\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24564);
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 4090');
+      expect(profile.tier).toBe('high');
+    });
+
+    it('SHALL keep the systeminformation VRAM when it already exceeds the nvidia-smi reading', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 4090, 24564, 535.129.03\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(24576);
+    });
+
+    it('SHALL NOT spawn nvidia-smi when systeminformation reports a plausible NVIDIA VRAM', async () => {
+      // A plausible reading (not sub-512 MB, not in the Windows WMI cap band) is trusted as-is, so the
+      // 5s-timeout nvidia-smi call is skipped on the common path — even on Windows.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3070', vram: 8192, driverVersion: '535.129.03' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.tier).toBe('medium');
+      expect(smiSpy).not.toHaveBeenCalled();
+    });
+
+    it('SHALL clamp a WMI-capped reading to the 4 GB floor when nvidia-smi cannot recover the true VRAM', async () => {
+      // Windows host: SI reports the capped 4095 MB and nvidia-smi is unavailable. The field saturated,
+      // so the card has >=4 GB — it must degrade to `low`, not be mislabeled cpu-only at the threshold.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(4096);
+      expect(profile.tier).toBe('low');
+    });
+
+    it('SHALL trust a 4096 MB Windows reading as a real 4 GB GPU without cross-checking', async () => {
+      // NVIDIA saturates the WMI cap at 4095 MB, so a 4096 MB reading comes from the reliable 64-bit
+      // registry path (a genuine 4 GB card) and must not trigger the nvidia-smi cross-check.
+      process.env.CI_HUB_HOST_PLATFORM = 'win32';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce GTX 1650', vram: 4096, driverVersion: '581.80' }],
+      });
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(4096);
+      expect(profile.tier).toBe('low');
+      expect(smiSpy).not.toHaveBeenCalled();
+    });
+
     it('SHALL fallback to nvidia-smi when systeminformation omits controllers', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
       execAsyncMock.mockImplementation(async (command: string) => {
@@ -478,7 +608,7 @@ describe('HardwareInspectorService', () => {
         return { stdout: '{}' };
       });
 
-      // SI returns 32 MB (PCIe BAR), detectNvidiaVram() fires but mock returns 0
+      // SI returns 32 MB (PCIe BAR), the nvidia-smi cross-check fires but mock returns 0
       // → initial profile records 0 MB (unreliable reading discarded)
       const initial = await service.detect();
       expect(initial.gpu.vramMb).toBe(0);

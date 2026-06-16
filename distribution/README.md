@@ -109,11 +109,18 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 
 Companion Hub now ships best-effort uninstall cleanup hooks/scripts for maintained channels:
 
-- Windows: Chocolatey + Scoop uninstaller scripts
+- Windows: Chocolatey + Scoop uninstaller scripts, **and both packaged installers — the NSIS `-setup.exe` and the WiX `.msi`** (covers WinGet, whose manifest installs one of those)
 - Linux: Debian `postrm`, AUR `post_remove`, and Snap `hooks/remove`
 - Shared script artifacts: `distribution/scripts/uninstall-cleanup.sh` and `distribution/scripts/uninstall-cleanup.ps1`
 
 Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`.
+
+Both Windows packaged installers run the bundled cleanup script before removing the app. The script is shipped into the bundle as a Tauri resource (`resources/uninstall-cleanup.ps1`), sourced directly from `distribution/scripts/uninstall-cleanup.ps1`.
+
+- **NSIS `-setup.exe`** — `packages/desktop/src-tauri/windows/installer-hooks.nsh` defines an `NSIS_HOOK_PREUNINSTALL` macro (wired through `bundle.windows.nsis.installerHooks`) that runs the script before `$INSTDIR` is removed.
+- **WiX `.msi`** — `packages/desktop/src-tauri/windows/cleanup-on-uninstall.wxs` adds a custom action (wired through `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`) sequenced `Before="RemoveFiles"` and conditioned on `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
+
+Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs.
 
 **Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
 config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,

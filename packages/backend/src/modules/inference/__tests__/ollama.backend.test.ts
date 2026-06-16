@@ -3,6 +3,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import axios from 'axios';
 
 vi.mock('axios');
@@ -176,6 +177,80 @@ describe('OllamaBackend', () => {
       expect(loaded).toBe(false);
       expect(state.urlResolved).toBe(false);
       expect(state.resolvedUrl).toBe(state.configuredUrl);
+    });
+  });
+
+  // ─── Pull model (streamed NDJSON) ──────────────────────────────────
+
+  describe('Pull model', () => {
+    /** Make resolveUrl() succeed, and have /api/pull stream the given NDJSON lines then end. */
+    const mockPullStream = (lines: string[]) => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: {} }); // probe() in resolveUrl
+      (axios.post as any) = vi.fn().mockImplementation(async () => {
+        const stream = new EventEmitter();
+        // Emit after the current microtask queue drains so pullModel has attached its listeners.
+        setImmediate(() => {
+          for (const line of lines) {
+            stream.emit('data', Buffer.from(`${line}\n`));
+          }
+          stream.emit('end');
+        });
+        return { data: stream };
+      });
+    };
+
+    it('resolves and reports progress when the stream ends with a success status', async () => {
+      mockPullStream([
+        JSON.stringify({ status: 'pulling manifest' }),
+        JSON.stringify({ status: 'downloading', digest: 'sha256:abc', total: 100, completed: 50 }),
+        JSON.stringify({ status: 'success' }),
+      ]);
+      const onProgress = vi.fn();
+
+      await expect(backend.pullModel('phi4-mini', onProgress)).resolves.toBeUndefined();
+
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ status: 'downloading', percent: 50 }));
+      expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
+    });
+
+    it('reassembles JSON lines split across chunk boundaries', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: {} });
+      (axios.post as any) = vi.fn().mockImplementation(async () => {
+        const stream = new EventEmitter();
+        const successLine = `${JSON.stringify({ status: 'success' })}\n`;
+        const mid = Math.floor(successLine.length / 2);
+        setImmediate(() => {
+          // Split the terminal success line across two chunks.
+          stream.emit('data', Buffer.from(`${JSON.stringify({ status: 'pulling manifest' })}\n${successLine.slice(0, mid)}`));
+          stream.emit('data', Buffer.from(successLine.slice(mid)));
+          stream.emit('end');
+        });
+        return { data: stream };
+      });
+
+      await expect(backend.pullModel('phi4-mini')).resolves.toBeUndefined();
+      expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
+    });
+
+    it('rejects when the stream reports an error (e.g. Ollama 412 manifest failure)', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      mockPullStream([
+        JSON.stringify({ status: 'pulling manifest' }),
+        JSON.stringify({ error: 'pull model manifest: 412: The model you are attempting to pull requires a newer version of Ollama.' }),
+      ]);
+
+      await expect(backend.pullModel('nemotron-3-nano:4b')).rejects.toThrow(/requires a newer version of Ollama/);
+      expect(loggerService.info).not.toHaveBeenCalledWith('[Ollama] Model pulled: nemotron-3-nano:4b');
+      expect(state.urlResolved).toBe(false);
+    });
+
+    it('rejects when the stream ends without a success status', async () => {
+      mockPullStream([JSON.stringify({ status: 'pulling manifest' })]);
+
+      await expect(backend.pullModel('phi4-mini')).rejects.toThrow(/without a success status/);
+      expect(loggerService.info).not.toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
     });
   });
 
