@@ -421,6 +421,67 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.available).toBe(true);
     });
 
+    it('SHALL fallback to cached AMD host probe with full VRAM when the container cannot see the GPU', async () => {
+      // Simulates Windows + Docker Desktop: the container's systeminformation
+      // reports no GPU, but the desktop AMD host probe captured the real 24 GB
+      // VRAM via the 64-bit qwMemorySize registry value (not the 4 GB-clamped
+      // 32-bit AdapterRAM).
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/amd.json') {
+          return JSON.stringify({
+            model: 'AMD Radeon RX 7900 XTX',
+            vramMb: 24576,
+            driverVersion: '31.0.24033.1003',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async () => {
+        throw new Error('no GPU tooling in container');
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9 7950X' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.model).toBe('AMD Radeon RX 7900 XTX');
+      expect(profile.gpu.vramMb).toBe(24576);
+      expect(profile.gpu.driverVersion).toBe('31.0.24033.1003');
+    });
+
+    it('SHALL augment a detected AMD GPU with cached host VRAM when the container reports an implausibly low value', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'AMD Radeon RX 7900 XTX', vram: 256, driverVersion: '1.0' }],
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/amd.json') {
+          return JSON.stringify({
+            model: 'AMD Radeon RX 7900 XTX',
+            vramMb: 24576,
+            driverVersion: '31.0.24033.1003',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async () => {
+        throw new Error('no GPU tooling in container');
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9 7950X' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.vramMb).toBe(24576);
+    });
+
     it('should set hostRocmAvailable from host ROCm probe cache', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
