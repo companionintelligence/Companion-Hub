@@ -124,6 +124,12 @@ describe('AppDetailsPage', () => {
     expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
   });
 
+  it('keeps the status and action bar in the shared header row layout', () => {
+    render(<AppDetailsPage />);
+
+    expect(screen.getByTestId('app-header-actions-row')).toHaveClass('md:flex-row', 'md:justify-between');
+  });
+
   it('disables runtime-health polling while an app is uninstalling', () => {
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
       if (options.queryKey?.[0] === 'app-image-size') {
