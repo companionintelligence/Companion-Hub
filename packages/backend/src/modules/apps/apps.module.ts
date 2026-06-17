@@ -1,4 +1,3 @@
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
@@ -31,7 +30,6 @@ import { RegistrationModule } from '../registration/registration.module';
     AppHelpers,
     AppsService,
     AppRuntimeMonitorService,
-    ConfigurationService,
     PortAllocationRepository,
     InstallPipelineTracker,
   ],
