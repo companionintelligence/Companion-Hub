@@ -140,22 +140,38 @@ export class HardwareInspectorService implements OnModuleInit {
         }
       : rawCpuInfo;
 
-    const nvidiaHostProbe = await this.readNvidiaHostProbe();
-    const effectiveGpuInfo =
-      nvidiaHostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)
-        ? {
-            available: gpuInfo.available || !!nvidiaHostProbe.model,
-            vendor: 'nvidia' as const,
-            model: gpuInfo.model || nvidiaHostProbe.model,
-            vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
-            driverVersion: gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
-          }
-        : gpuInfo;
+    const [nvidiaHostProbe, amdHostProbe] = await Promise.all([this.readNvidiaHostProbe(), this.readAmdHostProbe()]);
+    let effectiveGpuInfo = gpuInfo;
+    if (nvidiaHostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)) {
+      effectiveGpuInfo = {
+        available: gpuInfo.available || !!nvidiaHostProbe.model,
+        vendor: 'nvidia' as const,
+        model: gpuInfo.model || nvidiaHostProbe.model,
+        vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
+        driverVersion: gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
+      };
+    } else if (amdHostProbe && (gpuInfo.vendor === 'amd' || !gpuInfo.available)) {
+      // On Windows + Docker Desktop the container's systeminformation cannot see
+      // the host GPU's real VRAM, and WMI's 32-bit AdapterRAM clamps at 4 GB.
+      // The desktop AMD host probe reads the 64-bit qwMemorySize, so trust it
+      // when the container reported nothing plausible.
+      effectiveGpuInfo = {
+        available: gpuInfo.available || !!amdHostProbe.model,
+        vendor: 'amd' as const,
+        model: gpuInfo.model || amdHostProbe.model,
+        vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : amdHostProbe.vramMb,
+        driverVersion: gpuInfo.driverVersion || amdHostProbe.driverVersion,
+      };
+    }
 
-    if (!gpuInfo.available && hostProbe) {
+    if (!gpuInfo.available && hostProbe && nvidiaHostProbe) {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
+    } else if (!gpuInfo.available && hostProbe && amdHostProbe) {
+      this.logger.info('[HardwareInspector] Using host AMD probe cache fallback for GPU detection.');
     } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
       this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
+    } else if (hostProbe && gpuInfo.vendor === 'amd' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && amdHostProbe) {
+      this.logger.info('[HardwareInspector] Augmenting AMD GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
 
     // Host probe platform is authoritative on Docker Desktop (macOS/Windows); the container reports linux.
@@ -601,6 +617,28 @@ export class HardwareInspectorService implements OnModuleInit {
   private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {
     try {
       const raw = await this.filesystem.readTextFile('/data/state/hardware/nvidia.json');
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as {
+        model?: string;
+        vramMb?: number;
+        driverVersion?: string;
+      };
+
+      if (!parsed.model || typeof parsed.model !== 'string') return null;
+      return {
+        model: parsed.model,
+        vramMb: typeof parsed.vramMb === 'number' && Number.isFinite(parsed.vramMb) && parsed.vramMb > 0 ? parsed.vramMb : 0,
+        driverVersion: typeof parsed.driverVersion === 'string' ? parsed.driverVersion : '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async readAmdHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {
+    try {
+      const raw = await this.filesystem.readTextFile('/data/state/hardware/amd.json');
       if (!raw) return null;
 
       const parsed = JSON.parse(raw) as {
