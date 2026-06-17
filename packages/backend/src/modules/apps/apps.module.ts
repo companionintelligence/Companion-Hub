@@ -24,15 +24,7 @@ import { RegistrationModule } from '../registration/registration.module';
     forwardRef(() => RegistrationModule),
   ],
   controllers: [AppsController],
-  providers: [
-    AppFilesManager,
-    AppsRepository,
-    AppHelpers,
-    AppsService,
-    AppRuntimeMonitorService,
-    PortAllocationRepository,
-    InstallPipelineTracker,
-  ],
+  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, AppRuntimeMonitorService, PortAllocationRepository, InstallPipelineTracker],
   exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, AppRuntimeMonitorService, InstallPipelineTracker],
 })
 export class AppsModule {}
