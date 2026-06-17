@@ -49,6 +49,26 @@ function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: appUrn } }) });
 }
 
+function setCachedAppStatus(queryClient: QueryClient, appUrn: string, appStatus?: string) {
+  if (!appStatus) {
+    return;
+  }
+
+  queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) => {
+    if (!current?.app) {
+      return current;
+    }
+
+    return {
+      ...current,
+      app: {
+        ...current.app,
+        status: appStatus,
+      },
+    };
+  });
+}
+
 function clearUninstalledAppCaches(queryClient: QueryClient, appUrn: string) {
   queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) => {
     if (!current) {
@@ -98,6 +118,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   const urn = appUrn as AppUrn;
 
   if (event === 'install_error' && error) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     queryClient.setQueryData(['app-install-error', urn], { message: error, ts: Date.now() });
     updateInstallationProgress(urn, null);
     invalidateAppQueries(queryClient, appUrn);
@@ -105,6 +126,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (event === 'install_success') {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     queryClient.setQueryData(['app-install-error', urn], null);
     updateInstallationProgress(urn, null);
     invalidateAppQueries(queryClient, appUrn);
@@ -120,6 +142,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
@@ -129,11 +152,13 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (appStatus === 'installing' && typeof progress === 'number') {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     updateInstallationProgress(urn, progress);
     return;
   }
 
   if (appStatus === 'installing' && progress === undefined) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     updateInstallErrorCache(queryClient, appUrn, error, appStatus);
     invalidateAppQueries(queryClient, appUrn);
     return;
@@ -150,6 +175,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (appStatus) {
+    setCachedAppStatus(queryClient, appUrn, appStatus);
     invalidateAppQueries(queryClient, appUrn);
   }
 }
