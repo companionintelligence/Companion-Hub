@@ -71,4 +71,20 @@ describe('CloudflareHostnameService', () => {
     await expect(service.resolvesToExistingAppHostname('dropgate', 'companionintelligence.com', 'dropgate:store')).resolves.toBe(false);
     await expect(service.resolvesToExistingAppHostname('dropgate', 'companionintelligence.com')).resolves.toBe(false);
   });
+
+  it('treats legacy exposedLocal apps as cloudflare when matching the current hostname', async () => {
+    appsRepository.getAppByUrn.mockResolvedValue({
+      appName: 'dropgate',
+      appStoreSlug: 'store',
+      exposedLocal: true,
+      localSubdomain: 'dropgate',
+      publicDomain: 'companionintelligence.com',
+    } as never);
+    deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+      slug: 'devben',
+      hubSubdomain: 'hub-nvda-devben',
+    } as never);
+
+    await expect(service.resolvesToExistingAppHostname('dropgate', 'companionintelligence.com', 'dropgate:store')).resolves.toBe(true);
+  });
 });

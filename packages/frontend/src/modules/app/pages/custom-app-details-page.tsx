@@ -86,11 +86,11 @@ export const CustomAppDetailsPage = () => {
               <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
-            <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-              <div className="mb-1">
+            <div data-testid="app-header-actions-row" className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
                 <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
               </div>
-              <div className="min-w-0 xl:flex-1">
+              <div className="min-w-0 md:flex-1">
                 <AppActions
                   app={app}
                   metadata={metadata}

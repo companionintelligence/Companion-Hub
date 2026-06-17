@@ -144,9 +144,9 @@ export default () => {
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div data-testid="app-header-actions-row" className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               {app && app.status !== 'missing' ? <AppStatus status={app.status} runtimeHealth={runtimeHealth.data} variant="pill" /> : null}
-              <div className="min-w-0 xl:flex-1">
+              <div className="min-w-0 md:flex-1">
                 <AppActions
                   app={app}
                   metadata={metadata}

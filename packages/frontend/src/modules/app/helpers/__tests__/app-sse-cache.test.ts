@@ -54,6 +54,7 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', 42);
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
   });
 
@@ -65,6 +66,7 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', null);
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
   });
 
@@ -72,9 +74,11 @@ describe('handleAppSseEvent', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'install_success',
       appUrn: 'plane:ci-marketplace',
+      appStatus: 'running',
     });
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
   });
 

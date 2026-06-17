@@ -11,7 +11,7 @@ import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -162,19 +162,22 @@ export const InstallForm: React.FC<IProps> = ({
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
-  const checkDnsAvailability = async (subdomain: string, selectedDomain?: string) => {
-    const query = new URLSearchParams({ subdomain });
-    if (selectedDomain) {
-      query.set('domain', selectedDomain);
-    }
-    if (editingAppUrn) {
-      query.set('appUrn', editingAppUrn);
-    }
+  const checkDnsAvailability = useCallback(
+    async (subdomain: string, selectedDomain?: string) => {
+      const query = new URLSearchParams({ subdomain });
+      if (selectedDomain) {
+        query.set('domain', selectedDomain);
+      }
+      if (editingAppUrn) {
+        query.set('appUrn', editingAppUrn);
+      }
 
-    return apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
-      credentials: 'include',
-    });
-  };
+      return apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
+        credentials: 'include',
+      });
+    },
+    [editingAppUrn],
+  );
 
   const copyToClipboard = async (text: string) => {
     const value = text.trim();
