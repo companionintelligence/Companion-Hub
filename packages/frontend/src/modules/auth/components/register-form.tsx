@@ -44,6 +44,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
       <div className="mb-4 text-center">
         <h2 className="text-xl font-semibold">{t('AUTH_REGISTER_TITLE')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
+        <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>
       </div>
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input

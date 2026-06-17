@@ -380,6 +380,7 @@
   "AUTH_LOGIN_COMPANION_ACCOUNT_HINT": "Uses your Companion Account.",
   "AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT": "your local admin account",
   "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your Companion Hub account.",
+  "AUTH_REGISTER_NOTE_2": "If you want to log in with your Companion Hub account, use the same email address here as you use for your Hub login.",
   "AUTH_REGISTER_SUBMIT": "Create Local Admin User",
   "AUTH_REGISTER_TITLE": "Create local admin user for this device",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Back to login",
