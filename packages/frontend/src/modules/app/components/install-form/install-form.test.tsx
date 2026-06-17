@@ -428,6 +428,52 @@ describe('InstallForm', () => {
     expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('appUrn=ci-openclaw%3Astore'), expect.objectContaining({ credentials: 'include' }));
   });
 
+  it('does not keep rechecking DNS availability after a successful response', async () => {
+    vi.useFakeTimers();
+    apiFetch.mockResolvedValue(
+      new Response(JSON.stringify({ available: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    vi.mocked(useAppContext).mockReturnValue({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    const mockInfo = {
+      urn: 'ci-openclaw:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1800);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('shows optional fields by default and hides toggle in advanced mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
 

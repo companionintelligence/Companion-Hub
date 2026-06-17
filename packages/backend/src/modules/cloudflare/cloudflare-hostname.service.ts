@@ -2,6 +2,7 @@ import { castAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable } from '@nestjs/common';
 import { type AppUrn, buildPublicWebIdentity } from '@ci-hub/common/types';
+import { getEffectiveExposureMode } from '../apps/app-exposure.helpers';
 import { AppsRepository } from '../apps/apps.repository';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 
@@ -19,7 +20,14 @@ export class CloudflareHostnameService {
     }
 
     const app = await this.appsRepository.getAppByUrn(castAppUrn(appUrn));
-    if (!app || app.exposureMode !== 'cloudflare') {
+    const effectiveExposureMode = app
+      ? getEffectiveExposureMode({
+          exposureMode:
+            app.exposureMode === 'cloudflare' || app.exposureMode === 'tailscale' || app.exposureMode === 'local' ? app.exposureMode : undefined,
+          exposedLocal: app.exposedLocal,
+        })
+      : 'local';
+    if (!app || effectiveExposureMode !== 'cloudflare') {
       return false;
     }
 
