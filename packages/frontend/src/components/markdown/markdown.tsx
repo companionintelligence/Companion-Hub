@@ -6,7 +6,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
 export const Markdown: React.FC<{ content: string; className: string }> = ({ content, className }) => (
-  <div className={clsx('markdown', className)}>
+  <div className={clsx('markdown prose prose-sm dark:prose-invert max-w-none', className)}>
     <ReactMarkdown
       remarkPlugins={[remarkBreaks, remarkGfm]}
       rehypePlugins={[rehypeRaw]}
