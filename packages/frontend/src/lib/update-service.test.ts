@@ -1,7 +1,98 @@
-import { describe, it, expect } from 'vitest';
-import { isHubUpdateAvailable, isStackUpdateAvailable, isTrustedDownloadUrl, platformManifestKey } from '@/lib/update-service';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  checkForUpdates,
+  getInstalledDesktopVersion,
+  isHubUpdateAvailable,
+  isStackUpdateAvailable,
+  isTrustedDownloadUrl,
+  performUpdate,
+  platformManifestKey,
+  requiresManualDesktopUpdate,
+} from '@/lib/update-service';
+
+const mockInvoke = vi.fn();
+const mockOpenExternal = vi.fn();
+const mockPlatform = vi.fn();
+const mockArch = vi.fn();
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-os', () => ({
+  arch: (...args: unknown[]) => mockArch(...args),
+  platform: (...args: unknown[]) => mockPlatform(...args),
+}));
+
+vi.mock('@/lib/helpers/open-external', () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
+}));
 
 describe('update-service', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('rejects untrusted manual download URLs before opening them', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+
+    await expect(
+      performUpdate({
+        currentVersion: '0.2.23',
+        latestVersion: '0.2.24',
+        downloadUrl: 'https://evil.example.com/file.dmg',
+        updateAvailable: true,
+        platform: 'linux',
+        manualDownload: true,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL',
+    });
+    expect(mockOpenExternal).not.toHaveBeenCalled();
+  });
+
+  it('reads the desktop release version from Tauri for update checks', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockInvoke.mockResolvedValue('v0.2.24');
+
+    await expect(getInstalledDesktopVersion()).resolves.toBe('0.2.24');
+    expect(mockInvoke).toHaveBeenCalledWith('get_desktop_release_version_command');
+  });
+
+  it('prefers the provided desktop version without invoking Tauri again', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockPlatform.mockResolvedValue('linux');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ version: 'v0.2.24' }),
+      }),
+    );
+
+    await expect(checkForUpdates('0.2.24')).resolves.toEqual({
+      currentVersion: '0.2.24',
+      latestVersion: '0.2.24',
+      downloadUrl: '',
+      updateAvailable: false,
+      platform: 'linux',
+      manualDownload: true,
+    });
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
   it('accepts dl.ci.computer HTTPS URLs', () => {
     expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/macos/arm/Companion%20Hub_0.2.18_aarch64.dmg')).toBe(true);
   });
@@ -74,9 +165,20 @@ describe('update-service', () => {
         latestVersion: '1.2.0',
         downloadUrl: 'https://dl.ci.computer/file.dmg',
         updateAvailable: true,
+        platform: 'macos' as const,
+        manualDownload: false,
       };
       expect(isHubUpdateAvailable(true, desktopUpdate, '1.0.0', '1.0.0')).toBe(true);
       expect(isHubUpdateAvailable(true, null, '1.0.0', '1.2.0')).toBe(false);
+    });
+  });
+
+  describe('requiresManualDesktopUpdate', () => {
+    it('requires manual installer downloads on linux only', () => {
+      expect(requiresManualDesktopUpdate('linux')).toBe(true);
+      expect(requiresManualDesktopUpdate('macos')).toBe(false);
+      expect(requiresManualDesktopUpdate('windows')).toBe(false);
+      expect(requiresManualDesktopUpdate(null)).toBe(false);
     });
   });
 });

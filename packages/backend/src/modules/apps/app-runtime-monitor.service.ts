@@ -3,6 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
+import si from 'systeminformation';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.service';
@@ -10,6 +11,8 @@ import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.s
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
 const MONITOR_INTERVAL_MS = 60_000;
+const MONITOR_HISTORY_LIMIT = 24;
+const SNAPSHOT_CACHE_TTL_MS = 30_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
 
@@ -44,11 +47,36 @@ export type AppRuntimeHealth = {
   containers: AppContainerRuntimeStats[];
 };
 
+export type AppRuntimeHistoryPoint = {
+  appUrn: string;
+  appName: string;
+  status: string;
+  cpuPercent: number;
+  memoryUsageBytes: number;
+  containerCount: number;
+};
+
+export type AppRuntimeHistorySample = {
+  sampledAt: string;
+  apps: AppRuntimeHistoryPoint[];
+};
+
+export type AppRuntimeMonitorSnapshot = {
+  sampledAt: string;
+  apps: AppRuntimeHealth[];
+  history: AppRuntimeHistorySample[];
+};
+
+const HUB_RUNTIME_URN = 'ci-hub:system';
+
 @Injectable()
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
+  private readonly history: AppRuntimeHistorySample[] = [];
   private intervalHandle: NodeJS.Timeout | null = null;
+  private latestSnapshot: AppRuntimeMonitorSnapshot | null = null;
+  private latestSnapshotAtMs = 0;
   private summaryInFlight = false;
 
   constructor(
@@ -60,6 +88,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    void this.collectRuntimeMonitorSnapshot(true).catch((error) => {
+      this.logger.warn(`App runtime monitor warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+
     this.intervalHandle = setInterval(() => {
       if (this.summaryInFlight) {
         return;
@@ -79,14 +111,119 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getRuntimeMonitorSnapshot(): Promise<{ sampledAt: string; apps: AppRuntimeHealth[] }> {
+  async getRuntimeMonitorSnapshot(): Promise<AppRuntimeMonitorSnapshot> {
+    return this.collectRuntimeMonitorSnapshot();
+  }
+
+  private async collectRuntimeMonitorSnapshot(force = false): Promise<AppRuntimeMonitorSnapshot> {
+    if (!force && this.latestSnapshot && Date.now() - this.latestSnapshotAtMs < SNAPSHOT_CACHE_TTL_MS) {
+      return this.latestSnapshot;
+    }
+
+    const sampledAt = new Date().toISOString();
     const apps = await this.appsRepository.getApps();
     const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
-
-    return {
-      sampledAt: new Date().toISOString(),
-      apps: snapshots.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
+    const hubRuntime = await this.collectHubRuntimeHealth(sampledAt);
+    const entities = hubRuntime ? [...snapshots, hubRuntime] : snapshots;
+    const historySample: AppRuntimeHistorySample = {
+      sampledAt,
+      apps: entities.map((app) => ({
+        appUrn: app.appUrn,
+        appName: app.appName,
+        status: app.status,
+        cpuPercent: app.cpuPercent,
+        memoryUsageBytes: app.memoryUsageBytes,
+        containerCount: app.containers.length,
+      })),
     };
+
+    this.history.push(historySample);
+    while (this.history.length > MONITOR_HISTORY_LIMIT) {
+      this.history.shift();
+    }
+
+    this.latestSnapshot = {
+      sampledAt,
+      apps: entities.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
+      history: [...this.history],
+    };
+    this.latestSnapshotAtMs = Date.now();
+    return this.latestSnapshot;
+  }
+
+  private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
+    try {
+      const hubContainers = await this.dockerService.getHubRuntimeStats();
+      const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
+        ? null
+        : await si.processes().then((processList) => processList.list.find((entry) => entry.pid === process.pid));
+      if (!backendProcess && hubContainers.length === 0) {
+        return null;
+      }
+
+      const processRuntime: AppContainerRuntimeStats[] = backendProcess
+        ? [
+            {
+              containerId: `pid:${process.pid}`,
+              name: 'backend-api',
+              state: backendProcess.state || 'running',
+              status: 'Node process',
+              health: null,
+              cpuPercent: Number((backendProcess.cpu ?? 0).toFixed(2)),
+              memoryUsageBytes: Math.max(Math.round((backendProcess.memRss ?? 0) * 1024), 0),
+              memoryLimitBytes: 0,
+            },
+          ]
+        : [];
+
+      const containers = [...hubContainers, ...processRuntime];
+      const cpuPercent = Number(containers.reduce((sum, container) => sum + container.cpuPercent, 0).toFixed(2));
+      const memoryUsageBytes = containers.reduce((sum, container) => sum + container.memoryUsageBytes, 0);
+      const memoryLimitBytes = containers.reduce((sum, container) => sum + container.memoryLimitBytes, 0);
+      const recentSamples = this.rememberSample(HUB_RUNTIME_URN, {
+        sampledAtMs: Date.now(),
+        cpuPercent,
+        responsive: true,
+      });
+      const sustainedHighCpu =
+        recentSamples.length >= HIGH_CPU_SAMPLE_COUNT &&
+        recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
+
+      return {
+        appUrn: HUB_RUNTIME_URN,
+        appName: 'Companion Hub',
+        status: 'running',
+        cpuPercent,
+        memoryUsageBytes,
+        memoryLimitBytes,
+        highCpu: cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT,
+        sustainedHighCpu,
+        responsive: true,
+        degraded: false,
+        forceStopEligible: false,
+        reason: null,
+        cpuLimit: null,
+        usesDefaultCpuLimit: false,
+        sampledAt,
+        containers,
+      };
+    } catch (error) {
+      this.logger.warn(`Failed to collect Hub runtime metrics: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  private isCurrentProcessRepresentedByHubContainers(containers: AppContainerRuntimeStats[]): boolean {
+    const hostname = process.env.HOSTNAME?.trim().toLowerCase();
+    if (!hostname) {
+      return false;
+    }
+
+    return containers.some((container) => {
+      const containerId = container.containerId.toLowerCase();
+      const containerName = container.name.toLowerCase();
+      return containerId === hostname || containerId.startsWith(hostname) || containerName === hostname;
+    });
   }
 
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
@@ -206,7 +343,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   private async logRuntimeSummary() {
     try {
-      const { apps } = await this.getRuntimeMonitorSnapshot();
+      const { apps } = await this.collectRuntimeMonitorSnapshot();
       const activeApps = apps.filter((app) => app.status === 'running' || app.status === 'stopping' || app.cpuPercent > 0);
       if (activeApps.length === 0) {
         return;

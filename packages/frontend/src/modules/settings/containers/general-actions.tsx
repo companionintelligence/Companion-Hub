@@ -8,7 +8,16 @@ import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
-import { checkForUpdates, isHubUpdateAvailable, isTauri, performStackUpdate, performUpdate, type UpdateInfo } from '@/lib/update-service';
+import {
+  checkForUpdates,
+  getInstalledDesktopVersion,
+  isHubUpdateAvailable,
+  isTauri,
+  performStackUpdate,
+  performUpdate,
+  type UpdateActionResult,
+  type UpdateInfo,
+} from '@/lib/update-service';
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
@@ -21,6 +30,17 @@ export const GeneralActionsContainer = () => {
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
   const [restartingWizard, setRestartingWizard] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
+  const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
+
+  const desktop = isTauri();
+
+  const getUpdateMessage = useCallback(
+    (result: UpdateActionResult) =>
+      result.defaultMessage
+        ? t(result.messageKey, { defaultValue: result.defaultMessage, ...result.messageParams })
+        : t(result.messageKey, result.messageParams),
+    [t],
+  );
 
   const handleRestartWizard = useCallback(async () => {
     setRestartingWizard(true);
@@ -35,19 +55,28 @@ export const GeneralActionsContainer = () => {
   }, [t]);
 
   const refreshUpdateState = useCallback(async () => {
-    if (!isTauri()) {
+    if (!desktop) {
+      setDesktopUpdate(null);
+      setDesktopVersion(null);
+      return null;
+    }
+
+    const installedVersion = await getInstalledDesktopVersion();
+    setDesktopVersion(installedVersion);
+    if (!installedVersion) {
       setDesktopUpdate(null);
       return null;
     }
-    const info = await checkForUpdates(version.current);
+
+    const info = await checkForUpdates(installedVersion);
     setDesktopUpdate(info);
     return info;
-  }, [version.current]);
+  }, [desktop]);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!desktop) return;
     void refreshUpdateState();
-  }, [refreshUpdateState]);
+  }, [desktop, refreshUpdateState]);
 
   useEffect(() => {
     apiFetch('/api/system/update/auto-updates', { credentials: 'include' })
@@ -62,9 +91,11 @@ export const GeneralActionsContainer = () => {
     setChecking(true);
     setUpdateMessage(null);
     try {
-      if (isTauri()) {
+      if (desktop) {
         const info = await refreshUpdateState();
-        if (info?.updateAvailable) {
+        if (!info) {
+          toast.error(t('SETTINGS_ACTIONS_CHECK_UPDATE_FAILED'));
+        } else if (info.updateAvailable) {
           toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: info.latestVersion }));
         } else {
           toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
@@ -86,22 +117,21 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshUpdateState, t, version.latest]);
+  }, [desktop, refreshAppContext, refreshUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
     setUpdateMessage(null);
     try {
-      if (isTauri()) {
+      if (desktop) {
         const info = desktopUpdate ?? (await refreshUpdateState());
         if (info?.updateAvailable) {
           const result = await performUpdate(info);
+          const message = getUpdateMessage(result);
           if (result.ok) {
-            const message = t(result.messageKey, result.messageParams);
             setUpdateMessage(message);
             toast.success(message);
           } else {
-            const message = t(result.messageKey, result.messageParams);
             setUpdateMessage(message);
             toast.error(message);
             setUpdating(false);
@@ -112,18 +142,18 @@ export const GeneralActionsContainer = () => {
 
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
-        const message = t(stackResult.messageKey, stackResult.messageParams);
+        const message = getUpdateMessage(stackResult);
         setUpdateMessage(message);
         setTimeout(() => window.location.reload(), 15000);
       } else {
-        setUpdateMessage(t(stackResult.messageKey, stackResult.messageParams));
+        setUpdateMessage(getUpdateMessage(stackResult));
         setUpdating(false);
       }
     } catch {
       setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [desktopUpdate, refreshUpdateState, t, version.latest]);
+  }, [desktop, desktopUpdate, getUpdateMessage, refreshUpdateState, t, version.latest]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
@@ -142,9 +172,9 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(false);
   }, [autoUpdates]);
 
-  const updateAvailable = isHubUpdateAvailable(isTauri(), desktopUpdate, version.current, version.latest);
-  const displayVersion = desktopUpdate?.currentVersion ?? version.current;
-  const latestVersion = desktopUpdate?.latestVersion ?? version.latest;
+  const updateAvailable = isHubUpdateAvailable(desktop, desktopUpdate, version.current, version.latest);
+  const displayVersion = desktop ? (desktopVersion ?? t('COMMON_UNKNOWN')) : version.current;
+  const latestVersion = desktop ? (desktopUpdate?.latestVersion ?? displayVersion) : version.latest;
 
   const renderUpdateButton = () => {
     if (updateMessage) {
@@ -165,6 +195,8 @@ export const GeneralActionsContainer = () => {
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
                 {t('SETTINGS_ACTIONS_UPDATING')}
               </>
+            ) : desktopUpdate?.manualDownload ? (
+              t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER', 'Download installer')
             ) : (
               t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: latestVersion })
             )}
@@ -210,7 +242,7 @@ export const GeneralActionsContainer = () => {
           </div>
           <CardDescription>
             {t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}
-            {isTauri() ? '' : t('SETTINGS_ACTIONS_STACK_SUFFIX')}
+            {desktop ? '' : t('SETTINGS_ACTIONS_STACK_SUFFIX')}
           </CardDescription>
         </CardHeader>
         <CardContent>

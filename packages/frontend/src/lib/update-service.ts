@@ -1,4 +1,5 @@
 import semver from 'semver';
+import { openExternal } from '@/lib/helpers/open-external';
 
 const UPDATE_CHECK_URL = 'https://dl.ci.computer/latest.json';
 const MANIFEST_URL = (version: string) => `https://dl.ci.computer/v${version.replace(/^v/, '')}/manifest.json`;
@@ -76,7 +77,11 @@ export interface UpdateInfo {
   latestVersion: string;
   downloadUrl: string;
   updateAvailable: boolean;
+  platform: DesktopPlatform | null;
+  manualDownload: boolean;
 }
+
+export type DesktopPlatform = 'linux' | 'macos' | 'windows';
 
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -113,8 +118,9 @@ function getDownloadUrl(manifest: ManifestJson, platform: string, osArch: string
 async function getCurrentVersion(): Promise<string | null> {
   if (isTauri()) {
     try {
-      const { getVersion } = await import('@tauri-apps/api/app');
-      return getVersion();
+      const { invoke } = await import('@tauri-apps/api/core');
+      const version = await invoke<string>('get_desktop_release_version_command');
+      return version.trim().replace(/^v/, '');
     } catch {
       return null;
     }
@@ -122,11 +128,36 @@ async function getCurrentVersion(): Promise<string | null> {
   return null;
 }
 
+export async function getInstalledDesktopVersion(): Promise<string | null> {
+  return getCurrentVersion();
+}
+
+export async function getDesktopPlatform(): Promise<DesktopPlatform | null> {
+  if (!isTauri()) return null;
+
+  try {
+    const { platform } = await import('@tauri-apps/plugin-os');
+    const value = await platform();
+    if (value === 'linux' || value === 'macos' || value === 'windows') {
+      return value;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export function requiresManualDesktopUpdate(platform: DesktopPlatform | null): boolean {
+  return platform === 'linux';
+}
+
 export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
-  const currentVersion = (await getCurrentVersion()) ?? fallbackCurrentVersion ?? null;
+  const currentVersion = fallbackCurrentVersion ?? (await getCurrentVersion()) ?? null;
   if (!currentVersion || !semver.valid(currentVersion)) return null;
 
   try {
+    const desktopPlatform = await getDesktopPlatform();
     const latestRes = await fetch(UPDATE_CHECK_URL, { cache: 'no-store' });
     if (!latestRes.ok) return null;
 
@@ -144,6 +175,8 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
         latestVersion,
         downloadUrl: '',
         updateAvailable: false,
+        platform: desktopPlatform,
+        manualDownload: requiresManualDesktopUpdate(desktopPlatform),
       };
     }
 
@@ -153,7 +186,7 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
     const manifest = (await manifestRes.json()) as ManifestJson;
 
     let downloadUrl = '';
-    if (isTauri()) {
+    if (desktopPlatform) {
       const { platform, arch } = await import('@tauri-apps/plugin-os');
       const [osPlatform, osArch] = await Promise.all([platform(), arch()]);
       downloadUrl = getDownloadUrl(manifest, osPlatform, osArch) ?? '';
@@ -168,6 +201,8 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       latestVersion,
       downloadUrl,
       updateAvailable: true,
+      platform: desktopPlatform,
+      manualDownload: requiresManualDesktopUpdate(desktopPlatform),
     };
   } catch {
     return null;
@@ -211,11 +246,25 @@ export interface UpdateActionResult {
   ok: boolean;
   messageKey: string;
   messageParams?: Record<string, string>;
+  defaultMessage?: string;
 }
 
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {
   if (isTauri()) {
     try {
+      if (info.manualDownload) {
+        if (!info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
+          return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
+        }
+
+        await openExternal(info.downloadUrl);
+        return {
+          ok: true,
+          messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
+          defaultMessage: 'Installer download opened in your browser.',
+        };
+      }
+
       const { invoke } = await import('@tauri-apps/api/core');
       if (info.downloadUrl) {
         await invoke('perform_desktop_update_command', { downloadUrl: info.downloadUrl });
@@ -231,7 +280,11 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
       }
       return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
     } catch {
-      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
+      return {
+        ok: false,
+        messageKey: info.manualDownload ? 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_FAILED' : 'SETTINGS_ACTIONS_UPDATE_FAILED',
+        defaultMessage: info.manualDownload ? 'Could not open the installer download.' : undefined,
+      };
     }
   }
 
