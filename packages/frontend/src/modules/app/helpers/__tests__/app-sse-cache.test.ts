@@ -74,6 +74,7 @@ describe('handleAppSseEvent', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'install_success',
       appUrn: 'plane:ci-marketplace',
+      appStatus: 'running',
     });
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(2);
