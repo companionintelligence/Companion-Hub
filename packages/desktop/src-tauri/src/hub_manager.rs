@@ -481,17 +481,17 @@ fn refresh_amd_host_probe_cache(data_dir: &Path) {
     // Match the AMD/Radeon/ATI adapter via WMI for the model + driver version,
     // then walk the display-class registry keys to recover the 64-bit VRAM size
     // (qwMemorySize) which is not subject to the 32-bit AdapterRAM ceiling.
-    let script = "$amd = Get-CimInstance Win32_VideoController | \
-Where-Object { $_.Name -match 'AMD|Radeon|ATI' } | Select-Object -First 1; \
-if ($null -eq $amd) { exit 3 }; \
-$vram = [int64]0; \
-$base = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; \
-Get-ChildItem $base -ErrorAction SilentlyContinue | ForEach-Object { \
-$p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue; \
-$q = $p.'HardwareInformation.qwMemorySize'; \
-if ($q -ne $null -and ($p.DriverDesc -match 'AMD|Radeon|ATI')) { \
-$c = [int64]$q; if ($c -gt $vram) { $vram = $c } } }; \
-[PSCustomObject]@{ Name = $amd.Name; QwMemorySizeBytes = $vram; \
+    let script = "$amd = Get-CimInstance Win32_VideoController | 
+Where-Object { $_.Name -match 'AMD|Radeon|ATI' } | Select-Object -First 1; 
+if ($null -eq $amd) { exit 3 }; 
+$vram = [int64]0; 
+$base = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; 
+Get-ChildItem $base -ErrorAction SilentlyContinue | ForEach-Object { 
+$p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue; 
+$q = $p.'HardwareInformation.qwMemorySize'; 
+if ($q -ne $null -and ($p.DriverDesc -match 'AMD|Radeon|ATI')) { 
+$c = [int64]$q; if ($c -gt $vram) { $vram = $c } } }; 
+[PSCustomObject]@{ Name = $amd.Name; QwMemorySizeBytes = $vram; 
 AdapterRAM = [int64]$amd.AdapterRAM; DriverVersion = $amd.DriverVersion } | ConvertTo-Json -Compress";
 
     let mut command = Command::new("powershell.exe");
