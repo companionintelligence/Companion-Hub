@@ -350,9 +350,17 @@ describe('AppCredentialsService', () => {
       expect(config.endpointReady).toBe(false);
     });
 
-    it('exposes managedKeys matching env keys for header consumers', async () => {
+    it('exposes managedKeys covering env keys plus the always-managed num_ctx key', async () => {
+      // Default setup has no loaded model, so HERMES_NUM_CTX is not emitted — but it
+      // must still be declared managed so header consumers drop a stale value.
       const config = await service.getCredentials('hermes-agent');
-      expect(config.managedKeys.sort()).toEqual(Object.keys(config.env).sort());
+      expect(config.env.HERMES_NUM_CTX).toBeUndefined();
+      expect(config.managedKeys).toContain('HERMES_NUM_CTX');
+      for (const k of Object.keys(config.env)) {
+        expect(config.managedKeys).toContain(k);
+      }
+      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX'])];
+      expect(config.managedKeys.sort()).toEqual(expected.sort());
     });
 
     it('always defaults apiVersion to 1', async () => {

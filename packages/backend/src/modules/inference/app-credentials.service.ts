@@ -199,7 +199,14 @@ export class AppCredentialsService {
       env[keys.numCtx] = String(numCtx);
     }
 
+    // Always declare the per-app num_ctx key as Hub-managed — even when we don't
+    // emit a value (cloud provider selected, or no runnable local model) — so the
+    // X-Hub-Managed-Keys header tells consumers to strip any stale *_NUM_CTX left
+    // in the app's .env rather than honoring an outdated context cap.
     const managedKeys = Object.keys(env);
+    if (!managedKeys.includes(keys.numCtx)) {
+      managedKeys.push(keys.numCtx);
+    }
 
     this.logger.info(
       `[AppCredentials] resolve slug=${slug} v=${apiVersion} provider=${provider} endpoint=${endpointUrl} endpointReady=${endpointReady} ` +
