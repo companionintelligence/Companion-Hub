@@ -68,19 +68,18 @@ describe('update-service', () => {
     expect(mockInvoke).toHaveBeenCalledWith('get_desktop_release_version_command');
   });
 
-  it('prefers the provided desktop version without invoking Tauri again', async () => {
+  it('uses the native tauri updater command for desktop update checks', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       value: {},
       configurable: true,
     });
     mockPlatform.mockResolvedValue('linux');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ version: 'v0.2.24' }),
-      }),
-    );
+    mockInvoke.mockResolvedValue({
+      currentVersion: '0.2.24',
+      latestVersion: '0.2.24',
+      downloadUrl: '',
+      updateAvailable: false,
+    });
 
     await expect(checkForUpdates('0.2.24')).resolves.toEqual({
       currentVersion: '0.2.24',
@@ -90,7 +89,47 @@ describe('update-service', () => {
       platform: 'linux',
       manualDownload: true,
     });
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
+  });
+
+  it('falls back to the fetch path when the native tauri update check fails', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockPlatform.mockResolvedValue('linux');
+    mockArch.mockResolvedValue('x86_64');
+    mockInvoke.mockRejectedValue(new Error('native update check failed'));
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ version: 'v0.2.25' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            version: '0.2.25',
+            platforms: {
+              'linux-x86_64': {
+                deb: { url: 'https://dl.ci.computer/v0.2.25/linux/deb/x64/Companion%20Hub_0.2.25_amd64.deb', size: 123 },
+              },
+            },
+          }),
+        }),
+    );
+
+    await expect(checkForUpdates('0.2.24')).resolves.toEqual({
+      currentVersion: '0.2.24',
+      latestVersion: '0.2.25',
+      downloadUrl: 'https://dl.ci.computer/v0.2.25/linux/deb/x64/Companion%20Hub_0.2.25_amd64.deb',
+      updateAvailable: true,
+      platform: 'linux',
+      manualDownload: true,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
   });
 
   it('accepts dl.ci.computer HTTPS URLs', () => {
