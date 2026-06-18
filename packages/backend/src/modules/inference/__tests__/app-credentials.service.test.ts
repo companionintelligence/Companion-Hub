@@ -176,6 +176,8 @@ describe('AppCredentialsService', () => {
         HERMES_OPENAI_API_KEY: 'ollama',
         HERMES_DEFAULT_MODEL: 'hermes4:70b',
         OLLAMA_HOST: OLLAMA_BASE_URL,
+        // 24576 MB budget, zero-footprint test model, 131072 window → top tier.
+        HERMES_NUM_CTX: '65536',
       });
     });
 
@@ -190,6 +192,7 @@ describe('AppCredentialsService', () => {
         OPENAI_API_KEY: 'ollama',
         DEFAULT_MODEL: 'hermes4:70b',
         OLLAMA_HOST: OLLAMA_BASE_URL,
+        CI_LLM_NUM_CTX: '65536',
       });
     });
 

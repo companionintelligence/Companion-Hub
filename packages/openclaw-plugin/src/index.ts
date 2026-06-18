@@ -153,6 +153,13 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
         .filter((m) => m.id.includes(':'));
     }
 
+    // Hardware-aware context window injected by the Hub (CI_LLM_NUM_CTX). Caps
+    // both the agent's token budget and the native Ollama `num_ctx`, so OpenClaw
+    // doesn't pack to Ollama's oversized memory-based default (e.g. 262144 on
+    // unified-memory APUs).
+    const hubNumCtx = Number.parseInt(process.env.CI_LLM_NUM_CTX ?? '', 10);
+    const numCtx = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : undefined;
+
     if (localModels.length > 0 && api.registerProvider) {
       api.registerProvider({
         id: 'ci-hub',
@@ -174,8 +181,9 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
                 reasoning: false,
                 input: ['text'],
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: m.context_window ?? 32768,
+                contextWindow: numCtx ?? m.context_window ?? 32768,
                 maxTokens: m.max_tokens ?? 8192,
+                ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
               })),
             },
           }),

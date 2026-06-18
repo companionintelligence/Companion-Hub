@@ -8,6 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { isCatalogModelInstalled } from './model-availability.util';
+import { recommendContextLength } from './context-length.util';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -37,18 +38,20 @@ export interface AppCredentialsConfig {
   managedKeys: string[];
 }
 
-const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings: string; apiKey: string }> = {
+const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings: string; apiKey: string; numCtx: string }> = {
   'hermes-agent': {
     baseUrl: 'HERMES_OPENAI_BASE_URL',
     model: 'HERMES_DEFAULT_MODEL',
     embeddings: 'HERMES_EMBEDDINGS_MODEL',
     apiKey: 'HERMES_OPENAI_API_KEY',
+    numCtx: 'HERMES_NUM_CTX',
   },
   openclaw: {
     baseUrl: 'OPENAI_API_BASE',
     model: 'DEFAULT_MODEL',
     embeddings: 'EMBEDDINGS_MODEL',
     apiKey: 'OPENAI_API_KEY',
+    numCtx: 'CI_LLM_NUM_CTX',
   },
 };
 
@@ -181,6 +184,20 @@ export class AppCredentialsService {
     // Always expose the direct native Ollama URL so the app can reach Ollama's
     // native protocol regardless of the OpenAI-compatible / cloud connection above.
     env.OLLAMA_HOST = ollamaBaseUrl;
+
+    // Hardware-aware default context window for the model the app will actually
+    // run locally. Cloud providers manage their own context, so this is only
+    // emitted on the direct-Ollama path. Apps cap their token budget / pass it
+    // as the native Ollama `num_ctx` so they don't inherit Ollama's oversized
+    // memory-based default (e.g. 262144 on unified-memory APUs).
+    if (provider === 'ollama' && availableLlm) {
+      const numCtx = recommendContextLength({
+        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+        modelFootprintMb: availableLlm.runtime.memoryFootprintMb,
+        modelContextWindow: availableLlm.runtime.contextWindow,
+      });
+      env[keys.numCtx] = String(numCtx);
+    }
 
     const managedKeys = Object.keys(env);
 
