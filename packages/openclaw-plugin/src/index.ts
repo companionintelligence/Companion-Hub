@@ -184,7 +184,9 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
                 // the possibly-larger numCtx.
                 const DEFAULT_CTX = 32768;
                 const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? DEFAULT_CTX) : undefined;
-                const contextWindow = effCtx ?? m.context_window ?? DEFAULT_CTX;
+                // Without an explicit num_ctx, advertise the historical default but
+                // never more than what Ollama will actually allocate for the model.
+                const contextWindow = effCtx ?? Math.min(DEFAULT_CTX, m.context_window ?? DEFAULT_CTX);
                 return {
                   id: m.id,
                   name: m.id,

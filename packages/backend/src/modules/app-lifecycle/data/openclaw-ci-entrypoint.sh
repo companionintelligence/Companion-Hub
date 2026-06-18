@@ -304,7 +304,9 @@ const baseEntry = (id, name, caps) => {
   // the per-model limit is unknown, stay conservative at the historical 32000
   // default rather than the possibly-larger numCtx.
   const effCtx = numCtx ? Math.min(numCtx, caps?.contextLimit ?? 32000) : undefined;
-  const contextWindow = effCtx || 32000;
+  // Without an explicit num_ctx, advertise the historical 32000 default but never
+  // more than the model's known window (small-window models would be rejected).
+  const contextWindow = effCtx ?? Math.min(32000, caps?.contextLimit ?? 32000);
   const entry = {
     id,
     name: name || id,
