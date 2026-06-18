@@ -304,14 +304,16 @@ const baseEntry = (id, name, caps) => {
   // the per-model limit is unknown, stay conservative at the historical 32000
   // default rather than the possibly-larger numCtx.
   const effCtx = numCtx ? Math.min(numCtx, caps?.contextLimit ?? 32000) : undefined;
+  const contextWindow = effCtx || 32000;
   const entry = {
     id,
     name: name || id,
     reasoning: caps?.reasoning === true,
     input: caps?.vision ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: effCtx || 32000,
-    maxTokens: 4096,
+    contextWindow,
+    // Output budget can't exceed the total context window.
+    maxTokens: Math.min(4096, contextWindow),
     compat: { supportsTools: caps?.supportsTools === true },
   };
   if (effCtx) entry.options = { num_ctx: effCtx };

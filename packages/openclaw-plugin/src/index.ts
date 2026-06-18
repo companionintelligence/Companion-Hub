@@ -184,14 +184,16 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
                 // the possibly-larger numCtx.
                 const DEFAULT_CTX = 32768;
                 const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? DEFAULT_CTX) : undefined;
+                const contextWindow = effCtx ?? m.context_window ?? DEFAULT_CTX;
                 return {
                   id: m.id,
                   name: m.id,
                   reasoning: false,
                   input: ['text'],
                   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: effCtx ?? m.context_window ?? DEFAULT_CTX,
-                  maxTokens: m.max_tokens ?? 8192,
+                  contextWindow,
+                  // Output budget can't exceed the total context window.
+                  maxTokens: Math.min(m.max_tokens ?? 8192, contextWindow),
                   ...(effCtx ? { options: { num_ctx: effCtx } } : {}),
                 };
               }),
