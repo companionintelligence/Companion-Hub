@@ -284,25 +284,33 @@ const modelCapabilities = async (id) => {
     body: JSON.stringify({ name: id }),
   });
   const caps = Array.isArray(payload?.capabilities) ? payload.capabilities : [];
+  // model_info exposes the model's trained context as "<arch>.context_length".
+  const info = payload?.model_info && typeof payload.model_info === 'object' ? payload.model_info : {};
+  const ctxEntry = Object.entries(info).find(([k]) => k.endsWith('.context_length'));
+  const contextLimit = Number.isFinite(ctxEntry?.[1]) ? ctxEntry[1] : undefined;
   return {
     supportsTools: caps.includes('tools'),
     reasoning: caps.includes('thinking'),
     vision: caps.includes('vision'),
+    contextLimit,
   };
 };
 
 const baseEntry = (id, name, caps) => {
+  // Never request more context than the model supports: numCtx is computed for
+  // the Hub's default chat model and may exceed a smaller model's window.
+  const effCtx = numCtx ? Math.min(numCtx, caps?.contextLimit || numCtx) : undefined;
   const entry = {
     id,
     name: name || id,
     reasoning: caps?.reasoning === true,
     input: caps?.vision ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: numCtx || 32000,
+    contextWindow: effCtx || caps?.contextLimit || 32000,
     maxTokens: 4096,
     compat: { supportsTools: caps?.supportsTools === true },
   };
-  if (numCtx) entry.options = { num_ctx: numCtx };
+  if (effCtx) entry.options = { num_ctx: effCtx };
   return entry;
 };
 

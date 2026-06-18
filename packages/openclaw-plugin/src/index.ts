@@ -175,16 +175,22 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
               baseUrl: ollamaNativeUrl,
               apiKey: 'ollama',
               api: 'ollama',
-              models: localModels.map((m) => ({
-                id: m.id,
-                name: m.id,
-                reasoning: false,
-                input: ['text'],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: numCtx ?? m.context_window ?? 32768,
-                maxTokens: m.max_tokens ?? 8192,
-                ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
-              })),
+              models: localModels.map((m) => {
+                // Never advertise / request more context than the model supports:
+                // CI_LLM_NUM_CTX is computed for the Hub's default chat model and
+                // may exceed a smaller model's window, which Ollama would reject.
+                const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? numCtx) : (m.context_window ?? 32768);
+                return {
+                  id: m.id,
+                  name: m.id,
+                  reasoning: false,
+                  input: ['text'],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: effCtx,
+                  maxTokens: m.max_tokens ?? 8192,
+                  ...(numCtx ? { options: { num_ctx: effCtx } } : {}),
+                };
+              }),
             },
           }),
         },

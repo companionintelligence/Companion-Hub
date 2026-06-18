@@ -230,6 +230,50 @@ describe('CI-Hub Plugin', () => {
     ]);
   });
 
+  it('caps CI_LLM_NUM_CTX by each model context_window when the model window is smaller', async () => {
+    const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/health')) return { ok: true };
+      if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+      // Empty /api/tags -> plugin falls back to Hub inference status, which carries context_window.
+      if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [] }) };
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.method === 'initialize') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { serverInfo: {} } }) };
+      if (body?.method === 'tools/list') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }) };
+      if (body?.method === 'tools/call' && body?.params?.name === 'hub_get_inference_status') {
+        return {
+          ok: true,
+          json: async () => ({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              hardwareTier: 'high',
+              backends: [],
+              memoryBudget: {},
+              cloudProviders: [],
+              models: [{ id: 'tiny:4k', local: true, modality: ['text'], state: 'pulled', context_window: 4096, max_tokens: 2048 }],
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body?.id ?? 1, result: {} }) };
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    process.env.OLLAMA_HOST = 'http://ci-hub-ollama:11434';
+    process.env.CI_LLM_NUM_CTX = '16384';
+
+    await register(api, baseConfig);
+
+    const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
+    const catalog = await provider.catalog.run({});
+    expect(catalog.provider.models).toEqual([
+      expect.objectContaining({
+        id: 'tiny:4k',
+        contextWindow: 4096,
+        options: { num_ctx: 4096 },
+      }),
+    ]);
+  });
+
   describe('R-PLG: Env var fallback', () => {
     it('R-PLG-1: should fall back to HUB_URL env var when config.hubUrl is not provided', async () => {
       process.env.HUB_URL = 'http://ci-os-hub:3000';
