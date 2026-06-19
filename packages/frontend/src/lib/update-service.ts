@@ -81,6 +81,13 @@ export interface UpdateInfo {
   manualDownload: boolean;
 }
 
+interface NativeDesktopUpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  downloadUrl: string;
+  updateAvailable: boolean;
+}
+
 export type DesktopPlatform = 'linux' | 'macos' | 'windows';
 
 export function isTauri(): boolean {
@@ -158,6 +165,36 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
 
   try {
     const desktopPlatform = await getDesktopPlatform();
+    if (isTauri()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        // Desktop update metadata is fetched natively because the production CDN does not
+        // expose CORS headers for renderer-side fetches from the Tauri webview.
+        const nativeInfo = await invoke<NativeDesktopUpdateInfo>('check_desktop_update_command');
+        const nativeCurrentVersion = nativeInfo.currentVersion.replace(/^v/, '');
+        const latestVersion = nativeInfo.latestVersion.replace(/^v/, '');
+        if (!semver.valid(nativeCurrentVersion) || !semver.valid(latestVersion)) {
+          return null;
+        }
+
+        let downloadUrl = nativeInfo.downloadUrl ?? '';
+        if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
+          downloadUrl = '';
+        }
+
+        return {
+          currentVersion: nativeCurrentVersion,
+          latestVersion,
+          downloadUrl,
+          updateAvailable: nativeInfo.updateAvailable,
+          platform: desktopPlatform,
+          manualDownload: requiresManualDesktopUpdate(desktopPlatform),
+        };
+      } catch {
+        // Fall back to the fetch path for tests and nonstandard dev environments.
+      }
+    }
+
     const latestRes = await fetch(UPDATE_CHECK_URL, { cache: 'no-store' });
     if (!latestRes.ok) return null;
 
