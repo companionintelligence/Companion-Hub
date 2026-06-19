@@ -522,7 +522,7 @@ export const AiSettingsContainer = () => {
           <DialogDescription>Updating these settings will restart your apps that use AI models. Continue?</DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
-              Cancel
+              {t('COMMON_CANCEL')}
             </Button>
             <Button
               intent="primary"
@@ -532,7 +532,7 @@ export const AiSettingsContainer = () => {
               }}
               data-testid="ai-settings-confirm-btn"
             >
-              Confirm
+              {t('COMMON_CONTINUE')}
             </Button>
           </DialogFooter>
         </DialogContent>
