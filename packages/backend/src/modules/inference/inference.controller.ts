@@ -109,9 +109,7 @@ export class InferenceController {
       const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
       const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
       if (appLifecycle) {
-        try {
-          void appLifecycle.restartAiApps();
-        }
+        void appLifecycle.restartAiApps();
       }
     } catch(e) {
       this._logger.error(`Failed to trigger AI app restarts after preferences update: ${e instanceof Error ? e.message : String(e)}`);
