@@ -1,28 +1,12 @@
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
-
-function isPrivateOrLocalIp(ip: string): boolean {
-  if (ip === '::1' || ip === '127.0.0.1') return true;
-  if (ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd')) return true;
-  if (!isIP(ip)) return false;
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return false;
-  const [a, b = -1] = parts;
-  if (a === 10) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 0) return true;
-  return false;
-}
+import { isLocalHostname, isPrivateOrLocalIp } from './ip-address';
 
 async function assertResolvablePublicHost(hostname: string): Promise<void> {
-  if (isPrivateOrLocalIp(hostname)) {
+  if (isLocalHostname(hostname) || isPrivateOrLocalIp(hostname, { includeUnspecified: true })) {
     throw new Error('URL host is not allowed');
   }
   const records = await lookup(hostname, { all: true, verbatim: true });
-  if (records.some((r) => isPrivateOrLocalIp(r.address))) {
+  if (records.some((r) => isPrivateOrLocalIp(r.address, { includeUnspecified: true }))) {
     throw new Error('URL host resolves to a private address');
   }
 }
