@@ -376,6 +376,63 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_SCHEME')).toBe('http');
     });
 
+    it('maps listen-all INTERNAL_IP to loopback for URL vars while keeping APP_HOSTNAME raw', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      const port = 9091;
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '0.0.0.0',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, { port });
+
+      expect(envMap.get('APP_HOSTNAME')).toBe('0.0.0.0');
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_HOST')).toBe('127.0.0.1');
+      expect(envMap.get('APP_URL')).toBe('http://127.0.0.1:9091');
+      expect(envMap.get('APP_DOMAIN')).not.toContain('0.0.0.0');
+      expect(envMap.get('APP_URL')).not.toContain('0.0.0.0');
+    });
+
+    it('preserves real LAN IP in URL vars when INTERNAL_IP is not a listen-all sentinel', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      const lanIp = '192.168.1.100';
+      const port = 8080;
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: lanIp,
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, { port });
+
+      expect(envMap.get('APP_HOSTNAME')).toBe(lanIp);
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe(`${lanIp}:${port}`);
+      expect(envMap.get('APP_DOMAIN')).toBe(`${lanIp}:${port}`);
+      expect(envMap.get('APP_HOST')).toBe(lanIp);
+      expect(envMap.get('APP_URL')).toBe(`http://${lanIp}:${port}`);
+    });
+
     it('should throw error for required form fields', async () => {
       // Arrange
       const appInfoWithRequired = {
