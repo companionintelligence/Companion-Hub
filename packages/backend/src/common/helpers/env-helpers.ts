@@ -61,11 +61,11 @@ const getArchitecture = () => {
 };
 
 /**
- * Host paths may be expressed as POSIX absolute paths (/foo/bar) or
- * Windows drive-letter paths (C:/foo or C:\foo). The backend often runs in a
- * Linux container, so node:path.isAbsolute alone would reject Windows forms.
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
  */
-const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
+const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win32.isAbsolute(value);
 
 /**
  * Resolve a configuration value using the standard priority chain:

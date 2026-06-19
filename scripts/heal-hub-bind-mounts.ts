@@ -111,17 +111,27 @@ function resolveDockerGid(): number {
   }
 }
 
-function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
+/** Probe docker.sock ownership from inside a container (avoids shell `%` expansion on Windows). */
+export function probeDockerSocketOwnershipInContainer(): string | null {
   try {
     const socketPath = resolveHostDockerSocketPath();
-    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return out === '0:0';
+    const result = spawnSync(
+      'docker',
+      ['run', '--rm', '-v', `${socketPath}:/var/run/docker.sock:ro`, 'alpine', 'stat', '-c', '%u:%g', '/var/run/docker.sock'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    if (result.status !== 0 || result.error) return null;
+    const out = result.stdout.trim();
+    return out.length > 0 ? out : null;
   } catch {
     return null;
   }
+}
+
+export function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
+  const ownership = probeDockerSocketOwnershipInContainer();
+  if (ownership === null) return null;
+  return ownership === '0:0';
 }
 
 function parseUidGid(raw: string | undefined): number | undefined {

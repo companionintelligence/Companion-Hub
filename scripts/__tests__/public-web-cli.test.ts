@@ -1,7 +1,24 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { formatPublicWebStatusTable, resolveHubApiBase } from '../public-web-cli';
+import {
+  formatPublicWebStatusTable,
+  PUBLIC_WEB_REPAIR_FAIL_PREFIX,
+  PUBLIC_WEB_REPAIR_OK_PREFIX,
+  publicWebRepairHasFailures,
+  resolveHubApiBase,
+} from '../public-web-cli';
+
+describe('publicWebRepairHasFailures', () => {
+  it('detects failed repair lines by the ✗ prefix', () => {
+    expect(publicWebRepairHasFailures([`${PUBLIC_WEB_REPAIR_OK_PREFIX} app:store \u2192 host.example.com`])).toBe(false);
+    expect(publicWebRepairHasFailures([`${PUBLIC_WEB_REPAIR_FAIL_PREFIX} app:store: repair failed`])).toBe(true);
+  });
+
+  it('does not treat unrelated lines starting with ? as failures', () => {
+    expect(publicWebRepairHasFailures(['? corrupted prefix line'])).toBe(false);
+  });
+});
 
 describe('formatPublicWebStatusTable', () => {
   it('renders table rows for diagnostics', () => {

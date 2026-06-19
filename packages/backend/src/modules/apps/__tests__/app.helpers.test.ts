@@ -121,6 +121,29 @@ describe('AppHelpers', () => {
       expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
     });
 
+    it.each(['C:/foo/bar', 'C:\\foo\\bar', '\\\\server\\share\\folder'])('accepts Windows absolute ROOT_FOLDER_HOST (%s)', async (rootFolderHost) => {
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost,
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: rootFolderHost,
+            domain: 'example.com',
+          },
+        }),
+      );
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const appDataDir = envMap.get('APP_DATA_DIR');
+      expect(appDataDir).toBeDefined();
+      expect(toPosix(appDataDir ?? '')).toContain('app-data/test-store/test-app');
+    });
+
     it('should omit unavailable hub variables without failing env generation', async () => {
       const envMap = new Map<string, string>([
         ['HUB_DEVICE_ID', 'stale-device-id'],

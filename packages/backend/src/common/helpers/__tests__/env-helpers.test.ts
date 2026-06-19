@@ -178,6 +178,17 @@ describe('env-helpers — resolve() priority chain', () => {
     expect(mockedFs.promises.writeFile).toHaveBeenCalled();
     void target;
   });
+
+  it.each([
+    ['C:/foo/bar', 'C:/foo/bar'],
+    ['C:\\foo\\bar', 'C:\\foo\\bar'],
+    ['\\\\server\\share\\folder', '\\\\server\\share\\folder'],
+    ['/home/user/ci-os-hub', '/home/user/ci-os-hub'],
+  ])('accepts absolute host ROOT_FOLDER_HOST (%s)', async (input, expected) => {
+    process.env.ROOT_FOLDER_HOST = input;
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('ROOT_FOLDER_HOST')).toBe(expected);
+  });
 });
 
 describe('writeResolvedEnvFile', () => {

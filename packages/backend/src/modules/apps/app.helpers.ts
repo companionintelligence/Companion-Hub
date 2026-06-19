@@ -15,12 +15,12 @@ import { RegistrationService } from '../registration/registration.service';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 
 /**
- * Host paths may be expressed as POSIX absolute paths (/foo/bar) or
- * Windows drive-letter paths (C:/foo or C:\foo). The backend often runs in a
- * Linux container, so node:path.isAbsolute alone would reject Windows forms.
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
  */
 function isAbsoluteHostPath(value: string): boolean {
-  return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
 @Injectable()

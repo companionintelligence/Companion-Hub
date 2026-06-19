@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnvFile, upsertEnvVar } from './env-file';
 import {
+  dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
   isDockerAvailable,
   likelyDockerDesktop,
@@ -66,19 +67,6 @@ function resolveDockerGid(): string {
     return String(statSync(resolveHostDockerSocketPath()).gid);
   } catch {
     return '973';
-  }
-}
-
-function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
-  try {
-    const socketPath = resolveHostDockerSocketPath();
-    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return out === '0:0';
-  } catch {
-    return null;
   }
 }
 
