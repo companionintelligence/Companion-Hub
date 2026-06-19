@@ -21,15 +21,8 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseEnvFile } from './cihub-cli';
-
-export const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repos', 'app-data', 'user-config', 'backups', '.docker'] as const;
-
-/** Directories safe to quarantine and recreate when host-root-owned (no user app data expected). */
-export const RECREATABLE_BIND_MOUNT_DIRS = ['cache', 'logs', 'user-config', '.docker'] as const;
-
-/** User data directories — chown only; never auto-quarantine. */
-export const DATA_BEARING_BIND_MOUNT_DIRS = ['apps', 'app-data', 'media', 'repos', 'backups'] as const;
+import { parseEnvFile } from './env-file';
+import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
 
 /** Log files a prior root-owned Hub container may leave behind. */
 export const STALE_ROOT_OWNED_FILES = [
@@ -225,20 +218,24 @@ export function verifyContainerCanWriteDir(hostDir: string, uid: number, gid: nu
   return result?.status === 0;
 }
 
+function isSafeBindMountFileName(fileName: string): boolean {
+  return fileName.length > 0 && fileName === path.basename(fileName) && !fileName.includes('..') && !/[\0`$;|&<>]/.test(fileName);
+}
+
 /** Verify the Hub container user can update an existing bind-mounted file (not just the directory). */
 export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, gid: number): boolean {
   if (!isDockerAvailable()) return false;
 
   const hostDir = path.dirname(hostFilePath);
   const fileName = path.basename(hostFilePath);
-  if (!existsSync(hostDir)) return false;
+  if (!existsSync(hostDir) || !isSafeBindMountFileName(fileName)) return false;
 
   if (!existsSync(hostFilePath)) {
     return verifyContainerCanWriteDir(hostDir, uid, gid);
   }
 
   const mount = `${path.resolve(hostDir)}:/mnt:rw`;
-  const result = spawnSync('docker', ['run', '--rm', '--user', `${uid}:${gid}`, '-v', mount, 'alpine:3.20', 'sh', '-c', `touch /mnt/${fileName}`], {
+  const result = spawnSync('docker', ['run', '--rm', '--user', `${uid}:${gid}`, '-v', mount, 'alpine:3.20', 'touch', `/mnt/${fileName}`], {
     encoding: 'utf8',
     stdio: 'pipe',
   });

@@ -5,10 +5,11 @@
  * (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
+import { parseEnvFile } from './env-file';
 
 interface HostMetricsProbeFile {
   schemaVersion: 1;
@@ -25,28 +26,6 @@ interface HostMetricsProbeFile {
     diskUsedGb: number;
     diskMount: string;
   };
-}
-
-function parseEnvFile(filePath: string): Record<string, string> {
-  const values: Record<string, string> = {};
-  try {
-    const content = readFileSync(filePath, 'utf8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const idx = trimmed.indexOf('=');
-      if (idx < 0) continue;
-      const key = trimmed.slice(0, idx).trim();
-      let value = trimmed.slice(idx + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      values[key] = value;
-    }
-  } catch {
-    // ignore
-  }
-  return values;
 }
 
 function resolveStateDir(): string {

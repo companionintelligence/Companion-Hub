@@ -10,14 +10,13 @@ vi.mock('node:child_process', () => ({
   execSync: (...args: unknown[]) => execSyncMock(...args),
 }));
 
+import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
-  DATA_BEARING_BIND_MOUNT_DIRS,
   dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
   hostPathWritable,
   probeDockerSocketOwnershipInContainer,
   quarantineAndRecreateTunnelDir,
-  RECREATABLE_BIND_MOUNT_DIRS,
   repairCriticalBindMountFiles,
   repairHostRootOwnedBindMounts,
   resolveHubContainerIdentity,

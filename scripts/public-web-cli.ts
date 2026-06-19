@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { HubEnv } from './cihub-cli';
-import { parseEnvFile, resolveRootFolderHost } from './cihub-cli';
+import { parseEnvFile } from './env-file';
+import { resolveRootFolderHost } from './lib/paths';
 
 export interface PublicWebDiagnosticEntry {
   appUrn: string;

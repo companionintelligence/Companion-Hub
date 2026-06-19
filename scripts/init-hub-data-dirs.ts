@@ -9,7 +9,8 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseEnvFile, upsertEnvVar } from './env-file';
+import { upsertEnvVar } from './env-file';
+import { resolveRootFolderHostForRuntime } from './lib/paths';
 import {
   dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
@@ -20,20 +21,7 @@ import {
 } from './heal-hub-bind-mounts';
 
 function resolveRootFolderHost(): string {
-  const envFile = process.env.ENV_FILE || '.env.dev';
-  if (existsSync(envFile)) {
-    const vars = parseEnvFile(envFile);
-    const configured = vars.ROOT_FOLDER_HOST;
-    if (configured) {
-      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
-    }
-  }
-  const fromEnv = process.env.ROOT_FOLDER_HOST;
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
-  return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);
+  return resolveRootFolderHostForRuntime();
 }
 
 function healPoisonedEnvMount(cwd: string): void {
