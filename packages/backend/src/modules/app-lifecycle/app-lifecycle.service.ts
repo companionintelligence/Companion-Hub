@@ -807,7 +807,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     // Sync tunnel/DNS state with CI-Cloud. When subdomain or public domain changed,
     // run a release pass first so the old hostname is removed from Cloudflare DNS.
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
-    await this.syncExposureAfterRoutingChange(appName, routingChanged);
+    await this.syncExposureAfterRoutingChange(appUrn, routingChanged);
 
     // If the app is currently running, automatically restart it so the new
     // environment variables take effect immediately. The restart is fire-and-
@@ -824,7 +824,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure(options?: { excludeAppNames?: string[] }) {
+  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
     await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
   }
 
@@ -833,10 +833,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    * app's previous slug disappears from the sync payload. Sync once without the
    * reconfigured app so the old record is released, then sync the full state.
    */
-  private async syncExposureAfterRoutingChange(appName: string, routingChanged: boolean) {
+  private async syncExposureAfterRoutingChange(appUrn: AppUrn, routingChanged: boolean) {
     if (routingChanged) {
-      this.logger.info(`[Cloudflare] Public routing changed for ${appName} — releasing previous DNS before applying new hostname`);
-      await this.syncExposure({ excludeAppNames: [appName] });
+      this.logger.info(`[Cloudflare] Public routing changed for ${appUrn} — releasing previous DNS before applying new hostname`);
+      await this.syncExposure({ excludeAppUrns: [appUrn] });
     }
     await this.syncExposure();
   }
@@ -970,7 +970,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
   }
 
-  public async triggerCloudflareSync(options?: { excludeAppNames?: string[] }) {
+  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
     try {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
@@ -992,12 +992,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
 
       type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
-      const exclude = new Set(options?.excludeAppNames ?? []);
+      const exclude = new Set(options?.excludeAppUrns ?? []);
 
       const exposedApps: AppInfo[] = await Promise.all(
         apps
           .filter((app: AppFromDb) => {
-            if (exclude.has(app.appName)) {
+            const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+            if (exclude.has(appUrn)) {
               return false;
             }
             return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);

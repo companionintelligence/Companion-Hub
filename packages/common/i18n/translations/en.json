@@ -1122,6 +1122,8 @@
   "AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE": "Runtime model discovery unavailable for the selected inference backend.",
   "AI_SETTINGS_NO_ACTIVE_MODELS": "No models active in the inference backend.",
   "AI_SETTINGS_DOWNLOADED_BADGE": "Downloaded",
+  "AI_SETTINGS_CONFIRM_TITLE": "Confirm AI settings change",
+  "AI_SETTINGS_CONFIRM_DESCRIPTION": "Updating these settings will restart your apps that use AI models. Continue?",
   "HEADER_OPEN_MENU": "Open menu",
   "HEADER_THEME": "Theme",
   "NOT_FOUND_TITLE": "404 - Page Not Found",

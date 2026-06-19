@@ -517,9 +517,9 @@ export const AiSettingsContainer = () => {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>Confirm AI settings change</DialogTitle>
+            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription>Updating these settings will restart your apps that use AI models. Continue?</DialogDescription>
+          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
               {t('COMMON_CANCEL')}
