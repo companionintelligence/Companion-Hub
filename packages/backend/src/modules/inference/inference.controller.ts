@@ -111,10 +111,10 @@ export class InferenceController {
       if (appLifecycle) {
         try {
           void appLifecycle.restartAiApps();
-        } catch(e) {
-          this._logger.error(`Failed to trigger AI app restarts after preferences update: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
+    } catch(e) {
+      this._logger.error(`Failed to trigger AI app restarts after preferences update: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     return result;
