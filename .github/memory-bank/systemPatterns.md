@@ -1,4 +1,4 @@
-# Runtipi System Patterns
+# CI-Hub system patterns
 
 ## System Architecture
 

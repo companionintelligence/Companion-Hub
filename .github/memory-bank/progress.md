@@ -1,4 +1,4 @@
-# Runtipi Progress
+# CI-Hub progress
 
 ## What Works
 

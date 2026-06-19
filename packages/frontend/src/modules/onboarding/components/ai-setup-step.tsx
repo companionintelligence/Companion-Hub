@@ -349,9 +349,6 @@ export const AiSetupStep = ({
             tailscaleAvailable={tailscaleAvailable}
           />
 
-          {/* Inference backend selection hidden — Ollama is the only option.
-          <BackendCard /> */}
-
           {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 
           {/* Disk-available summary sits above the model selection so the budget is visible first. */}

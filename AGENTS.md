@@ -36,6 +36,10 @@ Tauri 2 in `packages/desktop/`. Run `pnpm run local:desktop` to launch against t
 
 `packages/backend/` · `packages/frontend/` · `packages/desktop/` · `packages/common/`
 
+## Dev-only tooling
+
+`agent/` at the repo root is a local dev helper (separate npm lockfile). It is not part of the pnpm workspace or CI — do not import it from Hub packages.
+
 ## Git discipline
 
 - Never `git reset --hard` or `git clean -f` without user confirmation.

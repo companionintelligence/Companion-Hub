@@ -1,52 +1,45 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Create a report to help us improve Companion Hub
 title: '[BUG]'
 labels: bug
-assignees: meienberger
 ---
 
 ### Checklist
 
-Before opening your issue be sure to have completed all those tasks.
+Before opening your issue, complete the tasks that apply.
 
-- [ ] My issue is not related to an app I installed through tipi (If so please open your issue here: https://github.com/runtipi/runtipi-appstore/issues)
-- [ ] My issue is not a support request (eg: "My instance is not running after update". If so please ask for support in the help section of our [Discord server](https://discord.gg/gyeHhmvwaK))
-- [ ] I have searched for an already existing issue with similar context and errors. My issue has not yet been reported.
-- [ ] I have included a clear description and steps to reproduce.
-- [ ] I have included the result of the command `./runtipi-cli debug`
-- [ ] I have included logs from the file `runtipi/logs/error.log` if relevant
-- [ ] I am using a custom docker compose file (`user-config/tipi-compose.yml`)
+- [ ] My issue is not related to a third-party marketplace app (open app issues in the app’s own tracker when applicable).
+- [ ] I searched for an existing issue with similar context.
+- [ ] I included a clear description and steps to reproduce.
+- [ ] I ran `cihub doctor` (or `pnpm run hub -- doctor`) and noted relevant output.
+- [ ] I checked Hub logs (`cihub logs` or tray → View Logs on desktop) if relevant.
+- [ ] I am using a custom compose override only if necessary — try without it first.
 
 **Describe the bug**
-A clear and concise description of what the bug is.
-
-> Warning ⚠️: If you use a custom docker compose file (located in `user-config/tipi-compose.yml`) please try to start runtipi without it before submitting an issue. If the issue persists even without the custom docker compose file then proceed to open an issue.
+A clear and concise description of what went wrong.
 
 **To Reproduce**
 Steps to reproduce the behavior:
 
 1. Go to '...'
 2. Click on '....'
-3. Scroll down to '....'
-4. See error
+3. See error
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen.
 
 **Screenshots**
 
-Screenshots are **required** for bugs involving UI/UX changes. Attach screenshots directly to this issue or upload them to the [shared team folder](https://drive.google.com/drive/folders/ci-hub-screenshots) organized by issue number.
+Attach screenshots for UI/UX bugs.
 
-- For UI bugs: include a screenshot showing the unexpected behaviour.
-- For regressions: include before/after screenshots if possible.
-- Use Playwright screenshots where applicable (see `CONTRIBUTING.md` for instructions).
-- Backend-only bugs: screenshots are optional.
+**Environment**
 
-**Server (please complete the following information):**
-
-- OS: [e.g. Ubuntu 20.04]
-- Companion Hub Version [e.g. 2.0.5] (can be found in settings page)
+- CI-Hub version (`cihub version`):
+- OS:
+- Docker Desktop / Engine version:
+- Install path (source dev / desktop app / appliance):
 
 **Additional context**
-Please include logs here `runtipi/logs/error.log` and add any other context about the problem here. Like results of the `start` script or container logs `docker logs ...` or include your custom docker compose file if its being used
+
+Logs, compose env (redact secrets), and anything else that helps.

@@ -1,4 +1,4 @@
-# Runtipi Technical Context
+# CI-Hub memory bank — technical context
 
 ## Technologies Used
 

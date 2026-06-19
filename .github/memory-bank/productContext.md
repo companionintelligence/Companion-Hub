@@ -1,4 +1,4 @@
-# Runtipi Product Context
+# CI-Hub product context
 
 ## Why Runtipi Exists
 
