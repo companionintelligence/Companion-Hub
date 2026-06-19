@@ -175,13 +175,15 @@ describe('AiSettingsContainer', () => {
 
     await user.click(screen.getByTestId('select-lemonade'));
     await user.click(screen.getByTestId('ai-settings-save-btn'));
+    // Saving now goes through a confirmation modal before patching preferences.
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith(
         '/api/inference/preferences',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ backend: 'lemonade' }),
+          body: JSON.stringify({ backend: 'lemonade', model: null, embeddingModel: null, visionModel: null }),
         }),
       );
     });
@@ -356,13 +358,16 @@ describe('AiSettingsContainer', () => {
     });
 
     await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
 
     await waitFor(() => {
-      expect(mockApiFetch).not.toHaveBeenCalledWith(
-        '/api/inference/models/pull',
-        expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
-      );
+      expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/preferences', expect.objectContaining({ method: 'PATCH' }));
     });
+
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/inference/models/pull',
+      expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
+    );
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {
