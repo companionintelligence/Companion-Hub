@@ -35,6 +35,7 @@ interface IProps {
   formId: string;
   appStatus?: AppStatus;
   onValidityChange?: (isValid: boolean) => void;
+  onDirtyChange?: (isDirty: boolean) => void;
   scrollable?: boolean;
   editingAppUrn?: string;
 }
@@ -87,6 +88,7 @@ export const InstallForm: React.FC<IProps> = ({
   formId,
   appStatus,
   onValidityChange,
+  onDirtyChange,
   scrollable,
   editingAppUrn,
 }) => {
@@ -211,6 +213,10 @@ export const InstallForm: React.FC<IProps> = ({
 
     onValidityChange(allRequiredFilled);
   }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watchedRequiredValues]);
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   useEffect(() => {
     // Detect when the form is reused for a different app so we can force-reset

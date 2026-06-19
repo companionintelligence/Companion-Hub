@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -11,7 +12,7 @@ import type {
   RuntimeModelInfo,
   RuntimeModelsResponse,
 } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CloudProviderType, CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -22,11 +23,32 @@ import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/componen
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { useTranslation } from 'react-i18next';
 
+// Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
+// Only LLMs can be the agent default; embeddings / speech models must never become the chat model.
+const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
+const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
+const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
+
+// Pick the preferred model for a role from the user's selection, preferring a recommended model.
+// Returns null (which clears the stored preference) when no selected model fits the role.
+const resolvePreferredModelId = (
+  profile: HardwareProfileResponse,
+  backend: InferenceBackendType,
+  match: (model: CuratedModel) => boolean,
+  selectedIds: string[],
+): string | null => {
+  const selectedSet = new Set(selectedIds);
+  const recommended = profile.recommendedModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id));
+  if (recommended) return recommended.id;
+  return profile.availableModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id))?.id ?? null;
+};
+
 export const AiSettingsContainer = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
@@ -189,11 +211,25 @@ export const AiSettingsContainer = () => {
         return;
       }
 
+      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
+      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+
+      // Resolve the default model for each role from the user's selection so agents/RAG/vision
+      // tasks have a usable default. null clears any previously stored preference for that role.
+      const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, selectedBackend, isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
+
       const backendRes = await apiFetch('/api/inference/preferences', {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backend: selectedBackend }),
+        body: JSON.stringify({
+          backend: selectedBackend,
+          model: preferredModel,
+          embeddingModel: preferredEmbeddingModel,
+          visionModel: preferredVisionModel,
+        }),
       });
       if (!backendRes.ok) {
         throw new Error(`Failed to save preferred backend: HTTP ${backendRes.status}`);
@@ -220,8 +256,6 @@ export const AiSettingsContainer = () => {
         }
       }
 
-      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const modelOperationErrors: string[] = [];
 
@@ -475,10 +509,34 @@ export const AiSettingsContainer = () => {
       <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />
 
       <div className="flex justify-end">
-        <Button intent="primary" onClick={handleSave} loading={saving} data-testid="ai-settings-save-btn">
+        <Button intent="primary" onClick={() => setConfirmOpen(true)} loading={saving} data-testid="ai-settings-save-btn">
           Save AI Settings
         </Button>
       </div>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              intent="primary"
+              onClick={() => {
+                setConfirmOpen(false);
+                void handleSave();
+              }}
+              data-testid="ai-settings-confirm-btn"
+            >
+              {t('COMMON_CONTINUE')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

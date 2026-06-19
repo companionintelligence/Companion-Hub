@@ -31,6 +31,7 @@ import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { didPublicRoutingIdentityChange, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
@@ -52,6 +53,15 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   }
 
   return parsedForm;
+}
+
+/** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
+function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
+  const parsed = appFormSchema.safeParse(raw);
+  if (!parsed.success) {
+    return raw;
+  }
+  return normalizeLocalOpenPort(parsed.data) as Record<string, unknown>;
 }
 
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
@@ -697,6 +707,15 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    const settingsChanged = this.hasConfigChanged(
+      normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
+      parsedForm as Record<string, unknown>,
+    );
+    if (!settingsChanged) {
+      this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
+      return { requestId: crypto.randomUUID() };
+    }
+
     const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
     if (!appInfo) {
@@ -778,28 +797,17 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       maxBackups: parsedForm.maxBackups ?? null,
     });
 
-    // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { isProduction: _isProdEnv } = this.config.getConfig();
-    const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
-    const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
-    const _wasExposedLocal = app.exposedLocal;
-    const _isNowExposedLocal = parsedForm.exposedLocal ?? false;
-    const oldPort = app.port;
-    // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
-    // parsedForm.port is the port being set in this update, so it's the most authoritative
-    const newPort = parsedForm.port ? Number(parsedForm.port) : app.port ? Number(app.port) : appInfo.port;
-    const _subdomainChanged = oldSubdomain !== newSubdomain;
-    const _portChanged = oldPort !== newPort;
+    const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
 
     if (!changed?.pendingRestart) {
-      const pendingRestart = this.hasConfigChanged(app.config, changed?.config || {});
-      await this.appRepository.updateAppById(app.id, { pendingRestart });
+      await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
     }
 
-    // Sync state with Cloudflare whenever exposedLocal is enabled or changed
+    // Sync tunnel/DNS state with CI-Cloud. When subdomain or public domain changed,
+    // run a release pass first so the old hostname is removed from Cloudflare DNS.
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
-    await this.syncExposure();
+    await this.syncExposureAfterRoutingChange(appUrn, routingChanged);
 
     // If the app is currently running, automatically restart it so the new
     // environment variables take effect immediately. The restart is fire-and-
@@ -816,8 +824,21 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure() {
-    await Promise.allSettled([this.triggerCloudflareSync(), this.triggerTailscaleSync()]);
+  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
+    await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
+  }
+
+  /**
+   * When public routing identity changes, CI-Cloud only deletes stale DNS when the
+   * app's previous slug disappears from the sync payload. Sync once without the
+   * reconfigured app so the old record is released, then sync the full state.
+   */
+  private async syncExposureAfterRoutingChange(appUrn: AppUrn, routingChanged: boolean) {
+    if (routingChanged) {
+      this.logger.info(`[Cloudflare] Public routing changed for ${appUrn} — releasing previous DNS before applying new hostname`);
+      await this.syncExposure({ excludeAppUrns: [appUrn] });
+    }
+    await this.syncExposure();
   }
 
   /**
@@ -949,7 +970,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
   }
 
-  public async triggerCloudflareSync() {
+  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
     try {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
@@ -971,11 +992,16 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
 
       type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+      const exclude = new Set(options?.excludeAppUrns ?? []);
 
       const exposedApps: AppInfo[] = await Promise.all(
         apps
           .filter((app: AppFromDb) => {
-            return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.localSubdomain;
+            const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+            if (exclude.has(appUrn)) {
+              return false;
+            }
+            return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
           })
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
@@ -1237,6 +1263,34 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         }
       }
     })();
+  }
+
+  /**
+   * Restart every running app whose marketplace listing is categorized as "ai".
+   * Called after inference preferences change so AI apps pick up the new
+   * model/backend env. Fire-and-forget: restarts run in the background so the
+   * caller (e.g. the preferences endpoint) isn't blocked.
+   */
+  async restartAiApps() {
+    const apps = await this.appRepository.getApps();
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
+
+    await Promise.all(
+      runningApps.map(async (app) => {
+        const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+        try {
+          const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
+          if (!info?.categories?.includes('ai')) {
+            return;
+          }
+          this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
+          return this.restartApp({ appUrn });
+        } catch (e) {
+          this.logger.error(`Failed to restart AI app ${app.id}`, e);
+        }
+      }),
+    );
   }
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {

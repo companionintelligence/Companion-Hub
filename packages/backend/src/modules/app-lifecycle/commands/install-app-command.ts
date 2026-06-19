@@ -12,6 +12,7 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -240,9 +241,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
               const envMap = envUtils.envStringToMap(appEnvData.content);
               envMap.set('APP_PORT', String(mainAlloc.hostPort));
 
-              // Update APP_INTERNAL_AUTHORITY with allocated port
-              const internalIp = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
-              envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${mainAlloc.hostPort}`);
+              // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
+              const bindHost = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
+              const browserHost = resolveBrowserHost(bindHost);
+              const internalAuthority = `${browserHost}:${mainAlloc.hostPort}`;
+              envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
+              if (envMap.get('APP_EXPOSED') !== 'true') {
+                envMap.set('APP_HOST', browserHost);
+                envMap.set('APP_DOMAIN', internalAuthority);
+                envMap.set('APP_URL', `http://${internalAuthority}`);
+              }
 
               // Also update form.port so ensureAppDir uses the right port
               form.port = mainAlloc.hostPort;

@@ -4,7 +4,7 @@ import type { AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import type React from 'react';
-import { useId } from 'react';
+import { useEffect, useId, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { InstallFormButtons } from '../../install-form-buttons/install-form-buttons';
@@ -23,8 +23,15 @@ const RUNNING_STATUSES: AppStatus[] = ['running', 'starting', 'restarting'];
 export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
   const { t } = useTranslation();
   const formId = useId();
+  const [hasChanges, setHasChanges] = useState(false);
 
   const isRunning = status != null && RUNNING_STATUSES.includes(status);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setHasChanges(false);
+    }
+  }, [isOpen]);
 
   const updateConfig = useMutation({
     ...updateAppConfigMutation(),
@@ -53,9 +60,14 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
       <DialogContent className="max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
-          <p className="text-sm text-muted-foreground mt-1">
-            {isRunning ? t('APP_UPDATE_SETTINGS_RESTART_HINT') : t('APP_UPDATE_SETTINGS_STOPPED_HINT')}
-          </p>
+          {hasChanges && (
+            <div
+              className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-400 mt-2"
+              data-testid="update-settings-restart-hint"
+            >
+              {isRunning ? t('APP_UPDATE_SETTINGS_RESTART_HINT') : t('APP_UPDATE_SETTINGS_STOPPED_HINT')}
+            </div>
+          )}
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
           <InstallForm
@@ -67,10 +79,11 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             appStatus={status}
             scrollable
             editingAppUrn={info.urn}
+            onDirtyChange={setHasChanges}
           />
         </div>
         <DialogFooter>
-          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} />
+          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
         </DialogFooter>
       </DialogContent>
     </Dialog>

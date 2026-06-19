@@ -306,6 +306,43 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('excludes only the targeted app URN when releasing DNS for a routing change', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'shared-name',
+          appStoreSlug: 'ci-marketplace',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'shared-marketplace',
+        },
+        {
+          appName: 'shared-name',
+          appStoreSlug: 'other-store',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'shared-other',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'example.com', localDomain: 'lan' },
+        domain: 'example.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], synced: 2 });
+
+      await service.triggerCloudflareSync({ excludeAppUrns: ['shared-name:ci-marketplace'] as any });
+
+      const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      const syncedSubdomains = syncedApps.filter((app) => app.privilegedKind !== 'hub').map((app) => app.subdomain);
+      expect(syncedSubdomains).toEqual(['shared-other']);
+    });
+
     it('emits per-app public DNS error events when the entire sync fails', async () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
@@ -636,12 +673,26 @@ describe('AppLifecycleService', () => {
     });
 
     it.each(['running', 'starting', 'restarting'] as const)('triggers restartApp({ skipPull: true }) when app status is "%s"', async (status) => {
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: {} } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await service.updateAppConfig({ appUrn, form: {} });
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
 
       expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    });
+
+    it.each([
+      'running',
+      'starting',
+      'restarting',
+    ] as const)('does NOT trigger restartApp when app status is "%s" but config is unchanged', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      expect(restartSpy).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -662,10 +713,10 @@ describe('AppLifecycleService', () => {
     });
 
     it('returns a requestId even when auto-restart fires', async () => {
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: {} } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: { port: 8080 } } as any);
       vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      const result = await service.updateAppConfig({ appUrn, form: {} });
+      const result = await service.updateAppConfig({ appUrn, form: { port: 9090 } });
 
       expect(result).toHaveProperty('requestId');
       expect(typeof result.requestId).toBe('string');
@@ -707,6 +758,53 @@ describe('AppLifecycleService', () => {
           config: expect.objectContaining({ exposureMode: 'local', openPort: true, port: 8080 }),
         }),
       );
+    });
+
+    it('releases previous public DNS before syncing a subdomain change', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        config: { exposureMode: 'cloudflare', localSubdomain: 'old-sub', port: 8080 },
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        localSubdomain: 'old-sub',
+        port: 8080,
+      } as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        hubSubdomain: 'hub1-acme',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'myapp',
+          appStoreSlug: 'ci-marketplace',
+          status: 'running',
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'new-sub',
+          port: 8080,
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        domain: 'example.com',
+      } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const syncSpy = vi.spyOn(service, 'triggerCloudflareSync').mockResolvedValue(undefined);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'new-sub', port: 8080 },
+      });
+
+      expect(syncSpy).toHaveBeenCalledTimes(2);
+      expect(syncSpy).toHaveBeenNthCalledWith(1, { excludeAppUrns: ['myapp:ci-marketplace'] });
+      expect(syncSpy).toHaveBeenNthCalledWith(2, undefined);
     });
   });
 

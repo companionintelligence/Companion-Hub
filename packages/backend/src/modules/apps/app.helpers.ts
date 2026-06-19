@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -246,14 +247,18 @@ export class AppHelpers {
     // --- Core Identity Variables ---
     // These variables represent the fundamental identity of the service.
 
-    // 1. APP_HOSTNAME: The internal IP address (e.g. 192.168.1.5)
+    // 1. APP_HOSTNAME: bind/listen address (e.g. 0.0.0.0 or 192.168.1.5) — kept raw for containers.
     envMap.set('APP_HOSTNAME', internalIp);
 
     // 2. APP_PORT (Already set earlier): The internal port
 
-    // 3. APP_INTERNAL_AUTHORITY: The combination of internal IP and port
+    // Browser-reachable host: listen-all sentinels (0.0.0.0 / ::) map to loopback so ORIGIN,
+    // APP_URL, and Hub "Open" URLs stay consistent (see resolveBrowserHost in apps.service.ts).
+    const browserHost = resolveBrowserHost(internalIp);
+
+    // 3. APP_INTERNAL_AUTHORITY: host:port suitable for URLs and CSRF origin checks
     if (config.port || form.port) {
-      envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${form.port ? form.port : config.port}`);
+      envMap.set('APP_INTERNAL_AUTHORITY', `${browserHost}:${form.port ? form.port : config.port}`);
     }
 
     // --- Exposure State Variables ---
@@ -321,8 +326,8 @@ export class AppHelpers {
 
     envMap.set('APP_PROTOCOL', scheme);
 
-    // APP_HOST: Internal IP in internal mode, Public FQDN in exposed mode.
-    envMap.set('APP_HOST', isExposed ? publicHostname : internalIp);
+    // APP_HOST: browser-reachable host in internal mode, public FQDN in exposed mode.
+    envMap.set('APP_HOST', isExposed ? publicHostname : browserHost);
 
     // APP_DOMAIN: IP:PORT in internal mode, Public FQDN in exposed mode.
     if (isExposed) {
