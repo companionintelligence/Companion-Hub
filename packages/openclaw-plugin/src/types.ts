@@ -90,6 +90,8 @@ export interface OpenClawModelEntry {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  /** Native backend options forwarded to the provider (e.g. Ollama `num_ctx`). */
+  options?: { num_ctx?: number };
 }
 
 /** Speech provider registration */

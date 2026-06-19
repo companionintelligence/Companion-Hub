@@ -153,6 +153,13 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
         .filter((m) => m.id.includes(':'));
     }
 
+    // Hardware-aware context window injected by the Hub (CI_LLM_NUM_CTX). Caps
+    // both the agent's token budget and the native Ollama `num_ctx`, so OpenClaw
+    // doesn't pack to Ollama's oversized memory-based default (e.g. 262144 on
+    // unified-memory APUs).
+    const hubNumCtx = Number.parseInt(process.env.CI_LLM_NUM_CTX ?? '', 10);
+    const numCtx = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : undefined;
+
     if (localModels.length > 0 && api.registerProvider) {
       api.registerProvider({
         id: 'ci-hub',
@@ -168,15 +175,30 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
               baseUrl: ollamaNativeUrl,
               apiKey: 'ollama',
               api: 'ollama',
-              models: localModels.map((m) => ({
-                id: m.id,
-                name: m.id,
-                reasoning: false,
-                input: ['text'],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: m.context_window ?? 32768,
-                maxTokens: m.max_tokens ?? 8192,
-              })),
+              models: localModels.map((m) => {
+                // Never advertise / request more context than the model supports.
+                // CI_LLM_NUM_CTX is computed for the Hub's default chat model and
+                // may exceed a smaller model's window (which Ollama would reject).
+                // When the window is unknown (e.g. /api/tags discovery only gives
+                // the id), stay conservative at the prior 32768 default rather than
+                // the possibly-larger numCtx.
+                const DEFAULT_CTX = 32768;
+                const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? DEFAULT_CTX) : undefined;
+                // Without an explicit num_ctx, advertise the historical default but
+                // never more than what Ollama will actually allocate for the model.
+                const contextWindow = effCtx ?? Math.min(DEFAULT_CTX, m.context_window ?? DEFAULT_CTX);
+                return {
+                  id: m.id,
+                  name: m.id,
+                  reasoning: false,
+                  input: ['text'],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow,
+                  // Output budget can't exceed the total context window.
+                  maxTokens: Math.min(m.max_tokens ?? 8192, contextWindow),
+                  ...(effCtx ? { options: { num_ctx: effCtx } } : {}),
+                };
+              }),
             },
           }),
         },

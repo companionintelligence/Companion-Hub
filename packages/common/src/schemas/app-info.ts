@@ -8,7 +8,15 @@ import { agentConfigSchema } from './agent-config.js';
  * env-generation time and writes it into the app's `app.env` under the
  * app-specified env variable name.
  */
-export const INFERENCE_VARIABLES = ['llm_base_url', 'llm_api_key', 'chat_model', 'embedding_model', 'vision_model', 'ollama_host'] as const;
+export const INFERENCE_VARIABLES = [
+  'llm_base_url',
+  'llm_api_key',
+  'chat_model',
+  'embedding_model',
+  'vision_model',
+  'ollama_host',
+  'num_ctx',
+] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 
 export const inferenceEnvMappingSchema = z.record(z.enum(INFERENCE_VARIABLES), z.string().min(1));
