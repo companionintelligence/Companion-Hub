@@ -118,15 +118,10 @@ Old script keys found:
 - `start:prod`
 - `start:staging`
 - `start:dev`
-- `start:dev:detached`
-- `check:all`
-- `device-id`
-- `hub`
-- `start:detached`
-- `fresh`
-- `fresh:local`
-- `wait:hub`
-- `start:dev:desktop`
+- `start:dev:detached` — removed; use `pnpm run dev` or `cihub up dev`
+- `wait:hub` — removed; health checks live in `scripts/launch-tauri-desktop.ts` / desktop Rust startup
+- `start:dev:desktop` — removed; use `pnpm run dev:desktop` (`scripts/launch-tauri-desktop.ts --stack-dev`)
+- `scripts/compose-profiles-for-env.ts`, `scripts/compose-runtime-env.ts` — removed; use `cihub` / `mergeComposeProfilesFromEnvFile` in `scripts/cihub-cli.ts`
 
 ### CLI implementation still exposing old names or compat paths
 

@@ -9,8 +9,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseEnvFile, upsertEnvVar } from './env-file';
+import { upsertEnvVar } from './env-file';
+import { resolveRootFolderHostForRuntime } from './lib/paths';
 import {
+  dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
   isDockerAvailable,
   likelyDockerDesktop,
@@ -19,20 +21,7 @@ import {
 } from './heal-hub-bind-mounts';
 
 function resolveRootFolderHost(): string {
-  const envFile = process.env.ENV_FILE || '.env.dev';
-  if (existsSync(envFile)) {
-    const vars = parseEnvFile(envFile);
-    const configured = vars.ROOT_FOLDER_HOST;
-    if (configured) {
-      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
-    }
-  }
-  const fromEnv = process.env.ROOT_FOLDER_HOST;
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
-  return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);
+  return resolveRootFolderHostForRuntime();
 }
 
 function healPoisonedEnvMount(cwd: string): void {
@@ -53,29 +42,19 @@ function healPoisonedEnvMount(cwd: string): void {
 }
 
 function resolveDockerGid(): string {
-  try {
-    const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
-    const gid = line.split(':')[2]?.trim();
-    if (gid) return gid;
-  } catch {
-    // getent missing (macOS) or docker group absent
+  if (process.platform !== 'win32') {
+    try {
+      const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
+      const gid = line.split(':')[2]?.trim();
+      if (gid) return gid;
+    } catch {
+      // getent missing (macOS) or docker group absent
+    }
   }
   try {
     return String(statSync(resolveHostDockerSocketPath()).gid);
   } catch {
     return '973';
-  }
-}
-
-function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
-  try {
-    const socketPath = resolveHostDockerSocketPath();
-    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null`, {
-      encoding: 'utf8',
-    }).trim();
-    return out === '0:0';
-  } catch {
-    return null;
   }
 }
 

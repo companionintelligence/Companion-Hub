@@ -5,6 +5,7 @@
   "type": "module",
   "files": [
     "dist",
+    "i18n",
     "package.json",
     "README.md"
   ],
@@ -18,7 +19,8 @@
       "import": "./dist/types/index.js",
       "types": "./dist/types/index.d.ts",
       "default": "./dist/types/index.js"
-    }
+    },
+    "./i18n/translations/*": "./i18n/translations/*"
   },
   "typesVersions": {
     "*": {
@@ -33,7 +35,7 @@
   "scripts": {
     "prepublishOnly": "npm run ci",
     "dev": "tsc --watch --preserveWatchOutput",
-    "build": "rm -rf dist && tsc && cp package.json dist/",
+    "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"const fs=require('fs');fs.copyFileSync('package.json','dist/package.json')\"",
     "bundle": "node -e \"process.exit(0)\"",
     "build:schemas": "tsx ./script/gen-json-schema.ts",
     "ci": "npm run build && npm run check-exports",

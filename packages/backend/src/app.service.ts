@@ -183,9 +183,13 @@ export class AppService implements OnApplicationShutdown {
       // Ensure config directory exists
       await this.filesystem.createDirectory(traefikConfigDest);
 
-      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) =>
-        content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com'),
-      );
+      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
+        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com');
+        if (process.env.NODE_ENV === 'production') {
+          next = next.replace(/^(\s*)insecure:\s*true\s*$/m, '$1insecure: false');
+        }
+        return next;
+      });
 
       // Copy dynamic config
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');

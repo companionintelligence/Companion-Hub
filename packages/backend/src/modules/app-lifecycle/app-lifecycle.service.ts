@@ -362,13 +362,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       return this.startApp({ appUrn });
     }
 
-    // TODO: Re-enable version gating once Hub versioning is stable
-    // Currently disabled during active development — Hub version scheme
-    // changed from Runtipi's 4.x to CI Hub's 0.x, breaking all app installs.
-    // if (appInfo?.min_hub_version && valid(version) && lt(version, appInfo.min_hub_version)) {
-    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: appInfo.min_hub_version });
-    // }
-
+    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
     const installRecord =
       existingApp ??
       (await this.appRepository.createApp({
@@ -1122,12 +1116,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    // TODO: Re-enable version gating once Hub versioning is stable
-    // const version = this.config.get('version');
-    // const { minHubVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
-    // if (minHubVersion && semver.valid(version) && semver.lt(version, minHubVersion)) {
-    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: minHubVersion });
-    // }
+    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
 
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 

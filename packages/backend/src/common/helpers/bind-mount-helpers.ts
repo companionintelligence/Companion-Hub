@@ -5,7 +5,7 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
 
-/** Rename a stale bind-mounted path aside for manual recovery instead of deleting it. */
+/** Rename a stale bind-mounted path aside for manual recovery instead of deleting it. Keep in sync with scripts/heal-hub-bind-mounts.ts quarantineStalePath. */
 export function quarantineStalePath(targetPath: string, reason = 'stale-root'): string | null {
   if (!fs.existsSync(targetPath)) return null;
 

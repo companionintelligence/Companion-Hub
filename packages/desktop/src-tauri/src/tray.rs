@@ -296,7 +296,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "open_portal" => {
                 let portal_url =
-                    option_env!("CI_HUB_CLOUD_URL").unwrap_or(crate::hub_manager::default_ci_cloud_url());
+                    option_env!("CI_HUB_CLOUD_URL").unwrap_or(crate::hub_env::default_ci_cloud_url());
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {

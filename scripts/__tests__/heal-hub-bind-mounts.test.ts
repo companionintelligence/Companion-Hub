@@ -10,12 +10,13 @@ vi.mock('node:child_process', () => ({
   execSync: (...args: unknown[]) => execSyncMock(...args),
 }));
 
+import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
-  DATA_BEARING_BIND_MOUNT_DIRS,
+  dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
   hostPathWritable,
+  probeDockerSocketOwnershipInContainer,
   quarantineAndRecreateTunnelDir,
-  RECREATABLE_BIND_MOUNT_DIRS,
   repairCriticalBindMountFiles,
   repairHostRootOwnedBindMounts,
   resolveHubContainerIdentity,
@@ -28,6 +29,7 @@ describe('resolveHubContainerIdentity', () => {
     delete process.env.CI_HUB_CONTAINER_UID;
     delete process.env.CI_HUB_CONTAINER_GID;
     execSyncMock.mockReset();
+    spawnSyncMock.mockReset();
   });
 
   it('prefers explicit env UID/GID', () => {
@@ -42,8 +44,34 @@ describe('resolveHubContainerIdentity', () => {
   });
 
   it('uses root identity when docker socket is root-only inside containers', () => {
-    execSyncMock.mockReturnValue('0:0');
+    spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+      if (cmd === 'docker' && args?.includes('stat') && args.includes('%u:%g')) {
+        return { status: 0, stdout: '0:0\n', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
     expect(resolveHubContainerIdentity()).toMatchObject({ uid: 0, gid: 0, source: 'docker-desktop-root' });
+  });
+});
+
+describe('probeDockerSocketOwnershipInContainer', () => {
+  beforeEach(() => {
+    spawnSyncMock.mockReset();
+  });
+
+  it('invokes docker with argv (no shell) so stat format is not mangled on Windows', () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '1000:1000\n', stderr: '' });
+    expect(probeDockerSocketOwnershipInContainer()).toBe('1000:1000');
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(['stat', '-c', '%u:%g', '/var/run/docker.sock']),
+      expect.objectContaining({ encoding: 'utf8' }),
+    );
+  });
+
+  it('reports root-only socket ownership', () => {
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '0:0\n', stderr: '' });
+    expect(dockerSocketIsRootOnlyInsideContainers()).toBe(true);
   });
 });
 

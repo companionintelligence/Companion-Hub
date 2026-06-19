@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
     "local": "pnpm run dev",
-    "build": "rm -rf dist && nest build && tsx build.ts",
-    "bundle": "rm -rf dist && nest build && tsx build.ts",
+    "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && nest build && tsx build.ts",
+    "bundle": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && nest build && tsx build.ts",
     "tsc": "tsc --noEmit",
     "test": "vitest --coverage --watch=false run",
     "test:integration": "tsx scripts/run-integration.ts",

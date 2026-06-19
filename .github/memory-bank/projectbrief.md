@@ -1,4 +1,4 @@
-# Runtipi Project Brief
+# CI-Hub project brief
 
 ## Project Overview
 

@@ -61,6 +61,13 @@ const getArchitecture = () => {
 };
 
 /**
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
+ */
+const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win32.isAbsolute(value);
+
+/**
  * Resolve a configuration value using the standard priority chain:
  *
  *   1. process.env (from .env.local or system environment — deployment intent)
@@ -339,7 +346,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     );
   }
 
-  if (!path.isAbsolute(rootFolderHost)) {
+  if (!isAbsoluteHostPath(rootFolderHost)) {
     throw new Error(
       `ROOT_FOLDER_HOST must be an absolute host path, got: ${rootFolderHost}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path in docker-compose.yml or .env file.',
@@ -356,14 +363,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure CI_HUB_APP_DATA_PATH is always absolute (host path)
-  if (appDataPath && !path.isAbsolute(appDataPath)) {
+  if (appDataPath && !isAbsoluteHostPath(appDataPath)) {
     appDataPath = path.resolve(rootFolderHost, appDataPath);
     logger.debug(`Resolved relative CI_HUB_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
   }
 
   const finalAppDataPath = appDataPath || rootFolderHost;
 
-  if (!path.isAbsolute(finalAppDataPath)) {
+  if (!isAbsoluteHostPath(finalAppDataPath)) {
     throw new Error(
       `CI_HUB_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path or set CI_HUB_APP_DATA_PATH to an absolute path.',

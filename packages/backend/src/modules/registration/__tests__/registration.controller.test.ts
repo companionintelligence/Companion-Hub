@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { AuthGuard } from '@/modules/auth/auth.guard';
 import { RegistrationController } from '../registration.controller';
 import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -17,7 +18,10 @@ describe('RegistrationController', () => {
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
       ],
-    }).compile();
+    })
+      .overrideGuard(AuthGuard)
+      .useValue({ canActivate: vi.fn().mockReturnValue(true) })
+      .compile();
 
     controller = moduleRef.get(RegistrationController);
     registrationService = moduleRef.get(RegistrationService);
@@ -130,6 +134,26 @@ describe('RegistrationController', () => {
         slug: 'my-org',
         domain: 'example.com',
       });
+    });
+  });
+
+  describe('handleCallbackPost', () => {
+    it('should complete registration from JSON body', async () => {
+      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
+
+      const result = await controller.handleCallbackPost({
+        device_id: 'device-1',
+        organization_id: 'org-1',
+        organization_name: 'My Org',
+        slug: 'my-org',
+        subdomain: 'my-sub',
+        tunnel_id: 'tun-1',
+        tunnel_token: 'tok-1',
+        api_key: 'key-1',
+        domain: 'example.com',
+      });
+
+      expect(result).toEqual({ success: true });
     });
   });
 
