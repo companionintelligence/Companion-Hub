@@ -80,7 +80,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:17400 http: https: ws: wss:; img-src 'self' data: blob: http: https:; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* wss://localhost:*; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:* https:; font-src 'self' data:"
     }
   },
   "plugins": {

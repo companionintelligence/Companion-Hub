@@ -21,7 +21,6 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
   const { t } = useTranslation();
   const { setOptimisticStatus } = useAppStatus();
 
-  // const [shouldRemoveBackups, setShouldRemoveBackups] = useState(false);
   const [shouldDeleteAllData, setShouldDeleteAllData] = useState(true);
 
   const uninstallMutation = useMutation({
@@ -46,14 +45,6 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
           <div className="flex justify-center pt-3">
-            {/*
-            <Switch
-              className="text-start"
-              checked={shouldRemoveBackups}
-              onCheckedChange={setShouldRemoveBackups}
-              label={t('APP_UNINSTALL_FORM_REMOVE_BACKUPS')}
-            />
-            */}
             <Switch
               className="text-start"
               checked={shouldDeleteAllData}

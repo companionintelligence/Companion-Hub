@@ -34,7 +34,7 @@ import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseEnvFile } from './env-file';
+import { resolveRootFolderHostForRuntime } from './lib/paths';
 
 const HOST_CONFIG_PATH = path.join(os.homedir(), '.docker', 'config.json');
 
@@ -43,20 +43,7 @@ const HOST_CONFIG_PATH = path.join(os.homedir(), '.docker', 'config.json');
 const HOST_ONLY_CREDSTORES = new Set(['desktop', 'osxkeychain', 'wincred', 'secretservice', 'pass']);
 
 function resolveRootFolderHost(): string {
-  const envFile = process.env.ENV_FILE || '.env.dev';
-  if (existsSync(envFile)) {
-    const vars = parseEnvFile(envFile);
-    const configured = vars.ROOT_FOLDER_HOST;
-    if (configured) {
-      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
-    }
-  }
-  const fromEnv = process.env.ROOT_FOLDER_HOST;
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
-  return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);
+  return resolveRootFolderHostForRuntime();
 }
 
 function isHostOnlyCredHelper(value: string): boolean {

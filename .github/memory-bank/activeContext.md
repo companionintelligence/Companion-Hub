@@ -1,4 +1,4 @@
-# Runtipi Active Context
+# CI-Hub active context
 
 ## Current Work Focus
 

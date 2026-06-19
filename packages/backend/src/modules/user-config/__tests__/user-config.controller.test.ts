@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { AuthGuard } from '@/modules/auth/auth.guard';
 import { UserConfigController } from '../user-config.controller';
 import { UserConfigService } from '../user-config.service';
 
@@ -12,7 +13,10 @@ describe('UserConfigController', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [UserConfigController],
       providers: [{ provide: UserConfigService, useValue: mock<UserConfigService>() }],
-    }).compile();
+    })
+      .overrideGuard(AuthGuard)
+      .useValue({ canActivate: vi.fn().mockReturnValue(true) })
+      .compile();
 
     controller = moduleRef.get(UserConfigController);
     userConfigService = moduleRef.get(UserConfigService);

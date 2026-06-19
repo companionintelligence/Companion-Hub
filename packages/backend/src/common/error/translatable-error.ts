@@ -1,4 +1,4 @@
-import messages from '@/modules/i18n/translations/en.json';
+import messages from '@ci-hub/common/i18n/translations/en.json';
 import { HttpException, type HttpExceptionOptions } from '@nestjs/common';
 
 type TranslationKey = keyof typeof messages;

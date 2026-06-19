@@ -1,11 +1,13 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { AuthGuard } from '@/modules/auth/auth.guard';
 import { GetUserConfigDto, UpdateUserConfigDto } from './dto/user-config.dto';
 import { UserConfigService } from './user-config.service';
 
 @Controller('user-config')
 @ApiTags('User Config')
+@UseGuards(AuthGuard)
 export class UserConfigController {
   constructor(private readonly userConfigService: UserConfigService) {}
 

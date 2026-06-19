@@ -25,7 +25,7 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 // ─── Mocks ────────────────────────────────────────────────────────────────
 
-const enTranslations = JSON.parse(readFileSync(join(ROOT, 'packages/backend/src/modules/i18n/translations/en.json'), 'utf8'));
+const enTranslations = JSON.parse(readFileSync(join(ROOT, 'packages/common/i18n/translations/en.json'), 'utf8'));
 
 const userContextMock = {
   allowAutoThemes: true,

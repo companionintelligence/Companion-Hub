@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseEnvFile } from './env-file';
 
 type OsFamily = 'debian' | 'rpm' | 'arch' | 'unknown';
 
@@ -97,28 +98,6 @@ function parseOsRelease(): Record<string, string> {
     }
   } catch {
     // ignore and fallback to unknown
-  }
-  return values;
-}
-
-function parseEnvFile(filePath: string): Record<string, string> {
-  const values: Record<string, string> = {};
-  try {
-    const content = readFileSync(filePath, 'utf8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const idx = trimmed.indexOf('=');
-      if (idx < 0) continue;
-      const key = trimmed.slice(0, idx).trim();
-      let value = trimmed.slice(idx + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      values[key] = value;
-    }
-  } catch {
-    // ignore
   }
   return values;
 }

@@ -74,14 +74,29 @@ export class ReposHelpers {
     if (process.platform !== 'win32') {
       await fs.promises.chmod(dirPath, 0o755);
     }
+
+    // Only mark real git repositories as safe directories.
+    // CI Cloud marketplace app folders are plain directories and adding each
+    // one to global git config can stall startup under lock contention.
+    const isGitRepo = await this.filesystem.pathExists(path.join(dirPath, '.git'));
+    if (!isGitRepo) {
+      return;
+    }
+
     try {
       execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
         stdio: 'ignore',
+        timeout: 2000,
       });
     } catch (error) {
-      this.logger.warn(
-        `Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message.includes('could not lock config file') || message.includes('.gitconfig.lock')) {
+        this.logger.warn(`Skipping git safe.directory registration for "${dirPath}" because global git config is locked: ${message}`);
+        return;
+      }
+
+      this.logger.warn(`Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${message}`);
     }
   }
 

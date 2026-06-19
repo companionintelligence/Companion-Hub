@@ -14,6 +14,15 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 
+/**
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
+ */
+function isAbsoluteHostPath(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -125,17 +134,17 @@ export class AppHelpers {
 
     // Ensure absolute path - resolve relative paths
     let appDataHostBase: string;
-    if (path.isAbsolute(baseAppDataPath)) {
+    if (isAbsoluteHostPath(baseAppDataPath)) {
       appDataHostBase = baseAppDataPath;
       this.logger.debug(`Using absolute baseAppDataPath: ${appDataHostBase}`);
-    } else if (path.isAbsolute(rootFolderHost)) {
+    } else if (isAbsoluteHostPath(rootFolderHost)) {
       // Resolve relative path - try multiple strategies
       appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
       this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
     } else {
       // Try environment variable
       const envRoot = process.env.ROOT_FOLDER_HOST;
-      if (envRoot && path.isAbsolute(envRoot)) {
+      if (envRoot && isAbsoluteHostPath(envRoot)) {
         appDataHostBase = path.resolve(envRoot, baseAppDataPath);
         this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
       } else {
@@ -166,7 +175,7 @@ export class AppHelpers {
     const finalAppDataDir = path.join(appDataHostPath, appStoreId, appName);
 
     // CRITICAL: Verify this is an absolute host path, not a container path
-    if (!path.isAbsolute(finalAppDataDir)) {
+    if (!isAbsoluteHostPath(finalAppDataDir)) {
       this.logger.error(`APP_DATA_DIR is not absolute: ${finalAppDataDir}. This will cause Docker mount errors.`);
       throw new Error(`APP_DATA_DIR must be an absolute path, got: ${finalAppDataDir}`);
     }
@@ -177,7 +186,7 @@ export class AppHelpers {
           'This will cause Docker mount errors. Using fallback path construction.',
       );
       // Fallback: construct path from ROOT_FOLDER_HOST
-      const fallbackBase = path.isAbsolute(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
+      const fallbackBase = isAbsoluteHostPath(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
       const fallbackPath = path.join(fallbackBase, 'app-data', appStoreId, appName);
       envMap.set('APP_DATA_DIR', fallbackPath);
       this.logger.warn(`Using fallback APP_DATA_DIR: ${fallbackPath}`);
@@ -386,6 +395,7 @@ export class AppHelpers {
           embedding_model: aiEnv.CI_EMBEDDING_MODEL,
           vision_model: aiEnv.CI_VISION_MODEL,
           ollama_host: aiEnv.OLLAMA_HOST,
+          num_ctx: aiEnv.CI_LLM_NUM_CTX,
         };
         for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
           const resolved = HUB_TO_RESOLVED[hubKey];

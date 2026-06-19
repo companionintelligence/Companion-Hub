@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { parseEnvFile } from './env-file';
 
 const OS_RESERVE_MB = 4096;
 const MIN_DOCKER_RAM_MB = 8192;
@@ -23,28 +24,6 @@ interface DockerTuningRecord {
   previousMemoryMb?: number;
   targetMemoryMb?: number;
   appliedMemoryMb?: number;
-}
-
-function parseEnvFile(filePath: string): Record<string, string> {
-  const values: Record<string, string> = {};
-  try {
-    const content = readFileSync(filePath, 'utf8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const idx = trimmed.indexOf('=');
-      if (idx < 0) continue;
-      const key = trimmed.slice(0, idx).trim();
-      let value = trimmed.slice(idx + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      values[key] = value;
-    }
-  } catch {
-    // ignore
-  }
-  return values;
 }
 
 function resolveStateDir(): string {

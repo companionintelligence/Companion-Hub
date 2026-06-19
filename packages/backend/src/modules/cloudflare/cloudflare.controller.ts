@@ -1,6 +1,7 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
+import { assertSafeOutboundUrl } from '@/common/helpers/ssrf-url';
 import { CloudflareClientService } from './cloudflare-client.service';
 import { CloudflareHostnameService } from './cloudflare-hostname.service';
 import { ApiResponse } from '@nestjs/swagger';
@@ -74,12 +75,12 @@ export class CloudflareController {
     }
 
     try {
-      // Use axios with relaxed SSL verification to handle self-signed certs or local dev environments
+      const safeUrl = await assertSafeOutboundUrl(url);
       const agent = new https.Agent({
         rejectUnauthorized: false,
       });
 
-      const response = await axios.head(url, {
+      const response = await axios.head(safeUrl.toString(), {
         httpsAgent: agent,
         timeout: 10000,
         validateStatus: (status) => status < 500, // resolved for status < 500

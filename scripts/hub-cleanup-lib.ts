@@ -3,6 +3,8 @@ import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+/** Legacy Runtipi Docker project/volume names — kept for appliances upgraded from Runtipi. See scripts/LEGACY_MIGRATION.md. */
+
 type CleanupLevel = 'INFO' | 'WARN' | 'ERROR';
 
 export type CleanupLogger = {

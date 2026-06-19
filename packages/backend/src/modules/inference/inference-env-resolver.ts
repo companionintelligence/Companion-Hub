@@ -5,6 +5,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { recommendContextLength } from './context-length.util';
 
 /**
  * Standardized AI environment variables injected into an app's `app.env` when
@@ -27,6 +28,12 @@ export interface StandardizedAiEnv {
   CI_VISION_MODEL?: string;
   /** Native Ollama URL (not OpenAI-compatible — for direct Ollama API calls). */
   OLLAMA_HOST?: string;
+  /**
+   * Hardware-aware default context window (num_ctx) for the chat model, in
+   * tokens, as a string. Scaled to the host's memory and capped by the model's
+   * window so apps don't inherit Ollama's oversized memory-based default.
+   */
+  CI_LLM_NUM_CTX?: string;
 }
 
 /**
@@ -88,15 +95,16 @@ export class InferenceEnvResolver {
 
     // ── Chat model ────────────────────────────────────────────────────────
     let chatModel: string | undefined;
+    let chatCurated: ReturnType<ModelRegistryService['getCuratedModel']>;
     const preferredId = preferences.preferredModel;
     if (preferredId) {
-      const curated = this.modelRegistry.getCuratedModel(preferredId);
-      chatModel = curated?.backendModelId;
+      chatCurated = this.modelRegistry.getCuratedModel(preferredId);
+      chatModel = chatCurated?.backendModelId;
     }
     if (!chatModel) {
       const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
-      const llm = recommended.find((m) => m.modality === 'llm');
-      chatModel = llm?.backendModelId;
+      chatCurated = recommended.find((m) => m.modality === 'llm');
+      chatModel = chatCurated?.backendModelId;
     }
 
     // ── Embedding model ───────────────────────────────────────────────────
@@ -131,6 +139,17 @@ export class InferenceEnvResolver {
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;
+
+    // Hardware-aware context window for the chat model, so apps don't inherit
+    // Ollama's oversized memory-based default (e.g. 262144 on unified-memory APUs).
+    if (chatCurated) {
+      const numCtx = recommendContextLength({
+        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+        modelFootprintMb: chatCurated.runtime.memoryFootprintMb,
+        modelContextWindow: chatCurated.runtime.contextWindow,
+      });
+      env.CI_LLM_NUM_CTX = String(numCtx);
+    }
 
     this.logger.info(
       `[InferenceEnvResolver] chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +

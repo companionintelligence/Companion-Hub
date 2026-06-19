@@ -48,7 +48,7 @@ fi
 # Fallback list used when the Hub doesn't send X-Hub-Managed-Keys
 # (older Hub releases). Kept in sync with AppBootstrapService's
 # OPENCLAW env keys as a last resort.
-FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST"
+FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST,CI_LLM_NUM_CTX"
 
 # Convert a comma-separated key list into a ^KEY= alternation pattern.
 keys_to_pattern() {
@@ -264,6 +264,13 @@ const readEnvValue = (key) => {
 const defaultModel = readEnvValue('DEFAULT_MODEL');
 const isEmbeddingModel = (id) => /embed/i.test(id);
 
+// Hardware-aware context window injected by the Hub (CI_LLM_NUM_CTX). Caps both
+// the agent's token budget and the native Ollama num_ctx so OpenClaw doesn't
+// pack to Ollama's oversized memory-based default (e.g. 262144 on APUs).
+const hubNumCtxRaw = readEnvValue('CI_LLM_NUM_CTX') || process.env.CI_LLM_NUM_CTX || '';
+const hubNumCtx = Number.parseInt(hubNumCtxRaw, 10);
+const numCtx = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : undefined;
+
 const fetchJson = async (url, init) => {
   const response = await fetch(url, init);
   if (!response.ok) return null;
@@ -277,24 +284,41 @@ const modelCapabilities = async (id) => {
     body: JSON.stringify({ name: id }),
   });
   const caps = Array.isArray(payload?.capabilities) ? payload.capabilities : [];
+  // model_info exposes the model's trained context as "<arch>.context_length".
+  const info = payload?.model_info && typeof payload.model_info === 'object' ? payload.model_info : {};
+  const ctxEntry = Object.entries(info).find(([k]) => k.endsWith('.context_length'));
+  // model_info may serialize the value as a number or a numeric string — coerce.
+  const ctxNum = ctxEntry ? Number(ctxEntry[1]) : Number.NaN;
+  const contextLimit = Number.isFinite(ctxNum) && ctxNum > 0 ? ctxNum : undefined;
   return {
     supportsTools: caps.includes('tools'),
     reasoning: caps.includes('thinking'),
     vision: caps.includes('vision'),
+    contextLimit,
   };
 };
 
 const baseEntry = (id, name, caps) => {
+  // Never request more context than the model supports: numCtx is computed for
+  // the Hub's default chat model and may exceed a smaller model's window. When
+  // the per-model limit is unknown, stay conservative at the historical 32000
+  // default rather than the possibly-larger numCtx.
+  const effCtx = numCtx ? Math.min(numCtx, caps?.contextLimit ?? 32000) : undefined;
+  // Without an explicit num_ctx, advertise the historical 32000 default but never
+  // more than the model's known window (small-window models would be rejected).
+  const contextWindow = effCtx ?? Math.min(32000, caps?.contextLimit ?? 32000);
   const entry = {
     id,
     name: name || id,
     reasoning: caps?.reasoning === true,
     input: caps?.vision ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 32000,
-    maxTokens: 4096,
+    contextWindow,
+    // Output budget can't exceed the total context window.
+    maxTokens: Math.min(4096, contextWindow),
     compat: { supportsTools: caps?.supportsTools === true },
   };
+  if (effCtx) entry.options = { num_ctx: effCtx };
   return entry;
 };
 

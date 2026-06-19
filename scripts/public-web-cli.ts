@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { HubEnv } from './cihub-cli';
-import { parseEnvFile, resolveRootFolderHost } from './cihub-cli';
+import { parseEnvFile } from './env-file';
+import { resolveRootFolderHost } from './lib/paths';
 
 export interface PublicWebDiagnosticEntry {
   appUrn: string;
@@ -23,6 +24,14 @@ export interface PublicWebDiagnosticsResponse {
 export interface PublicWebRepairResponse {
   results: { appUrn: string; success: boolean; message?: string; repairedHostname?: string }[];
   synced: boolean;
+}
+
+/** Prefixes for repair result lines (exported for CLI tone detection and tests). */
+export const PUBLIC_WEB_REPAIR_OK_PREFIX = '\u2713';
+export const PUBLIC_WEB_REPAIR_FAIL_PREFIX = '\u2717';
+
+export function publicWebRepairHasFailures(lines: string[]): boolean {
+  return lines.some((line) => line.startsWith(PUBLIC_WEB_REPAIR_FAIL_PREFIX));
 }
 
 export function resolveHubApiBase(envFileName: string): string {
@@ -109,9 +118,9 @@ export async function runPublicWebRepair(envFileName: string, appName?: string):
 
   const lines = result.results.map((entry) => {
     if (entry.success) {
-      return `✓ ${entry.appUrn} → ${entry.repairedHostname}`;
+      return `${PUBLIC_WEB_REPAIR_OK_PREFIX} ${entry.appUrn} \u2192 ${entry.repairedHostname}`;
     }
-    return `✗ ${entry.appUrn}: ${entry.message || 'repair failed'}`;
+    return `${PUBLIC_WEB_REPAIR_FAIL_PREFIX} ${entry.appUrn}: ${entry.message || 'repair failed'}`;
   });
 
   if (lines.length === 0) {

@@ -17,7 +17,7 @@ fi
 ### --------------------------------
 UPDATE="false"
 VERSION="latest"
-ASSET="runtipi-cli-linux-x86_64.tar.gz" # TODO: rename when CI CLI is available
+ASSET="runtipi-cli-linux-x86_64.tar.gz" # Legacy tarball name; ships `cihub` binary (rename tracked with CI packaging)
 ENV_FILE=""
 
 while [ -n "${1-}" ]; do
@@ -212,7 +212,7 @@ fi
 URL="https://github.com/companionintelligence/CI-OS-Hub/releases/download/$VERSION/$ASSET"
 
 if [[ "${UPDATE}" == "false" ]]; then
-  mkdir -p runtipi # TODO: rename directory when codebase migration is complete
+  mkdir -p runtipi # Legacy install dir name; contains `cihub` binary after extract
   cd runtipi || exit
 fi
 

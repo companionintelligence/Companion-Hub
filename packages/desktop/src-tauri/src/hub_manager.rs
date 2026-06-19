@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,6 +11,8 @@ use std::time::{Duration, Instant};
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+use crate::hub_env::{default_ci_cloud_url, default_hub_image, default_public_domain};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -60,15 +63,6 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
-const DEFAULT_DEV_PUBLIC_DOMAIN: &str = "companionintelligence.com";
-// Production public domain. Must be a Cloudflare-provisioned zone (CI-Portal only
-// provisions DNS/tunnel ingress for companionintelligence.com / companionintel.com /
-// ci.computer — NOT .org, which is the Squarespace marketing site). Image selection is
-// decoupled from this via default_hub_image(), so changing the domain does not change
-// which Hub image tag is pulled.
-const DEFAULT_PROD_PUBLIC_DOMAIN: &str = "companionintelligence.com";
-const DEFAULT_DEV_CI_CLOUD_URL: &str = "https://hub.companionintelligence.com";
-const DEFAULT_PROD_CI_CLOUD_URL: &str = "https://hub.ci.computer";
 #[cfg(target_os = "windows")]
 const HUB_ENV_FILENAME: &str = ".env";
 #[cfg(not(target_os = "windows"))]
@@ -106,32 +100,6 @@ const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &["docker-config.json", ".internal/d
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
-pub(crate) fn default_public_domain() -> &'static str {
-    match option_env!("CI_HUB_ENVIRONMENT") {
-        Some("production") => DEFAULT_PROD_PUBLIC_DOMAIN,
-        _ => DEFAULT_DEV_PUBLIC_DOMAIN,
-    }
-}
-
-pub(crate) fn default_ci_cloud_url() -> &'static str {
-    match option_env!("CI_HUB_ENVIRONMENT") {
-        Some("production") => DEFAULT_PROD_CI_CLOUD_URL,
-        _ => DEFAULT_DEV_CI_CLOUD_URL,
-    }
-}
-
-/// Hub container image tag for this build. Keyed on the build-time environment
-/// (CI_HUB_ENVIRONMENT) rather than the public domain, so the public domain can be a
-/// Cloudflare-provisioned zone (e.g. companionintelligence.com) without affecting which
-/// image tag is pulled. Production → :latest, staging → :staging, otherwise → :dev.
-pub(crate) fn default_hub_image() -> &'static str {
-    match option_env!("CI_HUB_ENVIRONMENT") {
-        Some("production") => "ghcr.io/companionintelligence/ci-hub:latest",
-        Some("staging") => "ghcr.io/companionintelligence/ci-hub:staging",
-        _ => "ghcr.io/companionintelligence/ci-hub:dev",
-    }
-}
-
 #[cfg(any(test, target_os = "windows"))]
 const DOCKER_DESKTOP_WINDOWS_INTEL_INSTALLER_URL: &str =
     "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe";
@@ -152,17 +120,35 @@ const OLLAMA_MACOS_ZIP_URL: &str = "https://ollama.com/download/Ollama-darwin.zi
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
     let mut cmd = Command::new(docker_path);
-    // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose)
+    // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose
+    // plug-ins and credential helpers such as docker-credential-desktop must be
+    // findable even when the Tauri process inherits a stripped PATH).
     if let Ok(current_path) = std::env::var("PATH") {
-        let extra_paths = if cfg!(target_os = "macos") {
-            "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+        if cfg!(target_os = "macos") {
+            let extra =
+                "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin";
+            cmd.env("PATH", format!("{}:{}", extra, current_path));
         } else if cfg!(target_os = "windows") {
-            ""
+            // Prepend Docker Desktop's resources\bin directory so credential
+            // helpers (docker-credential-desktop.exe) and compose plug-ins are
+            // findable when the Tauri process inherits a PATH that was set
+            // before Docker Desktop added its own entries.
+            let mut bin_dirs: Vec<String> = Vec::new();
+            for var in &["ProgramFiles", "ProgramW6432"] {
+                if let Ok(root) = std::env::var(var) {
+                    let dir = format!("{}\\Docker\\Docker\\resources\\bin", root);
+                    if !bin_dirs.contains(&dir) {
+                        bin_dirs.push(dir);
+                    }
+                }
+            }
+            if !bin_dirs.is_empty() {
+                let extra = bin_dirs.join(";");
+                cmd.env("PATH", format!("{};{}", extra, current_path));
+            }
         } else {
-            "/usr/local/bin:/usr/bin"
-        };
-        if !extra_paths.is_empty() {
-            cmd.env("PATH", format!("{}:{}", extra_paths, current_path));
+            let extra = "/usr/local/bin:/usr/bin";
+            cmd.env("PATH", format!("{}:{}", extra, current_path));
         }
     }
     #[cfg(target_os = "windows")]

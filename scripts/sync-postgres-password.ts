@@ -10,40 +10,15 @@
  * When TCP auth fails but ci-hub-db is running, we ALTER USER via local socket
  * inside the container (no old password required).
  */
-import { readFileSync } from 'node:fs';
-import path, { isAbsolute, join } from 'node:path';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parseEnvFile } from './env-file';
 
 const DB_CONTAINER = 'ci-hub-db';
 const DOCKER_NETWORK = 'ci-os-hub_network';
 const HEALTH_POLL_INTERVAL_MS = 1000;
 const HEALTH_WAIT_TIMEOUT_MS = 60_000;
-
-function parseEnvFile(envFileName: string): Record<string, string> {
-  const vars: Record<string, string> = {};
-  const envPath = isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
-
-  try {
-    const content = readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      let value = trimmed.slice(eq + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      vars[key] = value;
-    }
-  } catch {
-    // Missing env file — nothing to sync.
-  }
-
-  return vars;
-}
 
 function containerIsRunning(name: string): boolean {
   const result = spawnSync('docker', ['inspect', '-f', '{{.State.Running}}', name], {

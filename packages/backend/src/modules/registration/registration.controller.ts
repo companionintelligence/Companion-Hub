@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
+import { AuthGuard } from '@/modules/auth/auth.guard';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -20,6 +22,18 @@ interface PairDeviceDto {
   pairing_code: string;
 }
 
+interface RegistrationCallbackDto {
+  device_id: string;
+  organization_id: string;
+  organization_name: string;
+  slug: string;
+  subdomain: string;
+  tunnel_id: string;
+  tunnel_token: string;
+  api_key: string;
+  domain?: string;
+}
+
 @ApiTags('Registration')
 @Controller('registration')
 export class RegistrationController {
@@ -29,6 +43,7 @@ export class RegistrationController {
   ) {}
 
   @Post('reset')
+  @UseGuards(AuthGuard)
   @ApiOperation({ summary: 'Reset device registration to allow re-pairing' })
   @ApiResponse({ status: 200, description: 'Registration reset successfully' })
   async resetRegistration() {
@@ -70,8 +85,17 @@ export class RegistrationController {
     };
   }
 
+  @Post('callback')
+  @ApiOperation({ summary: 'Handle registration callback from CI Cloud (preferred — secrets in body)' })
+  @ApiResponse({ status: 200, description: 'Registration completed successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid callback data' })
+  async handleCallbackPost(@Body() body: RegistrationCallbackDto) {
+    return this.completeRegistrationCallback(body);
+  }
+
+  /** Legacy CI Cloud browser redirect — prefer POST so secrets are not in query strings. */
   @Get('callback')
-  @ApiOperation({ summary: 'Handle registration callback from CI Cloud' })
+  @ApiOperation({ summary: 'Handle registration callback from CI Cloud (legacy GET redirect)' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
   async handleCallback(
@@ -85,6 +109,32 @@ export class RegistrationController {
     @Query('api_key') apiKey: string,
     @Query('domain') domain: string,
   ) {
+    return this.completeRegistrationCallback({
+      device_id: deviceId,
+      organization_id: organizationId,
+      organization_name: organizationName,
+      slug,
+      subdomain,
+      tunnel_id: tunnelId,
+      tunnel_token: tunnelToken,
+      api_key: apiKey,
+      domain,
+    });
+  }
+
+  private async completeRegistrationCallback(body: RegistrationCallbackDto) {
+    const {
+      device_id: deviceId,
+      organization_id: organizationId,
+      organization_name: organizationName,
+      slug,
+      subdomain,
+      tunnel_id: tunnelId,
+      tunnel_token: tunnelToken,
+      api_key: apiKey,
+      domain,
+    } = body;
+
     if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey || !slug) {
       return {
         success: false,
@@ -108,7 +158,8 @@ export class RegistrationController {
   }
 
   @Get('config')
-  @ApiOperation({ summary: 'Get CI Cloud configuration (debug endpoint)' })
+  @UseGuards(AuthGuard)
+  @ApiOperation({ summary: 'Get CI Cloud configuration (operator debug)' })
   @ApiResponse({ status: 200, description: 'Returns the CI Cloud configuration' })
   async getConfig() {
     const config = this.config.getConfig();
@@ -239,6 +290,7 @@ export class RegistrationController {
   }
 
   @Get('probe-domain')
+  @UseGuards(AuthGuard)
   @ApiOperation({ summary: 'Probe a CF domain to check if the tunnel is serving the Hub' })
   @ApiResponse({ status: 200, description: 'Probe result' })
   async probeDomain(@Query('url') url: string) {
@@ -246,7 +298,8 @@ export class RegistrationController {
       return { ready: false };
     }
     try {
-      const res = await fetch(url, {
+      const safeUrl = await assertSafeOutboundHttpsUrl(url);
+      const res = await fetch(safeUrl, {
         redirect: 'follow',
         signal: AbortSignal.timeout(10000),
       });

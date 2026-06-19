@@ -17,6 +17,53 @@ import { fileURLToPath } from 'node:url';
  * 2. Fall back to /sys/class/dmi/id/product_uuid (same source systeminformation uses)
  */
 export function getDeviceId(): string {
+  // Windows: wmic / registry MachineGuid
+  if (process.platform === 'win32') {
+    // Primary: WMI product UUID (same as dmidecode system-uuid on Linux)
+    try {
+      const out = execSync('wmic csproduct get uuid /value', {
+        timeout: 5000,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const match = /UUID\s*=\s*([0-9A-Fa-f-]{36})/.exec(out);
+      if (match?.[1] && match[1].toUpperCase() !== 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF') {
+        return match[1];
+      }
+    } catch {
+      // wmic may be unavailable on some Windows 11 builds
+    }
+    // Fallback: registry MachineGuid (stable per-install identifier)
+    try {
+      const out = execSync('reg query "HKLM\\SOFTWARE\\Microsoft\\Cryptography" /v MachineGuid', {
+        timeout: 5000,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const match = /MachineGuid\s+REG_SZ\s+(\S+)/.exec(out);
+      if (match?.[1]) return match[1];
+    } catch {
+      // ignore
+    }
+    // Last resort: PowerShell Get-CimInstance
+    try {
+      const out = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystemProduct).UUID"', {
+        timeout: 8000,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (out && out.toUpperCase() !== 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF') {
+        return out;
+      }
+    } catch {
+      // ignore
+    }
+    // All hardware sources exhausted — emit a warning and continue with a
+    // stable per-user fallback so `cihub up` is never blocked on Windows.
+    console.warn('Warning: could not read a hardware device ID on Windows; using a local fallback identifier.');
+    return `windows-fallback-${process.env.USERNAME ?? process.env.COMPUTERNAME ?? 'unknown'}`;
+  }
+
   // macOS: ioreg IOPlatformUUID
   if (process.platform === 'darwin') {
     try {

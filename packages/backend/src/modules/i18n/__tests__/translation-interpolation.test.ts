@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
  *   when callers only pass {{label}} {{max}} — `{{min}}` rendered literally.
  */
 
-const TRANSLATIONS_DIR = join(__dirname, '..', 'translations');
+const TRANSLATIONS_DIR = join(__dirname, '..', '..', '..', '..', '..', 'common', 'i18n', 'translations');
 const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 
 function extractPlaceholders(value: unknown): Set<string> {
