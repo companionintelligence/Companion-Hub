@@ -150,7 +150,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   },
 ];
 
-// ─── colour & text ────────────────────────────────────────────────────────────
+// ??? colour & text ????????????????????????????????????????????????????????????
 
 function supportsColor() {
   if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== '0') return true;
@@ -192,10 +192,10 @@ function termWidth() {
 }
 
 function hr(tone: Tone = 'dim') {
-  return colorize('─'.repeat(termWidth()), tone);
+  return colorize('?'.repeat(termWidth()), tone);
 }
 
-// ─── boxes ───────────────────────────────────────────────────────────────────
+// ??? boxes ???????????????????????????????????????????????????????????????????
 
 export function box(title: string, lines: string[], tone: Tone = 'cyan') {
   const w = termWidth();
@@ -217,7 +217,7 @@ function printMessageBox(title: string, lines: string[], tone: Tone = 'cyan') {
   console.log(box(title, lines, tone));
 }
 
-// ─── step indicator ──────────────────────────────────────────────────────────
+// ??? step indicator ??????????????????????????????????????????????????????????
 
 export function renderStep(n: number, total: number, label: string, status: StepStatus = 'active') {
   const icons = STEP_ICONS;
@@ -227,7 +227,7 @@ export function renderStep(n: number, total: number, label: string, status: Step
   return `${icon} ${counter} ${label}`;
 }
 
-// ─── banner ───────────────────────────────────────────────────────────────────
+// ??? banner ???????????????????????????????????????????????????????????????????
 
 export function renderBanner() {
   return colorize(COMPANY_ART, 'green');
@@ -242,7 +242,7 @@ export function renderWizardWelcome() {
       [
         `${bold('Goal')}  Launch, configure, and register your Hub in one guided flow.`,
         `${bold('Tip')}   Press Enter to accept the shown default for each prompt.`,
-        `${bold('Docs')}  cihub man  ·  cihub --help`,
+        `${bold('Docs')}  cihub man  �  cihub --help`,
       ],
       'green',
     ),
@@ -269,7 +269,7 @@ export function renderHelp() {
       `${pad(colorize(`${BASE_COMMAND} --help`, 'green'), 20)}  This help output`,
       `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  Show version`,
     ]),
-    box('Environments', [allowedEnvs.join('  ·  ')], 'yellow'),
+    box('Environments', [allowedEnvs.join('  �  ')], 'yellow'),
   ].join('\n\n');
 }
 
@@ -279,7 +279,7 @@ export function renderManPage() {
     '',
     box('Synopsis', [`${BASE_COMMAND} <command> [args]`]),
     box('Description', [
-      'Companion Intelligence Hub CLI — setup, registration, Docker lifecycle,',
+      'Companion Intelligence Hub CLI � setup, registration, Docker lifecycle,',
       'MCP toggles, environment resets, and app management.',
       '',
       'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
@@ -302,7 +302,7 @@ export function renderManPage() {
   ].join('\n\n');
 }
 
-// ─── arg helpers ─────────────────────────────────────────────────────────────
+// ??? arg helpers ?????????????????????????????????????????????????????????????
 
 export function normalizeCliArgs(rawArgs: string[]) {
   return rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
@@ -316,7 +316,7 @@ export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local')
 }
 
 function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}) {
-  console.log(colorize(`▶ ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
+  console.log(colorize(`? ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
   const result = spawnSync(cmd, args, {
     stdio: 'inherit',
     env: { ...process.env, ...extraEnv },
@@ -330,7 +330,7 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
 }
 
 async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}): Promise<T> {
-  console.log(colorize(`▶ ${label}`, 'dim'));
+  console.log(colorize(`? ${label}`, 'dim'));
   const previousValues = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(extraEnv)) {
     previousValues.set(key, process.env[key]);
@@ -454,7 +454,7 @@ function printRemovedCommand(oldUsage: string, replacement: string, detail?: str
   process.exit(2);
 }
 
-// ─── env / compose helpers ───────────────────────────────────────────────────
+// ??? env / compose helpers ???????????????????????????????????????????????????
 
 function getEnvFileOrExit(env: string): string {
   const f = envFileMap[env as HubEnv];
@@ -528,7 +528,7 @@ export function buildEnvOverrides(envFileName: string) {
   if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
 
   // Identity comes from init:host / the env file (e.g. UID 0 on Docker Desktop). Never
-  // replace with getuid() here — shell env wins over --env-file for compose interpolation.
+  // replace with getuid() here � shell env wins over --env-file for compose interpolation.
   if (fileVars.CI_HUB_CONTAINER_UID) overrides.CI_HUB_CONTAINER_UID = fileVars.CI_HUB_CONTAINER_UID;
   if (fileVars.CI_HUB_CONTAINER_GID) overrides.CI_HUB_CONTAINER_GID = fileVars.CI_HUB_CONTAINER_GID;
 
@@ -560,7 +560,7 @@ function normalizeDetachedFlag(args: string[]): { detached: boolean; remaining: 
   };
 }
 
-// ─── docker availability ──────────────────────────────────────────────────────
+// ??? docker availability ??????????????????????????????????????????????????????
 
 function checkDockerAvailable(): boolean {
   return runCapture('docker', ['info']).ok;
@@ -627,7 +627,25 @@ function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
   return runtimeVars;
 }
 
-// ─── hub lifecycle ────────────────────────────────────────────────────────────
+// ??? hub lifecycle ???????????????????????????????????????????????????????????
+
+const POSTGRES_INFRA_SERVICES = ['ci-os-hub-queue', 'ci-hub-db'] as const;
+
+function buildComposeBaseArgs(envFileName: string, files: string[]): string[] {
+  const args = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
+  for (const f of files) args.push('-f', f);
+  return args;
+}
+
+/** Start Postgres (and queue), then align the DB role password with POSTGRES_PASSWORD in the env file. */
+async function ensurePostgresInfraAndSyncPassword(
+  envFileName: string,
+  composeFiles: string[],
+  envOverrides: Record<string, string | undefined>,
+) {
+  run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides);
+  await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
+}
 
 async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
@@ -677,24 +695,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
       ['Environment: local', 'Bringing up PostgreSQL and RabbitMQ, then launching backend/frontend from source.'],
       'green',
     );
-    run(
-      'docker',
-      [
-        'compose',
-        '--env-file',
-        envFileName,
-        '--project-name',
-        'ci-hub',
-        '-f',
-        'docker-compose.local.yml',
-        'up',
-        '-d',
-        'ci-os-hub-queue',
-        'ci-hub-db',
-      ],
-      envOverrides,
-    );
-    await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
+    await ensurePostgresInfraAndSyncPassword(envFileName, ['docker-compose.local.yml'], envOverrides);
     run('pnpm', ['run', 'dev:app'], { ...runtimeVars, ...envOverrides });
     return;
   }
@@ -722,6 +723,7 @@ async function startHub(mode: StartMode, env: HubEnv) {
     [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
+  await ensurePostgresInfraAndSyncPassword(envFileName, files, envOverrides);
   await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
@@ -753,7 +755,7 @@ async function registerHub(env: HubEnv) {
       [
         'Could not resolve a hardware device ID on this machine.',
         'On Linux: ensure dmidecode is available, or check /etc/machine-id.',
-        'On macOS: ioreg should work automatically — check scripts/get-device-id.ts.',
+        'On macOS: ioreg should work automatically � check scripts/get-device-id.ts.',
         '',
         'You can register manually at:',
         `  ${colorize(cloudUrl, 'cyan')}`,
@@ -844,7 +846,7 @@ function cleanHub(env: HubEnv) {
 function confirmDestructive(actionLabel: string, force: boolean) {
   if (force) return true;
   if (!process.stdin.isTTY) {
-    console.error(colorize(`  ✗ ${actionLabel} is destructive — requires an interactive terminal or --yes`, 'red'));
+    console.error(colorize(`  ? ${actionLabel} is destructive � requires an interactive terminal or --yes`, 'red'));
     process.exit(2);
   }
   return false;
@@ -898,12 +900,12 @@ function doctorHub(env: HubEnv) {
   const rootFolderHost = resolveRootFolderHost(envFileName);
   const composeFiles = getComposeFiles(env);
   const lines = [
-    `Docker               ${checkDockerAvailable() ? colorize('● available', 'green') : colorize('✗ unavailable', 'red')}`,
-    `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? colorize('● available', 'green') : colorize('✗ unavailable', 'red')}`,
-    `Env file             ${existsSync(join(process.cwd(), envFileName)) ? colorize('● found', 'green') : colorize('○ missing', 'yellow')}  ${envFileName}`,
-    `Root folder          ${existsSync(rootFolderHost) ? colorize('● present', 'green') : colorize('○ missing', 'yellow')}  ${rootFolderHost}`,
-    `Compose files        ${composeFiles.every((file) => existsSync(join(process.cwd(), file))) ? colorize('● found', 'green') : colorize('✗ missing', 'red')}  ${composeFiles.join(', ')}`,
-    `Tunnel token         ${hasCloudflareTunnelToken(envFileName) ? colorize('● present', 'green') : colorize('○ absent', 'dim')}`,
+    `Docker               ${checkDockerAvailable() ? colorize('? available', 'green') : colorize('? unavailable', 'red')}`,
+    `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? colorize('? available', 'green') : colorize('? unavailable', 'red')}`,
+    `Env file             ${existsSync(join(process.cwd(), envFileName)) ? colorize('? found', 'green') : colorize('? missing', 'yellow')}  ${envFileName}`,
+    `Root folder          ${existsSync(rootFolderHost) ? colorize('? present', 'green') : colorize('? missing', 'yellow')}  ${rootFolderHost}`,
+    `Compose files        ${composeFiles.every((file) => existsSync(join(process.cwd(), file))) ? colorize('? found', 'green') : colorize('? missing', 'red')}  ${composeFiles.join(', ')}`,
+    `Tunnel token         ${hasCloudflareTunnelToken(envFileName) ? colorize('? present', 'green') : colorize('? absent', 'dim')}`,
   ];
   printMessageBox(`Hub doctor  [${env}]`, lines, 'cyan');
 }
@@ -952,7 +954,7 @@ function showStatus(env: HubEnv) {
   const fileVars = parseEnvFile(envFileName);
   const lines: string[] = [];
 
-  // ── containers ────────────────────────────────────────────────────────────
+  // ?? containers ????????????????????????????????????????????????????????????
   const { stdout: psOut } = runCapture('docker', [
     'ps',
     '-a',
@@ -966,15 +968,15 @@ function showStatus(env: HubEnv) {
     for (const row of psOut.split('\n').filter(Boolean)) {
       const [name, status, ports] = row.split('\t');
       const isUp = (status || '').toLowerCase().startsWith('up');
-      const dot = isUp ? colorize('●', 'green') : colorize('✗', 'red');
+      const dot = isUp ? colorize('?', 'green') : colorize('?', 'red');
       const portsStr = ports ? dim(`  ${ports}`) : '';
       lines.push(`  ${dot} ${bold(name || '')}  ${dim(status || '')}${portsStr}`);
     }
   } else {
-    lines.push(`  ${dim('No CI-Hub containers — run: cihub up')}`);
+    lines.push(`  ${dim('No CI-Hub containers � run: cihub up')}`);
   }
 
-  // ── network / access URLs ─────────────────────────────────────────────────
+  // ?? network / access URLs ?????????????????????????????????????????????????
   lines.push('');
   lines.push(dim('Network'));
   const localPort = fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002';
@@ -984,10 +986,10 @@ function showStatus(env: HubEnv) {
   const tunnelContainer = findComposeName('tunnel') || findComposeName('cloudflared');
   const tunnelUp = tunnelContainer.length > 0;
   if (cfDomain) {
-    const cfStatus = tunnelUp ? colorize('● active', 'green') : colorize('○ tunnel down', 'yellow');
+    const cfStatus = tunnelUp ? colorize('? active', 'green') : colorize('? tunnel down', 'yellow');
     lines.push(`  Cloudflare     ${cfStatus}  ${colorize(`https://${cfDomain}`, 'cyan')}`);
   } else {
-    lines.push(`  Cloudflare     ${tunnelUp ? colorize('● active', 'green') : colorize('○ not configured', 'dim')}`);
+    lines.push(`  Cloudflare     ${tunnelUp ? colorize('? active', 'green') : colorize('? not configured', 'dim')}`);
   }
 
   const headscaleContainer = findComposeName('headscale');
@@ -995,12 +997,12 @@ function showStatus(env: HubEnv) {
   const tsIpClean = tsIp.trim();
   const tailscaleActive = tsIpClean.length > 0 || headscaleContainer.length > 0;
   if (tailscaleActive) {
-    lines.push(`  Tailscale VPN  ${colorize('● active', 'green')}  ${tsIpClean ? colorize(tsIpClean, 'cyan') : dim('(headscale)')}`);
+    lines.push(`  Tailscale VPN  ${colorize('? active', 'green')}  ${tsIpClean ? colorize(tsIpClean, 'cyan') : dim('(headscale)')}`);
   } else {
-    lines.push(`  Tailscale VPN  ${colorize('○ inactive', 'dim')}`);
+    lines.push(`  Tailscale VPN  ${colorize('? inactive', 'dim')}`);
   }
 
-  // ── ollama models ─────────────────────────────────────────────────────────
+  // ?? ollama models ?????????????????????????????????????????????????????????
   const ollamaContainer = findComposeName('ollama');
   if (ollamaContainer) {
     lines.push('');
@@ -1010,14 +1012,14 @@ function showStatus(env: HubEnv) {
     if (models.length > 0) {
       for (const m of models) lines.push(`  ${dim(m)}`);
     } else {
-      lines.push(`  ${dim('None installed — run: cihub models install llama3')}`);
+      lines.push(`  ${dim('None installed � run: cihub models install llama3')}`);
     }
   }
 
   printMessageBox(`Hub status  [${env}]`, lines, 'cyan');
 }
 
-// ─── models ───────────────────────────────────────────────────────────────────
+// ??? models ???????????????????????????????????????????????????????????????????
 
 function runModelsCommand(args: string[]) {
   const subcommand = args[0] || 'list';
@@ -1037,7 +1039,7 @@ function runModelsCommand(args: string[]) {
   if (subcommand === 'install' || subcommand === 'pull') {
     const name = args[1];
     if (!name) usageAndExit('Usage: models install <model-name>  (e.g. llama3, mistral, phi3)');
-    printMessageBox('Installing model', [`Pulling ${bold(name)} via Ollama — this may take a few minutes…`], 'green');
+    printMessageBox('Installing model', [`Pulling ${bold(name)} via Ollama � this may take a few minutes�`], 'green');
     run('docker', ['exec', '-it', ollamaContainer, 'ollama', 'pull', name]);
     return;
   }
@@ -1045,7 +1047,7 @@ function runModelsCommand(args: string[]) {
   if (subcommand === 'rm' || subcommand === 'remove') {
     const name = args[1];
     if (!name) usageAndExit('Usage: models rm <model-name>');
-    printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama…`], 'yellow');
+    printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama�`], 'yellow');
     run('docker', ['exec', ollamaContainer, 'ollama', 'rm', name]);
     return;
   }
@@ -1053,9 +1055,9 @@ function runModelsCommand(args: string[]) {
   usageAndExit(`Unknown models subcommand: ${subcommand}. Use: list, install, rm`);
 }
 
-// ─── purge ────────────────────────────────────────────────────────────────────
+// ??? purge ????????????????????????????????????????????????????????????????????
 
-// ─── MCP ─────────────────────────────────────────────────────────────────────
+// ??? MCP ?????????????????????????????????????????????????????????????????????
 
 function setMcpState(env: HubEnv, enabled: boolean) {
   const envFileName = getEnvFileOrExit(env);
@@ -1067,7 +1069,7 @@ function setMcpState(env: HubEnv, enabled: boolean) {
   printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', renderConfigLines(env), enabled ? 'green' : 'yellow');
 }
 
-// ─── public web ──────────────────────────────────────────────────────────────
+// ??? public web ??????????????????????????????????????????????????????????????
 
 async function runPublicWebCommand(args: string[]) {
   requireRepoRoot('cihub public-web');
@@ -1087,7 +1089,7 @@ async function runPublicWebCommand(args: string[]) {
 
     if (subcommand === 'repair') {
       const lines = await runPublicWebRepair(envFileName, appName);
-      printMessageBox(`Public Web repair  [${env}]`, lines, lines.some((line) => line.startsWith('✗')) ? 'yellow' : 'green');
+      printMessageBox(`Public Web repair  [${env}]`, lines, lines.some((line) => line.startsWith('?')) ? 'yellow' : 'green');
       return;
     }
 
@@ -1102,7 +1104,7 @@ async function runPublicWebCommand(args: string[]) {
   }
 }
 
-// ─── app lifecycle ────────────────────────────────────────────────────────────
+// ??? app lifecycle ????????????????????????????????????????????????????????????
 
 export function parseAppRuntimeArgs(args: string[]) {
   const ports: string[] = [];
@@ -1156,14 +1158,14 @@ function runAppCommand(args: string[]) {
   const subcommand = args[0];
   if (!subcommand) usageAndExit('Missing app subcommand');
 
-  // list ──────────────────────────────────────────────────────────────────────
+  // list ??????????????????????????????????????????????????????????????????????
   if (subcommand === 'list') {
     printMessageBox('Managed Docker apps', ['Listing all containers on this machine.'], 'cyan');
     run('docker', ['ps', '-a', '--format', 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}']);
     return;
   }
 
-  // status ────────────────────────────────────────────────────────────────────
+  // status ????????????????????????????????????????????????????????????????????
   if (subcommand === 'status') {
     const name = args[1];
     const filterArgs = name
@@ -1178,16 +1180,16 @@ function runAppCommand(args: string[]) {
     const lines = rows.map((row) => {
       const [n, s, p] = row.split('\t');
       const isUp = (s || '').toLowerCase().startsWith('up');
-      const dot = isUp ? colorize('●', 'green') : colorize('✗', 'red');
+      const dot = isUp ? colorize('?', 'green') : colorize('?', 'red');
       const statusStr = appStatusColor(s || '');
-      const portsStr = p ? dim(` → ${p}`) : '';
+      const portsStr = p ? dim(` ? ${p}`) : '';
       return `${dot} ${bold(n || '')}  ${statusStr}${portsStr}`;
     });
     printMessageBox('App status', lines, 'cyan');
     return;
   }
 
-  // logs ──────────────────────────────────────────────────────────────────────
+  // logs ??????????????????????????????????????????????????????????????????????
   if (subcommand === 'logs') {
     const name = args[1];
     if (!name) usageAndExit('Usage: app logs <name> [--tail N]');
@@ -1212,7 +1214,7 @@ function runAppCommand(args: string[]) {
     return;
   }
 
-  // inspect ───────────────────────────────────────────────────────────────────
+  // inspect ???????????????????????????????????????????????????????????????????
   if (subcommand === 'inspect') {
     const name = args[1];
     if (!name) usageAndExit('Usage: app inspect <name>');
@@ -1239,19 +1241,19 @@ function runAppCommand(args: string[]) {
       .map(([k, v]) => {
         const binds = v as Array<{ HostPort?: string }> | null;
         const host = binds?.[0]?.HostPort;
-        return host ? `${host} → ${k}` : k;
+        return host ? `${host} ? ${k}` : k;
       })
       .filter(Boolean);
     if (ports.length > 0) lines.push(`${bold('ports')}   ${ports.join('  ')}`);
     const envVars = (c.Config?.Env || []).filter((e) => !e.startsWith('PATH='));
     if (envVars.length > 0) lines.push(`${bold('env')}     ${envVars.slice(0, 5).join('  ')}`);
-    const mounts = (c.Mounts || []).map((m) => `${m.Source} → ${m.Destination}`);
+    const mounts = (c.Mounts || []).map((m) => `${m.Source} ? ${m.Destination}`);
     if (mounts.length > 0) lines.push(`${bold('mounts')} ${mounts.slice(0, 3).join('  ')}`);
     printMessageBox(`Inspect: ${name}`, lines, 'cyan');
     return;
   }
 
-  // add / edit ────────────────────────────────────────────────────────────────
+  // add / edit ????????????????????????????????????????????????????????????????
   if (subcommand === 'add' || subcommand === 'edit') {
     const name = args[1];
     const image = args[2];
@@ -1276,7 +1278,7 @@ function runAppCommand(args: string[]) {
     return;
   }
 
-  // start / stop / restart / delete ──────────────────────────────────────────
+  // start / stop / restart / delete ??????????????????????????????????????????
   const name = args[1];
   if (!name) usageAndExit(`Usage: app ${subcommand} <name>`);
 
@@ -1295,7 +1297,7 @@ function runAppCommand(args: string[]) {
   usageAndExit(`Unknown app subcommand: ${subcommand}`);
 }
 
-// ─── wizard ───────────────────────────────────────────────────────────────────
+// ??? wizard ???????????????????????????????????????????????????????????????????
 
 export function resolveWizardEnvInput(value: string, fallback: HubEnv = 'local'): HubEnv {
   const n = value.trim().toLowerCase();
@@ -1359,7 +1361,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       box(
         'First-time setup detected',
         [
-          `No ${envFileMap[defaultEnv]} found — the wizard will guide you through initial setup.`,
+          `No ${envFileMap[defaultEnv]} found � the wizard will guide you through initial setup.`,
           '',
           renderStep(1, FTUE_STEPS, 'Choose environment', 'pending'),
           renderStep(2, FTUE_STEPS, 'Check prerequisites', 'pending'),
@@ -1377,15 +1379,15 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
   const rl = createInterface({ input, output });
 
   try {
-    // ── Step 1: environment ────────────────────────────────────────────────
+    // ?? Step 1: environment ????????????????????????????????????????????????
     if (firstRun) console.log(renderStep(1, FTUE_STEPS, 'Choose environment', 'active'));
     printMessageBox(
       'Choose environment',
       [
-        '1. local    — Source-based local development  (default)',
-        '2. dev      — Dev appliance environment',
-        '3. staging  — Staging appliance environment',
-        '4. prod     — Production appliance environment',
+        '1. local    � Source-based local development  (default)',
+        '2. dev      � Dev appliance environment',
+        '3. staging  � Staging appliance environment',
+        '4. prod     � Production appliance environment',
       ],
       'cyan',
     );
@@ -1394,9 +1396,9 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     if (firstRun) console.log(renderStep(1, FTUE_STEPS, `Environment: ${bold(env)}`, 'done'));
 
     if (firstRun) {
-      // ── Step 2: prerequisites ──────────────────────────────────────────
+      // ?? Step 2: prerequisites ??????????????????????????????????????????
       console.log();
-      console.log(renderStep(2, FTUE_STEPS, 'Checking prerequisites…', 'active'));
+      console.log(renderStep(2, FTUE_STEPS, 'Checking prerequisites�', 'active'));
       const dockerOk = checkDockerAvailable();
       const { stdout: dcVersion } = runCapture('docker', ['compose', 'version']);
       const { stdout: tsIp } = runCapture('tailscale', ['ip', '--4']);
@@ -1404,10 +1406,10 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         box(
           'Prerequisites',
           [
-            `Docker:           ${dockerOk ? colorize('● available', 'green') : colorize('✗ not running', 'red')}`,
-            `Docker Compose:   ${dcVersion ? colorize('● available', 'green') : colorize('✗ not found', 'red')}`,
-            `Tailscale VPN:    ${tsIp.trim() ? colorize(`● ${tsIp.trim()}`, 'green') : colorize('○ not connected (optional)', 'dim')}`,
-            `Env file:         ${existsSync(join(process.cwd(), envFileMap[env])) ? colorize('● found', 'green') : colorize('○ will be created', 'yellow')}`,
+            `Docker:           ${dockerOk ? colorize('? available', 'green') : colorize('? not running', 'red')}`,
+            `Docker Compose:   ${dcVersion ? colorize('? available', 'green') : colorize('? not found', 'red')}`,
+            `Tailscale VPN:    ${tsIp.trim() ? colorize(`? ${tsIp.trim()}`, 'green') : colorize('? not connected (optional)', 'dim')}`,
+            `Env file:         ${existsSync(join(process.cwd(), envFileMap[env])) ? colorize('? found', 'green') : colorize('? will be created', 'yellow')}`,
           ],
           'cyan',
         ),
@@ -1418,37 +1420,37 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       }
       console.log(renderStep(2, FTUE_STEPS, 'Prerequisites checked', 'done'));
 
-      // ── Step 3: setup ──────────────────────────────────────────────────
+      // ?? Step 3: setup ??????????????????????????????????????????????????
       console.log();
-      console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets…', 'active'));
+      console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets�', 'active'));
       await setupHub(env);
       console.log(renderStep(3, FTUE_STEPS, 'Host initialized', 'done'));
 
-      // ── Step 4: register ──────────────────────────────────────────────
+      // ?? Step 4: register ??????????????????????????????????????????????
       console.log();
-      console.log(renderStep(4, FTUE_STEPS, 'Registering with CI Cloud…', 'active'));
+      console.log(renderStep(4, FTUE_STEPS, 'Registering with CI Cloud�', 'active'));
       await registerHub(env);
       console.log(renderStep(4, FTUE_STEPS, 'Open the URL above to pair this device, then continue', 'done'));
       const cont = await rl.question('  Press Enter once you have registered, or Ctrl+C to exit: ');
       void cont;
 
-      // ── Step 5: start ─────────────────────────────────────────────────
+      // ?? Step 5: start ?????????????????????????????????????????????????
       console.log();
-      console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub…', 'active'));
+      console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub�', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
       await startHub(env === 'local' ? 'local-dev' : detached === 'y' || detached === 'yes' ? 'detached' : 'attached', env);
       console.log(renderStep(5, FTUE_STEPS, 'Hub launched', 'done'));
 
-      // ── Step 6: optional model ────────────────────────────────────────
+      // ?? Step 6: optional model ????????????????????????????????????????
       console.log();
       console.log(renderStep(6, FTUE_STEPS, 'Install initial AI model (optional)', 'active'));
       printMessageBox(
         'Recommended models',
         [
-          'llama3        4.7 GB — general purpose, fast',
-          'mistral       4.1 GB — good reasoning, efficient',
-          'phi3          2.3 GB — lightweight, great for low VRAM',
-          'codestral    18.8 GB — code-focused',
+          'llama3        4.7 GB � general purpose, fast',
+          'mistral       4.1 GB � good reasoning, efficient',
+          'phi3          2.3 GB � lightweight, great for low VRAM',
+          'codestral    18.8 GB � code-focused',
           '',
           'Press Enter to skip model installation.',
         ],
@@ -1459,24 +1461,24 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         runModelsCommand(['install', modelAnswer]);
         console.log(renderStep(6, FTUE_STEPS, `Model ${bold(modelAnswer)} installed`, 'done'));
       } else {
-        console.log(renderStep(6, FTUE_STEPS, 'Skipped — install later with: cihub models install llama3', 'pending'));
+        console.log(renderStep(6, FTUE_STEPS, 'Skipped � install later with: cihub models install llama3', 'pending'));
       }
 
-      // ── completion ────────────────────────────────────────────────────
+      // ?? completion ????????????????????????????????????????????????????
       const envFileName = getEnvFileOrExit(env);
       const fileVars = parseEnvFile(envFileName);
       const cfDomain = process.env.CF_DOMAIN || fileVars.CF_DOMAIN || fileVars.DOMAIN;
       console.log();
       console.log(hr('dim'));
-      console.log(colorize('  ✓ Setup complete! Your Companion Intelligence Hub is running.', 'green'));
+      console.log(colorize('  ? Setup complete! Your Companion Intelligence Hub is running.', 'green'));
       console.log(dim(`  Local     http://localhost:${fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002'}`));
       if (cfDomain) console.log(dim(`  Cloud     https://${cfDomain}`));
       if (tsIp.trim()) console.log(dim(`  Tailscale ${tsIp.trim()}`));
-      console.log(dim(`  Manage    ${BASE_COMMAND} status · ${BASE_COMMAND} models list · ${BASE_COMMAND} --help`));
+      console.log(dim(`  Manage    ${BASE_COMMAND} status � ${BASE_COMMAND} models list � ${BASE_COMMAND} --help`));
       return;
     }
 
-    // ── returning user: action menu ────────────────────────────────────────
+    // ?? returning user: action menu ????????????????????????????????????????
     printMessageBox(
       'Choose action',
       [
@@ -1514,21 +1516,21 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
   }
 }
 
-// ─── version ─────────────────────────────────────────────────────────────────
+// ??? version ?????????????????????????????????????????????????????????????????
 
 export function renderVersion(): string {
   return `${BASE_COMMAND} ${packageVersion()}`;
 }
 
-// ─── error / usage ────────────────────────────────────────────────────────────
+// ??? error / usage ????????????????????????????????????????????????????????????
 
 function usageAndExit(message?: string, code = 2): never {
-  if (message) console.error(colorize(`  ✗ ${message}`, 'red'));
+  if (message) console.error(colorize(`  ? ${message}`, 'red'));
   console.error(renderHelp());
   process.exit(code);
 }
 
-// ─── Host update (delegates to companion-hub binary) ─────────────────────────
+// ??? Host update (delegates to companion-hub binary) ?????????????????????????
 
 /** First non-empty line from `where`/`which` stdout (Windows `where` may return multiple paths). */
 export function firstPathFromLookupOutput(output: string): string | undefined {
@@ -1572,7 +1574,7 @@ export function runHostUpdate(args: string[]) {
   process.exit(result.status ?? 1);
 }
 
-// ─── CLI dispatcher ───────────────────────────────────────────────────────────
+// ??? CLI dispatcher ???????????????????????????????????????????????????????????
 
 export async function runCli(rawArgs: string[]) {
   const args = normalizeCliArgs(rawArgs);
