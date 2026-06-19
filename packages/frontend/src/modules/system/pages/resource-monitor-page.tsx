@@ -2,6 +2,7 @@ import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/u
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
 import { fetchAppRuntimeMonitor, formatCpuLimitLabel, type AppRuntimeHealth, type AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
+import { computeCpuChartScale } from '@/modules/system/resource-monitor-chart';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Activity } from 'lucide-react';
 import { Fragment, useMemo } from 'react';
@@ -75,7 +76,10 @@ function CpuUsageHistoryChart({ history, apps }: { history: AppRuntimeHistorySam
       }));
   }, [apps, history]);
 
-  const maxCpu = Math.max(100, ...history.flatMap((sample) => sample.apps.map((app) => app.cpuPercent)));
+  const { max: maxCpu, ticks: chartTicks } = useMemo(() => {
+    const cpuPercents = [...history.flatMap((sample) => sample.apps.map((app) => app.cpuPercent)), ...apps.map((app) => app.cpuPercent)];
+    return computeCpuChartScale(cpuPercents);
+  }, [apps, history]);
 
   if (history.length < 2 || chartApps.length === 0) {
     return <div className="py-10 text-center text-sm text-muted-foreground">{t('RESOURCE_MONITOR_CHART_WAITING')}</div>;
@@ -90,7 +94,7 @@ function CpuUsageHistoryChart({ history, apps }: { history: AppRuntimeHistorySam
           role="img"
           aria-label={t('RESOURCE_MONITOR_CHART_TITLE')}
         >
-          {[0, 25, 50, 75, 100].map((tick) => {
+          {chartTicks.map((tick) => {
             const y = CHART_HEIGHT - (tick / maxCpu) * CHART_HEIGHT;
             return (
               <g key={tick}>
