@@ -1,4 +1,3 @@
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module, forwardRef } from '@nestjs/common';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
@@ -25,16 +24,7 @@ import { RegistrationModule } from '../registration/registration.module';
     forwardRef(() => RegistrationModule),
   ],
   controllers: [AppsController],
-  providers: [
-    AppFilesManager,
-    AppsRepository,
-    AppHelpers,
-    AppsService,
-    AppRuntimeMonitorService,
-    ConfigurationService,
-    PortAllocationRepository,
-    InstallPipelineTracker,
-  ],
+  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, AppRuntimeMonitorService, PortAllocationRepository, InstallPipelineTracker],
   exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, AppRuntimeMonitorService, InstallPipelineTracker],
 })
 export class AppsModule {}
