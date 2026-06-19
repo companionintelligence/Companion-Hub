@@ -5,6 +5,7 @@
   "type": "module",
   "files": [
     "dist",
+    "i18n",
     "package.json",
     "README.md"
   ],
@@ -18,7 +19,8 @@
       "import": "./dist/types/index.js",
       "types": "./dist/types/index.d.ts",
       "default": "./dist/types/index.js"
-    }
+    },
+    "./i18n/translations/*": "./i18n/translations/*"
   },
   "typesVersions": {
     "*": {

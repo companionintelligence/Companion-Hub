@@ -1,3 +1,5 @@
-**@runtipi/common** 
+# @ci-hub/common
 
-This package contains the common tools used in the Runtipi project. It is a TypeScript package that provides type definitions and validation for various data structures used in the project.
+Shared TypeScript types, Zod schemas, and helpers for the Companion Intelligence Hub (CI-Hub) monorepo.
+
+Previously published as `@runtipi/common` during the Runtipi → CI-Hub migration; runtime env aliases for legacy `RUNTIPI_*` keys remain in the backend until the migration window closes.

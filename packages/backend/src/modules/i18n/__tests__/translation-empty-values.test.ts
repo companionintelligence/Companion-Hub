@@ -15,7 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
  * `vi.importActual` for the on-disk reads.
  */
 
-const TRANSLATIONS_DIR = join(__dirname, '..', 'translations');
+const TRANSLATIONS_DIR = join(__dirname, '..', '..', '..', '..', '..', 'common', 'i18n', 'translations');
 
 describe('i18n empty values', () => {
   it('no locale file contains an empty-string translation value', async () => {

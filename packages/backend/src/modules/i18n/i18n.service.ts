@@ -3,16 +3,12 @@ import path from 'node:path';
 import { Injectable } from '@nestjs/common';
 import i18n from 'i18next';
 import Backend, { type FsBackendOptions } from 'i18next-fs-backend';
+import { resolveTranslationsDirectory } from './translations-dir';
 
 @Injectable()
 export class I18nService {
   constructor() {
-    let directory = path.join(process.cwd(), 'assets', 'translations');
-
-    const { NODE_ENV } = process.env;
-    if (NODE_ENV !== 'production') {
-      directory = path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');
-    }
+    const directory = resolveTranslationsDirectory();
 
     // Ensure directory exists before trying to read it
     if (!fs.existsSync(directory)) {
@@ -75,11 +71,7 @@ export class I18nService {
       }
 
       // Fallback: Load directly from file system
-      let directory = path.join(process.cwd(), 'assets', 'translations');
-      const { NODE_ENV } = process.env;
-      if (NODE_ENV !== 'production') {
-        directory = path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');
-      }
+      const directory = resolveTranslationsDirectory();
 
       // Try the exact language first, then normalized
       const possibleFiles = [
