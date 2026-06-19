@@ -149,7 +149,18 @@ describe('InferenceEnvResolver', () => {
       CI_EMBEDDING_MODEL: 'nomic-embed-text',
       CI_VISION_MODEL: 'gemma4:27b',
       OLLAMA_HOST: OLLAMA_BASE_URL,
+      // 24576 MB inference budget, zero-footprint test model, 131072 window → top tier.
+      CI_LLM_NUM_CTX: '65536',
     });
+  });
+
+  it('emits a hardware-aware num_ctx scaled to the inference memory budget', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+
+    const env = await service.resolve();
+
+    // 4096 MB budget → 16384 tier (model window 131072 does not cap it).
+    expect(env.CI_LLM_NUM_CTX).toBe('16384');
   });
 
   it('omits all inference variables when Ollama is unavailable and no cloud provider is configured', async () => {
