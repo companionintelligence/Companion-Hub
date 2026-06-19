@@ -95,12 +95,14 @@ export function resolveHostDockerSocketPath(): string {
 }
 
 function resolveDockerGid(): number {
-  try {
-    const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
-    const gid = line.split(':')[2]?.trim();
-    if (gid) return Number.parseInt(gid, 10);
-  } catch {
-    // macOS / missing group
+  if (process.platform !== 'win32') {
+    try {
+      const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
+      const gid = line.split(':')[2]?.trim();
+      if (gid) return Number.parseInt(gid, 10);
+    } catch {
+      // macOS / missing group
+    }
   }
   try {
     return statSync(resolveHostDockerSocketPath()).gid;
@@ -112,8 +114,9 @@ function resolveDockerGid(): number {
 function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
   try {
     const socketPath = resolveHostDockerSocketPath();
-    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null`, {
+    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock`, {
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     return out === '0:0';
   } catch {

@@ -688,6 +688,7 @@ fn download_file(url: &str, dest: &Path, source: &UpdateSource) -> Result<(), St
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallOutcome {
     /// Artifact installed in place — the caller must relaunch the app.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     Completed,
     /// A detached helper process finishes the install and relaunches after the
     /// current process exits (Windows: installers cannot replace running binaries).

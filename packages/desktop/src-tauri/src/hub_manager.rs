@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -152,17 +153,35 @@ const OLLAMA_MACOS_ZIP_URL: &str = "https://ollama.com/download/Ollama-darwin.zi
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
     let mut cmd = Command::new(docker_path);
-    // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose)
+    // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose
+    // plug-ins and credential helpers such as docker-credential-desktop must be
+    // findable even when the Tauri process inherits a stripped PATH).
     if let Ok(current_path) = std::env::var("PATH") {
-        let extra_paths = if cfg!(target_os = "macos") {
-            "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+        if cfg!(target_os = "macos") {
+            let extra =
+                "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin";
+            cmd.env("PATH", format!("{}:{}", extra, current_path));
         } else if cfg!(target_os = "windows") {
-            ""
+            // Prepend Docker Desktop's resources\bin directory so credential
+            // helpers (docker-credential-desktop.exe) and compose plug-ins are
+            // findable when the Tauri process inherits a PATH that was set
+            // before Docker Desktop added its own entries.
+            let mut bin_dirs: Vec<String> = Vec::new();
+            for var in &["ProgramFiles", "ProgramW6432"] {
+                if let Ok(root) = std::env::var(var) {
+                    let dir = format!("{}\\Docker\\Docker\\resources\\bin", root);
+                    if !bin_dirs.contains(&dir) {
+                        bin_dirs.push(dir);
+                    }
+                }
+            }
+            if !bin_dirs.is_empty() {
+                let extra = bin_dirs.join(";");
+                cmd.env("PATH", format!("{};{}", extra, current_path));
+            }
         } else {
-            "/usr/local/bin:/usr/bin"
-        };
-        if !extra_paths.is_empty() {
-            cmd.env("PATH", format!("{}:{}", extra_paths, current_path));
+            let extra = "/usr/local/bin:/usr/bin";
+            cmd.env("PATH", format!("{}:{}", extra, current_path));
         }
     }
     #[cfg(target_os = "windows")]

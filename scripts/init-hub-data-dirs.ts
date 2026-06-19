@@ -53,12 +53,14 @@ function healPoisonedEnvMount(cwd: string): void {
 }
 
 function resolveDockerGid(): string {
-  try {
-    const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
-    const gid = line.split(':')[2]?.trim();
-    if (gid) return gid;
-  } catch {
-    // getent missing (macOS) or docker group absent
+  if (process.platform !== 'win32') {
+    try {
+      const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
+      const gid = line.split(':')[2]?.trim();
+      if (gid) return gid;
+    } catch {
+      // getent missing (macOS) or docker group absent
+    }
   }
   try {
     return String(statSync(resolveHostDockerSocketPath()).gid);
@@ -70,8 +72,9 @@ function resolveDockerGid(): string {
 function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
   try {
     const socketPath = resolveHostDockerSocketPath();
-    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null`, {
+    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock`, {
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     return out === '0:0';
   } catch {
