@@ -37,19 +37,40 @@ process.on('uncaughtException', (error: Error) => {
 });
 
 async function setupSwagger(app: INestApplication) {
+  if (process.env.NODE_ENV === 'production') {
+    return;
+  }
+
   const document = buildSwaggerDocument(app);
   SwaggerModule.setup('api/docs', app, document);
 
-  const { NODE_ENV } = process.env;
-  if (NODE_ENV !== 'production') {
-    try {
-      await writeSwaggerJsonFile(document);
-    } catch (error) {
-      // Non-fatal — swagger.json is just for API docs during development
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
-    }
+  try {
+    await writeSwaggerJsonFile(document);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
   }
+}
+
+function resolveAllowedCorsOrigin(origin: string | undefined): string | boolean {
+  if (!origin) {
+    return true;
+  }
+  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') {
+    return origin;
+  }
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return origin;
+  }
+  const domain = process.env.DOMAIN?.trim();
+  if (domain && (origin === `https://${domain}` || origin === `http://${domain}`)) {
+    return origin;
+  }
+  const localDomain = process.env.LOCAL_DOMAIN?.trim();
+  if (localDomain && (origin === `https://${localDomain}` || origin === `http://${localDomain}`)) {
+    return origin;
+  }
+  return false;
 }
 
 async function bootstrap() {
@@ -67,13 +88,8 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe());
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, origin?: string | boolean) => void) => {
-      // Allow Tauri desktop origins and same-origin (no origin header) requests
-      if (!origin || origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin.startsWith('http://localhost')) {
-        callback(null, origin || true);
-      } else {
-        // Allow all other origins without credentials
-        callback(null, origin);
-      }
+      const allowed = resolveAllowedCorsOrigin(origin);
+      callback(null, allowed);
     },
     credentials: true,
   });

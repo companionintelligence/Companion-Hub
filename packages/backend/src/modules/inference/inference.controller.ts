@@ -11,6 +11,7 @@ import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
@@ -349,6 +350,7 @@ export class InferenceController {
   // container's OpenAI-compatible /v1 (or a cloud provider endpoint+key). The Hub
   // distributes connection info only; it never proxies the requests.
 
+  @UseGuards(InternalNetworkGuard)
   @Get('apps/:slug/credentials')
   async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
@@ -361,6 +363,7 @@ export class InferenceController {
 
   // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
   // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
+  @UseGuards(InternalNetworkGuard)
   @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
   async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
