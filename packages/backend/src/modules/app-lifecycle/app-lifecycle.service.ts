@@ -54,6 +54,15 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   return parsedForm;
 }
 
+/** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
+function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
+  const parsed = appFormSchema.safeParse(raw);
+  if (!parsed.success) {
+    return raw;
+  }
+  return normalizeLocalOpenPort(parsed.data) as Record<string, unknown>;
+}
+
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
   return buildPublicWebIdentity({
     appSubdomain: params.appSubdomain,
@@ -697,6 +706,15 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    const settingsChanged = this.hasConfigChanged(
+      normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
+      parsedForm as Record<string, unknown>,
+    );
+    if (!settingsChanged) {
+      this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
+      return { requestId: crypto.randomUUID() };
+    }
+
     const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
     if (!appInfo) {
@@ -793,8 +811,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const _portChanged = oldPort !== newPort;
 
     if (!changed?.pendingRestart) {
-      const pendingRestart = this.hasConfigChanged(app.config, changed?.config || {});
-      await this.appRepository.updateAppById(app.id, { pendingRestart });
+      await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
     }
 
     // Sync state with Cloudflare whenever exposedLocal is enabled or changed

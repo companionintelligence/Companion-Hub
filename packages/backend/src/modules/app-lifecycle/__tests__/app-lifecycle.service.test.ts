@@ -636,12 +636,26 @@ describe('AppLifecycleService', () => {
     });
 
     it.each(['running', 'starting', 'restarting'] as const)('triggers restartApp({ skipPull: true }) when app status is "%s"', async (status) => {
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: {} } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await service.updateAppConfig({ appUrn, form: {} });
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
 
       expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    });
+
+    it.each([
+      'running',
+      'starting',
+      'restarting',
+    ] as const)('does NOT trigger restartApp when app status is "%s" but config is unchanged', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      expect(restartSpy).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -662,10 +676,10 @@ describe('AppLifecycleService', () => {
     });
 
     it('returns a requestId even when auto-restart fires', async () => {
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: {} } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: { port: 8080 } } as any);
       vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      const result = await service.updateAppConfig({ appUrn, form: {} });
+      const result = await service.updateAppConfig({ appUrn, form: { port: 9090 } });
 
       expect(result).toHaveProperty('requestId');
       expect(typeof result.requestId).toBe('string');
