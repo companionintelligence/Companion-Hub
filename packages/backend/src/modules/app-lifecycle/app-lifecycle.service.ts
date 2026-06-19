@@ -31,6 +31,7 @@ import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { didPublicRoutingIdentityChange, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
@@ -796,27 +797,17 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       maxBackups: parsedForm.maxBackups ?? null,
     });
 
-    // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { isProduction: _isProdEnv } = this.config.getConfig();
-    const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
-    const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
-    const _wasExposedLocal = app.exposedLocal;
-    const _isNowExposedLocal = parsedForm.exposedLocal ?? false;
-    const oldPort = app.port;
-    // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
-    // parsedForm.port is the port being set in this update, so it's the most authoritative
-    const newPort = parsedForm.port ? Number(parsedForm.port) : app.port ? Number(app.port) : appInfo.port;
-    const _subdomainChanged = oldSubdomain !== newSubdomain;
-    const _portChanged = oldPort !== newPort;
+    const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
 
     if (!changed?.pendingRestart) {
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
     }
 
-    // Sync state with Cloudflare whenever exposedLocal is enabled or changed
+    // Sync tunnel/DNS state with CI-Cloud. When subdomain or public domain changed,
+    // run a release pass first so the old hostname is removed from Cloudflare DNS.
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
-    await this.syncExposure();
+    await this.syncExposureAfterRoutingChange(appName, routingChanged);
 
     // If the app is currently running, automatically restart it so the new
     // environment variables take effect immediately. The restart is fire-and-
@@ -833,8 +824,21 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure() {
-    await Promise.allSettled([this.triggerCloudflareSync(), this.triggerTailscaleSync()]);
+  private async syncExposure(options?: { excludeAppNames?: string[] }) {
+    await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
+  }
+
+  /**
+   * When public routing identity changes, CI-Cloud only deletes stale DNS when the
+   * app's previous slug disappears from the sync payload. Sync once without the
+   * reconfigured app so the old record is released, then sync the full state.
+   */
+  private async syncExposureAfterRoutingChange(appName: string, routingChanged: boolean) {
+    if (routingChanged) {
+      this.logger.info(`[Cloudflare] Public routing changed for ${appName} — releasing previous DNS before applying new hostname`);
+      await this.syncExposure({ excludeAppNames: [appName] });
+    }
+    await this.syncExposure();
   }
 
   /**
@@ -966,7 +970,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
   }
 
-  public async triggerCloudflareSync() {
+  public async triggerCloudflareSync(options?: { excludeAppNames?: string[] }) {
     try {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
@@ -988,11 +992,15 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
 
       type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+      const exclude = new Set(options?.excludeAppNames ?? []);
 
       const exposedApps: AppInfo[] = await Promise.all(
         apps
           .filter((app: AppFromDb) => {
-            return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.localSubdomain;
+            if (exclude.has(app.appName)) {
+              return false;
+            }
+            return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
           })
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
