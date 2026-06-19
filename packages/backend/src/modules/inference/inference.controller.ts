@@ -1,4 +1,5 @@
 import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -44,6 +45,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
   ) {}
 
@@ -97,7 +99,21 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    return this.configurationService.setInferencePreferences(body.backend, body.model, body.embeddingModel, body.visionModel);
+    const result = await this.configurationService.setInferencePreferences(body.backend, body.model, body.embeddingModel, body.visionModel);
+
+    // Restart running apps that use AI models so they pick up the new inference
+    // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
+    // than imported into InferenceModule) to avoid a circular module dependency,
+    // and the restart is fire-and-forget so the response isn't blocked on it.
+    try {
+      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      void appLifecycle.restartAiApps();
+    } catch (e) {
+      this._logger.error(`Failed to trigger AI app restarts after preferences update: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    return result;
   }
 
   @UseGuards(AuthGuard)

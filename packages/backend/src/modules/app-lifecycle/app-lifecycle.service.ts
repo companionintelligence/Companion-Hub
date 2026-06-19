@@ -1250,6 +1250,32 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     })();
   }
 
+  /**
+   * Restart every running app whose marketplace listing is categorized as "ai".
+   * Called after inference preferences change so AI apps pick up the new
+   * model/backend env. Fire-and-forget: restarts run in the background so the
+   * caller (e.g. the preferences endpoint) isn't blocked.
+   */
+  async restartAiApps() {
+    const apps = await this.appRepository.getApps();
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
+
+    await Promise.all((runningApps).map(async (app) => {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      try {
+        const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
+        if (!info?.categories?.includes('ai')) {
+          return;
+        }
+        this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
+        return this.restartApp({ appUrn });
+      } catch (e) {
+        this.logger.error(`Failed to restart AI app ${app.id}`, e);
+      }
+    }));
+  }
+
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
     this.errorReportingService?.reportAppFailure({ appUrn, phase, message });
   }
