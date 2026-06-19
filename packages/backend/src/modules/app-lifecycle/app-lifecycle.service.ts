@@ -1261,19 +1261,21 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
-    await Promise.all((runningApps).map(async (app) => {
-      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-      try {
-        const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
-        if (!info?.categories?.includes('ai')) {
-          return;
+    await Promise.all(
+      runningApps.map(async (app) => {
+        const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+        try {
+          const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
+          if (!info?.categories?.includes('ai')) {
+            return;
+          }
+          this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
+          return this.restartApp({ appUrn });
+        } catch (e) {
+          this.logger.error(`Failed to restart AI app ${app.id}`, e);
         }
-        this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
-        return this.restartApp({ appUrn });
-      } catch (e) {
-        this.logger.error(`Failed to restart AI app ${app.id}`, e);
-      }
-    }));
+      }),
+    );
   }
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
