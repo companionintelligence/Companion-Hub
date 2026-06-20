@@ -7062,9 +7062,14 @@ fn wsl2_engine_elevated_script() -> String {
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
 
-# Phase 1: WSL platform itself (admin + reboot when absent).
+# Phase 1: WSL platform itself (admin + reboot when absent). The status probe is
+# allowed to fail (WSL absent) — relax briefly so its non-zero exit doesn't become
+# a terminating error under Stop, then restore Stop for the download cmdlets below.
+$ErrorActionPreference = 'Continue'
 & wsl.exe --status | Out-Null
-if ($LASTEXITCODE -ne 0) {
+$wslPresent = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = 'Stop'
+if (-not $wslPresent) {
   & wsl.exe --install --no-distribution
   exit 100
 }
@@ -7126,7 +7131,12 @@ printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.
 systemctl enable docker 2>/dev/null || true"#;
 
     format!(
-        r#"$ErrorActionPreference = 'Stop'
+        r#"# Continue (not Stop): this phase runs probes that are *expected* to fail —
+# `docker context inspect` before the context exists, `docker info` /
+# `systemctl is-system-running` while the engine is still starting. Under Stop a
+# native command's non-zero exit (or stderr) becomes a terminating error, so the
+# must-succeed steps instead assert $LASTEXITCODE explicitly and `throw`.
+$ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
 
@@ -7162,8 +7172,10 @@ if (-not (Test-Path $dockerExe)) {{ throw "Static docker CLI is missing at $dock
 & $dockerExe context inspect wsl-engine 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {{
   & $dockerExe context create wsl-engine --docker host=tcp://127.0.0.1:2375 | Out-Null
+  if ($LASTEXITCODE -ne 0) {{ throw "Failed to create the wsl-engine docker context." }}
 }}
 & $dockerExe context use wsl-engine | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw "Failed to select the wsl-engine docker context." }}
 
 # Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
 $startup = [Environment]::GetFolderPath('Startup')
