@@ -7073,9 +7073,9 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   $latest = $zips[-1]
   if (-not $latest) { throw 'Could not determine the latest static docker CLI version.' }
   $zipPath = Join-Path $Env:TEMP $latest
+  $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
   Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
   try {
-    $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
     Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
     Expand-Archive -Path $zipPath -DestinationPath $extract
     # Validate authenticity beyond TLS, matching the Docker Desktop installer.
@@ -7089,8 +7089,8 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
     }
     New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
     Copy-Item $extractedExe (Join-Path $dockerBin 'docker.exe') -Force
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
   } finally {
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
   }
 }
