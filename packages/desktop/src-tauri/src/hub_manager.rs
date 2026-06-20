@@ -7234,9 +7234,12 @@ fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::proce
 
     if elevated {
         // Elevate via a nested Start-Process -Verb RunAs and propagate the inner
-        // exit code (the same launcher the Docker Desktop installer uses).
+        // exit code. The -File path is wrapped in embedded double quotes because
+        // Start-Process flattens -ArgumentList into a command line without
+        // re-quoting elements, so an unquoted temp path containing spaces (e.g. a
+        // profile dir with a space) would break `-File`.
         let launch_command = format!(
-            "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+            "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','\"{}\"'); exit $process.ExitCode",
             escape_powershell_single_quoted(&script.path().to_string_lossy()),
         );
         command.args([
