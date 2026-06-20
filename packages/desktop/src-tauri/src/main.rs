@@ -140,7 +140,11 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
 #[tauri::command]
 async fn install_docker_engine_alternative_command(
 ) -> Result<hub_manager::DockerInstallResult, String> {
-    hub_manager::install_docker_engine_alternative()
+    // The install can run for several minutes (first run downloads a VM image),
+    // so keep it off the async runtime to avoid starving status polling.
+    tokio::task::spawn_blocking(hub_manager::install_docker_engine_alternative)
+        .await
+        .map_err(|e| format!("Installation task failed: {e}"))?
 }
 
 /// Get the current Hub status (Docker availability, container state, health).

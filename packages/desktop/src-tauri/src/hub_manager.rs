@@ -7010,12 +7010,26 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
 
 /// Windows: Docker Engine inside WSL2, no Docker Desktop.
 ///
-/// Exit code contract matches the Docker Desktop installer: 100 = WSL was just
-/// enabled and Windows must reboot (NeedsRestart); 0 = engine reachable.
+/// The install is split across two PowerShell scripts so that only the steps
+/// that genuinely need Windows admin run elevated, and everything that is
+/// inherently per-user runs as the logged-in user. This matters because:
+///   - WSL distros, the docker context (`~/.docker`) and the Startup keepalive
+///     are all per-user; if they were created by an elevated *other* admin
+///     account (over-the-shoulder UAC) the Hub — running as the real user —
+///     would never see them, so `docker info` would keep failing after a
+///     "successful" install.
+///   - The Colima path on macOS already uses this elevated-then-user split.
+///
+/// Exit code contract for the **elevated** script matches the Docker Desktop
+/// installer: 100 = WSL was just enabled and Windows must reboot (NeedsRestart);
+/// 0 = elevated work done. The **user** script returns 0 once the engine is
+/// reachable.
 ///
 /// Design notes (all verified against MS Learn / Docker docs):
 ///   - `wsl --install -d Ubuntu --no-launch` registers Ubuntu without the
 ///     interactive first-run user creation; `wsl -u root` works without it.
+///     Once the WSL platform is enabled, adding/running a distro is per-user and
+///     does not require Windows admin.
 ///   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
 ///     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
 ///   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
@@ -7025,8 +7039,55 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
 ///   - docker.exe goes where find_docker_binary() already looks, and a docker
 ///     context (stored in ~/.docker, read at runtime) points it at the TCP
 ///     endpoint — no env vars, so the running Hub needs no restart.
+
+/// Elevated phase: the only two operations that require Windows admin — enabling
+/// the WSL platform (reboot via exit 100 the first time) and writing the static
+/// docker CLI into Program Files where `find_docker_binary()` looks.
 #[cfg(any(test, target_os = "windows"))]
-fn wsl2_engine_windows_install_script() -> String {
+fn wsl2_engine_elevated_script() -> String {
+    r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:WSL_UTF8 = '1'
+
+# Phase 1: WSL platform itself (admin + reboot when absent).
+& wsl.exe --status | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  & wsl.exe --install --no-distribution
+  exit 100
+}
+
+# Phase 2: static docker CLI where the Hub already looks for it (Program Files
+# needs admin to write). Idempotent: skip when docker.exe is already present.
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
+if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
+  $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
+  $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object { $_.Value } | Sort-Object { [version]($_ -replace 'docker-|\.zip', '') }
+  $latest = $zips[-1]
+  if (-not $latest) { throw 'Could not determine the latest static docker CLI version.' }
+  $zipPath = Join-Path $Env:TEMP $latest
+  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
+  try {
+    $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zipPath -DestinationPath $extract
+    New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
+    Copy-Item (Join-Path $extract 'docker\docker.exe') (Join-Path $dockerBin 'docker.exe') -Force
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+  } finally {
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+  }
+}
+exit 0
+"#
+    .to_string()
+}
+
+/// User phase: runs non-elevated as the logged-in user so all per-user state
+/// (distro registration, docker context, Startup keepalive) lands in the real
+/// profile. Assumes the elevated phase already enabled WSL and placed docker.exe.
+#[cfg(any(test, target_os = "windows"))]
+fn wsl2_engine_user_script() -> String {
     let linux_setup = r#"set -e
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v dockerd >/dev/null 2>&1; then
@@ -7044,14 +7105,8 @@ systemctl enable docker 2>/dev/null || true"#;
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
 
-# Phase 1: WSL itself (admin + reboot when absent).
-& wsl.exe --status | Out-Null
-if ($LASTEXITCODE -ne 0) {{
-  & wsl.exe --install --no-distribution
-  exit 100
-}}
-
-# Phase 2: Ubuntu distro, registered without the interactive first-run.
+# Phase 3: Ubuntu distro, registered without the interactive first-run (owned by
+# the logged-in user since this runs non-elevated).
 $distros = (& wsl.exe -l -q) | ForEach-Object {{ $_.Trim() }}
 $distro = $distros | Where-Object {{ $_ -eq 'Ubuntu' -or $_ -match '^Ubuntu-' }} | Select-Object -First 1
 if (-not $distro) {{
@@ -7060,7 +7115,7 @@ if (-not $distro) {{
   $distro = 'Ubuntu'
 }}
 
-# Phase 3: Docker Engine + systemd TCP drop-in inside the distro (as root).
+# Phase 4: Docker Engine + systemd TCP drop-in inside the distro (as root).
 $setup = @'
 {linux_setup}
 '@ -replace "`r`n", "`n"
@@ -7071,31 +7126,11 @@ if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with ex
 & wsl.exe --terminate $distro
 & wsl.exe -d $distro -u root -- true
 
-# Phase 4: static docker CLI where the Hub already looks for it.
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {{ 'aarch64' }} else {{ 'x86_64' }}
-$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
-if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {{
-  $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
-  $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object {{ $_.Value }} | Sort-Object {{ [version]($_ -replace 'docker-|\.zip', '') }}
-  $latest = $zips[-1]
-  if (-not $latest) {{ throw 'Could not determine the latest static docker CLI version.' }}
-  $zipPath = Join-Path $Env:TEMP $latest
-  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
-  try {{
-    $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-    Expand-Archive -Path $zipPath -DestinationPath $extract
-    New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
-    Copy-Item (Join-Path $extract 'docker\docker.exe') (Join-Path $dockerBin 'docker.exe') -Force
-    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-  }} finally {{
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-  }}
-}}
-
 # Phase 5: route the CLI at the WSL engine via a context (read from ~/.docker
 # at runtime — no env vars, no Hub restart needed).
+$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
 $dockerExe = Join-Path $dockerBin 'docker.exe'
+if (-not (Test-Path $dockerExe)) {{ throw "Static docker CLI is missing at $dockerExe." }}
 & $dockerExe context inspect wsl-engine 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {{
   & $dockerExe context create wsl-engine --docker host=tcp://127.0.0.1:2375 | Out-Null
@@ -7126,8 +7161,44 @@ throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
     )
 }
 
+/// True when the WSL platform is already enabled (`wsl --status` succeeds). Used
+/// to decide whether the elevated phase has anything to do.
 #[cfg(target_os = "windows")]
-fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
+fn wsl_platform_present() -> bool {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    command
+        .arg("--status")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// True when the static docker CLI is already in Program Files (where the
+/// elevated phase would otherwise place it).
+#[cfg(target_os = "windows")]
+fn program_files_docker_present() -> bool {
+    for env_var in ["ProgramFiles", "ProgramW6432"] {
+        if let Ok(root) = std::env::var(env_var) {
+            let candidate = Path::new(&root)
+                .join("Docker")
+                .join("Docker")
+                .join("resources")
+                .join("bin")
+                .join("docker.exe");
+            if candidate.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Run a PowerShell script, optionally elevated. Returns the captured output so
+/// the caller can map exit codes to the install-result contract.
+#[cfg(target_os = "windows")]
+fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::process::Output, String> {
     use std::io::Write as IoWrite;
 
     // PowerShell -File refuses scripts without a .ps1 extension.
@@ -7136,32 +7207,90 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
         .tempfile()
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
-        .write_all(wsl2_engine_windows_install_script().as_bytes())
+        .write_all(script_body.as_bytes())
         .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
-
-    let launch_command = format!(
-        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
-        escape_powershell_single_quoted(&script.path().to_string_lossy()),
-    );
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
-    let output = command
-        .args([
+
+    if elevated {
+        // Elevate via a nested Start-Process -Verb RunAs and propagate the inner
+        // exit code (the same launcher the Docker Desktop installer uses).
+        let launch_command = format!(
+            "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+            escape_powershell_single_quoted(&script.path().to_string_lossy()),
+        );
+        command.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             &launch_command,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to launch elevated WSL2 engine installer: {}", e))?;
+        ]);
+    } else {
+        // Non-elevated: run as the logged-in Hub user directly.
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.path().to_string_lossy(),
+        ]);
+    }
 
+    command
+        .output()
+        .map_err(|e| format!("Failed to launch WSL2 engine installer: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
+    // Elevation is only needed when the WSL platform must be enabled or the
+    // static docker CLI is missing from Program Files. Skipping it on re-runs
+    // avoids an unnecessary UAC prompt.
+    if !wsl_platform_present() || !program_files_docker_present() {
+        let output = run_powershell_script(&wsl2_engine_elevated_script(), true)?;
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+        match output.status.code() {
+            Some(0) => {}
+            Some(100) => {
+                return Ok(DockerInstallResult {
+                    state: DockerInstallState::NeedsRestart,
+                    detail: Some(
+                        "WSL was installed or enabled. Restart Windows, then reopen Companion Hub to continue Docker setup."
+                            .to_string(),
+                    ),
+                });
+            }
+            _ if combined_lower.contains("cancel") && combined_lower.contains("user") => {
+                return Err("Authorization was cancelled or denied.".to_string());
+            }
+            _ if combined.is_empty() => {
+                return Err(format!(
+                    "WSL2 Docker Engine installation failed with exit code {:?}.",
+                    output.status.code()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "WSL2 Docker Engine installation failed: {}",
+                    combined
+                ));
+            }
+        }
+    }
+
+    // User phase: per-user state (distro, docker context, Startup keepalive) is
+    // created as the logged-in user so the running Hub can see it.
+    let output = run_powershell_script(&wsl2_engine_user_script(), false)?;
     let combined = format_command_output(
         &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
     );
-    let combined_lower = combined.to_lowercase();
 
     match output.status.code() {
         Some(0) => Ok(DockerInstallResult {
@@ -7170,16 +7299,6 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
                 "Docker Engine is running inside WSL2 (context \"wsl-engine\").".to_string(),
             ),
         }),
-        Some(100) => Ok(DockerInstallResult {
-            state: DockerInstallState::NeedsRestart,
-            detail: Some(
-                "WSL was installed or enabled. Restart Windows, then reopen Companion Hub to continue Docker setup."
-                    .to_string(),
-            ),
-        }),
-        _ if combined_lower.contains("cancel") && combined_lower.contains("user") => {
-            Err("Authorization was cancelled or denied.".to_string())
-        }
         _ if combined.is_empty() => Err(format!(
             "WSL2 Docker Engine installation failed with exit code {:?}.",
             output.status.code()
@@ -7236,7 +7355,9 @@ mod tests {
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
     #[cfg(any(test, target_os = "windows"))]
-    use super::wsl2_engine_windows_install_script;
+    use super::wsl2_engine_elevated_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::wsl2_engine_user_script;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::preferred_unix_cli_install_dir;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -7774,32 +7895,54 @@ mod tests {
     }
 
     #[test]
-    fn wsl2_engine_script_keeps_desktop_contract_and_avoids_daemon_json_hosts() {
-        let script = wsl2_engine_windows_install_script();
+    fn wsl2_engine_elevated_script_only_does_admin_work() {
+        let script = wsl2_engine_elevated_script();
 
-        // Exit-code contract shared with the Docker Desktop installer.
+        // Exit-code contract shared with the Docker Desktop installer: enable WSL
+        // then ask for a reboot.
         assert!(script.contains("exit 100"));
         assert!(script.contains("--no-distribution"));
+        // UTF-16 output guard for wsl --status parsing.
+        assert!(script.contains("WSL_UTF8"));
+        // Architecture-aware docker CLI download into Program Files (the only
+        // admin-requiring filesystem write).
+        assert!(script.contains("PROCESSOR_ARCHITECTURE"));
+        assert!(script.contains("aarch64"));
+        assert!(script.contains("docker.exe"));
+
+        // Per-user state must NOT be created in the elevated phase — that is the
+        // core fix (it would otherwise land in the wrong profile under
+        // over-the-shoulder UAC).
+        assert!(!script.contains("context create wsl-engine"));
+        assert!(!script.contains("GetFolderPath('Startup')"));
+        assert!(!script.contains("--install -d Ubuntu"));
+    }
+
+    #[cfg(any(test, target_os = "windows"))]
+    #[test]
+    fn wsl2_engine_user_script_owns_per_user_state_and_avoids_daemon_json_hosts() {
+        let script = wsl2_engine_user_script();
+
+        // Distro registration happens in the user phase so the distro is owned by
+        // the logged-in user.
         assert!(script.contains("--install -d Ubuntu --no-launch"));
+        // Dynamic Ubuntu variant selection: handles Ubuntu-22.04, Ubuntu-24.04, etc.
+        assert!(script.contains("-match '^Ubuntu-'"));
+        // UTF-16 output guard for wsl -l parsing.
+        assert!(script.contains("WSL_UTF8"));
         // TCP exposure must be a systemd drop-in, not daemon.json "hosts"
         // (which conflicts with Ubuntu's -H fd:// unit).
         assert!(script.contains("docker.service.d"));
         assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2375"));
         assert!(!script.contains("\"hosts\""));
-        // UTF-16 output guard for wsl -l parsing.
-        assert!(script.contains("WSL_UTF8"));
-        // Context routing (no env vars) + logon keepalive.
+        // Per-user context routing (no env vars) + logon keepalive — generated in
+        // the non-elevated phase so they land in the real user's profile.
         assert!(script.contains("context create wsl-engine"));
+        assert!(script.contains("GetFolderPath('Startup')"));
         assert!(script.contains("sleep infinity"));
-        assert!(script.contains("docker.exe"));
-        // Dynamic Ubuntu variant selection: handles Ubuntu-22.04, Ubuntu-24.04, etc.
-        assert!(script.contains("-match '^Ubuntu-'"));
         // Must restart only the target distro, not every running WSL distro.
         assert!(script.contains("--terminate $distro"));
         assert!(!script.contains("--shutdown"));
-        // Architecture-aware docker CLI download: ARM64 gets aarch64, x86 gets x86_64.
-        assert!(script.contains("PROCESSOR_ARCHITECTURE"));
-        assert!(script.contains("aarch64"));
         // Systemd boot check before the docker-info poll loop.
         assert!(script.contains("is-system-running"));
     }
