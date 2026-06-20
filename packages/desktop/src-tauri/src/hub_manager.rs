@@ -7074,8 +7074,17 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
     $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
     Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
     Expand-Archive -Path $zipPath -DestinationPath $extract
+    # Validate authenticity beyond TLS, matching the Docker Desktop installer.
+    $extractedExe = Join-Path $extract 'docker\docker.exe'
+    $signature = Get-AuthenticodeSignature $extractedExe
+    if ($signature.Status -ne 'Valid') {
+      throw "Downloaded docker CLI signature validation failed: $($signature.Status)"
+    }
+    if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {
+      throw "Downloaded docker CLI signer was not recognized as Docker."
+    }
     New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
-    Copy-Item (Join-Path $extract 'docker\docker.exe') (Join-Path $dockerBin 'docker.exe') -Force
+    Copy-Item $extractedExe (Join-Path $dockerBin 'docker.exe') -Force
     Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
   } finally {
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
@@ -7182,23 +7191,27 @@ fn wsl_platform_present() -> bool {
 }
 
 /// True when the static docker CLI is already in Program Files (where the
-/// elevated phase would otherwise place it).
+/// elevated phase would otherwise place it). Resolves the root with the same
+/// ProgramW6432-first preference the install scripts use, so the pre-check looks
+/// at exactly the path the elevated phase writes and the user phase reads —
+/// otherwise a CLI present only under Program Files (x86) could wrongly skip the
+/// elevated phase and make the user phase throw "missing".
 #[cfg(target_os = "windows")]
 fn program_files_docker_present() -> bool {
-    for env_var in ["ProgramFiles", "ProgramW6432"] {
-        if let Ok(root) = std::env::var(env_var) {
-            let candidate = Path::new(&root)
-                .join("Docker")
-                .join("Docker")
-                .join("resources")
-                .join("bin")
-                .join("docker.exe");
-            if candidate.exists() {
-                return true;
-            }
-        }
+    let root = std::env::var("ProgramW6432")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("ProgramFiles").ok());
+    match root {
+        Some(root) => Path::new(&root)
+            .join("Docker")
+            .join("Docker")
+            .join("resources")
+            .join("bin")
+            .join("docker.exe")
+            .exists(),
+        None => false,
     }
-    false
 }
 
 /// Run a PowerShell script, optionally elevated. Returns the captured output so
