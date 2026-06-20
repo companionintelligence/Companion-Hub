@@ -310,7 +310,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
           <button
             type="button"
             onClick={handleInstall}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground cursor-pointer hover:bg-muted"
           >
             {installLabel}
           </button>
@@ -339,7 +339,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
             <button
               type="button"
               onClick={handleInstall}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground cursor-pointer hover:bg-muted"
             >
               {installLabel}
             </button>

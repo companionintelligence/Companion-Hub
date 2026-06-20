@@ -5984,9 +5984,13 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
                 .as_bytes(),
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
+    // Close our writable handle before executing: on Windows, PowerShell cannot
+    // run a .ps1 still held open by this process. into_temp_path() keeps the file
+    // on disk and deletes it on drop.
+    let script_path = script.into_temp_path();
 
     let launch_command =
-        docker_desktop_windows_outer_launch_command(&script.path().to_string_lossy(), &username);
+        docker_desktop_windows_outer_launch_command(&script_path.to_string_lossy(), &username);
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
@@ -6549,6 +6553,11 @@ fn install_ollama_windows() -> Result<OllamaInstallResult, String> {
     script
         .write_all(ollama_windows_install_script(OLLAMA_WINDOWS_INSTALLER_URL).as_bytes())
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
+    // Close our writable handle before executing: on Windows, PowerShell cannot
+    // run a .ps1 still held open by this process. into_temp_path() keeps the file
+    // on disk and deletes it on drop.
+    let script_path = script.into_temp_path();
+    let script_path_str = script_path.to_string_lossy();
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
@@ -6558,7 +6567,7 @@ fn install_ollama_windows() -> Result<OllamaInstallResult, String> {
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            &script.path().to_string_lossy(),
+            &script_path_str,
         ])
         .output()
         .map_err(|e| format!("Failed to launch Ollama installer: {}", e))?;
@@ -7232,6 +7241,12 @@ fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::proce
     script
         .write_all(script_body.as_bytes())
         .map_err(|e| format!("Failed to write temporary installer script: {}", e))?;
+    // Close our writable handle before executing: on Windows, PowerShell cannot
+    // run a .ps1 that is still held open by this process ("the process cannot
+    // access the file ... because it is being used by another process").
+    // into_temp_path() keeps the file on disk and still deletes it on drop.
+    let script_path = script.into_temp_path();
+    let script_path_str = script_path.to_string_lossy();
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
@@ -7244,7 +7259,7 @@ fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::proce
         // profile dir with a space) would break `-File`.
         let launch_command = format!(
             "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','\"{}\"'); exit $process.ExitCode",
-            escape_powershell_single_quoted(&script.path().to_string_lossy()),
+            escape_powershell_single_quoted(&script_path_str),
         );
         command.args([
             "-NoProfile",
@@ -7260,7 +7275,7 @@ fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::proce
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            &script.path().to_string_lossy(),
+            &script_path_str,
         ]);
     }
 
