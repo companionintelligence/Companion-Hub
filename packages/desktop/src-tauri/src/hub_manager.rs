@@ -7059,7 +7059,10 @@ if ($LASTEXITCODE -ne 0) {
 # Phase 2: static docker CLI where the Hub already looks for it (Program Files
 # needs admin to write). Idempotent: skip when docker.exe is already present.
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
+# Prefer ProgramW6432 (the 64-bit root even under 32-bit/WOW64 PowerShell) so the
+# CLI lands where the 64-bit Hub's find_docker_binary() looks.
+$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$dockerBin = Join-Path $programFiles 'Docker\Docker\resources\bin'
 if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
   $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object { $_.Value } | Sort-Object { [version]($_ -replace 'docker-|\.zip', '') }
@@ -7128,7 +7131,10 @@ if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with ex
 
 # Phase 5: route the CLI at the WSL engine via a context (read from ~/.docker
 # at runtime — no env vars, no Hub restart needed).
-$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
+# Prefer ProgramW6432 (the 64-bit root even under 32-bit/WOW64 PowerShell) so we
+# read the CLI from where the 64-bit Hub's find_docker_binary() placed it.
+$programFiles = if ($env:ProgramW6432) {{ $env:ProgramW6432 }} else {{ $env:ProgramFiles }}
+$dockerBin = Join-Path $programFiles 'Docker\Docker\resources\bin'
 $dockerExe = Join-Path $dockerBin 'docker.exe'
 if (-not (Test-Path $dockerExe)) {{ throw "Static docker CLI is missing at $dockerExe." }}
 & $dockerExe context inspect wsl-engine 2>$null | Out-Null
