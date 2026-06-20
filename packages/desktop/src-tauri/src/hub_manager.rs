@@ -7069,9 +7069,9 @@ $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:Program
 $dockerBin = Join-Path $programFiles 'Docker\Docker\resources\bin'
 if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
   $index = (Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/").Content
-  $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object { $_.Value } | Sort-Object { [version]($_ -replace 'docker-|\.zip', '') }
+  $zips = @([regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object { $_.Value } | Sort-Object { [version]($_ -replace 'docker-|\.zip', '') })
+  if ($zips.Count -eq 0) { throw 'Could not determine the latest static docker CLI version.' }
   $latest = $zips[-1]
-  if (-not $latest) { throw 'Could not determine the latest static docker CLI version.' }
   $zipPath = Join-Path $Env:TEMP $latest
   $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
   Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/$arch/$latest" -OutFile $zipPath
