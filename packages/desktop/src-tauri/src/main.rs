@@ -144,7 +144,13 @@ async fn install_docker_engine_alternative_command(
     // so keep it off the async runtime to avoid starving status polling.
     tokio::task::spawn_blocking(hub_manager::install_docker_engine_alternative)
         .await
-        .map_err(|e| format!("Installation task failed: {e}"))?
+        .map_err(|e| {
+            if e.is_panic() {
+                format!("Docker engine install task panicked: {e}")
+            } else {
+                format!("Docker engine install task was cancelled: {e}")
+            }
+        })?
 }
 
 /// Get the current Hub status (Docker availability, container state, health).

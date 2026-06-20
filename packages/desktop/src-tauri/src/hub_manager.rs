@@ -7214,7 +7214,7 @@ fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::proce
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(script_body.as_bytes())
-        .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
+        .map_err(|e| format!("Failed to write temporary installer script: {}", e))?;
 
     let mut command = Command::new("powershell.exe");
     command.creation_flags(CREATE_NO_WINDOW);
