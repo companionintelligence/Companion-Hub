@@ -5957,8 +5957,12 @@ exit 0
 
 #[cfg(any(target_os = "windows", test))]
 fn docker_desktop_windows_outer_launch_command(script_path: &str, username: &str) -> String {
+    // The -File path and -AppUser value are wrapped in embedded double quotes
+    // because Start-Process flattens -ArgumentList into a command line without
+    // re-quoting elements, so a path or username containing spaces would
+    // otherwise break the inner invocation.
     format!(
-        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','\"{}\"','-AppUser','\"{}\"'); exit $process.ExitCode",
         escape_powershell_single_quoted(script_path),
         escape_powershell_single_quoted(username),
     )
