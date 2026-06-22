@@ -130,6 +130,28 @@ function decodeToonTable(doc: string, tableName: string): ToonRow[] {
 const numOrUndef = (s: string | undefined): number | undefined => (s == null || s === '' ? undefined : Number(s));
 const flag = (s: string | undefined): boolean => s === '1';
 
+// Active (per-token) parameter count, in billions, for the catalog's
+// Mixture-of-Experts models. MoE models read only a small active-expert subset per
+// token, so their per-token memory traffic — and thus their speed on shared-memory /
+// APU hardware — is governed by this, not the total `params`. Dense models are not
+// listed; they default to their full `params`. Values are approximate (vendor-stated
+// active sizes) and only need to be good enough for relative ranking.
+const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
+  'qwen3-30b': 3, // Qwen3-30B-A3B
+  'qwen3-235b': 22, // Qwen3-235B-A22B
+  'gpt-oss-20b': 3.6, // GPT-OSS 20B (MoE)
+  'gpt-oss-120b': 5.1, // GPT-OSS 120B (MoE)
+  'mixtral-8x7b': 13, // 2 of 8 ~7B experts active
+  'mixtral-8x22b': 39, // 2 of 8 ~22B experts active
+  'llama4-16x17b': 17, // Llama 4 Scout — 17B active
+  'llama4-128x17b': 17, // Llama 4 Maverick — 17B active
+  'nemotron-3-super-120b': 12, // Nemotron 3 Super 120B-A12B
+  'deepseek-coder-v2-16b': 2.4, // DeepSeek-Coder-V2-Lite (MoE)
+  'deepseek-coder-v2-236b': 21, // DeepSeek-Coder-V2 (MoE)
+  'deepseek-r1-671b': 37, // DeepSeek-R1 (MoE)
+  'minimax-m2-community-230b': 10, // MiniMax M2 (MoE)
+};
+
 const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map((row): CuratedModel => {
   const params = Number(row.params);
   const gb = Number(row.gb);
@@ -167,6 +189,7 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
     displayName: row.name ?? '',
     description: `${row.name} — ${row.creator || 'open'} model for ${tier} tier systems.`,
     parameterScale: params,
+    activeParameterScale: MOE_ACTIVE_PARAMS_B[row.id ?? ''] ?? params,
     requirements: {
       minVramMb: diskMb,
       recommendedVramMb: Math.round(diskMb * 1.1 + 1024),

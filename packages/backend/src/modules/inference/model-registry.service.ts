@@ -54,6 +54,21 @@ function sizeClassOf(model: CuratedModel): ModelSizeClass {
   return 'large';
 }
 
+// On a memory-bandwidth-constrained shared-memory GPU — an x86 APU (AMD/Intel) whose
+// "VRAM" is ordinary system RAM — the per-token bottleneck is bandwidth ∝ ACTIVE
+// params, not capacity. A large dense model "fits" the big shared budget but must
+// stream all its weights every token, so it is bandwidth-bound (measured: a dense 27B
+// managed ~11 tok/s on a Radeon 8060S APU while a 3B-active MoE managed ~70). Cap the
+// active size so selection there prefers MoE / smaller-dense models. NOT applied to
+// Apple Silicon: its unified memory is high-bandwidth and runs large dense models well.
+// Heuristic — tune as more hardware data lands.
+const APU_MAX_ACTIVE_PARAMS_B = 14;
+
+/** Active (per-token) parameter count in billions; dense models fall back to total params. */
+function activeParamsOf(model: CuratedModel): number {
+  return model.activeParameterScale ?? model.parameterScale ?? Number.POSITIVE_INFINITY;
+}
+
 /**
  * Order LLM candidates best-first. The primary key is the Artificial Analysis Intelligence Index
  * (higher = smarter) so the best-fit default is the most capable model that fits the hardware — not
@@ -80,6 +95,13 @@ interface InferenceBudget {
   cpuOnly: boolean;
   /** GPU vendor key for catalog requirement matching ('cpu' when there is no usable GPU). */
   vendor: GpuVendorKey;
+  /**
+   * True on a memory-bandwidth-constrained shared-memory GPU — an x86 APU whose "VRAM"
+   * is system RAM. There per-token speed is bound by active params, so selection caps
+   * active size to prefer MoE / smaller-dense models. False for discrete VRAM, CPU, and
+   * Apple Silicon (whose unified memory is high-bandwidth and runs dense models well).
+   */
+  bandwidthConstrained: boolean;
 }
 
 @Injectable()
@@ -161,15 +183,29 @@ export class ModelRegistryService implements OnModuleInit {
   private computeInferenceBudget(profile: HardwareProfile): InferenceBudget {
     const totalRamMb = profile.ram.totalMb;
     if (profile.gpu.unifiedMemory && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
-      // Apple Silicon: the GPU draws from system RAM shared with the OS and apps.
-      return { budgetMb: Math.floor(totalRamMb * UNIFIED_MEMORY_BUDGET_FRACTION), cpuOnly: false, vendor: profile.gpu.vendor as GpuVendorKey };
+      // Shared-memory GPU (Apple Silicon, or an AMD APU): the GPU draws from system RAM
+      // shared with the OS and apps. Only an x86 UMA APU is bandwidth-bound per token —
+      // its "VRAM" is ordinary DDR/LPDDR system RAM. ARM unified-memory parts (Apple
+      // Silicon, NVIDIA Grace) are purpose-built high-bandwidth and run dense models
+      // well, so gate on the CPU arch rather than vendor (which also excludes them).
+      return {
+        budgetMb: Math.floor(totalRamMb * UNIFIED_MEMORY_BUDGET_FRACTION),
+        cpuOnly: false,
+        vendor: profile.gpu.vendor as GpuVendorKey,
+        bandwidthConstrained: profile.cpu.arch === 'x86_64',
+      };
     }
     if (profile.gpu.available && profile.gpu.vramMb > 0 && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
       // Discrete GPU (nvidia/amd): the model must fit in dedicated VRAM.
-      return { budgetMb: Math.floor(profile.gpu.vramMb * VRAM_BUDGET_FRACTION), cpuOnly: false, vendor: profile.gpu.vendor as GpuVendorKey };
+      return {
+        budgetMb: Math.floor(profile.gpu.vramMb * VRAM_BUDGET_FRACTION),
+        cpuOnly: false,
+        vendor: profile.gpu.vendor as GpuVendorKey,
+        bandwidthConstrained: false,
+      };
     }
     // No GPU Ollama can offload to (none, or unsupported like Intel): run on the CPU out of system RAM.
-    return { budgetMb: Math.floor(totalRamMb * SYSTEM_RAM_BUDGET_FRACTION), cpuOnly: true, vendor: 'cpu' };
+    return { budgetMb: Math.floor(totalRamMb * SYSTEM_RAM_BUDGET_FRACTION), cpuOnly: true, vendor: 'cpu', bandwidthConstrained: false };
   }
 
   /**
@@ -189,6 +225,7 @@ export class ModelRegistryService implements OnModuleInit {
       budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
       cpuOnly: true,
       vendor: 'cpu',
+      bandwidthConstrained: false,
     });
   }
 
@@ -204,7 +241,11 @@ export class ModelRegistryService implements OnModuleInit {
         m.modality === 'llm' &&
         m.requirements.gpuVendors.includes(budget.vendor) &&
         m.runtime.memoryFootprintMb <= budget.budgetMb &&
-        (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE),
+        (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE) &&
+        // On a bandwidth-constrained APU, exclude high-active-param models: a large
+        // dense model "fits" the shared budget but is too slow per token, so prefer
+        // MoE / smaller-dense by active size.
+        (!budget.bandwidthConstrained || activeParamsOf(m) <= APU_MAX_ACTIVE_PARAMS_B),
     );
     fitting.sort(compareLlmCandidates);
 
