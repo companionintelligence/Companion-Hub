@@ -2,9 +2,10 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
+import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { APP_DIR, TUNNEL_DIR } from '@/common/constants';
+import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -23,6 +24,8 @@ import {
 import si from 'systeminformation';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
+const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -31,6 +34,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private checkInterval: NodeJS.Timeout | null = null;
   private periodicValidationInterval: NodeJS.Timeout | null = null;
   private consecutiveValidationFailures = 0;
+  private lastCloudValidationAt = 0;
+  private cloudValidationInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -57,7 +62,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Before checking full registration status, try to recover the tunnel
     // token file from the database. isRegistered() requires both a DB record
     // AND the token file on disk, so we must restore the file first.
-    await this.recoverTunnelTokenFromDb();
+    const tunnelRecovered = await this.recoverTunnelTokenFromDb();
 
     // Ensure CloudflareClientService has the token in memory (for getTunnelToken() / app-context).
     // After a restart, the token file may exist on disk but CloudflareClientService starts with null.
@@ -66,9 +71,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Covers the "registered-before, Hub restarted" case: recoverTunnelTokenFromDb
     // only spawns cloudflared when the token file is missing, so without this call
     // the public hub-*.$DOMAIN hostname stays DNS-resolvable but the tunnel is dead.
-    // Only starts cloudflared if not already running — avoids a token-mismatch restart
-    // when credentials are about to be refreshed from cloud.
-    await this.cloudflareClientService.ensureCloudflaredRunning();
+    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
 
     // Ensure Traefik has a route for the hub's public hostname (e.g. devbox-core1.companionintelligence.com)
     // so requests through the Cloudflare tunnel reach ci-os-hub.
@@ -88,6 +91,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (isOperational(this._currentPhase)) {
+      await Promise.race([
+        this.validateRegistrationWithCloud(),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, BOOTSTRAP_VALIDATION_TIMEOUT_MS);
+        }),
+      ]).catch((e) => this.logger.error('Initial registration validation failed', e));
+
+      this.lastCloudValidationAt = Date.now();
       this.startPeriodicValidation();
     } else {
       this.pollRegistration();
@@ -198,7 +209,39 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
     await this.refreshPhaseFromSources();
+    await this.maybeValidateWithCloud();
     return this.getRegistrationStatus();
+  }
+
+  /**
+   * Throttled, deduped Portal check-in for status endpoints.
+   * Non-fatal when Portal is unreachable.
+   */
+  private async maybeValidateWithCloud(): Promise<void> {
+    if (!isOperational(this._currentPhase)) {
+      return;
+    }
+
+    const { ciCloudUrl } = this.config.getConfig();
+    if (!ciCloudUrl) {
+      return;
+    }
+
+    const now = Date.now();
+    if (this.lastCloudValidationAt > 0 && now - this.lastCloudValidationAt < CLOUD_VALIDATION_THROTTLE_MS) {
+      return;
+    }
+
+    if (!this.cloudValidationInFlight) {
+      this.cloudValidationInFlight = this.validateRegistrationWithCloud()
+        .catch((e) => this.logger.error('Registration validation check failed', e))
+        .finally(() => {
+          this.lastCloudValidationAt = Date.now();
+          this.cloudValidationInFlight = null;
+        });
+    }
+
+    await this.cloudValidationInFlight;
   }
 
   /**
@@ -255,26 +298,50 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * is missing on disk, re-write it. This covers container restarts, volume
    * resets, and dev-mode scenarios.
    */
-  private async recoverTunnelTokenFromDb() {
+  private async recoverTunnelTokenFromDb(): Promise<boolean> {
     try {
       const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
-      if (!hasOrg) return;
-
-      if (this.hasTunnelToken()) return;
+      if (!hasOrg) return false;
 
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-      if (org?.tunnelToken && org.tunnelId) {
-        this.logger.info('Tunnel token file missing — recovering from database...');
-        await this.cloudflareClientService.initializeTunnel(org.id, {
-          tunnelId: org.tunnelId,
-          token: org.tunnelToken,
-        });
-        this.logger.info('Tunnel token file restored successfully');
-      } else {
-        this.logger.warn('Organization exists in DB but has no tunnel credentials to recover');
+      if (!org?.tunnelToken || !org.tunnelId) {
+        if (hasOrg) {
+          this.logger.warn('Organization exists in DB but has no tunnel credentials to recover');
+        }
+        return false;
       }
+
+      const tokenPath = path.join(TUNNEL_DIR, 'token');
+      let onDiskToken: string | null = null;
+      try {
+        onDiskToken = (await fs.promises.readFile(tokenPath, 'utf-8')).trim() || null;
+      } catch {
+        onDiskToken = null;
+      }
+
+      const credentialsOutOfSync = !onDiskToken || onDiskToken !== org.tunnelToken.trim();
+      if (!credentialsOutOfSync) {
+        return false;
+      }
+
+      this.logger.info(
+        onDiskToken
+          ? 'Tunnel token on disk is missing or out of sync with database — rewriting credentials...'
+          : 'Tunnel token file missing — recovering from database...',
+      );
+      const result = await this.cloudflareClientService.initializeTunnel(org.id, {
+        tunnelId: org.tunnelId,
+        token: org.tunnelToken,
+      });
+      if (!result) {
+        this.logger.error('Failed to restore tunnel credentials from database (check bind-mount permissions on tunnel/token)');
+        return false;
+      }
+      this.logger.info('Tunnel token file restored successfully');
+      return true;
     } catch (e) {
       this.logger.warn('Failed to recover tunnel token from database (non-fatal)', e);
+      return false;
     }
   }
 
@@ -321,8 +388,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
-    this.validateRegistrationWithCloud().catch((e) => this.logger.error('Initial registration validation failed', e));
-
     this.periodicValidationInterval = setInterval(() => {
       this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
     }, PERIODIC_VALIDATION_INTERVAL_MS);
@@ -356,23 +421,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Use the existing unauthenticated check-in endpoint to confirm the
       // device is still active in CI Portal. A 400 means the device is no
       // longer active; network errors are counted toward the failure threshold.
-      const response = await fetch(`${ciCloudUrl}/api/devices/check-in`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await axios.post(
+        `${ciCloudUrl}/api/devices/check-in`,
+        { device_id: deviceId },
+        {
+          timeout: 10_000,
+          validateStatus: () => true,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
 
       if (response.status === 400) {
-        // 400 is a definitive "device inactive/unregistered" signal from CI Portal —
-        // degrade immediately rather than waiting for 3 strikes.
+        // 400 is definitive — device was removed or deactivated in CI Portal.
         this.consecutiveValidationFailures = 0;
-        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — transitioning to degraded immediately');
-        await this.setPhase('degraded', ['cloud_validation_failed']);
+        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — clearing local registration for re-pairing');
+        await this.resetRegistration({ reason: 'portal_rejected' });
         return;
       }
 
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         // Transient failure (5xx, etc.) — count toward the 3-strike threshold.
         this.consecutiveValidationFailures++;
         this.logger.warn(`Registration validation: CI Portal check-in returned ${response.status} (failure ${this.consecutiveValidationFailures}/3)`);
@@ -401,11 +468,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         if (org?.hubSubdomain && domain && domain !== 'example.com') {
           const hostname = `${org.hubSubdomain}.${domain}`;
           try {
-            const dnsCheck = await fetch(`https://${hostname}`, {
-              method: 'HEAD',
-              signal: AbortSignal.timeout(5_000),
+            const dnsCheck = await axios.head(`https://${hostname}`, {
+              timeout: 5_000,
+              validateStatus: () => true,
             });
-            if (!dnsCheck.ok && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
+            if (dnsCheck.status >= 400 && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
               this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
             }
           } catch {
@@ -427,8 +494,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Reset device registration to allow re-pairing.
    * Clears in-memory state, database records, tunnel token, and resolved env.
    */
-  public async resetRegistration(): Promise<void> {
-    this.logger.info('Resetting device registration...');
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+    const reason = options?.reason ?? 'manual';
+    if (reason === 'portal_rejected') {
+      this.logger.info('Clearing local device registration after CI Portal rejected check-in');
+    } else {
+      this.logger.info('Resetting device registration...');
+    }
 
     // Transition via setPhase so the change is logged consistently.
     // Reset → unregistered is always a legal transition.
@@ -452,7 +524,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     // Clear the resolved env file so it regenerates
-    const resolvedEnvPath = path.join(APP_DIR, '.env.resolved');
+    const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
     try {
       await fs.promises.unlink(resolvedEnvPath);
     } catch {
@@ -465,7 +537,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.pollRegistration();
   }
 
+  // Memoized device-id resolution. The detection chain (dmidecode →
+  // systeminformation → /sys → /etc/machine-id) is invoked on every app
+  // lifecycle command, bootstrap restart, and hourly validation; resolving it
+  // once per process avoids re-running (and re-logging) the same probes.
+  // Failures are not cached so a later call can retry.
+  private deviceIdPromise?: Promise<string>;
+
   public async getDeviceId(): Promise<string> {
+    if (!this.deviceIdPromise) {
+      this.deviceIdPromise = this.resolveDeviceId().catch((err) => {
+        this.deviceIdPromise = undefined;
+        throw err;
+      });
+    }
+
+    return this.deviceIdPromise;
+  }
+
+  private async resolveDeviceId(): Promise<string> {
     const envDeviceId = process.env.DEVICE_ID?.trim();
     if (envDeviceId) {
       this.logger.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
@@ -495,12 +585,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return serial;
       }
 
-      this.logger.warn(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
+      this.logger.debug(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
     } catch (e) {
-      this.logger.warn('dmidecode failed, falling back to systeminformation', e);
+      // Expected on platforms without dmidecode (e.g. macOS) — not a real error.
+      this.logger.debug('dmidecode unavailable, falling back to systeminformation', e);
     }
 
-    const uuid = await si.uuid();
+    const uuid = await si.uuid().catch(() => ({ hardware: '' }));
 
     const id = uuid.hardware;
     if (id && id !== '00000000-0000-0000-0000-000000000000') {
@@ -512,14 +603,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       return fs.readFileSync('/sys/class/dmi/id/product_uuid', 'utf-8').trim();
     } catch (e) {
-      console.error('Could not read /sys/class/dmi/id/product_uuid', e);
+      // Linux-only path; absent on macOS — expected, keep at debug.
+      this.logger.debug('Could not read /sys/class/dmi/id/product_uuid', e);
     }
 
     // Last resort: /etc/machine-id
     try {
       return fs.readFileSync('/etc/machine-id', 'utf-8').trim();
     } catch (e) {
-      console.error('Could not read /etc/machine-id', e);
+      this.logger.debug('Could not read /etc/machine-id', e);
     }
 
     throw new Error('Unable to determine device ID from any source');

@@ -21,5 +21,3 @@ export const locales = {
 } as const;
 
 export type Locale = keyof typeof locales;
-
-export const getLocaleName = (locale: Locale): string => locales[locale];

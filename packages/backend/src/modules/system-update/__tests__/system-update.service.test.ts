@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { SystemUpdateService } from '../system-update.service';
+import fs from 'node:fs';
 
-// Mock child_process
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
@@ -10,6 +11,7 @@ vi.mock('node:fs', () => ({
   default: {
     existsSync: vi.fn(() => false),
     readFileSync: vi.fn(),
+    writeFileSync: vi.fn(),
     promises: { writeFile: vi.fn() },
   },
 }));
@@ -21,6 +23,7 @@ describe('SystemUpdateService', () => {
   let mockLogger: any;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     mockLogger = {
       info: vi.fn(),
       debug: vi.fn(),
@@ -45,6 +48,7 @@ describe('SystemUpdateService', () => {
       expect(result.updateAvailable).toBe(true);
       expect(result.current).toBe('1.0.0');
       expect(result.latest).toBe('1.1.0');
+      expect(mockRegistryService.getTagsSince).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '1.0.0');
     });
 
     it('should return no update when no newer versions', async () => {
@@ -52,13 +56,15 @@ describe('SystemUpdateService', () => {
 
       const result = await service.checkForUpdates();
       expect(result.updateAvailable).toBe(false);
-      expect(result.current).toBe('1.0.0');
-      expect(result.latest).toBe('1.0.0');
     });
   });
 
   describe('performUpdate', () => {
-    it('should pull the new image and schedule restart', async () => {
+    it('should pull the full stack and recreate containers on restart', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\n`);
+
       const { spawn } = await import('node:child_process');
       const mockProcess = {
         stdout: { on: vi.fn() },
@@ -70,9 +76,26 @@ describe('SystemUpdateService', () => {
       };
       (spawn as any).mockReturnValue(mockProcess);
 
-      const result = await service.performUpdate();
+      const resultPromise = service.performUpdate('1.1.0');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+
       expect(result.success).toBe(true);
-      expect(result.message).toContain('restart shortly');
+      expect(fs.writeFileSync).toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalledTimes(2);
+
+      const pullCall = (spawn as any).mock.calls[0];
+      expect(pullCall[1]).toContain('pull');
+      expect(pullCall[1]).not.toContain('ci-os-hub');
+
+      const upCall = (spawn as any).mock.calls[1];
+      expect(upCall[1]).toContain('up');
+      expect(upCall[1]).toContain('--pull');
+      expect(upCall[1]).toContain('always');
+      expect(upCall[1]).toContain('--force-recreate');
+      expect(upCall[1]).toContain('--remove-orphans');
+
+      vi.useRealTimers();
     });
   });
 
@@ -82,10 +105,18 @@ describe('SystemUpdateService', () => {
     });
   });
 
-  describe('onApplicationBootstrap', () => {
-    it('should not schedule auto-update in non-production', () => {
-      service.onApplicationBootstrap();
-      // No interval set in non-prod — just ensure no error
+  describe('getHostUpdateListenerToken', () => {
+    it('should return token when token file exists', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('secret-token\n');
+
+      expect(service.getHostUpdateListenerToken()).toBe('secret-token');
+    });
+
+    it('should return null when token file is missing', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      expect(service.getHostUpdateListenerToken()).toBeNull();
     });
   });
 });

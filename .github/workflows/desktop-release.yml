@@ -3,26 +3,26 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.0)"
+        description: 'Release tag (e.g. v0.1.0)'
         required: true
         type: string
       prerelease:
-        description: "Mark as pre-release"
+        description: 'Mark as pre-release'
         required: false
         default: true
         type: boolean
       environment:
-        description: "Target environment"
+        description: 'Target environment'
         required: false
-        default: "dev"
+        default: 'dev'
         type: choice
         options:
           - dev
           - production
       platforms:
-        description: "Platforms to build"
+        description: 'Platforms to build'
         required: false
-        default: "all"
+        default: 'all'
         type: choice
         options:
           - all
@@ -62,12 +62,20 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      # Sentry symbol/sourcemap upload runs only when SENTRY_AUTH_TOKEN is set, and
+      # also needs repo/org variables SENTRY_ORG, SENTRY_FRONTEND_PROJECT and
+      # SENTRY_DESKTOP_PROJECT. Uploads are best-effort (continue-on-error) and
+      # never fail a release.
+      SENTRY_SYMBOLS_ENABLED: ${{ secrets.SENTRY_AUTH_TOKEN != '' && 'true' || '' }}
       # Windows signing uses GitHub OIDC + Azure login + Azure Artifact Signing.
       # Required environment secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
       # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE.
@@ -111,29 +119,80 @@ jobs:
             xdg-utils
       - name: Install pnpm
         if: env.BUILD_ENABLED
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Install Node.js
         if: env.BUILD_ENABLED
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: '22'
+      - name: Install Bun
+        if: env.BUILD_ENABLED
+        uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
-      - name: Build frontend
-        if: env.BUILD_ENABLED
-        env:
-          NODE_ENV: production
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
       - name: Set environment config
         if: env.BUILD_ENABLED
         shell: bash
         run: |
-          echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
-          echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            {
+              echo "CI_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "CI_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
+          fi
+          {
+            echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
+          } >> "$GITHUB_ENV"
+      - name: Build frontend
+        if: env.BUILD_ENABLED
+        env:
+          NODE_ENV: production
+          CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ inputs.tag }}
+          # Emit production source maps only when we will upload them to Sentry.
+          VITE_BUILD_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
+        run: |
+          pnpm run --filter=@ci-hub/common build
+          pnpm run --filter=frontend build
+      - name: Build standalone Companion Hub CLI
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CLI_OUT="${CLI_OUT}.exe"
+          fi
+          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
+          ls -lh "$CLI_OUT"
+      - name: Upload frontend source maps to Sentry
+        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_FRONTEND_PROJECT }}
+        run: |
+          # Best-effort per command: under `bash -eo pipefail` a sentry-cli
+          # failure would otherwise abort the step before the deletion below,
+          # leaving raw .map files to be embedded in the shipped desktop bundle.
+          # Always strip the maps regardless of the upload result.
+          DIST="packages/frontend/dist/client"
+          npx --yes @sentry/cli@2 sourcemaps inject "$DIST" || echo "::warning::sentry sourcemaps inject failed"
+          npx --yes @sentry/cli@2 sourcemaps upload \
+            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST" || echo "::warning::sentry sourcemaps upload failed"
+          find "$DIST" -name '*.map' -delete
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
@@ -170,19 +229,31 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm certificate.p12
+      - name: Sign bundled macOS CLI resource
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          chmod 755 "$CLI_OUT"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
+          codesign --verify --verbose=2 "$CLI_OUT"
       - name: Build Tauri app (signed)
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
           # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
-          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
       - name: Build Tauri app
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
@@ -190,14 +261,43 @@ jobs:
           TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
         shell: bash
         run: |
           cd packages/desktop
-          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+
+          # Tauri downloads external bundling tools from GitHub at bundle time
+          # (linuxdeploy/AppRun for the Linux AppImage, the WiX toolset for the
+          # Windows MSI) and routinely hits transient HTTP 5xx (e.g. 504), which
+          # previously failed the whole release. Retry the bundle step; the Rust
+          # compile is already cached, so each retry only re-attempts the
+          # download/bundle, and a genuine outage still fails after retries.
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            args+=(-b deb,rpm,appimage)
+            # The required Linux desktop release artifacts are deb/rpm only.
+            # AppImage is excluded here because linuxdeploy on GitHub ARM runners
+            # is flaky enough to break otherwise successful ARM64 releases.
+            npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            sh scripts/patch-deb-maintainer-scripts.sh
+          else
+            retry_build "${base_args[@]}"
           fi
-          npx --yes @tauri-apps/cli@2 build "${args[@]}"
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
@@ -258,6 +358,21 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
+      - name: Upload desktop debug symbols to Sentry
+        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_DESKTOP_PROJECT }}
+        run: |
+          # Upload native debug info so Rust panics/crashes symbolicate in Sentry.
+          # Captures Windows PDBs plus any dSYM/DWARF present. NOTE: the release
+          # profile sets strip=true, so macOS/Linux symbol coverage is limited;
+          # set split-debuginfo or relax strip for full native symbolication.
+          npx --yes @sentry/cli@2 debug-files upload --include-sources \
+            "packages/desktop/src-tauri/target/${{ matrix.target }}/release" || true
       - name: Collect release artifacts
         if: env.BUILD_ENABLED
         id: artifacts
@@ -290,7 +405,7 @@ jobs:
           ls -lh release-artifacts/
       - name: Upload release artifacts
         if: env.BUILD_ENABLED
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: release-artifacts/*
@@ -301,21 +416,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
+          fetch-depth: 0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
           path: artifacts
           merge-multiple: false
       - name: Collect all files
         run: |
           mkdir -p release-files
-          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
+          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
           echo "=== All release files ==="
           ls -lh release-files/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: "Companion Hub Desktop ${{ inputs.tag }}${{ inputs.environment != 'production' && format(' ({0})', inputs.environment) || '' }}"
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
@@ -326,10 +447,11 @@ jobs:
             | Platform | Installer | Notes |
             |---|---|---|
             | **Windows (x64)** | `.msi` or `-setup.exe` | Recommended for most Windows users |
+            | **Windows (ARM64)** | `.msi` or `-setup.exe` | Windows on ARM (Snapdragon and other ARM64 PCs) |
             | **macOS (Apple Silicon)** | `.dmg` | M1/M2/M3/M4 Macs |
             | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
-            | **Linux (x64)** | `.deb`, `.rpm`, or `.AppImage` | Ubuntu/Debian, Fedora/RHEL, or universal |
-            | **Linux (ARM64)** | `.deb`, `.rpm`, or `.AppImage` | Raspberry Pi, ARM servers |
+            | **Linux (x64)** | `.deb` or `.rpm` | Ubuntu/Debian or Fedora/RHEL |
+            | **Linux (ARM64)** | `.deb` or `.rpm` | Raspberry Pi, ARM servers |
             ### Requirements
             - Docker must be installed and running
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
@@ -343,8 +465,9 @@ jobs:
     environment: production
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
+          pattern: release-*
           path: artifacts
           merge-multiple: false
 
@@ -369,12 +492,20 @@ jobs:
             [ -f "$f" ] && upload "$VERSION/macos/intel/$(basename "$f")" "$f"
           done
 
-          # Windows
+          # Windows x64
           for f in artifacts/release-x86_64-pc-windows-msvc/*.msi; do
             [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-pc-windows-msvc/*-setup.exe; do
             [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
+          done
+
+          # Windows ARM64
+          for f in artifacts/release-aarch64-pc-windows-msvc/*.msi; do
+            [ -f "$f" ] && upload "$VERSION/windows/arm64/$(basename "$f")" "$f"
+          done
+          for f in artifacts/release-aarch64-pc-windows-msvc/*-setup.exe; do
+            [ -f "$f" ] && upload "$VERSION/windows/arm64/$(basename "$f")" "$f"
           done
 
           # Linux x64
@@ -384,19 +515,12 @@ jobs:
           for f in artifacts/release-x86_64-unknown-linux-gnu/*.rpm; do
             [ -f "$f" ] && upload "$VERSION/linux/rpm/x64/$(basename "$f")" "$f"
           done
-          for f in artifacts/release-x86_64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/x64/$(basename "$f")" "$f"
-          done
-
           # Linux ARM64
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.deb; do
             [ -f "$f" ] && upload "$VERSION/linux/deb/arm/$(basename "$f")" "$f"
           done
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.rpm; do
             [ -f "$f" ] && upload "$VERSION/linux/rpm/arm/$(basename "$f")" "$f"
-          done
-          for f in artifacts/release-aarch64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/arm/$(basename "$f")" "$f"
           done
 
       - name: Generate and upload manifest.json
@@ -420,10 +544,11 @@ jobs:
 
           const mappings = [
             ['windows-x86_64', 'release-x86_64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
+            ['windows-aarch64', 'release-aarch64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
             ['darwin-aarch64', 'release-aarch64-apple-darwin', { dmg: '.dmg' }],
             ['darwin-x86_64', 'release-x86_64-apple-darwin', { dmg: '.dmg' }],
-            ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
-            ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
+            ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
+            ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm' }],
           ];
 
           for (const [platform, artifactDir, formats] of mappings) {
@@ -435,16 +560,21 @@ jobs:
               const file = files.find(f => f.endsWith(ext));
               if (file) {
                 const stat = fs.statSync(path.join(dir, file));
+                const filePath = path.join(dir, file);
+                const fileBuffer = fs.readFileSync(filePath);
+                const sha256 = require('crypto').createHash('sha256').update(fileBuffer).digest('hex');
                 const encodedFile = encodeURIComponent(file);
                 let r2Path;
-                if (platform.startsWith('windows')) r2Path = 'windows/x64';
+                if (platform === 'windows-aarch64') r2Path = 'windows/arm64';
+                else if (platform.startsWith('windows')) r2Path = 'windows/x64';
                 else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
                 else if (platform === 'darwin-x86_64') r2Path = 'macos/intel';
-                else if (platform === 'linux-x86_64') r2Path = fmt === 'appimage' ? 'linux/appimage/x64' : 'linux/' + fmt + '/x64';
-                else r2Path = fmt === 'appimage' ? 'linux/appimage/arm' : 'linux/' + fmt + '/arm';
+                else if (platform === 'linux-x86_64') r2Path = 'linux/' + fmt + '/x64';
+                else r2Path = 'linux/' + fmt + '/arm';
                 platformData[fmt] = {
                   url: 'https://dl.ci.computer/$VERSION/' + r2Path + '/' + encodedFile,
                   size: stat.size,
+                  sha256,
                 };
               }
             }
@@ -464,7 +594,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          echo '{"version":"${{ inputs.tag }}","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > /tmp/latest.json
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "{\"version\":\"${{ inputs.tag }}\",\"date\":\"${DATE}\"}" > /tmp/latest.json
           wrangler r2 object put --remote "dl-prod/latest.json" --file /tmp/latest.json
 
   finalize-release-page:
@@ -476,27 +607,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: Collect all files
-        run: |
-          set -euo pipefail
-          mkdir -p release-files
-          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
-          echo "=== All release files ==="
-          ls -lh release-files/
 
       - name: Finalize GitHub release page
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_FILES_DIR: release-files
         run: ./.github/scripts/finalize-desktop-release.sh

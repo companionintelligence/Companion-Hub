@@ -17,6 +17,8 @@ import {
   DEFAULT_RABBITMQ_PASSWORD,
   DEFAULT_FORWARD_AUTH_URL,
   DEFAULT_DNS_IP,
+  DEFAULT_CI_CLOUD_URL,
+  DEFAULT_PUBLIC_DOMAIN,
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
@@ -32,8 +34,7 @@ import {
   DEFAULT_THEME_COLOR,
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
-
-export const DEFAULT_REPO_URL = '';
+import { quarantineStalePath } from './bind-mount-helpers';
 
 /**
  * Generates a random seed if it does not exist yet
@@ -58,6 +59,13 @@ const getArchitecture = () => {
 
   throw new Error(`Unsupported architecture: ${arch}`);
 };
+
+/**
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
+ */
+const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win32.isAbsolute(value);
 
 /**
  * Resolve a configuration value using the standard priority chain:
@@ -123,9 +131,169 @@ function resolve(
   return opts.fallback;
 }
 
+/** True when process.env already has a non-empty value (including legacy alias). */
+function processEnvHasValue(key: string): boolean {
+  if (process.env[key] !== undefined && process.env[key] !== '') {
+    return true;
+  }
+  const legacyKey = LEGACY_ENV_MAP[key];
+  return Boolean(legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '');
+}
+
 /** Coerce a settings boolean to string, or return undefined if not set */
 function boolStr(val: boolean | undefined): string | undefined {
   return typeof val === 'boolean' ? String(val) : undefined;
+}
+
+function isFsErrorWithCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
+}
+
+const SETTINGS_JSON_MODE = 0o666;
+
+/** Ensure bind-mounted state/ exists; Hub container UID should match the host user (see CI_HUB_CONTAINER_UID). */
+export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
+  await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o775 });
+  try {
+    await fs.promises.chmod(stateDir, 0o775);
+  } catch {
+    // chmod may fail on some mounts; write retry logic still applies.
+  }
+}
+
+async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: string): Promise<void> {
+  try {
+    await fs.promises.chmod(stateDir, 0o777);
+  } catch {
+    // Host user may not own the directory (e.g. prior root-owned Hub container).
+  }
+  if (fs.existsSync(settingsFilePath)) {
+    try {
+      await fs.promises.chmod(settingsFilePath, SETTINGS_JSON_MODE);
+      return;
+    } catch {
+      try {
+        await fs.promises.access(settingsFilePath, fs.constants.R_OK);
+        // Readable but not writable — preserve in place for manual ownership repair.
+        return;
+      } catch {
+        quarantineStalePath(settingsFilePath);
+      }
+    }
+  }
+}
+
+function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): Error {
+  return new Error(
+    `Cannot read or write ${settingsFilePath}. This usually means bind-mounted Hub data was written by a prior container running as a different user (common after Hub upgrades or Docker Desktop UID changes). Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST/state"), or quarantine state/settings.json and restart.`,
+    { cause },
+  );
+}
+
+/** Ensure settings.json exists and is readable/writable by the Hub process. */
+export async function ensureSettingsJsonReady(settingsFilePath: string): Promise<void> {
+  const stateDir = path.dirname(settingsFilePath);
+  await ensureHubStateDirWritable(stateDir);
+
+  const createEmpty = async () => {
+    await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+  };
+
+  if (!fs.existsSync(settingsFilePath)) {
+    try {
+      await createEmpty();
+      return;
+    } catch (error) {
+      if (!isFsErrorWithCode(error, 'EACCES')) {
+        throw error;
+      }
+      await retrySettingsJsonPermissions(settingsFilePath, stateDir);
+      await createEmpty();
+      return;
+    }
+  }
+
+  try {
+    await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
+  } catch (error) {
+    await retrySettingsJsonPermissions(settingsFilePath, stateDir);
+    if (!fs.existsSync(settingsFilePath)) {
+      await createEmpty();
+      return;
+    }
+    try {
+      await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
+    } catch (retryError) {
+      throw settingsJsonPermissionError(settingsFilePath, retryError ?? error);
+    }
+  }
+}
+
+/** Write settings.json with permission recovery for stale root-owned bind mounts. */
+export async function writeSettingsJsonFile(settingsFilePath: string, content: string): Promise<void> {
+  await ensureSettingsJsonReady(settingsFilePath);
+
+  try {
+    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+  } catch (error) {
+    if (!isFsErrorWithCode(error, 'EACCES')) {
+      throw error;
+    }
+    await retrySettingsJsonPermissions(settingsFilePath, path.dirname(settingsFilePath));
+    try {
+      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+    } catch (retryError) {
+      throw settingsJsonPermissionError(settingsFilePath, retryError);
+    }
+  }
+}
+
+/** Best-effort persistence of resolved env; returns false when the mount blocks writes. */
+export async function writeResolvedEnvFile(targetPath: string, content: string): Promise<boolean> {
+  const stateDir = path.dirname(targetPath);
+  await ensureHubStateDirWritable(stateDir);
+
+  try {
+    await fs.promises.unlink(targetPath);
+  } catch {
+    // File may not exist yet.
+  }
+
+  const attemptWrite = async () => {
+    await fs.promises.writeFile(targetPath, content, { mode: 0o664 });
+  };
+
+  try {
+    await attemptWrite();
+    return true;
+  } catch (error: unknown) {
+    if (!isFsErrorWithCode(error, 'EACCES') && !isFsErrorWithCode(error, 'EROFS')) {
+      throw error;
+    }
+    try {
+      await fs.promises.chmod(targetPath, 0o664);
+    } catch {
+      // ignore
+    }
+    try {
+      await attemptWrite();
+      return true;
+    } catch (retryError: unknown) {
+      if (isFsErrorWithCode(retryError, 'EACCES') || isFsErrorWithCode(retryError, 'EROFS')) {
+        return false;
+      }
+      throw retryError;
+    }
+  }
+}
+
+/** Apply resolved env to process.env without clobbering runtime / .env.local values. */
+function applyEnvMapToProcess(envMap: Map<string, string>) {
+  for (const [key, value] of envMap.entries()) {
+    if (!processEnvHasValue(key)) {
+      process.env[key] = value;
+    }
+  }
 }
 
 export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
@@ -134,7 +302,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const envUtils = new EnvUtils();
 
-  await fs.promises.mkdir(path.join(DATA_DIR, 'state'), { recursive: true });
+  const stateDir = path.join(DATA_DIR, 'state');
+  await ensureHubStateDirWritable(stateDir);
 
   const settingsFilePath = path.join(DATA_DIR, 'state', 'settings.json');
   const envFilePath = path.join(DATA_DIR, '.env');
@@ -151,9 +320,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const { NODE_ENV } = process.env;
   envMap.set('NODE_ENV', NODE_ENV || 'production');
 
-  if (!fs.existsSync(settingsFilePath)) {
-    await fs.promises.writeFile(settingsFilePath, JSON.stringify({}));
-  }
+  await ensureSettingsJsonReady(settingsFilePath);
 
   const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
 
@@ -168,8 +335,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // --- Resolve all values using the standard priority chain ---
 
-  const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
-  const mcpApiKey = envMap.get('MCP_API_KEY') || envUtils.deriveEntropy('mcp_api_key');
+  const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
+  const mcpApiKey = resolve('MCP_API_KEY', { envMap, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -179,7 +346,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     );
   }
 
-  if (!path.isAbsolute(rootFolderHost)) {
+  if (!isAbsoluteHostPath(rootFolderHost)) {
     throw new Error(
       `ROOT_FOLDER_HOST must be an absolute host path, got: ${rootFolderHost}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path in docker-compose.yml or .env file.',
@@ -196,14 +363,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure CI_HUB_APP_DATA_PATH is always absolute (host path)
-  if (appDataPath && !path.isAbsolute(appDataPath)) {
+  if (appDataPath && !isAbsoluteHostPath(appDataPath)) {
     appDataPath = path.resolve(rootFolderHost, appDataPath);
     logger.debug(`Resolved relative CI_HUB_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
   }
 
   const finalAppDataPath = appDataPath || rootFolderHost;
 
-  if (!path.isAbsolute(finalAppDataPath)) {
+  if (!isAbsoluteHostPath(finalAppDataPath)) {
     throw new Error(
       `CI_HUB_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path or set CI_HUB_APP_DATA_PATH to an absolute path.',
@@ -231,7 +398,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
   envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
-  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
+  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
   envMap.set(
     'LOCAL_DOMAIN',
     resolve('LOCAL_DOMAIN', {
@@ -319,7 +486,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // CI Cloud integration — REQUIRED, no fallback
   const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
-    throw new Error('CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=https://hub.companionintelligence.com)');
+    throw new Error(`CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=${DEFAULT_CI_CLOUD_URL})`);
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
@@ -327,20 +494,16 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const newEnvContent = envUtils.envMapToString(envMap);
 
-  try {
-    await fs.promises.writeFile(resolvedEnvFilePath, newEnvContent);
-    logger.debug('Resolved environment written to state/.env.resolved');
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'EROFS') {
-      logger.warn('Cannot write resolved env (read-only mount). Continuing with existing values.');
-    } else {
-      throw error;
-    }
-  }
+  applyEnvMapToProcess(envMap);
 
-  // Load the resolved env into process.env as DEFAULTS only.
-  // .env.local values already in process.env are NOT overwritten.
-  dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
+  const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent);
+  if (wroteResolved) {
+    logger.debug('Resolved environment written to state/.env.resolved');
+    // Disk snapshot for other processes; override: false preserves runtime / .env.local on process.env.
+    dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
+  } else {
+    logger.warn('Could not write state/.env.resolved (permission denied on bind mount). Using in-memory resolved environment for this process.');
+  }
 
   return envMap;
 };

@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
 import { faker } from '@faker-js/faker';
-import type { AppInfo, AppInfoInput } from '@ci-hub/common/schemas';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import { appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
-export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}) => {
+export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}): Promise<AppInfo> => {
   const id = app.id ?? faker.lorem.words(3).split(' ').join('-').toLowerCase();
 
-  const appInfo: AppInfoInput = {
+  const appInfo = appInfoSchema.parse({
     id,
     urn: `${id}:${storeId}` as AppUrn,
     name: faker.lorem.words(2),
@@ -26,26 +27,25 @@ export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = 
     short_desc: faker.lorem.sentence(),
     website: faker.internet.url(),
     supported_architectures: [],
-    created_at: Date.now(),
-    updated_at: Date.now(),
+    created_at: 0,
+    updated_at: 0,
     deprecated: false,
-    tipi_version: 1,
+    cihub_app_version: 1,
     force_expose: false,
     generate_vapid_keys: false,
     form_fields: [],
     ...app,
-  };
+  });
 
   const composeJson = {
+    schemaVersion: 2,
     services: [
       {
         name: appInfo.id,
         image: 'nginx:latest',
         isMain: true,
         internalPort: 80,
-        environment: {
-          TEST: 'test',
-        },
+        environment: [{ key: 'TEST', value: 'test' }],
       },
     ],
   };

@@ -48,13 +48,13 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - run: pnpm install --frozen-lockfile
 
@@ -84,9 +84,9 @@ jobs:
       - name: Start mock portal
         run: |
           pnpm exec tsx e2e/mock-portal/server.ts &
-          echo "MOCK_PID=$!" >> $GITHUB_ENV
+          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
           sleep 2
-          curl -sf http://localhost:${MOCK_PORTAL_PORT}/v2/ || echo "Warning: mock portal not responding"
+          curl -sf "http://localhost:${MOCK_PORTAL_PORT}/v2/" || echo "Warning: mock portal not responding"
 
       - name: Run E2E tests
         run: pnpm run test:e2e:ci
@@ -113,7 +113,7 @@ jobs:
           CI: true
           DEVICE_ID: test-device-e2e
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report

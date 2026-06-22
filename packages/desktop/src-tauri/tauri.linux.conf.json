@@ -1,6 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Companion Hub",
+  "mainBinaryName": "companion-hub",
   "bundle": {
-    "targets": ["deb", "rpm"]
+    "targets": ["appimage", "deb", "rpm"]
   }
 }

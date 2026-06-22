@@ -7,6 +7,8 @@ const translations = {
   COMMON_BACK: 'Back',
   COMMON_CONTINUE: 'Continue',
   ONBOARDING_TAILSCALE_SKIP: 'Skip',
+  ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER: 'Skip to Discover',
+  ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER: 'Continue to Discover',
 } as const;
 
 vi.mock('@tanstack/react-query', () => ({
@@ -67,17 +69,17 @@ describe('TailscaleSetupStep', () => {
   it('shows only Skip when Tailscale is not connected', () => {
     renderStep(false);
 
-    expect(screen.getByRole('button', { name: 'Skip' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skip to Discover' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue to Discover' })).not.toBeInTheDocument();
   });
 
   it('shows only Continue when Tailscale is connected and completes onboarding', async () => {
     const { onComplete } = renderStep(true);
 
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue to Discover' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skip to Discover' })).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue to Discover' }));
 
     expect(onComplete).toHaveBeenCalledTimes(1);
   });

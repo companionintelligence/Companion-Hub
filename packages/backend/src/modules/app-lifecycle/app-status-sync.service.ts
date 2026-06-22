@@ -3,12 +3,16 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/constants';
 import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+
+const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -32,10 +36,17 @@ export class AppStatusSyncService {
     private readonly configuration: ConfigurationService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
+    @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
+      const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
       this.logger.warn(
-        `You have set a high events timeout of ${this.configuration.get('userSettings').eventsTimeout} minutes. Consider lowering if app status syncs are not occurring as expected.`,
+        `You have set a high events timeout of ${eventsTimeout} minutes. Consider lowering if app status syncs are not occurring as expected.`,
+      );
+      this.errorReportingService?.captureWarning(
+        'App status sync configured with a high events timeout',
+        { eventsTimeoutMinutes: eventsTimeout },
+        { debounceKey: 'app-status-sync:high-events-timeout', debounceMs: 60 * 60_000 },
       );
     }
 
@@ -82,20 +93,32 @@ export class AppStatusSyncService {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
+        const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
         if (isTransitional) {
           const timeSinceUpdate = Date.now() - new Date(app.updatedAt).getTime();
-          if (timeSinceUpdate < this.configuration.get('userSettings').eventsTimeout * 60 * 1000) {
+          if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
             skippedCount++;
             continue;
           }
-          this.logger.warn(`App ${appUrn} stuck in '${app.status}' for ${Math.round(timeSinceUpdate / 60000)} minutes`);
+          const minutesStuck = Math.round(timeSinceUpdate / 60000);
+          this.logger.warn(`App ${appUrn} stuck in '${app.status}' for ${minutesStuck} minutes`);
+          this.errorReportingService?.captureWarning(
+            `App ${appUrn} stuck in '${app.status}'`,
+            { appUrn, status: app.status, minutesStuck },
+            { debounceKey: `app-status-sync:stuck:${appUrn}:${app.status}`, debounceMs: 30 * 60_000 },
+          );
         }
 
         const dockerStatus = dockerStatusMap.get(appUrn);
         let newStatus: AppStatus;
 
         if (!dockerStatus || dockerStatus.total === 0) {
+          // Large image pulls can exceed the default queue grace; don't mark as missing mid-install.
+          if (app.status === 'installing' || app.status === 'install_failed') {
+            skippedCount++;
+            continue;
+          }
           newStatus = 'missing';
         } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
           newStatus = 'running';
@@ -103,6 +126,11 @@ export class AppStatusSyncService {
           newStatus = 'stopped';
           if (dockerStatus.running > 0) {
             this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
+            this.errorReportingService?.captureWarning(
+              `App ${appUrn} has mixed container states`,
+              { appUrn, runningContainers: dockerStatus.running, totalContainers: dockerStatus.total },
+              { debounceKey: `app-status-sync:mixed:${appUrn}`, debounceMs: 30 * 60_000 },
+            );
           }
         }
 
@@ -114,6 +142,11 @@ export class AppStatusSyncService {
           // Detect crash: running → stopped or missing
           if (app.status === 'running' && (newStatus === 'stopped' || newStatus === 'missing')) {
             this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
+            this.errorReportingService?.reportAppFailure({
+              appUrn,
+              phase: 'crash',
+              message: `App transitioned from ${app.status} to ${newStatus} during status sync`,
+            });
           }
           syncedCount++;
         }
@@ -139,5 +172,13 @@ export class AppStatusSyncService {
         totalApps: 0,
       };
     }
+  }
+
+  private getTransitionalGraceMs(status: AppStatus): number {
+    const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
+    const minutes = LONG_RUNNING_TRANSITIONAL_STATES.includes(status)
+      ? Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES))
+      : eventsTimeoutMinutes;
+    return minutes * 60 * 1000;
   }
 }

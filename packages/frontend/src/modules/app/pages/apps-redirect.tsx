@@ -1,3 +1,3 @@
 import { Navigate } from 'react-router';
 
-export default () => <Navigate to="/app-store" replace />;
+export default () => <Navigate to="/store" replace />;

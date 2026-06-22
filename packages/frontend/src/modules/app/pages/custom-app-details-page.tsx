@@ -7,12 +7,14 @@ import { Card, CardHeader } from '@/components/ui/Card';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getAppOptions, uploadAppImageMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
+import { fetchAppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 
 export const CustomAppDetailsPage = () => {
   const params = useParams<{ appId: string }>();
@@ -22,6 +24,7 @@ export const CustomAppDetailsPage = () => {
     ...getAppOptions({ path: { urn: `${params.appId}:_user` } }),
     staleTime: 30_000,
   });
+  const runtimeHealthEnabled = Boolean(getApp.data?.app && getApp.data.app.status !== 'uninstalling');
 
   const { userSettings } = useAppContext();
   const [searchParams] = useSearchParams();
@@ -39,6 +42,13 @@ export const CustomAppDetailsPage = () => {
     onError: (error: TranslatableError) => {
       toast.error(t(error.message, error.intlParams));
     },
+  });
+
+  const runtimeHealth = useQuery({
+    queryKey: ['app-runtime-health', `${params.appId}:_user`],
+    queryFn: () => fetchAppRuntimeHealth(`${params.appId}:_user`),
+    refetchInterval: 15_000,
+    enabled: runtimeHealthEnabled,
   });
 
   const handleImageUpload = (file: File) => {
@@ -60,6 +70,7 @@ export const CustomAppDetailsPage = () => {
 
   return (
     <div className="h-full overflow-y-auto">
+      <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
       <Card data-testid="app-details">
         <CardHeader className="flex flex-col md:flex-row border-0">
           <CustomAppLogo
@@ -71,14 +82,26 @@ export const CustomAppDetailsPage = () => {
           />
           <div className="w-full flex flex-col md:ml-3 items-center md:items-start">
             <div>
-              <span className="mt-1 me-1">{t('APP_DETAILS_VERSION')}: </span>
+              <span className="mt-1 me-1">{t('COMMON_VERSION')}: </span>
               <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
-            <div className="mb-1">
-              <AppStatus status={app?.status ?? 'missing'} />
+            <div data-testid="app-header-actions-row" className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
+              </div>
+              <div className="min-w-0 md:flex-1">
+                <AppActions
+                  app={app}
+                  metadata={metadata}
+                  info={info}
+                  localDomain={userSettings.localDomain}
+                  sslPort={userSettings.sslPort}
+                  runtimeHealth={runtimeHealth.data}
+                  layout="hero"
+                />
+              </div>
             </div>
-            <AppActions app={app} metadata={metadata} info={info} localDomain={userSettings.localDomain} sslPort={userSettings.sslPort} />
           </div>
         </CardHeader>
         <AppDetailsTabs info={info} app={app} metadata={metadata} />

@@ -82,9 +82,10 @@ sequenceDiagram
     AppLifeSvc->>Queue: Publish Job { command: 'install', urn }
     AppLifeSvc-->>AppLifeCtrl: Returns Request ID (Async)
     deactivate AppLifeSvc
-    AppLifeCtrl-->>Frontend: ACK (Websocket listens for updates)
+    AppLifeCtrl-->>Frontend: ACK (SSE: status_change, install_queue)
 
     activate Queue
+    note right of Queue: 3 workers; install jobs wait on<br/>INSTALL_PIPELINE_MUTEX_KEY
     Queue->>Worker: Process 'install' Job
     activate Worker
     Worker->>Market: getDockerComposeJson(urn)

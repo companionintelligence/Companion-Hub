@@ -21,7 +21,7 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
   const { t } = useTranslation();
   const { setOptimisticStatus } = useAppStatus();
 
-  const [shouldRemoveBackups, setShouldRemoveBackups] = useState(false);
+  const [shouldDeleteAllData, setShouldDeleteAllData] = useState(true);
 
   const uninstallMutation = useMutation({
     ...uninstallAppMutation(),
@@ -42,19 +42,19 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
         </DialogHeader>
         <DialogDescription className="text-center py-4">
           <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
-          <h3>{t('APP_UNINSTALL_FORM_WARNING')}</h3>
-          <span className="text-muted-foreground">{t('APP_UNINSTALL_FORM_SUBTITLE')}</span>
+          <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
+          <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
           <div className="flex justify-center pt-3">
             <Switch
               className="text-start"
-              checked={shouldRemoveBackups}
-              onCheckedChange={setShouldRemoveBackups}
-              label={t('APP_UNINSTALL_FORM_REMOVE_BACKUPS')}
+              checked={shouldDeleteAllData}
+              onCheckedChange={setShouldDeleteAllData}
+              label={t('APP_UNINSTALL_FORM_DELETE_ALL_DATA')}
             />
           </div>
         </DialogDescription>
         <DialogFooter>
-          <Button onClick={() => uninstallMutation.mutate({ path: { urn: info.urn }, body: { removeBackups: shouldRemoveBackups } })} intent="danger">
+          <Button onClick={() => uninstallMutation.mutate({ path: { urn: info.urn }, body: { deleteAllData: shouldDeleteAllData } })} intent="danger">
             {t('APP_UNINSTALL_FORM_SUBMIT')}
           </Button>
         </DialogFooter>

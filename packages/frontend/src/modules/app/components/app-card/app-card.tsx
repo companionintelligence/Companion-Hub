@@ -7,6 +7,7 @@ import type { AppInfoSimple } from '@/types/app.types';
 import { Check, Download } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
 interface AppCardProps {
@@ -16,6 +17,7 @@ interface AppCardProps {
 }
 
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
+  const { t } = useTranslation();
   const [appId, storeId] = app.urn.split(':');
   const logoUrl = getMarketplaceAppImageUrl(app.urn);
   const [imgSrc, setImgSrc] = useState(logoUrl);
@@ -50,9 +52,9 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
   }
 
   return (
-    <Link to={`/app-store/${storeId}/${appId}`} className="block h-full group">
+    <Link to={`/store/${storeId}/${appId}`} className="block h-full group">
       <GlassContainer
-        className="h-full p-4 hover:bg-white/10 hover:shadow-lg transition-all active:scale-[0.98] flex flex-col min-h-[180px] sm:min-h-[220px]"
+        className="h-full min-h-[180px] flex flex-col p-4 shadow-sm shadow-slate-300/70 transition-all active:scale-[0.98] hover:bg-white/10 hover:shadow-xl hover:shadow-slate-300/80 sm:min-h-[220px] dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20"
         intensity="low"
       >
         <div className="flex items-start justify-between mb-3 sm:mb-4">
@@ -72,7 +74,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">Free</span>
+          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
         </div>
 
         <h3 className="font-bold text-base sm:text-lg mb-1 truncate text-foreground group-hover:text-primary transition-colors">{app.name}</h3>

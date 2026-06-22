@@ -4,9 +4,11 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '../registration/registration.service';
+import axios from 'axios';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import fs from 'node:fs';
+import path from 'node:path';
 
 // Mock fs module
 vi.mock('node:fs', async () => {
@@ -34,6 +36,8 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
 }));
 
+vi.mock('axios');
+
 describe('ReposHelpers', () => {
   let service: ReposHelpers;
   let configService = mock<ConfigurationService>();
@@ -41,9 +45,7 @@ describe('ReposHelpers', () => {
   const logger = mockDeep<LoggerService>();
   let registrationService = mock<RegistrationService>();
 
-  // Mock fetch
-  const fetchMock = vi.fn();
-  global.fetch = fetchMock as any;
+  const axiosMock = vi.mocked(axios);
 
   beforeEach(async () => {
     configService = mock<ConfigurationService>();
@@ -83,19 +85,23 @@ describe('ReposHelpers', () => {
         { slug: 'app2', name: 'App 2', version: '1.0.0' },
       ];
 
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => appsData,
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: appsData,
       });
 
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
-      expect(fetchMock).toHaveBeenCalledWith('http://cloud.api/store');
+      expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url: 'http://cloud.api/store' }));
 
       // Verify it creates directories and writes files
       expect(fs.promises.mkdir).toHaveBeenCalled();
       // We expect writes for each app's config.json
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('app1/config.json'), expect.stringContaining('"slug": "app1"'));
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.normalize('app1/config.json')),
+        expect.stringContaining('"slug": "app1"'),
+      );
     });
 
     it('should enrich missing metadata for CI Cloud apps', async () => {
@@ -106,17 +112,18 @@ describe('ReposHelpers', () => {
         // Missing author, urn, etc.
       };
 
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => [minimalApp],
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [minimalApp],
       });
 
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
-      expect(fetchMock).toHaveBeenCalledWith('http://cloud.api/store');
+      expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url: 'http://cloud.api/store' }));
 
       const calls = (fs.promises.writeFile as any).mock.calls;
-      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
       expect(configCall).toBeDefined();
 
       const writtenConfig = JSON.parse(configCall[1]);
@@ -129,23 +136,116 @@ describe('ReposHelpers', () => {
       expect(writtenConfig).toHaveProperty('port', 8080);
       expect(writtenConfig).toHaveProperty('supported_architectures', ['amd64', 'arm64']);
     });
+
+    it('uses metadata/description.md for the full app description', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', description: 'Config fallback description' }],
+      });
+
+      axiosMock.get.mockImplementation(async (url: string) => {
+        if (url === 'http://cloud.api/store/app1/metadata/description.md') {
+          return {
+            status: 200,
+            statusText: 'OK',
+            headers: { 'content-type': 'text/markdown; charset=utf-8' },
+            data: '# Markdown description',
+          };
+        }
+
+        return {
+          status: 404,
+          statusText: 'Not Found',
+          headers: {},
+          data: '',
+        };
+      });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const descriptionCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/metadata/description.md')));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
+
+      expect(descriptionCall).toBeDefined();
+      expect(descriptionCall[1]).toBe('# Markdown description');
+      expect(JSON.parse(configCall[1]).description).toBe('# Markdown description');
+    });
+
+    it('falls back to config description for unsupported description content-types', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', description: 'Config fallback description' }],
+      });
+
+      axiosMock.get.mockImplementation(async (url: string) => {
+        if (url === 'http://cloud.api/store/app1/metadata/description.md') {
+          return {
+            status: 200,
+            statusText: 'OK',
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+            data: '<html>wrong payload</html>',
+          };
+        }
+
+        return {
+          status: 404,
+          statusText: 'Not Found',
+          headers: {},
+          data: '',
+        };
+      });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const descriptionCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/metadata/description.md')));
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
+
+      expect(descriptionCall).toBeUndefined();
+      expect(JSON.parse(configCall[1]).description).toBe('Config fallback description');
+    });
+
+    it('retries transient CI Cloud HTTP failures before succeeding', async () => {
+      axiosMock.request
+        .mockResolvedValueOnce({ status: 503, statusText: 'Service Unavailable', data: {} })
+        .mockResolvedValueOnce({ status: 200, statusText: 'OK', data: [] });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(true);
+      expect(axiosMock.request).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry permanent CI Cloud client errors', async () => {
+      axiosMock.request.mockResolvedValueOnce({ status: 404, statusText: 'Not Found', data: {} });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('404 Not Found');
+      expect(axiosMock.request).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('downloadAppFiles', () => {
     it('should fetch install files and write them', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           files: {
             'docker-compose.yml': 'services: test',
           },
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
 
       expect(result.success).toBe(true);
-      expect(fetchMock).toHaveBeenCalledWith(
+      expect(axiosMock.get).toHaveBeenCalledWith(
         'http://cloud.api/store/app1/install',
         expect.objectContaining({
           headers: expect.objectContaining({ 'x-device-id': 'test-uuid' }),
@@ -155,14 +255,15 @@ describe('ReposHelpers', () => {
     });
 
     it('should write multiple files from files format', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           files: {
             'config.json': '{"name":"test"}',
             'docker-compose.json': 'services:\n  app:\n    image: test',
           },
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'multi-app');
@@ -173,15 +274,16 @@ describe('ReposHelpers', () => {
     });
 
     it('should handle canonical files format with multiple files', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           files: {
             'docker-compose.yml': 'services:\n  app:\n    image: nginx',
             'config.json': '{"name":"multi"}',
             'data/settings.json': '{"key":"value"}',
           },
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'multi-file-app');
@@ -189,23 +291,25 @@ describe('ReposHelpers', () => {
       expect(result.success).toBe(true);
       expect(fs.promises.writeFile).toHaveBeenCalledTimes(3);
       expect(fs.promises.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('multi-file-app/docker-compose.yml'),
+        expect.stringContaining(path.normalize('multi-file-app/docker-compose.yml')),
         'services:\n  app:\n    image: nginx',
       );
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/config.json'), '{"name":"multi"}');
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/data/settings.json'), '{"key":"value"}');
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.normalize('multi-file-app/config.json')), '{"name":"multi"}');
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining(path.normalize('multi-file-app/data/settings.json')),
+        '{"key":"value"}',
+      );
 
       // Verify mkdir is called for nested paths (data/ subdirectory)
       const mkdirCalls = (fs.promises.mkdir as any).mock.calls.map((c: any[]) => c[0]);
-      expect(mkdirCalls).toContainEqual(expect.stringContaining('multi-file-app/data'));
+      expect(mkdirCalls).toContainEqual(expect.stringContaining(path.normalize('multi-file-app/data')));
     });
 
     it('should reject responses that do not contain a files object', async () => {
-      fetchMock.mockResolvedValue({
-        ok: false,
+      axiosMock.get.mockResolvedValue({
         status: 500,
         statusText: 'Internal Server Error',
-        json: async () => ({}),
+        data: {},
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'bad-app');
@@ -215,9 +319,10 @@ describe('ReposHelpers', () => {
     });
 
     it('should handle empty files object gracefully', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({ files: {} }),
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: { files: {} },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'empty-app');
@@ -229,9 +334,10 @@ describe('ReposHelpers', () => {
     });
 
     it('should handle response with no files property (warn, not crash)', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({ someOtherData: 'hello' }),
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: { someOtherData: 'hello' },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'no-files-app');
@@ -244,12 +350,13 @@ describe('ReposHelpers', () => {
     });
 
     it('MUST NOT support legacy {config, dockerCompose} format', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           config: '{"name":"legacy"}',
           dockerCompose: 'services:\n  app:\n    image: old',
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'legacy-app');
@@ -262,25 +369,27 @@ describe('ReposHelpers', () => {
 
     it('should pass through file content exactly as received (no transformation)', async () => {
       const exactContent = '  spaces  \n\ttabs\t\n{"json": true}\nspecial chars: àéîõü™©®';
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           files: { 'exact.txt': exactContent },
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'exact-app');
 
       expect(result.success).toBe(true);
-      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('exact-app/exact.txt'), exactContent);
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.normalize('exact-app/exact.txt')), exactContent);
     });
 
     it('should create directories before writing files', async () => {
-      fetchMock.mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      axiosMock.get.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: {
           files: { 'test.yml': 'content' },
-        }),
+        },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'dir-app');
@@ -297,11 +406,10 @@ describe('ReposHelpers', () => {
     });
 
     it('should handle payment required', async () => {
-      fetchMock.mockResolvedValue({
-        ok: false,
+      axiosMock.get.mockResolvedValue({
         status: 402,
         statusText: 'Payment Required',
-        json: async () => ({ error: 'Payment Required' }),
+        data: { error: 'Payment Required' },
       });
 
       const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');

@@ -2,12 +2,48 @@ import { z } from 'zod';
 import { zodAppUrn } from '../types/app-urn.js';
 import { agentConfigSchema } from './agent-config.js';
 
+/**
+ * Standardized inference variable names that apps can request from the Hub.
+ * When declared in `hub_integration.inference`, the Hub resolves the value at
+ * env-generation time and writes it into the app's `app.env` under the
+ * app-specified env variable name.
+ */
+export const INFERENCE_VARIABLES = [
+  'llm_base_url',
+  'llm_api_key',
+  'chat_model',
+  'embedding_model',
+  'vision_model',
+  'ollama_host',
+  'num_ctx',
+] as const;
+export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
+
+export const inferenceEnvMappingSchema = z.record(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+
 export const hubIntegrationSchema = z
   .object({
     mcp_client: z.boolean().default(false),
     wake_endpoint: z.string().optional().default('/hooks/hub-wake'),
     wake_port: z.number().optional(),
     sse_events: z.boolean().default(false),
+    /**
+     * Opt-in inference variable mapping. Keys are standardized Hub variable
+     * names; values are the env variable names the app expects.
+     *
+     * Example in config.json:
+     * ```json
+     * "hub_integration": {
+     *   "inference": {
+     *     "llm_base_url": "LLM_API_BASE",
+     *     "llm_api_key": "LLM_API_KEY",
+     *     "chat_model": "LLM_DEFAULT_CHAT_MODEL",
+     *     "embedding_model": "LLM_DEFAULT_EMBEDDING_MODEL"
+     *   }
+     * }
+     * ```
+     */
+    inference: inferenceEnvMappingSchema.optional(),
   })
   .optional();
 
@@ -29,6 +65,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'companion-intelligence',
 ] as const;
 export type AppCategory = (typeof APP_CATEGORIES)[number];
 export const ARCHITECTURES = ['arm64', 'amd64'] as const;
@@ -55,7 +92,20 @@ export const formFieldSchema = z.object({
   encoding: z.enum(RANDOM_ENCODINGS).optional(),
 });
 
-export const appInfoSchema = z.object({
+/** Accept legacy Runtipi field names when parsing app config.json from stores or backups. */
+function normalizeAppInfoInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const raw = input as Record<string, unknown>;
+  return {
+    ...raw,
+    cihub_app_version:
+      typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.tipi_version === 'number' ? raw.tipi_version : 1,
+    min_hub_version:
+      typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_tipi_version === 'string' ? raw.min_tipi_version : undefined,
+  };
+}
+
+export const appInfoObjectSchema = z.object({
   id: z.string().refine((v) => v.split(':').length === 1),
   urn: zodAppUrn,
   available: z.boolean(),
@@ -64,7 +114,7 @@ export const appInfoSchema = z.object({
   name: z.string(),
   description: z.string().optional().default(''),
   version: z.string().optional().default('latest'),
-  tipi_version: z.number(),
+  cihub_app_version: z.number().optional().default(1),
   short_desc: z.string(),
   author: z.string(),
   source: z.string(),
@@ -101,22 +151,23 @@ export const appInfoSchema = z.object({
   hub_integration: hubIntegrationSchema,
 });
 
-// Derived types
-export type AppInfoInput = z.input<typeof appInfoSchema>;
-export type AppInfo = z.output<typeof appInfoSchema>;
+export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
+
+export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
+export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 
 export const frontmatterSchema = z
   .object({
-    name: appInfoSchema.shape.name.optional(),
-    short_desc: appInfoSchema.shape.short_desc.optional(),
-    description: appInfoSchema.shape.description.optional(),
-    source: appInfoSchema.shape.source.optional(),
-    website: appInfoSchema.shape.website.optional(),
-    author: appInfoSchema.shape.author.optional(),
-    categories: appInfoSchema.shape.categories.optional().default(['development']),
-    version: appInfoSchema.shape.version.optional(),
-    port: appInfoSchema.shape.port.optional(),
-    supported_architectures: appInfoSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
+    name: appInfoObjectSchema.shape.name.optional(),
+    short_desc: appInfoObjectSchema.shape.short_desc.optional(),
+    description: appInfoObjectSchema.shape.description.optional(),
+    source: appInfoObjectSchema.shape.source.optional(),
+    website: appInfoObjectSchema.shape.website.optional(),
+    author: appInfoObjectSchema.shape.author.optional(),
+    categories: appInfoObjectSchema.shape.categories.optional().default(['development']),
+    version: appInfoObjectSchema.shape.version.optional(),
+    port: appInfoObjectSchema.shape.port.optional(),
+    supported_architectures: appInfoObjectSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
   })
   .optional();

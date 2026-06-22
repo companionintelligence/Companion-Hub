@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import isFQDN from 'validator/lib/isFQDN';
@@ -20,6 +22,8 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
+    cpuLimit: optionalCpuLimitSchema,
+    memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
     // These must be typed explicitly so generateEnvFile and triggerCloudflareSync receive them correctly.
     // Validation mirrors appFormSchema in app-lifecycle.dto.ts for consistency.
@@ -39,7 +43,6 @@ const commonAppCommandSchema = z.object({
     z.literal('start'),
     z.literal('stop'),
     z.literal('install'),
-    z.literal('uninstall'),
     z.literal('reset'),
     z.literal('restart'),
     z.literal('generate_env'),
@@ -66,8 +69,15 @@ const updateAppCommandSchema = z.object({
   requestId: z.uuid(),
 });
 
-export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema).or(updateAppCommandSchema);
-export type AppEvent = z.infer<typeof appEventSchema>;
+const uninstallAppCommandSchema = z.object({
+  command: z.literal('uninstall'),
+  appUrn: zodAppUrn,
+  form: queueAppFormSchema,
+  deleteAllData: z.boolean().optional().default(true),
+  requestId: z.uuid(),
+});
+
+export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema).or(updateAppCommandSchema).or(uninstallAppCommandSchema);
 
 export const appEventResultSchema = z.object({
   success: z.boolean(),
@@ -75,7 +85,6 @@ export const appEventResultSchema = z.object({
 });
 
 export type AppEventFormInput = z.input<typeof commonAppCommandSchema>['form'];
-export type AppEventForm = z.output<typeof commonAppCommandSchema>['form'];
 
 @Injectable()
 export class AppEventsQueue extends Queue<typeof appEventSchema, typeof appEventResultSchema> {}

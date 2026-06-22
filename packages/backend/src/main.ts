@@ -1,4 +1,7 @@
-import { type INestApplication, ValidationPipe } from '@nestjs/common';
+import './instrument';
+
+import { type INestApplication, Logger, ValidationPipe } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
@@ -7,20 +10,67 @@ import { AppService } from './app.service';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 
+// Process-level safety nets for failures that escape local try/catch handlers.
+// - unhandledRejection: log and keep running — detached async work (e.g. a DB
+//   write in a fire-and-forget lifecycle callback) should degrade gracefully.
+// - uncaughtException: log and exit — Node may be in an undefined state after a
+//   synchronous throw; let the desktop wrapper/supervisor restart the backend.
+const processLogger = new Logger('Process');
+
+process.on('unhandledRejection', (reason: unknown) => {
+  processLogger.error(
+    `Unhandled promise rejection (process kept alive): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+  );
+  Sentry.captureException(reason);
+});
+
+process.on('uncaughtException', (error: Error) => {
+  processLogger.error(`Uncaught exception — exiting for clean restart: ${error.stack ?? error.message}`);
+  Sentry.captureException(error);
+  // Flush buffered events before exiting; process.exit otherwise truncates the
+  // async Sentry transport and the crash report is lost. close() resolves even
+  // when Sentry is disabled (no DSN), so the supervisor still restarts promptly.
+  void Sentry.close(2000).then(
+    () => process.exit(1),
+    () => process.exit(1),
+  );
+});
+
 async function setupSwagger(app: INestApplication) {
+  if (process.env.NODE_ENV === 'production') {
+    return;
+  }
+
   const document = buildSwaggerDocument(app);
   SwaggerModule.setup('api/docs', app, document);
 
-  const { NODE_ENV } = process.env;
-  if (NODE_ENV !== 'production') {
-    try {
-      await writeSwaggerJsonFile(document);
-    } catch (error) {
-      // Non-fatal — swagger.json is just for API docs during development
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
-    }
+  try {
+    await writeSwaggerJsonFile(document);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
   }
+}
+
+function resolveAllowedCorsOrigin(origin: string | undefined): string | boolean {
+  if (!origin) {
+    return true;
+  }
+  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost') {
+    return origin;
+  }
+  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    return origin;
+  }
+  const domain = process.env.DOMAIN?.trim();
+  if (domain && (origin === `https://${domain}` || origin === `http://${domain}`)) {
+    return origin;
+  }
+  const localDomain = process.env.LOCAL_DOMAIN?.trim();
+  if (localDomain && (origin === `https://${localDomain}` || origin === `http://${localDomain}`)) {
+    return origin;
+  }
+  return false;
 }
 
 async function bootstrap() {
@@ -38,13 +88,8 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe());
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, origin?: string | boolean) => void) => {
-      // Allow Tauri desktop origins and same-origin (no origin header) requests
-      if (!origin || origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin.startsWith('http://localhost')) {
-        callback(null, origin || true);
-      } else {
-        // Allow all other origins without credentials
-        callback(null, origin);
-      }
+      const allowed = resolveAllowedCorsOrigin(origin);
+      callback(null, allowed);
     },
     credentials: true,
   });

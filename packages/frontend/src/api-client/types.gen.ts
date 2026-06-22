@@ -43,6 +43,8 @@ export type AppContextDto = {
     isProduction: boolean;
     cloudflareAvailable: boolean;
     tailscaleAvailable: boolean;
+    tailscaleNodeFqdn?: string | null;
+    tailscaleSupportsServices?: boolean;
     user: {
         hasCompletedOnboarding: boolean;
         id: number;
@@ -58,6 +60,7 @@ export type AppContextDto = {
         allowErrorMonitoring: boolean;
         appDataPath: string;
         appsRepoUrl: string;
+        defaultAppCpuLimit?: string;
         demoMode: boolean;
         disablePasswordReset: boolean;
         dnsIp: string;
@@ -98,6 +101,7 @@ export type UserSettingsBody = {
     allowErrorMonitoring?: boolean;
     appDataPath?: string;
     appsRepoUrl?: string;
+    defaultAppCpuLimit?: string;
     demoMode?: boolean;
     disablePasswordReset?: boolean;
     dnsIp?: string;
@@ -130,8 +134,17 @@ export type LoadDto = {
     diskSize: number;
     diskUsed: number;
     memoryTotal: number;
+    memoryUsed: number;
     percentUsed: number;
     percentUsedMemory: number;
+    hasVmWedge: boolean;
+    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
+    containerMemoryTotal?: number;
+    containerMemoryUsed?: number;
+    containerDiskTotal?: number;
+    containerDiskUsed?: number;
+    recommendedDockerRamMb?: number;
+    platformGuidance?: string;
 };
 
 export type LoginBody = {
@@ -210,7 +223,7 @@ export type MyAppsDto = {
             openPort: boolean;
             pendingRestart: boolean;
             port: number | null;
-            status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
             version: number;
             config?: {
                 [key: string]: unknown;
@@ -257,12 +270,12 @@ export type MyAppsDto = {
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
-            tipi_version: number;
+            cihub_app_version: number;
             updated_at: number;
             urn: string;
             version: string;
             gid?: number;
-            min_tipi_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -291,7 +304,7 @@ export type GuestAppsDto = {
             openPort: boolean;
             pendingRestart: boolean;
             port: number | null;
-            status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
             version: number;
             config?: {
                 [key: string]: unknown;
@@ -338,12 +351,12 @@ export type GuestAppsDto = {
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
-            tipi_version: number;
+            cihub_app_version: number;
             updated_at: number;
             urn: string;
             version: string;
             gid?: number;
-            min_tipi_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -401,12 +414,12 @@ export type GetAppDto = {
         short_desc: string;
         source: string;
         supported_architectures: Array<'amd64' | 'arm64'>;
-        tipi_version: number;
+        cihub_app_version: number;
         updated_at: number;
         urn: string;
         version: string;
         gid?: number;
-        min_tipi_version?: string;
+        min_hub_version?: string;
         port?: number;
         uid?: number;
         url_suffix?: string;
@@ -430,7 +443,7 @@ export type GetAppDto = {
         openPort: boolean;
         pendingRestart: boolean;
         port: number | null;
-        status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+        status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
         version: number;
         config?: {
             [key: string]: unknown;
@@ -525,7 +538,7 @@ export type LifecycleRequestDto = {
 };
 
 export type UninstallAppBody = {
-    removeBackups: boolean;
+    deleteAllData?: boolean;
 };
 
 export type UpdateAppBody = {

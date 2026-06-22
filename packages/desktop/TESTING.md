@@ -140,8 +140,8 @@ await driver.getTitle(); // "Companion Hub"
 
 ## Important Notes
 
-- The frontend dev server (Vite on port 9091) must be running before launching via tauri-driver in dev mode, since `devUrl` points to `http://localhost:9091`.
-- The Hub backend must also be running on port 3000 for the app to function.
+- The frontend dev server (Vite on port 5005) must be running before launching via tauri-driver in dev mode, since `devUrl` points to `http://localhost:5005`.
+- The Hub backend must also be running on port 5004 for the app to function.
 - `xdotool` does NOT work reliably with WebKitGTK webviews — always use WebDriver instead.
 - Screenshots via the WebDriver `/screenshot` endpoint return base64-encoded PNG data.
 

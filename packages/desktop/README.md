@@ -19,6 +19,7 @@ Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2]
 - [Rust](https://rustup.rs/) (stable) — `rustup` will install `cargo`, `rustc`, etc.
 - [pnpm](https://pnpm.io/) (≥ 10) — for frontend build and dependency management
 - [Node.js](https://nodejs.org/) (≥ 22) — required by some build tooling
+- [Bun](https://bun.sh/) — required to compile the bundled standalone `cihub` CLI for desktop releases
 - [Git](https://git-scm.com/)
 
 ### macOS
@@ -50,11 +51,13 @@ sudo apt-get install -y \
 ```
 
 For building `.rpm` packages (optional):
+
 ```bash
 sudo apt-get install -y rpm
 ```
 
 For running `.AppImage` bundles:
+
 ```bash
 sudo apt-get install -y libfuse2
 ```
@@ -62,28 +65,44 @@ sudo apt-get install -y libfuse2
 ### Windows
 
 1. **Visual Studio Build Tools 2022** with the **"Desktop development with C++"** workload:
+
    ```powershell
    winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
    ```
+
    > A restart may be required after installation.
 
 2. **WebView2 Runtime** — ships with Windows 11. On Windows 10, it auto-installs or can be downloaded from [developer.microsoft.com/webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 
 3. **Rust** (if not already installed):
+
    ```powershell
    winget install Rustlang.Rustup
    ```
 
 4. **Bun**:
+
    ```powershell
    winget install Oven-sh.Bun
    ```
 
 **Important:** When building from a terminal (CMD/PowerShell), you must first load the VS build environment:
+
 ```cmd
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
 ```
+
 Or open the **"x64 Native Tools Command Prompt for VS 2022"** from the Start menu which does this automatically.
+
+## Headless launch
+
+When the packaged desktop binary is installed on a Linux machine without an attached GUI session, start the Hub runtime without opening Tauri:
+
+```bash
+companion-hub --detached
+```
+
+This runs the packaged Hub stack startup in detached mode, using the bundled compose resources and runtime env files, so it works over SSH without requiring `DISPLAY` or GTK initialization.
 
 ## Development
 
@@ -101,15 +120,17 @@ pnpm run --filter=@ci-hub/common build
 
 ### 3. Start the Hub backend + frontend
 
-The Tauri dev mode connects to the Vite frontend dev server at `http://localhost:9091`, which proxies API calls to the backend at `http://localhost:3000`.
+The Tauri dev mode connects to the Vite frontend dev server at `http://localhost:5005`, which proxies API calls to the backend at `http://localhost:5004`.
 
 **Option A — Docker (recommended for first setup):**
+
 ```bash
 # From repo root — starts Postgres, RabbitMQ, backend, and frontend
 docker compose -f docker-compose.local.yml up -d
 ```
 
 **Option B — Native dev mode:**
+
 ```bash
 # Start Postgres + RabbitMQ in Docker
 docker compose -f docker-compose.local.yml up -d ci-hub-db ci-os-hub-queue
@@ -124,12 +145,27 @@ dotenv -e .env.local -- pnpm run dev:app
 
 ### 4. Start the Tauri dev app
 
-From the repo root:
+**Prod stack + Tauri (same containers as desktop, no Vite):** from repo root, with `.env.dev` configured:
+
 ```bash
 pnpm run dev:desktop
 ```
 
+This starts the `.env.dev` appliance stack in the background, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not the local Vite port).
+
+Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `cihub config dev`.
+
+**Classic local source-dev + Tauri:**
+
+From the repo root:
+
+```bash
+pnpm run local
+pnpm run local:desktop
+```
+
 Or from this directory:
+
 ```bash
 cargo tauri dev
 ```
@@ -147,11 +183,22 @@ cargo tauri build
 ```
 
 Or from repo root:
+
 ```bash
 pnpm run build:desktop
 ```
 
+On Linux, the desktop build patches generated `.deb` bundles with a Debian `postrm` maintainer script so uninstall can remove Hub runtime state and related Docker resources.
+
+On Windows, both packaged installers run the same cleanup before removing the app, invoking the bundled `resources/uninstall-cleanup.ps1` (sourced from `distribution/scripts/uninstall-cleanup.ps1` and shipped as a Tauri resource):
+
+- **NSIS `-setup.exe`** — `src-tauri/windows/installer-hooks.nsh` (`NSIS_HOOK_PREUNINSTALL`, wired via `bundle.windows.nsis.installerHooks`), run before `$INSTDIR` is removed.
+- **WiX `.msi`** — `src-tauri/windows/cleanup-on-uninstall.wxs` (a custom action wired via `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`), sequenced `Before="RemoveFiles"` and gated to real uninstalls via `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
+
+Either way, uninstalling the packaged build tears down Hub + marketplace-app Docker containers/volumes/images and deletes Hub state under `%APPDATA%`/`%LOCALAPPDATA%`. WinGet is covered transitively (its manifest installs one of these two).
+
 **Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
+
 ```bash
 # From repo root
 pnpm run --filter=@ci-hub/common build
@@ -171,6 +218,7 @@ Typical sizes: `.deb`/`.rpm`/`.msi` ≈ 7 MB, `.dmg` ≈ 6.5 MB, `.AppImage` ≈
 ### Cross-compilation
 
 macOS ARM64 runners can cross-compile for Intel:
+
 ```bash
 rustup target add x86_64-apple-darwin
 cargo tauri build --target x86_64-apple-darwin
@@ -182,9 +230,11 @@ Cross-compiling between Linux/Windows/macOS is not supported by Tauri — use th
 
 - Always run builds from a terminal with the VS build environment loaded
 - If you see `error: no such command: tauri`, install the Tauri CLI:
+
   ```cmd
   cargo install tauri-cli --version "^2" --locked
   ```
+
 - If Docker pulls fail from SSH sessions, the Docker Desktop credential helper may need to be cleared — see [Docker docs on credential stores](https://docs.docker.com/reference/cli/docker/login/#credential-stores)
 
 ## Architecture
@@ -209,9 +259,9 @@ packages/desktop/
 
 ### How it works
 
-- **Dev mode:** The Tauri WebView loads from `http://localhost:9091` (Vite dev server). The frontend proxies `/api/*` to the backend on port 3000.
+- **Dev mode:** The Tauri WebView loads from `http://localhost:5005` (Vite dev server). The frontend proxies `/api/*` to the backend on port 5004.
 - **Release mode:** The pre-built frontend static files are embedded in the binary from `packages/frontend/dist/client`. The backend must be running separately.
-- **System tray:** Polls the Hub health endpoint every 10 seconds (tries both port 5002 for prod and port 3000 for dev). Start/Stop Hub uses `docker start/stop` on the known container names.
+- **System tray:** Polls the Hub health endpoint every 10 seconds (tries both port 5002 for appliance mode and port 5004 for local source dev). Start/Stop Hub uses `docker start/stop` on the known container names.
 - **Single instance:** Uses `tauri-plugin-single-instance` — a second launch sends focus to the existing window via IPC.
 - **Close-to-tray:** The window close button hides to tray instead of quitting. Use "Quit" from the tray menu to actually exit.
 
@@ -228,6 +278,6 @@ packages/desktop/
 | `error: no such command: tauri` | Install: `cargo install tauri-cli --version "^2" --locked` |
 | Windows build fails with "cannot compile" | Load VS env: `call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64` |
 | Linux build fails with missing headers | Install all deps listed in Prerequisites → Linux section |
-| App shows blank window | Ensure the frontend dev server is running on port 9091 (dev mode) or frontend was built (release mode) |
+| App shows blank window | Ensure the frontend dev server is running on port 5005 (dev mode) or frontend was built (release mode) |
 | Docker credential errors on Windows SSH | Clear `credsStore` in `~/.docker/config.json` |
 | "Maximum number of active sessions" (WebDriver) | Kill stale `tauri-driver` and `WebKitWebDriver` processes |

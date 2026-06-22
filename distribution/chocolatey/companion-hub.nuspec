@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Chocolatey package specification for Companion Hub -->
+<!-- To publish: https://push.chocolatey.org/ (requires Chocolatey community account) -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>companion-hub</id>
+    <version>0.2.4</version>
+    <packageSourceUrl>https://github.com/companionintelligence/CI-Hub/tree/main/distribution/chocolatey</packageSourceUrl>
+    <owners>companionintelligence</owners>
+    <title>Companion Hub</title>
+    <authors>Companion Intelligence</authors>
+    <projectUrl>https://github.com/companionintelligence/CI-Hub</projectUrl>
+    <licenseUrl>https://github.com/companionintelligence/CI-Hub/blob/main/license.md</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/companionintelligence/CI-Hub</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/companionintelligence/CI-Hub/issues</bugTrackerUrl>
+    <tags>ai desktop companion intelligence hub windows</tags>
+    <summary>AI-powered companion intelligence hub</summary>
+    <description><![CDATA[
+Companion Hub is a desktop application that serves as an AI-powered companion
+intelligence hub, orchestrating AI workflows, integrations, and local services
+for the Companion Intelligence platform.
+
+It manages Docker Compose stacks, coordinates local AI services, and provides
+a unified interface for the companion intelligence ecosystem.
+
+## Features
+
+- AI workflow orchestration
+- Docker Compose stack management
+- Local AI service coordination
+- Unified companion intelligence interface
+- Deep-link support via `cihub://` scheme
+    ]]></description>
+    <releaseNotes>https://github.com/companionintelligence/CI-Hub/releases/tag/v0.2.4</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+    <file src="..\scripts\uninstall-cleanup.ps1" target="tools\scripts" />
+  </files>
+</package>

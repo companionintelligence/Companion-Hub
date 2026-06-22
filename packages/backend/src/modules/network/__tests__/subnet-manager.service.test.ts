@@ -45,6 +45,24 @@ describe('SubnetManagerService', () => {
       await expect(service.allocateSubnet(appUrn)).rejects.toThrow(TranslatableError);
     });
 
+    it('should reuse an existing subnet without updating the app record', async () => {
+      const appUrn = 'app:test/app' as AppUrn;
+      const existingSubnet = '10.128.15.0/24';
+
+      appsRepository.getAppByUrn.mockResolvedValue(
+        fromPartial({
+          id: 1,
+          subnet: existingSubnet,
+        }),
+      );
+
+      const result = await service.allocateSubnet(appUrn);
+
+      expect(result).toBe(existingSubnet);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(dockerMock.listNetworks).not.toHaveBeenCalled();
+    });
+
     it('should allocate a new subnet if app does not have one', async () => {
       // arrange
       const appUrn = 'app:test/app' as AppUrn;
@@ -72,10 +90,7 @@ describe('SubnetManagerService', () => {
       const appUrn = 'app:test/app' as AppUrn;
       const expectedSubnet = '10.128.12.0/24';
 
-      dockerMock.listNetworks.mockResolvedValue([
-        { IPAM: { Config: [{ Subnet: '10.128.10.0/24' }] } },
-        { IPAM: { Config: [{ Subnet: '10.128.11.0/24' }] } },
-      ]);
+      appsRepository.getApps.mockResolvedValue([fromPartial({ subnet: '10.128.10.0/24' }), fromPartial({ subnet: '10.128.11.0/24' })]);
 
       appsRepository.getAppByUrn.mockResolvedValue(fromPartial({ id: 1, subnet: null }));
       appsRepository.updateAppById.mockResolvedValue(fromPartial({ id: 1, subnet: expectedSubnet }));
@@ -97,11 +112,11 @@ describe('SubnetManagerService', () => {
       for (let y = 128; y <= 254; y++) {
         for (let z = 0; z <= 254; z++) {
           networkMocks.push({
-            IPAM: { Config: [{ Subnet: `10.${y}.${z}.0/24` }] },
+            subnet: `10.${y}.${z}.0/24`,
           });
         }
       }
-      dockerMock.listNetworks.mockResolvedValue(networkMocks);
+      appsRepository.getApps.mockResolvedValue(networkMocks.map((network) => fromPartial(network)));
 
       appsRepository.getAppByUrn.mockResolvedValue(
         fromPartial({
@@ -140,10 +155,10 @@ describe('SubnetManagerService', () => {
       // arrange
       const appUrn = 'app:test/app' as AppUrn;
 
-      dockerMock.listNetworks.mockResolvedValue([
-        { IPAM: { Config: [{ Subnet: '10.128.10.0/24' }] } },
-        { IPAM: { Config: [{ Subnet: '10.128.12.0/24' }] } },
-        { IPAM: { Config: [{ Subnet: '10.128.13.0/24' }] } },
+      appsRepository.getApps.mockResolvedValue([
+        fromPartial({ subnet: '10.128.10.0/24' }),
+        fromPartial({ subnet: '10.128.12.0/24' }),
+        fromPartial({ subnet: '10.128.13.0/24' }),
       ]);
 
       appsRepository.getAppByUrn.mockResolvedValue(
@@ -165,10 +180,10 @@ describe('SubnetManagerService', () => {
       // arrange
       const appUrn = 'app:test/app' as AppUrn;
 
-      dockerMock.listNetworks.mockResolvedValue([
-        { IPAM: { Config: [{ Subnet: '10.128.10.0/24' }] } },
-        { IPAM: { Config: [{ Subnet: 'invalid-subnet' }] } },
-        { IPAM: { Config: [{ Subnet: '10.128.11.0/24' }] } },
+      appsRepository.getApps.mockResolvedValue([
+        fromPartial({ subnet: '10.128.10.0/24' }),
+        fromPartial({ subnet: 'invalid-subnet' }),
+        fromPartial({ subnet: '10.128.11.0/24' }),
       ]);
 
       appsRepository.getAppByUrn.mockResolvedValue(
@@ -196,11 +211,11 @@ describe('SubnetManagerService', () => {
       for (let i = 0; i <= 254; i++) {
         networkMocks.push(
           fromPartial({
-            IPAM: { Config: [{ Subnet: `10.128.${i}.0/24` }] },
+            subnet: `10.128.${i}.0/24`,
           }),
         );
       }
-      dockerMock.listNetworks.mockResolvedValue(networkMocks);
+      appsRepository.getApps.mockResolvedValue(networkMocks);
 
       appsRepository.getAppByUrn.mockResolvedValue(fromPartial({ id: 1, subnet: null }));
       appsRepository.updateAppById.mockResolvedValue(fromPartial({ id: 1, subnet: expectedSubnet }));

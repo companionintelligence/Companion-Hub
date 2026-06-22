@@ -1,5 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { InstallPipelineTracker } from './install-pipeline.tracker';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -7,14 +9,26 @@ import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildPublicWebIdentity } from '@ci-hub/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../tailscale/tailscale.service';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
+
+function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, suffix = ''): string | null {
+  const cleanNodeFqdn = nodeFqdn?.trim();
+  if (!cleanNodeFqdn || !port) {
+    return null;
+  }
+
+  return `https://${cleanNodeFqdn}:${port}${suffix}`;
+}
 
 @Injectable()
 export class AppsService {
@@ -25,6 +39,7 @@ export class AppsService {
     private readonly marketplaceService: MarketplaceService,
     private readonly configurationService: ConfigurationService,
     private readonly portAllocationRepository: PortAllocationRepository,
+    private readonly installPipelineTracker: InstallPipelineTracker,
     @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
     private readonly moduleRef: ModuleRef,
   ) {}
@@ -36,14 +51,18 @@ export class AppsService {
       apps.map(async (app) => {
         return limit(async () => {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          let appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
           const updateInfo = await this.marketplaceService.getAppUpdateInfo(appUrn).catch((_) => {
             return { latestVersion: 0, latestDockerVersion: '0.0.0' };
           });
 
           if (!appInfo) {
-            this.logger.debug(`App ${app.id} not found in app files`);
+            appInfo = (await this.marketplaceService.getAppInfoFromAppStore(appUrn)) ?? null;
+          }
+
+          if (!appInfo) {
+            this.logger.debug(`App ${app.id} not found in app files or marketplace`);
             return null;
           }
 
@@ -78,6 +97,36 @@ export class AppsService {
     const apps = await this.appsRepository.getApps();
 
     return this.populateAppInfo(apps);
+  }
+
+  /** Active install (Docker pipeline) and apps waiting in the install queue. */
+  public async getInstallQueueState() {
+    const installing = await this.appsRepository.getAppsByStatus('installing');
+    const activeUrn = this.installPipelineTracker.getActive();
+
+    const entries = await Promise.all(
+      installing.map(async (app) => {
+        const urn = createAppUrn(app.appName, app.appStoreSlug);
+        let name = app.appName;
+        const info = (await this.appFilesManager.getInstalledAppInfo(urn)) ?? (await this.marketplaceService.getAppInfoFromAppStore(urn));
+        if (info?.name) name = info.name;
+        return { urn, name, id: app.id };
+      }),
+    );
+
+    entries.sort((a, b) => a.id - b.id);
+
+    let active = activeUrn ? (entries.find((e) => e.urn === activeUrn) ?? null) : null;
+    if (!active && entries.length > 0) {
+      active = entries[0] ?? null;
+    }
+
+    const queued = entries.filter((e) => e.urn !== active?.urn).map(({ urn, name }) => ({ urn, name }));
+
+    return {
+      active: active ? { urn: active.urn, name: active.name } : null,
+      queued,
+    };
   }
 
   public async getGuestDashboardApps() {
@@ -163,27 +212,54 @@ export class AppsService {
     const exposureMode = app.exposureMode || 'local';
     const baseSubdomain = app.localSubdomain;
     const urlSuffix = info.url_suffix || '';
+    const hasDirectLocalAccess = exposureMode === 'local' || app.exposedLocal || app.openPort;
 
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      // Local mode: direct access via internal IP and app port
-      const internalIp = userSettings.internalIp || '127.0.0.1';
-      const appPort = app.port || userSettings.sslPort || 443;
-      appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
+      if (!app.port || !hasDirectLocalAccess) {
+        return { available: false, appUrl: undefined, stage: 'error' };
+      }
 
-      // Local mode with a port: skip HTTP check entirely — container is on localhost
-      if (app.port) {
+      const host = resolveBrowserHost(userSettings.internalIp);
+      appUrl = `http://${host}:${app.port}${urlSuffix}`;
+      return { available: true, appUrl, stage: 'ready' };
+    }
+    if (exposureMode === 'tailscale') {
+      const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
+      const tailscaleStatus = tailscaleService ? await tailscaleService.getStatus().catch(() => null) : null;
+      const appPort = app.port ?? info.port ?? null;
+      const vpnUrl =
+        tailscaleStatus?.connected && tailscaleStatus.nodeFqdn ? buildTailscalePortUrl(tailscaleStatus.nodeFqdn, appPort, urlSuffix) : null;
+
+      if (!vpnUrl) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'TAILSCALE_NOT_READY',
+          detail: 'Tailscale is not connected or this app does not have a published Private VPN port yet.',
+          resolvable: true,
+        };
+      }
+
+      appUrl = vpnUrl;
+    } else {
+      const cloudflareClient = this.moduleRef.get(CloudflareClientService, { strict: false });
+      const hasTunnelToken = Boolean(
+        cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
+      );
+      if (!hasTunnelToken && app.port && hasDirectLocalAccess) {
+        const host = resolveBrowserHost(userSettings.internalIp);
+        appUrl = `http://${host}:${app.port}${urlSuffix}`;
         return { available: true, appUrl, stage: 'ready' };
       }
-    } else {
-      // Cloudflare/Tailscale: use public domain
+
       const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
       if (!organizationSlug || !resolvedDomain) {
         return { available: false, appUrl, stage: 'error' };
       }
 
-      // Always include deviceSlug for correct subdomain construction
       if (!org?.hubSubdomain) {
         return {
           available: false,
@@ -194,9 +270,14 @@ export class AppsService {
           resolvable: false,
         };
       }
-      const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-      const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-      appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
+
+      const identity = buildPublicWebIdentity({
+        appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
+        hubSubdomain: org.hubSubdomain,
+        orgSlug: organizationSlug,
+        publicDomainRoot: resolvedDomain,
+      });
+      appUrl = `${identity.publicUrl}${urlSuffix}`;
     }
 
     // Helper to determine stage from error code
@@ -207,7 +288,7 @@ export class AppsService {
       const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
 
-      if (isCloudflare) {
+      if (exposureMode === 'cloudflare' && isCloudflare) {
         const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
         const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : response.status;
 
@@ -384,11 +465,11 @@ export class AppsService {
 
       // For Tailscale errors: re-add serve entry
       if (exposureMode === 'tailscale' && (check.errorCode === 'CONNECTION_REFUSED' || check.errorCode === 'PROXY_UPSTREAM_ERROR')) {
-        const { TailscaleService } = await import('../tailscale/tailscale.service');
-        const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
-        if (tailscaleService && app.localSubdomain) {
-          await tailscaleService.serveApp({ subdomain: app.localSubdomain, localPort: 80 });
-          actions.push('Re-added Tailscale Serve entry');
+        const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+        const lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
+        if (lifecycleService) {
+          await lifecycleService.syncExposurePublic();
+          actions.push('Re-synced Private VPN publishing');
         }
       }
 

@@ -137,6 +137,20 @@
         ]
       }
     },
+    "/api/restart-onboarding": {
+      "patch": {
+        "operationId": "restartOnboarding",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/registration/reset": {
       "post": {
         "operationId": "resetRegistration",
@@ -401,8 +415,45 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/domains": {
+      "get": {
+        "operationId": "getDomains",
+        "parameters": [],
         "responses": {
           "default": {
             "description": "",
@@ -564,6 +615,27 @@
         ]
       }
     },
+    "/api/apps/install-queue": {
+      "get": {
+        "operationId": "getInstallQueue",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstallQueueDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/guest": {
       "get": {
         "operationId": "getGuestApps",
@@ -596,6 +668,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetRandomPortDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/resource-monitor": {
+      "get": {
+        "operationId": "getResourceMonitor",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppRuntimeMonitorDto"
                 }
               }
             }
@@ -765,6 +858,36 @@
         ]
       }
     },
+    "/api/apps/{urn}/runtime-health": {
+      "get": {
+        "operationId": "getRuntimeHealth",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppRuntimeHealthDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/resolve-availability": {
       "post": {
         "operationId": "resolveAvailability",
@@ -785,6 +908,591 @@
         },
         "tags": [
           "Apps"
+        ]
+      }
+    },
+    "/api/inference/health": {
+      "get": {
+        "operationId": "health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/preferences": {
+      "get": {
+        "operationId": "getPreferences",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      },
+      "patch": {
+        "operationId": "updatePreferences",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateInferencePreferencesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/runtime": {
+      "get": {
+        "operationId": "getRuntimeModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/hardware": {
+      "get": {
+        "operationId": "getHardware",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/hardware/rescan": {
+      "post": {
+        "operationId": "rescanHardware",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/memory": {
+      "get": {
+        "operationId": "getMemory",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/catalog": {
+      "get": {
+        "operationId": "getCatalog",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/tracked": {
+      "get": {
+        "operationId": "getTrackedModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/pull-preflight": {
+      "get": {
+        "operationId": "pullPreflight",
+        "parameters": [
+          {
+            "name": "modelId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/pull": {
+      "post": {
+        "operationId": "pullModel",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/load": {
+      "post": {
+        "operationId": "loadModel",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/unload": {
+      "post": {
+        "operationId": "unloadModel",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/pin": {
+      "post": {
+        "operationId": "pinModel",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/models/unpin": {
+      "post": {
+        "operationId": "unpinModel",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/cloud-providers": {
+      "get": {
+        "operationId": "getCloudProviders",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      },
+      "post": {
+        "operationId": "setCloudProvider",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/onboarding-profile": {
+      "get": {
+        "operationId": "getOnboardingProfile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/ollama/status": {
+      "get": {
+        "operationId": "getOllamaStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/ollama/install": {
+      "post": {
+        "operationId": "installOllama",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/credentials": {
+      "get": {
+        "operationId": "getAppCredentials",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/credentials.env": {
+      "get": {
+        "operationId": "getAppCredentialsEnv[0]",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/bootstrap.env": {
+      "get": {
+        "operationId": "getAppCredentialsEnv[1]",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/system/load": {
+      "get": {
+        "operationId": "systemLoad",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/resources": {
+      "get": {
+        "operationId": "systemResources",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemResourcesDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/logs/download": {
+      "get": {
+        "operationId": "downloadHubLogs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Hub logs download"
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/certificate": {
+      "get": {
+        "operationId": "downloadLocalCertificate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/detect-services": {
+      "get": {
+        "operationId": "detectServices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system-inspector": {
+      "get": {
+        "operationId": "getFullInspection",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Full system inspection: ports, containers, health",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/containers": {
+      "get": {
+        "operationId": "getContainers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Running Docker containers and their status",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/ports": {
+      "get": {
+        "operationId": "getPorts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Port allocations with live bind checks",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/health": {
+      "get": {
+        "operationId": "getHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "System health: CPU, memory, disk, uptime",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/ports": {
+      "get": {
+        "operationId": "getAllAllocations",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns all port allocations across all apps"
+          }
+        },
+        "summary": "Get all port allocations",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}": {
+      "get": {
+        "operationId": "getAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns port allocations for the specified app"
+          }
+        },
+        "summary": "Get port allocations for a specific app",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}/check": {
+      "get": {
+        "operationId": "checkAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns current port status and availability"
+          }
+        },
+        "summary": "Check port availability for an app",
+        "tags": [
+          "Ports"
         ]
       }
     },
@@ -1010,192 +1718,6 @@
         ]
       }
     },
-    "/api/system/load": {
-      "get": {
-        "operationId": "systemLoad",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoadDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/logs/download": {
-      "get": {
-        "operationId": "downloadHubLogs",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Hub logs download"
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/certificate": {
-      "get": {
-        "operationId": "downloadLocalCertificate",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/detect-services": {
-      "get": {
-        "operationId": "detectServices",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system-inspector": {
-      "get": {
-        "operationId": "getFullInspection",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Full system inspection: ports, containers, health",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/containers": {
-      "get": {
-        "operationId": "getContainers",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Running Docker containers and their status",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/ports": {
-      "get": {
-        "operationId": "getPorts",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Port allocations with live bind checks",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/health": {
-      "get": {
-        "operationId": "getHealth",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "System health: CPU, memory, disk, uptime",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/ports": {
-      "get": {
-        "operationId": "getAllAllocations",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Returns all port allocations across all apps"
-          }
-        },
-        "summary": "Get all port allocations",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
-    "/api/ports/{appUrn}": {
-      "get": {
-        "operationId": "getAppPorts",
-        "parameters": [
-          {
-            "name": "appUrn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Returns port allocations for the specified app"
-          }
-        },
-        "summary": "Get port allocations for a specific app",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
-    "/api/ports/{appUrn}/check": {
-      "get": {
-        "operationId": "checkAppPorts",
-        "parameters": [
-          {
-            "name": "appUrn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Returns current port status and availability"
-          }
-        },
-        "summary": "Check port availability for an app",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
     "/api/i18n/locales/{ns}/{lng}.json": {
       "get": {
         "operationId": "getTranslation",
@@ -1327,6 +1849,98 @@
         "responses": {
           "201": {
             "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/start": {
+      "get": {
+        "operationId": "startPortalLogin",
+        "parameters": [
+          {
+            "name": "redirect_url",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desktop",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/callback": {
+      "get": {
+        "operationId": "portalCallback",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/desktop-exchange": {
+      "get": {
+        "operationId": "exchangePortalDesktopLogin",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -1610,6 +2224,36 @@
     "/api/app-lifecycle/{urn}/stop": {
       "post": {
         "operationId": "stopApp",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifecycleRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/force-stop": {
+      "post": {
+        "operationId": "forceStopApp",
         "parameters": [
           {
             "name": "urn",
@@ -2542,6 +3186,48 @@
         ]
       }
     },
+    "/api/public-web/diagnostics": {
+      "get": {
+        "operationId": "getDiagnostics",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "PublicWeb"
+        ]
+      }
+    },
+    "/api/public-web/repair": {
+      "post": {
+        "operationId": "repair",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "PublicWeb"
+        ]
+      }
+    },
     "/api/user-config/{urn}": {
       "get": {
         "operationId": "getUserConfig",
@@ -2843,93 +3529,9 @@
         ]
       }
     },
-    "/api/inference/v1/chat/completions": {
-      "post": {
-        "operationId": "chatCompletions",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/completions": {
-      "post": {
-        "operationId": "completions",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/audio/speech": {
-      "post": {
-        "operationId": "tts",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/audio/transcriptions": {
-      "post": {
-        "operationId": "stt",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/embeddings": {
-      "post": {
-        "operationId": "embeddings",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/images/generations": {
-      "post": {
-        "operationId": "imageGen",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/models": {
+    "/api/system/update/host-listener-token": {
       "get": {
-        "operationId": "models",
+        "operationId": "getHostListenerToken",
         "parameters": [],
         "responses": {
           "200": {
@@ -2937,265 +3539,7 @@
           }
         },
         "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/health": {
-      "get": {
-        "operationId": "health",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/preferences": {
-      "get": {
-        "operationId": "getPreferences",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      },
-      "patch": {
-        "operationId": "updatePreferences",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateInferencePreferencesBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/runtime": {
-      "get": {
-        "operationId": "getRuntimeModels",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/status": {
-      "get": {
-        "operationId": "getStatus",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/hardware": {
-      "get": {
-        "operationId": "getHardware",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/hardware/rescan": {
-      "post": {
-        "operationId": "rescanHardware",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/memory": {
-      "get": {
-        "operationId": "getMemory",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/catalog": {
-      "get": {
-        "operationId": "getCatalog",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/tracked": {
-      "get": {
-        "operationId": "getTrackedModels",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/pull": {
-      "post": {
-        "operationId": "pullModel",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/load": {
-      "post": {
-        "operationId": "loadModel",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/unload": {
-      "post": {
-        "operationId": "unloadModel",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/pin": {
-      "post": {
-        "operationId": "pinModel",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/models/unpin": {
-      "post": {
-        "operationId": "unpinModel",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/cloud-providers": {
-      "get": {
-        "operationId": "getCloudProviders",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      },
-      "post": {
-        "operationId": "setCloudProvider",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/onboarding-profile": {
-      "get": {
-        "operationId": "getOnboardingProfile",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
+          "SystemUpdate"
         ]
       }
     },
@@ -3356,11 +3700,19 @@
         "type": "object",
         "properties": {}
       },
+      "InstallQueueDto": {
+        "type": "object",
+        "properties": {}
+      },
       "GuestAppsDto": {
         "type": "object",
         "properties": {}
       },
       "GetRandomPortDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AppRuntimeMonitorDto": {
         "type": "object",
         "properties": {}
       },
@@ -3373,6 +3725,22 @@
         "properties": {}
       },
       "GetConfigDiffDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AppRuntimeHealthDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdateInferencePreferencesBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "LoadDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "SystemResourcesDto": {
         "type": "object",
         "properties": {}
       },
@@ -3404,10 +3772,6 @@
         "type": "object",
         "properties": {}
       },
-      "LoadDto": {
-        "type": "object",
-        "properties": {}
-      },
       "LoginBody": {
         "type": "object",
         "properties": {}
@@ -3425,6 +3789,10 @@
         "properties": {}
       },
       "RegisterDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "PortalDesktopExchangeDto": {
         "type": "object",
         "properties": {}
       },
@@ -3529,10 +3897,6 @@
         "properties": {}
       },
       "UpdateAppMetadataDto": {
-        "type": "object",
-        "properties": {}
-      },
-      "UpdateInferencePreferencesBody": {
         "type": "object",
         "properties": {}
       }

@@ -2,11 +2,14 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
-import { DATA_DIR } from '@/common/constants';
+import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME } from '@/common/constants';
+import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+
+const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -37,7 +40,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   async checkForUpdates() {
     const { version: currentVersion } = this.config.getConfig();
-    const releasesSince = await this.registryService.getTagsSince('ci-os-hub', currentVersion);
+    const releasesSince = await this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,
@@ -59,29 +62,81 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     };
   }
 
+  private resolveComposeFile(dataDir: string): string {
+    for (const name of COMPOSE_FILENAMES) {
+      const candidate = path.join(dataDir, name);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return path.join(dataDir, COMPOSE_FILENAMES[0]);
+  }
+
+  private pinHubImageInEnv(envFile: string, targetVersion?: string): string | undefined {
+    if (!targetVersion || !fs.existsSync(envFile)) {
+      return undefined;
+    }
+
+    const imageLine = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:${targetVersion}`;
+    const content = fs.readFileSync(envFile, 'utf8');
+    const lines = content.split('\n');
+    let replaced = false;
+    const next = lines.map((line) => {
+      if (line.startsWith('CI_HUB_IMAGE=')) {
+        replaced = true;
+        return imageLine;
+      }
+      return line;
+    });
+    if (!replaced) {
+      next.push(imageLine);
+    }
+    fs.writeFileSync(envFile, next.join('\n'));
+    return targetVersion;
+  }
+
   async performUpdate(targetVersion?: string) {
-    this.logger.info(`Hub self-update initiated${targetVersion ? ` to ${targetVersion}` : ''}`);
+    const pinned = targetVersion ?? (await this.checkForUpdates()).latest;
+    this.logger.info(`Hub stack update initiated${pinned ? ` to ${pinned}` : ''}`);
 
     const { dataDir } = this.config.get('directories');
     const envFile = path.join(dataDir, '.env');
-    const composeFile = path.join(dataDir, 'docker-compose.yml');
+    const composeFile = this.resolveComposeFile(dataDir);
 
-    // Pull the new image
+    this.pinHubImageInEnv(envFile, pinned);
+
     try {
-      await this.runComposeCommand(['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'pull', 'ci-os-hub']);
-      this.logger.info('Successfully pulled new ci-os-hub image');
+      await this.runComposeCommand(['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'pull']);
+      this.logger.info('Successfully pulled new stack images');
     } catch (error) {
-      this.logger.error('Failed to pull new image', error);
+      this.logger.error('Failed to pull new images', error);
       throw error;
     }
 
-    // Schedule the restart after a delay so the HTTP response is sent first
     setTimeout(() => {
-      this.logger.info('Restarting ci-os-hub container with new image...');
-      const cmd = spawn('docker', ['compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'up', '-d', 'ci-os-hub'], {
-        stdio: 'ignore',
-        detached: true,
-      });
+      this.logger.info('Restarting Hub stack with new images...');
+      const cmd = spawn(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          envFile,
+          '--project-name',
+          'ci-hub',
+          '-f',
+          composeFile,
+          'up',
+          '-d',
+          '--pull',
+          'always',
+          '--force-recreate',
+          '--remove-orphans',
+        ],
+        {
+          stdio: 'ignore',
+          detached: true,
+        },
+      );
       cmd.unref();
     }, 3000);
 
@@ -138,7 +193,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       // ignore
     }
     settings.autoUpdates = enabled;
-    await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    await writeSettingsJsonFile(settingsPath, JSON.stringify(settings, null, 2));
   }
 
   private async autoUpdateCheck() {
@@ -149,10 +204,24 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
       if (updateAvailable && this.getAutoUpdatesEnabled()) {
         this.logger.info(`Auto-updating hub from ${current} to ${latest}`);
-        await this.performUpdate();
+        await this.performUpdate(latest);
       }
     } catch (error) {
       this.logger.error('Auto-update check failed', error);
+    }
+  }
+
+  /** Token for the desktop host update listener on 127.0.0.1:17400 (browser cannot reach it without auth). */
+  getHostUpdateListenerToken(): string | null {
+    const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
+    if (!fs.existsSync(tokenPath)) {
+      return null;
+    }
+    try {
+      const token = fs.readFileSync(tokenPath, 'utf8').trim();
+      return token || null;
+    } catch {
+      return null;
     }
   }
 }

@@ -76,6 +76,13 @@ export default defineConfig(({ mode }) => {
   const hubFileEnv = loadCiHubRootEnvFiles(hubRoot);
   /** Same variable as backend/runtime; injected into the client bundle for portal API calls. */
   const ciCloudUrl = (process.env.CI_CLOUD_URL ?? fileEnv.CI_CLOUD_URL ?? hubFileEnv.CI_CLOUD_URL ?? '').trim();
+  const ciHubVersion = (process.env.CI_HUB_VERSION ?? fileEnv.CI_HUB_VERSION ?? hubFileEnv.CI_HUB_VERSION ?? '').trim();
+  /**
+   * Matches the Rust binary's compile-time `CI_HUB_ENVIRONMENT` check.
+   * Injected so the frontend can derive correct defaults without relying on
+   * `import.meta.env.DEV` (which is always false in any `vite build`).
+   */
+  const ciHubEnvironment = (process.env.CI_HUB_ENVIRONMENT ?? fileEnv.CI_HUB_ENVIRONMENT ?? hubFileEnv.CI_HUB_ENVIRONMENT ?? '').trim();
 
   const alias: Record<string, string> = {
     '@': path.resolve(__dirname, './src'),
@@ -93,6 +100,8 @@ export default defineConfig(({ mode }) => {
     plugins,
     define: {
       'import.meta.env.CI_CLOUD_URL': JSON.stringify(ciCloudUrl),
+      'import.meta.env.CI_HUB_VERSION': JSON.stringify(ciHubVersion),
+      'import.meta.env.CI_HUB_ENVIRONMENT': JSON.stringify(ciHubEnvironment),
     },
     resolve: {
       alias,
@@ -102,7 +111,7 @@ export default defineConfig(({ mode }) => {
     server: {
       open: true,
       host: true,
-      port: 9091,
+      port: Number(process.env.FRONTEND_PORT || 5005),
       hmr: {
         timeout: 60000,
       },
@@ -128,7 +137,7 @@ export default defineConfig(({ mode }) => {
       },
       proxy: {
         '/api': {
-          target: `http://localhost:${process.env.API_PORT || 3000}`,
+          target: `http://localhost:${process.env.API_PORT || 5004}`,
           changeOrigin: false,
           configure: (proxy, _options) => {
             proxy.on('error', (err, _req, _res) => {
@@ -141,13 +150,13 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       force: false,
-      include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', 'js-cookie', '@tanstack/react-query'],
+      include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', '@tanstack/react-query'],
     },
     preview: {
-      port: 9091,
+      port: Number(process.env.FRONTEND_PORT || 5005),
       proxy: {
         '/api': {
-          target: `http://localhost:${process.env.API_PORT || 3000}`,
+          target: `http://localhost:${process.env.API_PORT || 5004}`,
           changeOrigin: false,
         },
       },

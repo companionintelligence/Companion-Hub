@@ -1,24 +1,9 @@
-import {
-  AlertTriangle,
-  Ban,
-  CheckCircle,
-  MoreHorizontal,
-  Download,
-  Edit,
-  Eraser,
-  ExternalLink,
-  Pause,
-  Play,
-  RotateCw,
-  Settings,
-  Trash,
-} from 'lucide-react';
+import { AlertTriangle, Ban, CheckCircle, Download, Edit, Eraser, ExternalLink, Pause, Play, RotateCw, Settings, Trash } from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
-import { useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -26,20 +11,21 @@ import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
+import { Tooltip } from 'react-tooltip';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
 import { StopDialog } from '../../components/dialogs/stop-dialog/stop-dialog';
+import { ForceStopDialog } from '../../components/dialogs/force-stop-dialog/force-stop-dialog';
 import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/uninstall-dialog';
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
+import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 
 const openExternalUrl = (url: string) => openExternal(url);
 
@@ -49,10 +35,17 @@ interface IProps {
   metadata: AppMetadata;
   localDomain?: string;
   sslPort?: number;
+  runtimeHealth?: AppRuntimeHealth;
+  layout?: 'default' | 'hero';
 }
 
 interface BtnProps extends ButtonProps {
   IconComponent?: typeof Download;
+}
+
+interface IconBtnProps extends ButtonProps {
+  icon: typeof Download;
+  label: string;
 }
 
 const ActionButton: React.FC<BtnProps> = (props) => {
@@ -73,18 +66,35 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
-const ERROR_MESSAGES: Record<string, string> = {
-  CF_TUNNEL_NOT_FOUND: 'Tunnel route not configured — syncing...',
-  CF_UPSTREAM_ERROR: 'Connecting through tunnel...',
-  CF_ORIGIN_DOWN: 'Origin server is down',
-  CF_TIMEOUT: 'Connection timed out',
-  CF_UNKNOWN: 'Cloudflare error',
-  DNS_NOT_FOUND: 'DNS propagating...',
-  CONNECTION_REFUSED: 'App not responding',
-  CONNECTION_TIMEOUT: 'Connection timed out',
-  PROXY_UPSTREAM_ERROR: 'Waiting for app to start...',
-  APP_HTTP_ERROR: 'App returned an error',
-  NO_DEVICE_REGISTRATION: 'Device not registered',
+const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className, ...props }) => (
+  <Button
+    type="button"
+    size="icon"
+    variant="ghost"
+    aria-label={label}
+    title={label}
+    data-testid={`icon-action-${label.toLowerCase().replace(/\s+/g, '-')}`}
+    data-tooltip-id="app-actions-tooltip"
+    data-tooltip-content={label}
+    className={clsx('hero-action-icon', className)}
+    {...props}
+  >
+    <Icon size={16} />
+  </Button>
+);
+
+const ERROR_MESSAGE_KEYS: Record<string, string> = {
+  CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
+  CF_UPSTREAM_ERROR: 'APP_ACTION_ERROR_CF_UPSTREAM_ERROR',
+  CF_ORIGIN_DOWN: 'APP_ACTION_ERROR_CF_ORIGIN_DOWN',
+  CF_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
+  CF_UNKNOWN: 'APP_ACTION_ERROR_CF_UNKNOWN',
+  DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+  CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
+  CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
+  PROXY_UPSTREAM_ERROR: 'APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR',
+  APP_HTTP_ERROR: 'APP_ACTION_ERROR_APP_HTTP_ERROR',
+  NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
 };
 
 // Polling phases
@@ -93,9 +103,12 @@ const GRACE_POLL_MS = 3_000;
 const NORMAL_POLL_MS = 10_000;
 const MAX_POLL_MS = 5 * 60_000;
 
-export const AppActions = ({ app, info, metadata }: IProps) => {
+const INSTALL_FINALIZING_PROGRESS = 99;
+
+export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
+  const forceStopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
   const updateSettingsDisclosure = useDisclosure();
   const uninstallDisclosure = useDisclosure();
@@ -151,97 +164,55 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressText = progress === null ? '' : ` ${progress}%`;
+    const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
 
-    let stageText = '';
+    let stageText = t('APP_ACTION_PREPARING');
     if (progress !== null) {
-      if (progress < 20) stageText = 'Preparing...';
-      else if (progress < 40) stageText = 'Downloading...';
-      else if (progress < 70) stageText = 'Setting up...';
-      else if (progress < 90) stageText = 'Starting...';
-      else stageText = 'Almost ready...';
+      if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
+      else if (progress >= 60) stageText = t('APP_ACTION_DOWNLOADING');
+      else stageText = t('APP_ACTION_PREPARING');
     }
 
     return (
-      <div key="loading" className="flex flex-col items-start gap-1">
-        <ActionButton disabled intent="success" title={`${t('APP_ACTION_INSTALLING')}${progressText}`} className="installation-progress-button" />
-        {stageText && <p className="text-xs text-muted-foreground">{stageText}</p>}
+      <div key="loading" className="installation-progress-shell">
+        <ActionButton disabled variant="outline" title={t('COMMON_INSTALLING')} className="installation-progress-button" />
+        <div
+          className="installation-progress-track"
+          role="progressbar"
+          aria-label={t('COMMON_INSTALLING')}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress ?? undefined}
+          aria-valuetext={stageText}
+        >
+          <div className="installation-progress-fill" style={{ width: `${progressValue}%` }} />
+        </div>
+        <p className="installation-progress-stage">{stageText}</p>
       </div>
     );
   })();
 
-  const RemoveListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
-      <Trash className="mr-2" size={16} />
-      {t('APP_ACTION_REMOVE')}
-    </DropdownMenuItem>
+  const InstallButton = (
+    <ActionButton
+      key="install"
+      onClick={installDisclosure.open}
+      title={t('COMMON_INSTALL')}
+      variant="default"
+      size="lg"
+      className="install-action-button"
+    />
   );
-  const SettingsListItem = (
-    <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
-      <Settings className="mr-2" size={16} />
-      {t('APP_ACTION_SETTINGS')}
-    </DropdownMenuItem>
+  const RetryInstallButton = (
+    <ActionButton
+      key="retry-install"
+      IconComponent={RotateCw}
+      onClick={installDisclosure.open}
+      title={t('APP_ACTION_RETRY_INSTALL')}
+      variant="outline"
+      size="lg"
+      className="retry-install-action-button"
+    />
   );
-  const RestartListItem = (
-    <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
-      <RotateCw className="mr-2" size={16} />
-      {t('APP_ACTION_RESTART')}
-      {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
-    </DropdownMenuItem>
-  );
-  const UpdateListItem = (
-    <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
-      <Download className="mr-2" size={16} />
-      {t('APP_ACTION_UPDATE')}
-      <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
-    </DropdownMenuItem>
-  );
-  const IgnoreVersionListItem = (
-    <DropdownMenuItem
-      onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
-      key="ignore-version"
-      disabled={ignoreVersionMutation.isPending}
-    >
-      <Ban className="mr-2" size={16} />
-      {t('APP_ACTION_IGNORE_VERSION')}
-    </DropdownMenuItem>
-  );
-  const UnignoreVersionListItem = (
-    <DropdownMenuItem
-      onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
-      key="unignore-version"
-      disabled={unignoreVersionMutation.isPending}
-    >
-      <CheckCircle className="mr-2" size={16} />
-      {t('APP_ACTION_UNIGNORE_VERSION')}
-    </DropdownMenuItem>
-  );
-  const CancelListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
-      <Pause className="mr-2" size={16} />
-      {t('APP_ACTION_CANCEL')}
-    </DropdownMenuItem>
-  );
-  const ResetListItem = (
-    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-destructive focus:text-destructive">
-      <Eraser className="mr-2" size={16} />
-      {t('APP_INSTALL_FORM_RESET')}
-    </DropdownMenuItem>
-  );
-
-  const EditConfigListItem = (
-    <DropdownMenuItem
-      onClick={() => navigate(`/apps/${info.id}/edit`)}
-      key="edit-config"
-      disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
-    >
-      <Edit className="mr-2" size={16} />
-      {t('CUSTOM_APP_EDIT_CONFIG')}
-    </DropdownMenuItem>
-  );
-
-  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
-  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
   // Availability check state
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -258,7 +229,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   // Show install errors surfaced from SSE via query cache
   const queryClient = useQueryClient();
-  const installError = queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null;
+  const { data: installError } = useQuery({
+    queryKey: ['app-install-error', info.urn],
+    queryFn: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
+    initialData: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const exposureMode = ((app as Record<string, unknown> | null)?.exposureMode as string) || 'local';
   const isLocal = exposureMode === 'local';
@@ -281,13 +257,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       const { data } = await client.post({ url: `/api/apps/${info.urn}/resolve-availability` });
       const result = (data || {}) as { success: boolean; detail: string };
       if (result.success) {
-        toast.success(result.detail || 'Resolution attempted. Rechecking...');
+        toast.success(result.detail || t('APP_ACTION_RESOLUTION_ATTEMPTED_RECHECKING'));
         setTimeout(resetPolling, 3000);
       } else {
-        toast.error(result.detail || 'Resolution failed.');
+        toast.error(result.detail || t('APP_ACTION_RESOLUTION_FAILED'));
       }
     } catch (e) {
-      toast.error(`Failed to resolve: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      toast.error(t('APP_ACTION_FAILED_TO_RESOLVE', { error: e instanceof Error ? e.message : t('COMMON_UNKNOWN_ERROR') }));
     } finally {
       setIsResolving(false);
     }
@@ -358,14 +334,14 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         }
 
         setIsCheckingUrl(false);
-        setCheckError(detail || 'Application Error');
+        setCheckError(detail || t('APP_ACTION_APPLICATION_ERROR'));
         setCheckErrorCode(errorCode || null);
         setErrorResolvable(resolvable ?? false);
       } catch (error) {
         if (!isMounted) return;
         setUrlAvailable(null);
         setIsCheckingUrl(true);
-        setCheckError(error instanceof Error ? error.message : 'Unknown error');
+        setCheckError(error instanceof Error ? error.message : t('COMMON_UNKNOWN_ERROR'));
         setCheckErrorCode(null);
         setErrorResolvable(false);
       }
@@ -391,12 +367,16 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       clearTimeout(initialTimeout);
       if (pollTimeout) clearTimeout(pollTimeout);
     };
-  }, [app?.status, info.no_gui, info.urn, isLocal]);
+  }, [app?.status, info.no_gui, info.urn, isLocal, t]);
 
   // Determine UI state for the Open button area
   const elapsed = pollStartRef.current ? Date.now() - pollStartRef.current : 0;
   const withinGracePeriod = elapsed < GRACE_PERIOD_MS && !pollingStopped;
-  const statusMessage = checkErrorCode ? ERROR_MESSAGES[checkErrorCode] || checkError : checkError;
+  const statusMessage = (() => {
+    if (!checkErrorCode) return checkError;
+    const translationKey = ERROR_MESSAGE_KEYS[checkErrorCode];
+    return translationKey ? t(translationKey) : checkError;
+  })();
 
   // Build the Open button area for running apps with GUI
   const renderOpenButtonArea = () => {
@@ -414,13 +394,24 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
               openExternalUrl(appUrl);
             } else {
               // Fetch URL on-demand for local
-              client.get({ url: `/api/apps/${info.urn}/check-availability` }).then(({ data }) => {
-                const result = (data || {}) as { appUrl?: string };
-                if (result.appUrl) openExternalUrl(result.appUrl);
-              });
+              client
+                .get({ url: `/api/apps/${info.urn}/check-availability` })
+                .then(({ data }) => {
+                  const result = (data || {}) as { appUrl?: string };
+                  if (result.appUrl) openExternalUrl(result.appUrl);
+                })
+                .catch(() => {
+                  // A transient backend/tunnel failure (e.g. a Cloudflare 530
+                  // while the tunnel reconnects) must not become an unhandled
+                  // rejection surfaced as a generic error. Tell the user instead.
+                  toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
+                });
             }
           }}
           title={t('APP_ACTION_OPEN')}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
         />
       );
     }
@@ -439,6 +430,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           onClick={() => appUrl && openExternalUrl(appUrl)}
           title={t('APP_ACTION_OPEN')}
           disabled={!appUrl}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
         />
       );
     }
@@ -447,11 +441,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
       return (
         <div key="open-propagating" className="flex flex-col items-start gap-1">
-          <ActionButton title="Starting..." disabled loading />
+          <ActionButton title={t('COMMON_STARTING')} disabled loading />
           {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>
@@ -463,7 +457,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
           {pollingStopped ? (
-            <ActionButton IconComponent={RotateCw} title="Retry" intent="warning" onClick={resetPolling} />
+            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={resetPolling} />
           ) : (
             <ActionButton
               IconComponent={RotateCw}
@@ -477,7 +471,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>
@@ -492,7 +486,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>
@@ -505,48 +499,126 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   // If there was an install error for this app, show it under the open/action area
   const InstallErrorMessage = installError?.message ? (
-    <p className="mt-1 text-sm text-destructive" role="alert">
-      {installError.message}
-    </p>
+    <div
+      className={clsx(
+        'min-w-0 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive',
+        layout === 'hero' && 'hero-inline-install-error',
+      )}
+      role="alert"
+      title={installError.message}
+    >
+      {layout === 'hero' ? (
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="min-w-0 flex-1 break-words line-clamp-2">{installError.message}</p>
+        </div>
+      ) : (
+        installError.message
+      )}
+    </div>
   ) : null;
 
   const buttons: React.JSX.Element[] = [];
-  const listItems: React.JSX.Element[] = [];
-  const listItemsDestructive: React.JSX.Element[] = [];
-
-  if (info.urn.split(':')[1] === '_user') {
-    listItems.push(EditConfigListItem);
-  }
+  const secondaryActions: React.JSX.Element[] = [];
 
   switch (app?.status ?? 'missing') {
     case 'stopped':
       buttons.push(StartButton);
-      listItems.push(SettingsListItem);
-      listItemsDestructive.push(ResetListItem);
-      listItemsDestructive.push(RemoveListItem);
+      secondaryActions.push(
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
       if (updateAvailable && !versionIsIgnored) {
-        listItems.push(UpdateListItem);
-        listItems.push(IgnoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="update"
+            icon={Download}
+            label={t('COMMON_UPDATE')}
+            onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
+          />,
+          <IconActionButton
+            key="ignore-version"
+            icon={Ban}
+            label={t('APP_ACTION_IGNORE_VERSION')}
+            onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={ignoreVersionMutation.isPending}
+          />,
+        );
       } else if (versionIsIgnored) {
-        listItems.push(UnignoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="unignore-version"
+            icon={CheckCircle}
+            label={t('APP_ACTION_UNIGNORE_VERSION')}
+            onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={unignoreVersionMutation.isPending}
+          />,
+        );
       }
       break;
     case 'running': {
-      buttons.push(StopButton);
-      listItems.push(SettingsListItem);
-      listItems.push(RestartListItem);
-      listItemsDestructive.push(ResetListItem);
-      listItemsDestructive.push(RemoveListItem);
+      secondaryActions.push(
+        <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} onClick={stopDisclosure.open} />,
+        <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} onClick={restartDisclosure.open} />,
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
 
       // Open button area for running apps with a GUI
       const openArea = renderOpenButtonArea();
       if (openArea) buttons.push(openArea);
 
       if (updateAvailable && !versionIsIgnored) {
-        listItems.push(UpdateListItem);
-        listItems.push(IgnoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="update"
+            icon={Download}
+            label={t('COMMON_UPDATE')}
+            onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
+          />,
+          <IconActionButton
+            key="ignore-version"
+            icon={Ban}
+            label={t('APP_ACTION_IGNORE_VERSION')}
+            onClick={() => ignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={ignoreVersionMutation.isPending}
+          />,
+        );
       } else if (versionIsIgnored) {
-        listItems.push(UnignoreVersionListItem);
+        secondaryActions.push(
+          <IconActionButton
+            key="unignore-version"
+            icon={CheckCircle}
+            label={t('APP_ACTION_UNIGNORE_VERSION')}
+            onClick={() => unignoreVersionMutation.mutate({ path: { urn: info.urn } })}
+            disabled={unignoreVersionMutation.isPending}
+          />,
+        );
+      }
+      if (runtimeHealth?.forceStopEligible) {
+        secondaryActions.push(
+          <IconActionButton
+            key="force-stop"
+            icon={AlertTriangle}
+            label={t('APP_FORCE_STOP_ACTION')}
+            onClick={forceStopDisclosure.open}
+            className="text-destructive hover:text-destructive"
+          />,
+        );
       }
       break;
     }
@@ -560,15 +632,48 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     case 'backing_up':
     case 'restoring':
       buttons.push(LoadingButton);
-      listItems.push(CancelListItem);
+      secondaryActions.push(<IconActionButton key="cancel" icon={Pause} label={t('COMMON_CANCEL')} onClick={uninstallDisclosure.open} />);
+      break;
+    case 'install_failed':
+      buttons.push(RetryInstallButton);
+      secondaryActions.push(
+        <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
+        <IconActionButton
+          key="remove"
+          icon={Trash}
+          label={t('COMMON_REMOVE')}
+          onClick={uninstallDisclosure.open}
+          className="text-destructive hover:text-destructive"
+        />,
+      );
       break;
     case 'missing':
       buttons.push(InstallButton);
       if (info.urn.split(':')[1] === '_user') {
-        listItemsDestructive.push(RemoveListItem);
+        secondaryActions.push(
+          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+          <IconActionButton
+            key="remove"
+            icon={Trash}
+            label={t('COMMON_REMOVE')}
+            onClick={uninstallDisclosure.open}
+            className="text-destructive hover:text-destructive"
+          />,
+        );
       }
       break;
     default:
+      if (info.urn.split(':')[1] === '_user') {
+        secondaryActions.push(
+          <IconActionButton
+            key="edit-config"
+            icon={Edit}
+            label={t('CUSTOM_APP_EDIT_CONFIG')}
+            onClick={() => navigate(`/apps/${info.id}/edit`)}
+            disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
+          />,
+        );
+      }
       break;
   }
 
@@ -576,6 +681,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     <>
       <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} />
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
+      <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
       <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
@@ -586,31 +692,19 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         config={app?.config ?? {}}
         status={app?.status}
       />
-      <div className="mt-1 flex flex-wrap gap-2">
-        {buttons.map((button) => {
-          return createElement(button.type, {
-            ...button.props,
-            key: button.key,
-          });
-        })}
-        {InstallErrorMessage}
-        {listItems.length > 0 && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" name="more" className="more-button relative">
-                <MoreHorizontal size={14} />
-                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
-                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuGroup>{listItems}</DropdownMenuGroup>
-              {listItemsDestructive.length > 0 ? <DropdownMenuSeparator /> : null}
-              <DropdownMenuGroup>{listItemsDestructive}</DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+      <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>
+        <div className={clsx('flex flex-wrap items-start gap-2', layout === 'hero' && 'hero-actions-layout')}>
+          {layout === 'hero' ? InstallErrorMessage : null}
+          {secondaryActions.length > 0 ? <div className="hero-action-bar">{secondaryActions}</div> : null}
+          {buttons.map((button) => {
+            return createElement(button.type, {
+              ...button.props,
+              key: button.key,
+            });
+          })}
+        </div>
+        <Tooltip id="app-actions-tooltip" className="tooltip" />
+        {layout === 'hero' ? null : InstallErrorMessage}
       </div>
     </>
   );

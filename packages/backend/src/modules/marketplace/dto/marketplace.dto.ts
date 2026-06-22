@@ -1,4 +1,4 @@
-import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoObjectSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 
@@ -18,7 +18,7 @@ const searchAppQuerySchema = z.object({
   storeId: z.string().optional(),
 });
 
-const simpleAppInfoSchema = appInfoSchema.pick({
+const simpleAppInfoSchema = appInfoObjectSchema.pick({
   id: true,
   urn: true,
   name: true,
@@ -34,11 +34,6 @@ const searchAppsResponseSchema = z.object({
   data: z.array(simpleAppInfoSchema),
   nextCursor: z.string().nullable().optional(),
   total: z.number(),
-});
-
-const appDetailsSchema = z.object({
-  info: appInfoSchema,
-  metadata: metadataSchema,
 });
 
 const successResponseSchema = z.object({
@@ -67,14 +62,11 @@ const createAppStoreBodySchema = z.object({
 });
 
 // App info
-export class AppInfoSimpleDto extends createZodDto(simpleAppInfoSchema) {}
-export class AppInfoDto extends createZodDto(appInfoSchema) {}
 export class MetadataDto extends createZodDto(metadataSchema) {}
 
 // Search apps
 export class SearchAppsQueryDto extends createZodDto(searchAppQuerySchema) {}
 export class SearchAppsDto extends createZodDto(searchAppsResponseSchema) {}
-export class AppDetailsDto extends createZodDto(appDetailsSchema) {}
 
 // Pull
 export class PullDto extends createZodDto(successResponseSchema) {}

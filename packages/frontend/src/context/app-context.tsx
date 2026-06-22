@@ -1,5 +1,6 @@
 import type { AppContextDto } from '@/api-client';
 import { appContextOptions, appContextQueryKey, searchAppsInfiniteOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { captureHubWarning } from '@/lib/sentry';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
@@ -21,6 +22,8 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
   isProduction: true,
   cloudflareAvailable: false,
   tailscaleAvailable: false,
+  tailscaleNodeFqdn: null,
+  tailscaleSupportsServices: false,
 };
 
 // Optimistically prefetch pages that are likely to be visited
@@ -51,6 +54,13 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     // During desktop startup races, backend endpoints can briefly fail before
     // becoming ready. Keep defaults instead of crashing the entire UI.
     console.warn('appContext unavailable during startup, using defaults:', error);
+    captureHubWarning(
+      'appContext unavailable during startup; using defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { dedupeKey: 'app-context-startup-unavailable' },
+    );
   }
 
   const refreshAppContext = async () => {
@@ -64,7 +74,14 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     isLoading,
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {
-      queryClient.setQueryData(['appContext'], { ...resolved, ...newAppContext });
+      queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {
+        const base = current ?? resolved;
+        return {
+          ...base,
+          ...newAppContext,
+          user: newAppContext.user ? { ...base.user, ...newAppContext.user } : base.user,
+        };
+      });
     },
   };
 

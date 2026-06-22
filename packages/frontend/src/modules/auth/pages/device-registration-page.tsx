@@ -5,10 +5,25 @@ import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
+import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
+import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
+import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import {
+  REGISTRATION_ACCOUNT_HINT,
+  REGISTRATION_DEVICE_ID_HINT,
+  REGISTRATION_DNS_HINT,
+  REGISTRATION_PAIRING_CODE_HINT,
+  REGISTRATION_PROVISIONING_HINT,
+} from '@/components/hub-status/hub-status-tooltips';
+import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
+import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
+import { useTranslation } from 'react-i18next';
 
-const DEFAULT_PORTAL_URL = 'https://hub.companionintelligence.com';
+const DEFAULT_PORTAL_URL = (
+  (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
+  (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? 'https://hub.ci.computer' : 'https://hub.companionintelligence.com')
+).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
@@ -20,54 +35,49 @@ type PairingTarget = {
   subdomain?: string;
 };
 
-function setRegisteredCache() {
-  sessionStorage.setItem('device-registered', 'true');
-  sessionStorage.setItem('device-registered-at', String(Date.now()));
-}
-
-function clearRegisteredCache() {
-  sessionStorage.removeItem('device-registered');
-  sessionStorage.removeItem('device-registered-at');
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string) {
+function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string, t: (key: string) => string) {
   if (!status) {
     return {
-      title: 'Checking registration status...',
-      description: 'Please wait while we confirm your Hub status.',
+      title: t('DEVICE_REGISTRATION_CHECKING_STATUS'),
+      description: t('DEVICE_REGISTRATION_PLEASE_WAIT'),
+      hint: undefined as string | undefined,
     };
   }
 
   switch (status.phase) {
     case 'paired':
       return {
-        title: 'Provisioning your domain',
-        description:
-          'Your pairing code worked. We are finishing DNS and secure routing for your Hub so it can be reached on the web. That often takes a few minutes—please keep this window open.',
+        title: t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN'),
+        description: t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN_DESC'),
+        hint: t(REGISTRATION_PROVISIONING_HINT),
       };
     case 'provisioning':
       return {
-        title: 'Setting up your Hub',
-        description: 'We are turning on local services and your public connection. DNS propagation can add another minute or two.',
+        title: t('DEVICE_REGISTRATION_SETTING_UP_HUB'),
+        description: t('DEVICE_REGISTRATION_SETTING_UP_HUB_DESC'),
+        hint: t(REGISTRATION_DNS_HINT),
       };
     case 'degraded':
       return {
-        title: 'Hub setup needs attention',
+        title: t('DEVICE_REGISTRATION_HUB_SETUP_NEEDS_ATTENTION'),
         description: redirectStatus,
+        hint: undefined,
       };
     default:
       return {
-        title: 'Registration complete',
+        title: t('DEVICE_REGISTRATION_COMPLETE'),
         description: redirectStatus,
+        hint: undefined,
       };
   }
 }
 
 export default function DeviceRegistrationPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
@@ -79,23 +89,34 @@ export default function DeviceRegistrationPage() {
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
-  const [redirectStatus, setRedirectStatus] = useState<string>('Setting up your Hub...');
+  const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
+  const deepLinkPairAttemptRef = useRef<string | null>(null);
+  const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
   const loadDeviceInfo = useCallback(async () => {
     try {
       const deviceRes = await apiFetch('/api/registration/device-id');
       if (!deviceRes.ok) {
-        setDeviceInfoError('Failed to get device information');
+        captureHubWarning(
+          'Device registration page could not load device info',
+          {
+            status: deviceRes.status,
+          },
+          { dedupeKey: `device-registration-device-info:${deviceRes.status}` },
+        );
+        setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
         return;
       }
 
       const deviceData = (await deviceRes.json()) as { device_id?: string; ci_cloud_url?: string };
       setDeviceId(deviceData.device_id ?? null);
+      setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));
@@ -103,61 +124,84 @@ export default function DeviceRegistrationPage() {
       setDeviceInfoError(null);
     } catch (error) {
       console.error(error);
-      setDeviceInfoError('Failed to get device information');
+      captureHubWarning(
+        'Device registration page could not load device info',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+        { dedupeKey: 'device-registration-device-info:exception' },
+      );
+      setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
     }
-  }, []);
+  }, [t]);
 
-  const refreshRegistrationStatus = useCallback(
-    async ({ loadDeviceData = false }: { loadDeviceData?: boolean } = {}) => {
-      try {
-        const res = await apiFetch('/api/registration/status');
-        if (!res.ok) {
-          throw new Error('Failed to fetch registration status');
-        }
+  const refreshRegistrationStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/registration/status');
+      if (!res.ok) {
+        captureHubWarning(
+          'Device registration status temporarily unavailable',
+          {
+            status: res.status,
+          },
+          { dedupeKey: `device-registration-status:${res.status}` },
+        );
+        throw new Error(t('DEVICE_REGISTRATION_FETCH_STATUS_FAILED'));
+      }
 
-        const status = (await res.json()) as RegistrationStatus;
-        setRegistrationStatus(status);
-        setStatusError(null);
+      const status = (await res.json()) as RegistrationStatus;
+      setRegistrationStatus(status);
+      setStatusError(null);
 
-        if (isRegistrationOperational(status)) {
-          setRegisteredCache();
-          return status;
-        }
-
-        clearRegisteredCache();
-
-        if (loadDeviceData && status.phase === 'unregistered') {
+      if (requiresDeviceRegistration(status)) {
+        completionStartedRef.current = false;
+        clearRegistrationCache();
+        if (status.phase === 'unregistered') {
           await loadDeviceInfo();
         }
-
         return status;
-      } catch (error) {
-        console.error(error);
-        setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
-        return null;
-      } finally {
-        setIsLoading(false);
       }
-    },
-    [loadDeviceInfo],
-  );
+
+      if (isRegistrationOperational(status)) {
+        cacheRegistrationStatus(status);
+        return status;
+      }
+
+      clearRegistrationCache();
+
+      return status;
+    } catch (error) {
+      console.error(error);
+      captureHubWarning(
+        'Device registration status temporarily unavailable',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+        { dedupeKey: 'device-registration-status:exception' },
+      );
+      setStatusError(t('DEVICE_REGISTRATION_STATUS_TEMPORARY_UNAVAILABLE'));
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDeviceInfo, t]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
       const { domain, subdomain } = pendingPairTargetRef.current ?? {};
       pendingPairTargetRef.current = null;
-      setRegisteredCache();
+      cacheRegistrationStatus(status);
 
       if (isTauri) {
-        setRedirectStatus('Registration complete! Loading the local Hub...');
+        setRedirectStatusKey('DEVICE_REGISTRATION_COMPLETE_LOADING_LOCAL');
         await sleep(1500);
         window.location.href = '/';
         return;
       }
 
       if (status.phase === 'degraded') {
-        setRedirectStatus('Your Hub is ready locally, but the public route still needs attention. Redirecting you to the local Hub...');
-        toast('Your Hub is ready locally. Public connectivity still needs attention, so we are taking you to the local app.', { duration: 8000 });
+        setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_REDIRECTING');
+        toast(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/', { replace: true });
         return;
@@ -165,7 +209,7 @@ export default function DeviceRegistrationPage() {
 
       if (domain && subdomain) {
         const fullUrl = `https://${subdomain}.${domain}`;
-        setRedirectStatus('Local setup is complete. Checking your public Hub URL...');
+        setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL');
 
         let consecutiveSuccesses = 0;
         for (let attempt = 1; attempt <= MAX_DOMAIN_PROBE_ATTEMPTS; attempt++) {
@@ -176,7 +220,7 @@ export default function DeviceRegistrationPage() {
               if (probeData.ready) {
                 consecutiveSuccesses++;
                 if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
-                  setRedirectStatus('Public Hub URL is ready. Redirecting...');
+                  setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING');
                   window.location.href = `${fullUrl}/login`;
                   return;
                 }
@@ -192,31 +236,31 @@ export default function DeviceRegistrationPage() {
           consecutiveSuccesses = 0;
 
           if (attempt >= 12) {
-            setRedirectStatus('Waiting for DNS propagation...');
+            setRedirectStatusKey('DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION');
           }
           if (attempt >= 36) {
-            setRedirectStatus('Still waiting for your public Hub URL — this can take a few minutes...');
+            setRedirectStatusKey('DEVICE_REGISTRATION_STILL_WAITING_PUBLIC_URL');
           }
 
           await sleep(DOMAIN_PROBE_INTERVAL_MS);
         }
 
-        setRedirectStatus('Public route is still propagating. Redirecting to the local Hub for now...');
-        toast('Cloudflare tunnel setup is still propagating. You can use your Hub locally while it finishes.', { duration: 8000 });
+        setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_ROUTE_PROPAGATING_REDIRECTING_LOCAL');
+        toast(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/', { replace: true });
         return;
       }
 
-      setRedirectStatus('Registration complete! Redirecting to the local Hub...');
+      setRedirectStatusKey('DEVICE_REGISTRATION_COMPLETE_REDIRECTING_LOCAL');
       await sleep(1000);
       navigate('/', { replace: true });
     },
-    [isTauri, navigate],
+    [isTauri, navigate, t],
   );
 
   useEffect(() => {
-    void refreshRegistrationStatus({ loadDeviceData: true });
+    void refreshRegistrationStatus();
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
@@ -242,6 +286,10 @@ export default function DeviceRegistrationPage() {
 
   useEffect(() => {
     if (!registrationStatus || !isRegistrationOperational(registrationStatus) || completionStartedRef.current) {
+      return;
+    }
+
+    if (requiresDeviceRegistration(registrationStatus)) {
       return;
     }
 
@@ -283,24 +331,22 @@ export default function DeviceRegistrationPage() {
           pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
           setPairingCode('');
           setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
-          setRedirectStatus(
-            'Provisioning your domain and secure connection. DNS and tunnel setup can take a few minutes—please wait on this screen.',
-          );
-          toast.success('Pairing accepted. Provisioning your domain—this usually takes a few minutes.');
+          setRedirectStatusKey('DEVICE_REGISTRATION_PROVISIONING_STATUS');
+          toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
         } else {
-          const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
+          const errorMsg = typeof data.message === 'string' ? data.message : t('DEVICE_REGISTRATION_FAILED');
           setPairingError(errorMsg);
           toast.error(errorMsg);
         }
       } catch (error) {
         console.error(error);
-        setPairingError('Failed to register device. Please try again.');
+        setPairingError(t('DEVICE_REGISTRATION_FAILED_RETRY'));
       } finally {
         setIsPairing(false);
       }
     },
-    [refreshRegistrationStatus],
+    [refreshRegistrationStatus, t],
   );
 
   useEffect(() => {
@@ -319,8 +365,8 @@ export default function DeviceRegistrationPage() {
             return;
           }
 
-          setPairingCode(code);
-          void doPair(code);
+          stashPendingPairingCode(code);
+          setPendingDeepLinkCode(code);
         });
       } catch {
         // Tauri event bridge unavailable in non-desktop contexts.
@@ -330,17 +376,41 @@ export default function DeviceRegistrationPage() {
     return () => {
       void unlisten?.();
     };
-  }, [doPair, isTauri]);
+  }, [isTauri]);
+
+  useEffect(() => {
+    if (!canAutoPairFromDeepLink) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      const pendingCode = (pendingDeepLinkCode && normalizePairingCode(pendingDeepLinkCode)) ?? (await resolvePendingPairingCode());
+      if (cancelled || !pendingCode || deepLinkPairAttemptRef.current === pendingCode) {
+        return;
+      }
+
+      deepLinkPairAttemptRef.current = pendingCode;
+      setPendingDeepLinkCode(null);
+      setPairingCode(pendingCode);
+      await doPair(pendingCode);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAutoPairFromDeepLink, doPair, pendingDeepLinkCode]);
 
   const handleRetryStatus = async () => {
     setStatusError(null);
-    await refreshRegistrationStatus({ loadDeviceData: registrationStatus?.phase === 'unregistered' || !registrationStatus });
+    await refreshRegistrationStatus();
   };
 
   const handlePair = async () => {
     const code = pairingCode.trim().toUpperCase();
     if (code.length !== 6) {
-      setPairingError('Pairing code must be exactly 6 characters.');
+      setPairingError(t('DEVICE_REGISTRATION_PAIRING_CODE_LENGTH'));
       return;
     }
     await doPair(code);
@@ -353,21 +423,22 @@ export default function DeviceRegistrationPage() {
 
     try {
       await navigator.clipboard.writeText(deviceId);
-      toast.success('Device ID copied to clipboard.');
+      toast.success(t('DEVICE_REGISTRATION_DEVICE_ID_COPIED'));
     } catch {
-      toast.error('Failed to copy device ID.');
+      toast.error(t('DEVICE_REGISTRATION_DEVICE_ID_COPY_FAILED'));
     }
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
+  const redirectStatus = t(redirectStatusKey);
 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center gap-4 py-4 text-center">
-        <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Checking registration status...</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Please wait.</p>
+          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_CHECKING_STATUS')}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_PLEASE_WAIT')}</p>
         </div>
       </div>
     );
@@ -378,18 +449,31 @@ export default function DeviceRegistrationPage() {
     (registrationStatus && isRegistrationOperational(registrationStatus) && Boolean(pendingPairTargetRef.current));
 
   if (showProgressState) {
-    const progressCopy = getProgressCopy(registrationStatus, redirectStatus);
+    const progressCopy = getProgressCopy(registrationStatus, redirectStatus, t);
     const showSuccessIcon = registrationStatus?.registered;
 
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         {showSuccessIcon ? (
-          <CheckCircle2 role="img" aria-label="success" className="h-12 w-12 text-green-500" />
+          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-green-500" />
         ) : (
-          <Loader2 role="img" aria-label="loading" className="h-10 w-10 animate-spin text-primary" />
+          <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-10 w-10 animate-spin text-primary" />
         )}
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+          <div className="flex items-center justify-center gap-1 flex-wrap">
+            {progressCopy.hint ? (
+              <HintText
+                id={`reg-progress-${registrationStatus?.phase}`}
+                hint={progressCopy.hint}
+                as="h2"
+                className="text-xl font-semibold text-foreground"
+              >
+                {progressCopy.title}
+              </HintText>
+            ) : (
+              <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+            )}
+          </div>
           <p className="mt-3 text-sm text-muted-foreground">{progressCopy.description}</p>
         </div>
 
@@ -397,10 +481,10 @@ export default function DeviceRegistrationPage() {
           <Alert variant="warning" className="w-full text-left">
             <AlertDescription>
               <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 shrink-0" />
+                <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
-                    ? 'We temporarily lost contact while checking progress. We will keep retrying automatically.'
+                    ? t('DEVICE_REGISTRATION_PROGRESS_CONTACT_LOST')
                     : statusError}
                 </span>
               </div>
@@ -409,7 +493,7 @@ export default function DeviceRegistrationPage() {
         )}
 
         <Button variant="outline" onClick={() => void handleRetryStatus()} disabled={isPairing}>
-          Check again
+          {t('COMMON_CHECK_AGAIN')}
         </Button>
       </div>
     );
@@ -418,12 +502,12 @@ export default function DeviceRegistrationPage() {
   if (statusError && !registrationStatus) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
-        <AlertCircle role="img" aria-label="error" className="h-12 w-12 text-amber-500" />
+        <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-amber-500" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Registration status temporarily unavailable</h2>
+          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
         </div>
-        <Button onClick={() => void handleRetryStatus()}>Retry status check</Button>
+        <Button onClick={() => void handleRetryStatus()}>{t('DEVICE_REGISTRATION_RETRY_STATUS_CHECK')}</Button>
       </div>
     );
   }
@@ -431,10 +515,10 @@ export default function DeviceRegistrationPage() {
   if (registrationStatus && isRegistrationOperational(registrationStatus) && !pendingPairTargetRef.current) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
-        <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Registration complete</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Loading your Hub...</p>
+          <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_COMPLETE')}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_LOADING_HUB')}</p>
         </div>
       </div>
     );
@@ -443,16 +527,30 @@ export default function DeviceRegistrationPage() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
-        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
-          <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
-            Log into your Companion Account and create a device. Copy the device&apos;s pairing code and return here.
-          </p>
-          <Button asChild className="mt-5 w-full" intent="primary">
+        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
+          <div className="flex items-start gap-1 flex-wrap">
+            <HintText
+              id="reg-account"
+              hint={t(REGISTRATION_ACCOUNT_HINT)}
+              as="h2"
+              className="text-lg font-semibold leading-snug text-foreground md:text-xl"
+            >
+              {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
+            </HintText>
+          </div>
+          <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-              Login to Companion Account
+              {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
             </a>
           </Button>
+          <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
+            <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
+            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
+              <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer">
+                {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
+              </a>
+            </Button>
+          </div>
         </section>
 
         <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
@@ -460,14 +558,16 @@ export default function DeviceRegistrationPage() {
         </div>
 
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 2: Connect this device</h2>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Enter the code and use the Current Device ID to complete registration.</p>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_STEP_2_SUBTITLE')}</p>
 
           <div className="mt-5 space-y-4">
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Current Device ID:</p>
+              <div className="text-sm text-muted-foreground">
+                <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
+              </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
-                <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
+                <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}</p>
                 <Button
                   type="button"
                   variant="ghost"
@@ -475,8 +575,8 @@ export default function DeviceRegistrationPage() {
                   className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
                   disabled={!deviceId}
                   onClick={() => void handleCopyDeviceId()}
-                  aria-label="Copy device ID"
-                  title="Copy device ID"
+                  aria-label={t('DEVICE_REGISTRATION_COPY_DEVICE_ID')}
+                  title={t('DEVICE_REGISTRATION_COPY_DEVICE_ID')}
                 >
                   <Copy className="h-4 w-4" />
                 </Button>
@@ -485,13 +585,15 @@ export default function DeviceRegistrationPage() {
 
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
-                Enter Pairing Code:
+                <HintText id="reg-pairing-code" hint={t(REGISTRATION_PAIRING_CODE_HINT)}>
+                  {t('DEVICE_REGISTRATION_ENTER_PAIRING_CODE')}
+                </HintText>
               </label>
               <div className="flex gap-2">
                 <input
                   id="pairing-code"
                   ref={pairingInputRef}
-                  placeholder="ABC123"
+                  placeholder={t('DEVICE_REGISTRATION_PAIRING_CODE_PLACEHOLDER')}
                   value={pairingCode}
                   onChange={(event) => {
                     const value = event.target.value
@@ -508,10 +610,16 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-9 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  className={`h-9 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
-                <Button intent="primary" onClick={() => void handlePair()} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
-                  {isPairing ? 'Registering...' : 'Register'}
+                <Button
+                  intent="primary"
+                  onClick={() => void handlePair()}
+                  disabled={pairingCode.length !== 6 || isPairing}
+                  loading={isPairing}
+                  className="w-40 shrink-0"
+                >
+                  {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>
               </div>
               {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
@@ -524,7 +632,7 @@ export default function DeviceRegistrationPage() {
         <Alert variant="warning">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 shrink-0" />
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{statusError}</span>
             </div>
           </AlertDescription>
@@ -535,20 +643,12 @@ export default function DeviceRegistrationPage() {
         <Alert variant="danger">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label="error" className="mt-0.5 h-4 w-4 shrink-0" />
+              <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{deviceInfoError}</span>
             </div>
           </AlertDescription>
         </Alert>
       )}
-
-      <p className="text-center text-xs text-muted-foreground">
-        Don&apos;t have an account yet?{' '}
-        <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline hover:no-underline">
-          Create one free
-        </a>{' '}
-        — it only takes a moment, and your data stays on this device.
-      </p>
     </div>
   );
 }

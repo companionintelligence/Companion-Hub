@@ -8,6 +8,7 @@ import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 
 export interface AppInfo {
   name: string;
@@ -16,7 +17,7 @@ export interface AppInfo {
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
-  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
+  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.ci.lan)
   /**
    * Discriminator for infrastructure entries that CI-Cloud must preserve
    * across regular app sync. Unset/undefined means a regular user app
@@ -37,6 +38,18 @@ export interface AppInfo {
    * migration 0017.
    */
   privilegedKind?: 'hub' | 'vpn';
+}
+
+/**
+ * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
+ * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
+ * record for (a partially-applied sync). Callers must treat a non-empty
+ * `failed` list as a user-visible failure — those apps will not resolve.
+ */
+export interface CloudflareSyncResult {
+  ok: boolean;
+  failed: string[];
+  synced: number;
 }
 
 @Injectable()
@@ -98,7 +111,7 @@ export class CloudflareClientService {
       await fs.mkdir(certsDir, { recursive: true });
 
       // Write the token to a file that cloudflared will read (configured in docker-compose)
-      await fs.writeFile(path.join(tunnelDir, 'token'), token, { mode: 0o644 });
+      await writeHealableTextFile(path.join(tunnelDir, 'token'), token, 0o644);
       this.logger.log('Wrote tunnel token to file');
     } catch (e) {
       this.logger.error(`Failed to write tunnel files: ${e}`);
@@ -157,14 +170,14 @@ export class CloudflareClientService {
    * Sync local state (running apps) to CI-Cloud
    * CI-Cloud will then update Cloudflare Tunnel Config & DNS
    */
-  async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<boolean> {
+  async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<CloudflareSyncResult> {
     if (tunnelId) {
       this.tunnelId = tunnelId;
     }
 
     if (!this.tunnelId) {
       this.logger.warn('Cannot sync state: Tunnel not initialized and no tunnelId provided');
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     }
 
     try {
@@ -183,10 +196,25 @@ export class CloudflareClientService {
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
 
       if (response.data.success) {
-        this.logger.log('State sync successful');
-        return true;
+        // CI-Cloud returns `failed` (app names whose public DNS record could not
+        // be created) and `synced` (count of DNS records created). Surface a
+        // clear warning instead of silently reporting success — a partially
+        // applied sync means those apps will not load at their public domain.
+        const failed: string[] = Array.isArray(response.data.failed) ? response.data.failed : [];
+        const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
+
+        if (failed.length > 0) {
+          this.logger.warn(
+            `[Cloudflare] State sync only partially applied: ${failed.length} app(s) did NOT get a public DNS record and will not load at their public domain: ${failed.join(', ')}. ` +
+              `Verify the selected domain's zone is reachable in this environment (see CI-Cloud DNS logs for the underlying Cloudflare error).`,
+          );
+        } else {
+          this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
+        }
+
+        return { ok: true, failed, synced: synced ?? 0 };
       }
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`Failed to sync state: ${error.message}`);
@@ -196,7 +224,7 @@ export class CloudflareClientService {
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     }
   }
 
@@ -264,11 +292,14 @@ export class CloudflareClientService {
         message: 'Unable to verify DNS availability (unexpected CI-Cloud response)',
       };
     } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`Failed to check DNS availability: ${error.message}`);
-      } else {
-        this.logger.error(`Failed to check DNS availability: ${String(error)}`);
-      }
+      const errorMessage =
+        error instanceof Error && error.message
+          ? error.message
+          : axios.isAxiosError(error)
+            ? [error.code, error.response?.status, error.response?.statusText].filter(Boolean).join(' ') || 'CI-Cloud request failed'
+            : String(error);
+
+      this.logger.error(`Failed to check DNS availability: ${errorMessage}`);
 
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);
@@ -277,6 +308,14 @@ export class CloudflareClientService {
       const errorData = (error as { response?: { data?: { message?: unknown; error?: unknown } } })?.response?.data;
       const responseMessage =
         typeof errorData?.message === 'string' ? errorData.message : typeof errorData?.error === 'string' ? errorData.error : '';
+
+      if (axios.isAxiosError(error) && !error.response) {
+        this.logger.warn('CI-Cloud DNS availability check timed out or was unreachable; failing open');
+        return {
+          available: true,
+          message: 'Unable to verify DNS availability right now. Please try again.',
+        };
+      }
 
       const message = responseMessage || 'Unable to verify DNS availability right now. Please try again.';
 
@@ -327,7 +366,7 @@ export class CloudflareClientService {
    * of a previously-registered Hub would otherwise leave the tunnel down.
    * Skipped in local/E2E mode (domain === ci.localhost).
    */
-  async ensureCloudflaredRunning(): Promise<boolean> {
+  async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
       this.logger.warn('ensureCloudflaredRunning: skipped — no tunnel token in memory');
       return false;
@@ -340,12 +379,16 @@ export class CloudflareClientService {
     try {
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
 
-      // Skip restart if cloudflared is already running — prevents the double-restart
-      // boot scenario where the container is running with the current token but would
-      // be unnecessarily stopped and re-started, causing a 40-second connection storm.
       const alreadyRunning = await dockerService.isContainerRunning('cloudflared');
-      if (alreadyRunning) {
+      if (alreadyRunning && !options.forceRestart) {
         this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
+        return true;
+      }
+
+      if (alreadyRunning && options.forceRestart) {
+        this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
+        await dockerService.restartContainer('cloudflared');
+        this.logger.warn('Cloudflared container restarted with recovered credentials.');
         return true;
       }
 

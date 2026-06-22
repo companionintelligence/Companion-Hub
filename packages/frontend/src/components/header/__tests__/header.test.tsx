@@ -38,9 +38,9 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
-function renderHeader(isLoggedIn = true) {
+function renderHeader(isLoggedIn = true, initialEntry = '/dashboard') {
   return render(
-    <MemoryRouter initialEntries={['/dashboard']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Header isLoggedIn={isLoggedIn} />
     </MemoryRouter>,
   );
@@ -50,8 +50,8 @@ describe('Header', () => {
   it('renders Home and Store links when logged in', () => {
     renderHeader(true);
 
-    expect(screen.getAllByRole('link', { name: /Home/i }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByRole('link', { name: /Store/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('link', { name: /COMMON_HOME|Home/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i }).length).toBeGreaterThanOrEqual(1);
   });
 
   it('does not render My Apps link', () => {
@@ -63,6 +63,12 @@ describe('Header', () => {
   it('does not render navigation links when logged out', () => {
     renderHeader(false);
 
-    expect(screen.queryByRole('link', { name: /Store/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
+  });
+
+  it('uses the stronger active styling for the selected settings button', () => {
+    renderHeader(true, '/settings');
+
+    expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-primary/12', 'text-primary', 'btn-active');
   });
 });

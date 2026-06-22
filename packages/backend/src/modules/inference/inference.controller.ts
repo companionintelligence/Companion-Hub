@@ -1,24 +1,34 @@
-import { Body, Controller, Get, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { OllamaInstallerService } from './ollama-installer.service';
+import { AppCredentialsService } from './app-credentials.service';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { resolveInstalledCatalogIds } from './model-availability.util';
 
 /**
- * Inference controller — exposes OpenAI-compatible inference endpoints.
- * All apps and agents talk to these endpoints; the router decides which backend handles each request.
+ * Inference controller — exposes Ollama/backend provisioning + management.
+ *
+ * The Hub does NOT proxy inference requests. Apps talk to the Ollama container
+ * (its own OpenAI-compatible `/v1` or native protocol) or a cloud provider
+ * directly. This controller provisions Ollama (install/pull/catalog/hardware),
+ * stores the operator's cloud-provider keys, and distributes connection info to
+ * apps via the credentials endpoints below.
  */
 @Controller('inference')
 export class InferenceController {
@@ -29,133 +39,43 @@ export class InferenceController {
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
+    private readonly ollamaInstaller: OllamaInstallerService,
+    private readonly appCredentials: AppCredentialsService,
+    private readonly hostMetrics: HostMetricsService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
-    private readonly logger: LoggerService,
+    private readonly moduleRef: ModuleRef,
+    readonly _logger: LoggerService,
   ) {}
 
-  // ─── OpenAI-Compatible Endpoints ──────────────────────────────────────
+  private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
+    return profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
+          ? 'vllm'
+          : 'ollama';
+  }
 
-  @Post('v1/chat/completions')
-  async chatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeChatCompletion(body);
-
-      if (result.stream) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Inference-Backend', result.backend);
-        (result.stream as NodeJS.ReadableStream).pipe(res);
-        return;
-      }
-
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] Chat completion error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
+  private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
+    if (
+      recommendedBackend === 'ollama' &&
+      profile.gpu.available &&
+      !profile.gpu.unifiedMemory &&
+      !profile.gpu.runtimeAvailable &&
+      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
+      profile.gpu.vramMb > 0
+    ) {
+      return this.hardwareInspector.computeTier({ ...profile.gpu, runtimeAvailable: true }, profile.ram);
     }
+
+    return profile.tier;
   }
 
-  @Post('v1/completions')
-  async completions(@Body() _body: Record<string, unknown>, @Res() res: Response) {
-    // Legacy completions API not supported — use /v1/chat/completions instead
-    res.status(404).json({
-      error: {
-        message: 'The completions API is not supported. Use /v1/chat/completions instead.',
-        type: 'invalid_request_error',
-        param: null,
-        code: 'unsupported_endpoint',
-      },
-    });
-  }
-
-  @Post('v1/audio/speech')
-  async tts(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeTts(body);
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.send(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] TTS error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/audio/transcriptions')
-  @UseInterceptors(FileInterceptor('file'))
-  async stt(
-    @UploadedFile() file: { buffer: Buffer; originalname: string; mimetype: string } | undefined,
-    @Body() body: Record<string, string>,
-    @Res() res: Response,
-  ) {
-    try {
-      if (!file) {
-        res.status(400).json({ error: { message: 'No audio file provided', type: 'invalid_request_error', param: 'file', code: null } });
-        return;
-      }
-
-      // Rebuild FormData with the uploaded file for backend forwarding
-      const formData = new FormData();
-      const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
-      formData.append('file', blob, file.originalname);
-      for (const [key, value] of Object.entries(body)) {
-        formData.append(key, value);
-      }
-
-      const result = await this.router.routeStt(formData);
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] STT error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/embeddings')
-  async embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeEmbeddings(body);
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] Embeddings error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/images/generations')
-  async imageGen(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      // Image gen only available via Lemonade or cloud
-      const provider = this.cloudFallback.getEnabledProviders()[0];
-      if (!provider) {
-        res.status(503).json({ error: { message: 'No image generation backend available', type: 'server_error', param: null, code: null } });
-        return;
-      }
-      const result = await this.cloudFallback.proxyImageGeneration(provider, body);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  // ─── Discovery & Health ───────────────────────────────────────────────
-
-  @Get('v1/models')
-  async models() {
-    const models = await this.router.listModels();
-    return { object: 'list', data: models };
-  }
+  // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
   async health() {
@@ -180,7 +100,23 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    return this.configurationService.setInferencePreferences(body.backend);
+    const result = await this.configurationService.setInferencePreferences(body.backend, body.model, body.embeddingModel, body.visionModel);
+
+    // Restart running apps that use AI models so they pick up the new inference
+    // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
+    // than imported into InferenceModule) to avoid a circular module dependency,
+    // and the restart is fire-and-forget so the response isn't blocked on it.
+    try {
+      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      if (appLifecycle) {
+        void appLifecycle.restartAiApps();
+      }
+    } catch (e) {
+      this._logger.error('Failed to trigger AI app restarts after preferences update', e);
+    }
+
+    return result;
   }
 
   @UseGuards(AuthGuard)
@@ -242,7 +178,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     return {
       tier: profile.tier,
-      recommended: this.modelRegistry.getRecommendedModels(profile.tier),
+      recommended: this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile),
       available: this.modelRegistry.getModelsForTier(profile.tier),
     };
   }
@@ -254,10 +190,37 @@ export class InferenceController {
   }
 
   @UseGuards(AuthGuard)
+  @Get('models/pull-preflight')
+  async pullPreflight(@Query('modelId') modelId: string) {
+    if (!modelId?.trim()) {
+      return { canPull: false, reason: 'modelId is required' };
+    }
+    return this.modelPuller.evaluatePull(modelId.trim());
+  }
+
+  @UseGuards(AuthGuard)
   @Post('models/pull')
-  async pullModel(@Body() body: { modelId: string }) {
-    await this.modelPuller.pullModel(body.modelId);
-    return { success: true, message: `Model ${body.modelId} pulled` };
+  async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
+    const evaluation = await this.modelPuller.evaluatePull(body.modelId);
+    if (!evaluation.canPull && !evaluation.alreadyInstalled) {
+      if (body.bestEffort) {
+        return { success: false, skipped: true, message: evaluation.reason ?? `Pull blocked for ${body.modelId}` };
+      }
+      throw new ConflictException(evaluation.reason ?? `Pull blocked for ${body.modelId}`);
+    }
+
+    try {
+      await this.modelPuller.pullModel(body.modelId);
+      return { success: true, message: `Model ${body.modelId} pulled` };
+    } catch (err) {
+      const curated = this.modelRegistry.getCuratedModel(body.modelId);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (body.bestEffort && curated?.backend === 'ollama') {
+        this._logger.warn(`[Inference] Best-effort Ollama pull skipped for ${body.modelId}: ${msg}`);
+        return { success: false, skipped: true, message: msg };
+      }
+      throw err;
+    }
   }
 
   @UseGuards(AuthGuard)
@@ -333,19 +296,12 @@ export class InferenceController {
   @Get('onboarding-profile')
   async getOnboardingProfile() {
     const profile = await this.hardwareInspector.getProfile();
-    const tier = profile.tier;
-    const recommendedModels = this.modelRegistry.getRecommendedModels(tier);
+    const recommendedBackend = this.getRecommendedBackend(profile);
+    const tier = this.getOnboardingTier(profile, recommendedBackend);
+    const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
-
-    const recommendedBackend: InferenceBackendType = profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
-          ? 'vllm'
-          : 'ollama';
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
     const availableMemoryMb =
@@ -353,11 +309,30 @@ export class InferenceController {
         ? budget.modelBudgetVramMb - budget.modelUsedVramMb
         : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
+    const hostSection = await this.hostMetrics.readHostSection();
+    const displayLoad = await this.hostMetrics.getDisplayLoad(0, 0);
+    const diskTotalGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskTotalGb : displayLoad.diskSize;
+    const diskUsedGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskUsedGb : displayLoad.diskUsed;
+    const diskTotalMb = diskTotalGb * 1024;
+    const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
+
+    const ollamaHealth = await this.ollamaBackend.healthCheck().catch(() => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+    }));
+    const installedCatalogIds = resolveInstalledCatalogIds(
+      this.modelRegistry.getCatalog(),
+      ollamaHealth.modelsLoaded ?? [],
+      (id) => this.modelRegistry.getTrackedModel(id)?.state,
+    );
+
     return {
       hardware: profile,
       tier,
       recommendedModels,
       availableModels,
+      installedCatalogIds,
       memoryBudget: budget,
       backends: {
         recommended: recommendedBackend,
@@ -367,7 +342,55 @@ export class InferenceController {
         totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
         totalMemoryMb,
         availableMemoryMb: Math.max(0, availableMemoryMb),
+        availableDiskMb,
+        diskTotalMb: diskTotalMb,
       },
     };
+  }
+
+  // ─── Ollama Installation ──────────────────────────────────────────────
+
+  @UseGuards(AuthGuard)
+  @Get('ollama/status')
+  async getOllamaStatus() {
+    return this.ollamaInstaller.checkInstallation();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('ollama/install')
+  async installOllama() {
+    return this.ollamaInstaller.install();
+  }
+
+  // ─── App Credentials ──────────────────────────────────────────────────
+  // Hub-managed sibling apps (currently hermes-agent and openclaw) query these endpoints
+  // on container start to discover where to send inference DIRECTLY — the Ollama
+  // container's OpenAI-compatible /v1 (or a cloud provider endpoint+key). The Hub
+  // distributes connection info only; it never proxies the requests.
+
+  @UseGuards(InternalNetworkGuard)
+  @Get('apps/:slug/credentials')
+  async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appCredentials.parseApiVersion(v);
+    const config = await this.appCredentials.getCredentials(slug, apiVersion);
+    res.setHeader('X-Hub-Credentials-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(config);
+  }
+
+  // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
+  // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
+  @UseGuards(InternalNetworkGuard)
+  @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
+  async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appCredentials.parseApiVersion(v);
+    const config = await this.appCredentials.getCredentials(slug, apiVersion);
+    const body = this.appCredentials.serializeAsDotenv(config);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Hub-Credentials-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(body);
   }
 }

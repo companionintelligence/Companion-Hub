@@ -7,14 +7,27 @@ import { DockerService } from '@/modules/docker/docker.service';
 import axios from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
+import path from 'node:path';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('axios');
 vi.mock('node:fs/promises');
-vi.mock('node:fs', () => ({
-  existsSync: vi.fn(),
+vi.mock('@/common/helpers/bind-mount-helpers', () => ({
+  writeHealableTextFile: vi.fn(async (filePath: string, content: string) => {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(filePath, content, { mode: 0o644 });
+  }),
+  ensureWritableFile: vi.fn(async () => undefined),
+  readTextFileIfExists: vi.fn(() => null),
 }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn(actual.existsSync),
+  };
+});
 
 describe('CloudflareClientService', () => {
   let service: CloudflareClientService;
@@ -74,10 +87,10 @@ describe('CloudflareClientService', () => {
 
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
-      expect(fsSync.existsSync).toHaveBeenCalledWith(`${DATA_DIR}/docker-compose.yml`);
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
+      expect(fsSync.existsSync).toHaveBeenCalledWith(path.join(DATA_DIR, 'docker-compose.yml'));
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${DATA_DIR}/docker-compose.yml`,
+        composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
         profile: 'cloudflare',
       });
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
@@ -89,7 +102,7 @@ describe('CloudflareClientService', () => {
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${APP_DIR}/docker-compose.prod.yml`,
+        composeFile: path.join(APP_DIR, 'docker-compose.prod.yml'),
         profile: 'cloudflare',
       });
     });
@@ -101,7 +114,7 @@ describe('CloudflareClientService', () => {
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: `${APP_DIR}/docker-compose.local.yml`,
+        composeFile: path.join(APP_DIR, 'docker-compose.local.yml'),
         profile: 'cloudflare',
       });
     });
@@ -122,7 +135,7 @@ describe('CloudflareClientService', () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       // Token file should still be written
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining(path.join('tunnel', 'token')), 'tok', { mode: 0o644 });
       // Docker container should NOT be started
       expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
       // Should still return credentials
@@ -136,7 +149,7 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true, failed: [], synced: 0 });
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         'tunnels/state',
         expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }),
@@ -144,15 +157,23 @@ describe('CloudflareClientService', () => {
       );
     });
 
+    it('should surface apps CI-Cloud could not create a DNS record for', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { success: true, failed: ['anything-llm'], synced: 1 } });
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], synced: 1 });
+    });
+
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
-      expect(result).toBe(false);
+      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
     });
 
     it('should handle axios error', async () => {
       mockAxiosInstance.post.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
-      expect(result).toBe(false);
+      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
     });
   });
 
@@ -217,7 +238,22 @@ describe('CloudflareClientService', () => {
       expect(result).toEqual({ available: true, message: 'ok' });
     });
 
-    it('should fail closed when CI-Cloud availability check errors', async () => {
+    it('should fail open when CI-Cloud availability check times out before a response', async () => {
+      mockAxiosInstance.get.mockRejectedValue({
+        code: 'ETIMEDOUT',
+        isAxiosError: true,
+      });
+      mockedAxios.isAxiosError.mockReturnValue(true);
+
+      const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
+
+      expect(result).toEqual({
+        available: true,
+        message: 'Unable to verify DNS availability right now. Please try again.',
+      });
+    });
+
+    it('should preserve explicit CI-Cloud unavailability responses', async () => {
       mockAxiosInstance.get.mockRejectedValue({
         response: {
           data: {

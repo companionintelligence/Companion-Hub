@@ -31,7 +31,6 @@ const backupRequestSchema = z.object({
   requestId: z.string().uuid(),
 });
 
-export class BackupDto extends createZodDto(backupSchema) {}
 export class RestoreAppBackupDto extends createZodDto(restoreAppBackupSchema) {}
 export class GetAppBackupsDto extends createZodDto(getAppBackupsSchema) {}
 export class GetAppBackupsQueryDto extends createZodDto(getAppBackupsQuerySchema) {}

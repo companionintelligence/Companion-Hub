@@ -3,6 +3,7 @@ import { copilot } from '@uiw/codemirror-theme-copilot';
 import ReactCodeMirror from '@uiw/react-codemirror';
 import { AnimatePresence, motion } from 'framer-motion';
 import { markdown } from '@codemirror/lang-markdown';
+import { useTranslation } from 'react-i18next';
 
 type Props = {
   meta: string;
@@ -11,12 +12,14 @@ type Props = {
 };
 
 export const AppDescriptionEditor = ({ isEditing, meta, setMeta }: Props) => {
+  const { t } = useTranslation();
+
   return (
     <AnimatePresence mode="wait">
       <motion.div key={isEditing ? 1 : 0} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
         {isEditing ? (
           <ReactCodeMirror
-            placeholder="My app notes in markdown..."
+            placeholder={t('APP_DETAILS_NOTES_PLACEHOLDER')}
             value={meta}
             height="400px"
             onChange={(e) => setMeta(e)}

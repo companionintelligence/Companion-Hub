@@ -44,9 +44,10 @@ interface QAResult {
   cpuPercent: number;
   httpStatus: number;
   screenshotPath: string | null;
-  score: 'pass' | 'warn' | 'fail';
+  score: 'pass' | 'warn' | 'fail' | 'skip';
   notes: string;
   timestamp: string;
+  reason?: string; // skip classifier (e.g. "gpu") emitted by qa-stream.ts for skipped apps
 }
 
 interface BatchSummary {
@@ -116,20 +117,29 @@ async function main() {
     }
   }
 
-  // Calculate totals
+  // Calculate totals. Skips (gpu/auth/no_gui/VM — apps that CAN'T run on a fleet node, not
+  // failures) are reported separately and excluded from the pass/warn/fail percentage denominator
+  // so they don't depress the pass rate.
   const totalPassed = allResults.filter((r) => r.score === 'pass').length;
   const totalWarned = allResults.filter((r) => r.score === 'warn').length;
   const totalFailed = allResults.filter((r) => r.score === 'fail').length;
+  const totalErrored = allResults.filter((r) => r.score === 'error').length;
+  const totalTimedOut = allResults.filter((r) => r.score === 'timeout').length;
+  const totalSkipped = allResults.filter((r) => r.score === 'skip').length;
   const totalApps = allResults.length;
-  const _passRate = totalApps > 0 ? (totalPassed / totalApps) * 100 : 0;
+  // % denominator excludes skips AND error/timeout (infra/harness faults, not the app's verdict).
+  const scored = totalPassed + totalWarned + totalFailed || 1;
+  const _passRate = (totalPassed / scored) * 100;
 
   console.log(`\n${'═'.repeat(60)}`);
   console.log('FLEET RESULTS');
   console.log('═'.repeat(60));
-  console.log(`\nTotal apps tested: ${totalApps}`);
-  console.log(`✅ Pass: ${totalPassed} (${((totalPassed / totalApps) * 100).toFixed(1)}%)`);
-  console.log(`⚠️ Warn: ${totalWarned} (${((totalWarned / totalApps) * 100).toFixed(1)}%)`);
-  console.log(`❌ Fail: ${totalFailed} (${((totalFailed / totalApps) * 100).toFixed(1)}%)`);
+  console.log(`\nTotal apps: ${totalApps}  (scored: ${totalPassed + totalWarned + totalFailed}, skipped: ${totalSkipped})`);
+  console.log(`✅ Pass: ${totalPassed} (${((totalPassed / scored) * 100).toFixed(1)}%)`);
+  console.log(`⚠️ Warn: ${totalWarned} (${((totalWarned / scored) * 100).toFixed(1)}%)`);
+  console.log(`❌ Fail: ${totalFailed} (${((totalFailed / scored) * 100).toFixed(1)}%)`);
+  console.log(`🧯 Error: ${totalErrored}  ⏱️ Timeout: ${totalTimedOut}  (infra/harness — excluded from pass rate)`);
+  console.log(`⏭️ Skip: ${totalSkipped}`);
 
   // Save merged results
   writeFileSync(join(LOCAL_RESULTS, 'all-results.json'), JSON.stringify(allResults, null, 2));
@@ -140,10 +150,12 @@ async function main() {
   md += `**Total Apps:** ${totalApps}\n\n`;
 
   md += '## Summary\n\n';
+  md += `_Percentages are of ${scored} scored apps (skips excluded)._\n\n`;
   md += '| Status | Count | Percent |\n|--------|-------|--------|\n';
-  md += `| ✅ Pass | ${totalPassed} | ${((totalPassed / totalApps) * 100).toFixed(1)}% |\n`;
-  md += `| ⚠️ Warn | ${totalWarned} | ${((totalWarned / totalApps) * 100).toFixed(1)}% |\n`;
-  md += `| ❌ Fail | ${totalFailed} | ${((totalFailed / totalApps) * 100).toFixed(1)}% |\n\n`;
+  md += `| ✅ Pass | ${totalPassed} | ${((totalPassed / scored) * 100).toFixed(1)}% |\n`;
+  md += `| ⚠️ Warn | ${totalWarned} | ${((totalWarned / scored) * 100).toFixed(1)}% |\n`;
+  md += `| ❌ Fail | ${totalFailed} | ${((totalFailed / scored) * 100).toFixed(1)}% |\n`;
+  md += `| ⏭️ Skip | ${totalSkipped} | — |\n\n`;
 
   md += '## Server Results\n\n';
   md += '| Server | Batch | Apps | Pass | Warn | Fail | Rate | Time |\n';

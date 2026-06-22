@@ -67,15 +67,15 @@ describe('AppLifecycleTools', () => {
   });
 
   describe('hub_uninstall_app', () => {
-    it('should enqueue uninstall command with removeBackups defaulting to false', async () => {
+    it('should enqueue uninstall command with deleteAllData defaulting to true', async () => {
       lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
       await tools.uninstallApp({ appUrn: 'ci-store:test' });
-      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ removeBackups: false }));
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ deleteAllData: true }));
     });
-    it('should pass removeBackups: true when specified', async () => {
+    it('should pass deleteAllData: false when specified', async () => {
       lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
-      await tools.uninstallApp({ appUrn: 'ci-store:test', removeBackups: true });
-      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ removeBackups: true }));
+      await tools.uninstallApp({ appUrn: 'ci-store:test', deleteAllData: false });
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ deleteAllData: false }));
     });
     it('should return a requestId', async () => {
       lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });

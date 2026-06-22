@@ -1,44 +1,39 @@
 {
   "name": "ci-hub",
   "version": "0.1.0",
-  "description": "",
-  "packageManager": "pnpm@10.33.0",
+  "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
+  "packageManager": "pnpm@11.5.1",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=11"
+  },
   "scripts": {
-    "dev": "pnpm exec tsx scripts/start.ts dev",
+    "start": "pnpm exec tsx scripts/start.ts up",
+    "dev": "pnpm exec tsx scripts/start.ts up dev --detached",
+    "local": "pnpm exec tsx scripts/start.ts up local",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
-    "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
-    "infra:down": "docker compose --project-name ci-hub -f docker-compose.local.yml down",
-    "cleanup": "pnpm exec tsx scripts/cleanup.ts",
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",
-    "test": "turbo test",
+    "test": "turbo test && pnpm run test:cli",
     "test:integration": "turbo run test:integration",
-    "start": "pnpm exec tsx scripts/start.ts start",
-    "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up --build",
-    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts",
-    "start:prod": "pnpm run init:host && ENV_FILE=.env.prod docker compose --env-file .env.prod --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
-    "start:staging": "pnpm run init:host && ENV_FILE=.env.staging docker compose --env-file .env.staging --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
-    "start:dev": "pnpm run init:host && ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
-    "start:dev:detached": "pnpm run init:host && ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up -d --build",
     "test:e2e": "bash e2e/pre-test-cleanup.sh && pnpm exec tsx scripts/run-e2e.ts",
     "test:e2e:ci": "pnpm exec playwright test",
     "test:e2e:ui": "NODE_ENV=test dotenv -e .env -e .env.e2e -- playwright test --ui",
     "e2e:cross-domain": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=cross-domain pnpm exec playwright test --config playwright.cross-domain.config.ts",
-    "check:all": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
+    "check": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
     "gen:api-client": "openapi-ts",
     "gen:swagger": "pnpm --filter backend run gen:swagger",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
     "prepare": "husky",
-    "device-id": "pnpm exec tsx scripts/get-device-id.ts",
     "version": "echo $npm_package_version",
-    "start:detached": "pnpm exec tsx scripts/start.ts start:detached",
-    "fresh": "pnpm run cleanup && pnpm start dev",
-    "fresh:local": "pnpm run cleanup && pnpm start local",
-    "dev:desktop": "cd packages/desktop && cargo tauri dev",
-    "build:desktop": "cd packages/desktop && cargo tauri build"
+    "dev:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts --stack-dev",
+    "local:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts",
+    "build:cli": "node scripts/build-standalone-cli.cjs",
+    "build:desktop": "node -e \"const { execSync } = require('node:child_process'); const command = process.platform === 'win32' ? 'cargo tauri build' : 'pnpm run build'; execSync(command, { cwd: 'packages/desktop', stdio: 'inherit', shell: true });\"",
+    "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts"
   },
   "lint-staged": {
     "*": [
@@ -46,32 +41,38 @@
       "git add"
     ]
   },
-  "keywords": [],
+  "keywords": [
+    "cihub",
+    "companion-intelligence",
+    "cli",
+    "docker",
+    "self-hosted",
+    "mcp"
+  ],
   "author": "",
-  "license": "GNU General Public License v3.0",
+  "license": "CI-Commercial-1.0",
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
     "@playwright/test": "^1.52.0",
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "turbo": "^2.8.17",
-    "tsx": "^4.19.2"
+    "systeminformation": "companionintelligence/systeminformation#master",
+    "turbo": "^2.9.14",
+    "vitest": "^4.1.4"
   },
-  "private": true,
+  "private": false,
   "peerDependencies": {
     "typescript": "^5"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "argon2",
-      "esbuild",
-      "@swc/core",
-      "@sentry/cli",
-      "protobufjs",
-      "ssh2",
-      "cpu-features",
-      "@nestjs/core"
-    ]
+  "preferGlobal": true,
+  "bin": {
+    "cihub": "./bin/cihub.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
   }
 }

@@ -2,7 +2,6 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { AppsRepository } from '../apps/apps.repository';
 import { PortAllocationRepository } from './port-allocation.repository';
 import net from 'node:net';
 
@@ -42,7 +41,6 @@ export interface PortAllocation {
 export class PortManagerService {
   constructor(
     private readonly portAllocationRepo: PortAllocationRepository,
-    readonly _appsRepository: AppsRepository,
     private readonly logger: LoggerService,
   ) {}
 

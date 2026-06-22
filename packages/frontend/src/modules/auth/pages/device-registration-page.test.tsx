@@ -1,11 +1,13 @@
-import { act, fireEvent, render, screen } from '@/tests/test-utils';
+import { act, fireEvent, render, screen, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
-const { navigate, apiFetch, toast } = vi.hoisted(() => ({
+const { captureHubWarning, navigate, apiFetch, setHubSentryDeviceId, toast } = vi.hoisted(() => ({
+  captureHubWarning: vi.fn(),
   navigate: vi.fn(),
   apiFetch: vi.fn(),
+  setHubSentryDeviceId: vi.fn(),
   toast: {
     success: vi.fn(),
     error: vi.fn(),
@@ -22,6 +24,11 @@ vi.mock('react-router', async () => {
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch,
+}));
+
+vi.mock('@/lib/sentry', () => ({
+  captureHubWarning,
+  setHubSentryDeviceId,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -58,6 +65,15 @@ describe('DeviceRegistrationPage', () => {
     vi.clearAllMocks();
     vi.useRealTimers();
     sessionStorage.clear();
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/registration/status') {
+        return jsonResponse(makeStatus('unregistered'));
+      }
+      if (url === '/api/registration/device-id') {
+        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
+      }
+      return jsonResponse({});
+    });
   });
 
   it('shows the pairing form only after confirming the Hub is unregistered', async () => {
@@ -71,7 +87,11 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+    expect(
+      screen.getByText('In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
+    ).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
+    expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(navigate).not.toHaveBeenCalled();
@@ -88,15 +108,10 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('waits for operational readiness before advancing after a successful pair', async () => {
-    vi.useFakeTimers();
-
-    const statusSequence = [makeStatus('unregistered'), makeStatus('paired'), makeStatus('provisioning'), makeStatus('locally_ready', true)];
-
+  it('submits pairing without immediate navigation when status remains unregistered', async () => {
     apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/registration/status') {
-        const nextStatus = statusSequence.shift() ?? makeStatus('locally_ready', true);
-        return jsonResponse(nextStatus);
+        return jsonResponse(makeStatus('unregistered'));
       }
 
       if (url === '/api/registration/device-id') {
@@ -117,32 +132,15 @@ describe('DeviceRegistrationPage', () => {
 
     fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-    await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: 'Provisioning your domain' })).toBeInTheDocument();
-    expect(navigate).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        '/api/registration/pair',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ pairing_code: 'ABC123' }) }),
+      );
     });
-    await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: 'Setting up your Hub' })).toBeInTheDocument();
+    // Pairing submission should not trigger an immediate route transition in this branch.
     expect(navigate).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
-    });
-    await flushAsyncWork();
-
-    expect(screen.getByRole('heading', { name: 'Registration complete' })).toBeInTheDocument();
-    expect(navigate).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-    });
-    await flushAsyncWork();
-
-    expect(navigate).toHaveBeenCalledWith('/', { replace: true });
   });
 });

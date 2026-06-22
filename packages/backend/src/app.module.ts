@@ -30,6 +30,7 @@ import { QueueModule } from './modules/queue/queue.module';
 import { SystemModule } from './modules/system/system.module';
 import { TailscaleModule } from './modules/tailscale/tailscale.module';
 import { CloudflareModule } from './modules/cloudflare/cloudflare.module';
+import { PublicWebModule } from './modules/public-web/public-web.module';
 import { UserModule } from './modules/user/user.module';
 import { UserConfigModule } from './modules/user-config/user-config.module';
 import { MutexModule } from './utils/mutex/mutex.module';
@@ -43,8 +44,12 @@ import { SystemUpdateModule } from './modules/system-update/system-update.module
 import { McpModule } from './modules/mcp/mcp.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 import { InferenceModule } from './modules/inference/inference.module';
+import { ErrorReportingModule } from './core/error-reporting/error-reporting.module';
+import { SentryModule } from '@sentry/nestjs/setup';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
+  SentryModule.forRoot(),
+  ErrorReportingModule,
   RegistrationModule,
   SystemModule,
   I18nModule,
@@ -67,6 +72,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   NetworkModule,
   TailscaleModule,
   CloudflareModule,
+  PublicWebModule,
   UserConfigModule,
   MutexModule,
   DockerModule,

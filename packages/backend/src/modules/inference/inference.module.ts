@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
 import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { SystemModule } from '@/modules/system/system.module';
@@ -8,13 +8,16 @@ import { MemoryManagerService } from './memory-manager.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { OllamaInstallerService } from './ollama-installer.service';
+import { AppCredentialsService } from './app-credentials.service';
+import { InferenceEnvResolver } from './inference-env-resolver';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { InferenceController } from './inference.controller';
 
 @Module({
-  imports: [LoggerModule, FilesystemModule, SystemModule],
+  imports: [LoggerModule, FilesystemModule, forwardRef(() => SystemModule)],
   controllers: [InferenceController],
   providers: [
     HardwareInspectorService,
@@ -23,6 +26,9 @@ import { InferenceController } from './inference.controller';
     ModelPullerService,
     InferenceRouterService,
     CloudFallbackService,
+    OllamaInstallerService,
+    AppCredentialsService,
+    InferenceEnvResolver,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
@@ -34,6 +40,9 @@ import { InferenceController } from './inference.controller';
     ModelPullerService,
     InferenceRouterService,
     CloudFallbackService,
+    OllamaInstallerService,
+    AppCredentialsService,
+    InferenceEnvResolver,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,

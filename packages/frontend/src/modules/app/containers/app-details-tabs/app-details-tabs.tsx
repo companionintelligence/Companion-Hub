@@ -12,6 +12,7 @@ import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { getCategoryLabel } from '../../helpers/category-label';
 
 const AppDescriptionEditor = React.lazy(() =>
   import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
@@ -58,7 +59,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
             <AlertCircle strokeWidth={2} />
           </AlertIcon>
           <div>
-            <AlertHeading>{t('APP_DETAILS_DEPRECATED_ALERT_TITLE')}</AlertHeading>
+            <AlertHeading>{t('COMMON_THIS_APP_IS_DEPRECATED')}</AlertHeading>
             <AlertDescription>{t('APP_DETAILS_DEPRECATED_ALERT_SUBTITLE')}</AlertDescription>
           </div>
         </Alert>
@@ -78,16 +79,16 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
       </Alert>
 
       {/* Two-column portal-style layout */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-6 md:gap-8">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_280px] md:gap-8">
         {/* Left column - About this app */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <div>
             {isUserApp && (
               <div className="flex justify-between items-center mb-3">
                 <h2 className="text-lg font-semibold">{t('APP_DETAILS_NOTES')}</h2>
                 {!isEditing && (
                   <Button variant="outline" size="sm" onClick={() => setIsEditing(!isEditing)}>
-                    {t('EDIT')}
+                    {t('COMMON_EDIT')}
                   </Button>
                 )}
                 {isEditing && (
@@ -101,7 +102,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                         setMeta(info.description);
                       }}
                     >
-                      {t('ACTIONS_CANCEL')}
+                      {t('COMMON_CANCEL')}
                     </Button>
                     <Button
                       variant="outline"
@@ -114,7 +115,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                       }
                       loading={saveMetaMutation.isPending}
                     >
-                      {t('SAVE')}
+                      {t('COMMON_SAVE')}
                     </Button>
                   </div>
                 )}
@@ -130,10 +131,10 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
         </div>
 
         {/* Right column - Information */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <div>
-            <h2 className="text-lg font-semibold mb-4">{t('APP_DETAILS_INFORMATION')}</h2>
-            <div className="space-y-4">
+            <h2 className="text-lg font-semibold mb-4">{t('COMMON_INFORMATION')}</h2>
+            <div className="space-y-3 sm:space-y-4">
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
                 <span className="text-sm font-medium text-right">{info.author}</span>
@@ -141,27 +142,25 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
-                <span className="text-sm font-medium text-right capitalize">
-                  {info.categories?.map((c) => t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)).join(', ')}
-                </span>
+                <span className="text-sm font-medium text-right">{(info.categories ?? []).map((c) => getCategoryLabel(t, c)).join(', ')}</span>
               </div>
               <div className="border-t border-border/40" />
               {updatedDate && (
                 <>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_UPDATED')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_UPDATED')}</span>
                     <span className="text-sm font-medium">{updatedDate}</span>
                   </div>
                   <div className="border-t border-border/40" />
                 </>
               )}
               <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_VERSION')}</span>
+                <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
                 <span className="text-sm font-medium">{info.version}</span>
               </div>
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_SOURCE_CODE')}</span>
+                <span className="text-sm text-muted-foreground">{t('COMMON_SOURCE_CODE')}</span>
                 <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline" href={info.source}>
                   {t('APP_DETAILS_LINK')}
                   <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
@@ -184,14 +183,14 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_DOWNLOAD_SIZE')}</span>
                 <span className="text-sm font-medium flex items-center gap-1">
                   <HardDrive size={13} />
-                  {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
+                  {imageSizeLoading ? t('APP_DETAILS_CALCULATING') : imageSizeFormatted ? `~${imageSizeFormatted}` : t('COMMON_UNKNOWN')}
                 </span>
               </div>
               {info.supported_architectures && info.supported_architectures.length > 0 && (
                 <>
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start" data-testid="app-architectures">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_ARCHITECTURES')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
                     <span className="text-sm font-medium flex items-center gap-1">
                       <Cpu size={13} />
                       {info.supported_architectures.join(', ')}
@@ -203,7 +202,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <>
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start" data-testid="app-min-hub-version">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_MIN_HUB_VERSION')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
                     <span className="text-sm font-medium">{metadata.minHubVersion}</span>
                   </div>
                 </>
@@ -212,13 +211,13 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           </div>
 
           {/* App Privacy card */}
-          <div className="rounded-xl border border-border/50 bg-muted/20 p-4">
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-3 sm:p-4">
             <div className="flex items-center gap-2 mb-2">
               <Shield className="h-4 w-4 text-blue-400" />
               <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>
             </div>
             <p className="text-xs text-muted-foreground mb-3">{t('APP_DETAILS_APP_PRIVACY_DESC')}</p>
-            <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2.5">
+            <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2 sm:p-2.5">
               <Shield className="h-3.5 w-3.5 text-muted-foreground" />
               <div>
                 <p className="text-xs font-medium">{t('APP_DETAILS_DATA_COLLECTION')}</p>

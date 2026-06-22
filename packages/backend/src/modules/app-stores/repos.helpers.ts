@@ -2,10 +2,12 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
@@ -72,15 +74,102 @@ export class ReposHelpers {
     if (process.platform !== 'win32') {
       await fs.promises.chmod(dirPath, 0o755);
     }
+
+    // Only mark real git repositories as safe directories.
+    // CI Cloud marketplace app folders are plain directories and adding each
+    // one to global git config can stall startup under lock contention.
+    const isGitRepo = await this.filesystem.pathExists(path.join(dirPath, '.git'));
+    if (!isGitRepo) {
+      return;
+    }
+
     try {
       execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
         stdio: 'ignore',
+        timeout: 2000,
       });
     } catch (error) {
-      this.logger.warn(
-        `Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message.includes('could not lock config file') || message.includes('.gitconfig.lock')) {
+        this.logger.warn(`Skipping git safe.directory registration for "${dirPath}" because global git config is locked: ${message}`);
+        return;
+      }
+
+      this.logger.warn(`Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${message}`);
     }
+  }
+
+  private async requestCiCloud<T>(config: AxiosRequestConfig, retries = 2): Promise<T> {
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= retries) {
+      try {
+        const response = await axios.request<T>({
+          timeout: 15_000,
+          responseType: 'json',
+          validateStatus: () => true,
+          ...config,
+        });
+
+        if (response.status >= 200 && response.status < 300) {
+          return response.data;
+        }
+
+        const shouldRetryStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+        const message = `CI Cloud request failed: ${config.method ?? 'GET'} ${config.url} -> ${response.status} ${response.statusText}`;
+        if (!shouldRetryStatus) {
+          throw new Error(message);
+        }
+        const retryableError = new Error(message) as Error & { retryable?: boolean };
+        retryableError.retryable = true;
+        throw retryableError;
+      } catch (error) {
+        lastError = error;
+        const retryableTransportError = axios.isAxiosError(error) && !error.response;
+        const retryableHttpError = error instanceof Error && 'retryable' in error && error.retryable === true;
+        if (!retryableTransportError && !retryableHttpError) {
+          throw error;
+        }
+        if (attempt >= retries) {
+          throw error;
+        }
+        this.logger.warn(
+          `Retrying CI Cloud request (${attempt + 1}/${retries + 1}): ${config.method ?? 'GET'} ${config.url} — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      attempt++;
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private getHeaderValue(value: AxiosHeaderValue | undefined): string {
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : typeof first === 'number' || typeof first === 'boolean' ? String(first) : '';
+    }
+
+    return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
+  }
+
+  private isAcceptedDescriptionContentType(contentTypeHeader: AxiosHeaderValue | undefined): boolean {
+    const contentType = this.getHeaderValue(contentTypeHeader).split(';')[0]?.trim().toLowerCase() ?? '';
+
+    if (!contentType) {
+      return true;
+    }
+
+    if (contentType === 'text/markdown' || contentType === 'text/x-markdown' || contentType === 'text/plain') {
+      return true;
+    }
+
+    if (contentType === 'text/html' || contentType.startsWith('image/')) {
+      return false;
+    }
+
+    return false;
   }
 
   /**
@@ -151,88 +240,109 @@ export class ReposHelpers {
       // Fetch metadata list
       const storeUrl = `${url}/store`;
       this.logger.debug(`Fetching store metadata from ${storeUrl}`);
-      const response = await fetch(storeUrl); // Assuming url is base API url
-      if (!response.ok) {
-        throw new Error(`Failed to fetch store metadata from ${storeUrl}: ${response.status} ${response.statusText}`);
-      }
+      const apps = await this.requestCiCloud<Array<{ id: string; slug?: string; [key: string]: unknown }>>({
+        method: 'GET',
+        url: storeUrl,
+      });
 
-      const apps = (await response.json()) as Array<{ id: string; slug?: string; [key: string]: unknown }>;
+      const limit = pLimit(12);
+      await Promise.all(
+        apps.map((app) =>
+          limit(async () => {
+            const appSlug = app.slug || app.id;
+            const appDir = path.join(appsPath, appSlug);
+            await this.ensureDirectoryWithPermissions(appDir);
 
-      for (const app of apps) {
-        const appSlug = app.slug || app.id;
-        const appDir = path.join(appsPath, appSlug);
-        await this.ensureDirectoryWithPermissions(appDir);
+            let markdownDescription: string | null = null;
+            try {
+              const descriptionUrl = `${url}/store/${appSlug}/metadata/description.md`;
+              const descriptionRes = await axios.get<string>(descriptionUrl, {
+                timeout: 15_000,
+                responseType: 'text',
+                validateStatus: () => true,
+              });
+              if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
+                const contentTypeHeader = descriptionRes.headers['content-type'];
 
-        let markdownDescription: string | null = null;
-        try {
-          const descriptionRes = await fetch(`${url}/store/${appSlug}/metadata/description.md`);
-          if (descriptionRes.ok) {
-            const contentType = descriptionRes.headers.get('content-type') || '';
-            if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
-              const descriptionText = await descriptionRes.text();
-              if (descriptionText.trim().length > 0) {
-                markdownDescription = descriptionText;
-                const metadataDir = path.join(appDir, 'metadata');
-                await this.ensureDirectoryWithPermissions(metadataDir);
-                await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                if (this.isAcceptedDescriptionContentType(contentTypeHeader)) {
+                  const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
+                  if (descriptionText.trim().length > 0) {
+                    markdownDescription = descriptionText;
+                    const metadataDir = path.join(appDir, 'metadata');
+                    await this.ensureDirectoryWithPermissions(metadataDir);
+                    await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                  }
+                } else {
+                  this.logger.warn(
+                    `Skipping marketplace description for ${appSlug}: unsupported content-type ${this.getHeaderValue(contentTypeHeader) || '(missing)'}`,
+                  );
+                }
+              }
+            } catch {
+              // Non-fatal: description will fall back to API payload/config.
+            }
+
+            // Enrich app metadata with default required fields if missing
+            const enrichedApp = {
+              ...app,
+              urn: `urn:app:${appSlug}`,
+              name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
+              author: typeof app.author === 'string' ? app.author : 'Unknown Author',
+              available: typeof app.available === 'boolean' ? app.available : true,
+              short_desc:
+                typeof app.short_desc === 'string'
+                  ? app.short_desc
+                  : (typeof app.shortDescription === 'string' ? app.shortDescription : null) ||
+                    (app.description as string) ||
+                    'No description provided',
+              title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
+              description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
+              categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
+              port: typeof app.port === 'number' ? app.port : 8080,
+              version: typeof app.version === 'string' ? app.version : '0.0.1',
+              cihub_app_version:
+                typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+              source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
+              supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
+            };
+
+            await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
+
+            // Write docker-compose.json if available
+            if (typeof app.compose === 'string') {
+              await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
+            }
+
+            // Download app icon so getAppImage can serve it from metadata/logo.*
+            const iconUrl = typeof app.icon === 'string' ? app.icon : null;
+            if (iconUrl) {
+              try {
+                const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
+                const iconRes = await axios.get<ArrayBuffer>(fullIconUrl, {
+                  timeout: 15_000,
+                  responseType: 'arraybuffer',
+                  validateStatus: () => true,
+                });
+                if (iconRes.status >= 200 && iconRes.status < 300) {
+                  const contentTypeHeader = iconRes.headers['content-type'];
+                  const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : 'image/png';
+                  const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+                  const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
+                  const metadataDir = path.join(appDir, 'metadata');
+                  await this.ensureDirectoryWithPermissions(metadataDir);
+                  const buffer = Buffer.from(iconRes.data);
+                  await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
+                }
+              } catch {
+                // Non-fatal: logo will fall back to generic thumbnail
               }
             }
-          }
-        } catch {
-          // Non-fatal: description will fall back to API payload/config.
-        }
+          }),
+        ),
+      );
 
-        // Enrich app metadata with default required fields if missing
-        const enrichedApp = {
-          ...app,
-          urn: `urn:app:${appSlug}`,
-          name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
-          author: typeof app.author === 'string' ? app.author : 'Unknown Author',
-          available: typeof app.available === 'boolean' ? app.available : true,
-          short_desc:
-            typeof app.short_desc === 'string'
-              ? app.short_desc
-              : (typeof app.shortDescription === 'string' ? app.shortDescription : null) || (app.description as string) || 'No description provided',
-          title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
-          description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
-          categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
-          port: typeof app.port === 'number' ? app.port : 8080,
-          version: typeof app.version === 'string' ? app.version : '0.0.1',
-          tipi_version: typeof app.tipi_version === 'number' ? app.tipi_version : 1,
-          source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
-          supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
-        };
-
-        await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
-
-        // Write docker-compose.json if available
-        if (typeof app.compose === 'string') {
-          await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
-        }
-
-        // Download app icon so getAppImage can serve it from metadata/logo.*
-        const iconUrl = typeof app.icon === 'string' ? app.icon : null;
-        if (iconUrl) {
-          try {
-            const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
-            const iconRes = await fetch(fullIconUrl);
-            if (iconRes.ok) {
-              const contentType = iconRes.headers.get('content-type') || 'image/png';
-              const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
-              const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
-              const metadataDir = path.join(appDir, 'metadata');
-              await this.ensureDirectoryWithPermissions(metadataDir);
-              const buffer = Buffer.from(await iconRes.arrayBuffer());
-              await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
-            }
-          } catch {
-            // Non-fatal: logo will fall back to generic thumbnail
-          }
-        }
-      }
-
-      // Also write a repo.json or config.json so Tipi sees it as a valid repo?
-      // Tipi (CI-OS-Hub) expects `repo.json` in root of repo?
+      // Also write a repo.json or config.json so Hub sees it as a valid repo?
+      // CI Hub expects `repo.json` in root of repo?
       // Existing `downloadZipRepo` unzips a file.
       // Let's check `downloadZipRepo` implementation to see what files are expected.
 
@@ -252,21 +362,21 @@ export class ReposHelpers {
 
       // Fetch full install data
       const deviceId = await this.registrationService.getDeviceId();
-      const response = await fetch(`${repoUrl}/store/${appSlug}/install`, {
+      const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
+        timeout: 20_000,
+        validateStatus: () => true,
         headers: {
           'x-device-id': deviceId,
         },
       });
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         if (response.status === 402) {
           return { success: false, message: 'Payment Required' };
         }
-        throw new Error(`Failed to fetch app files: ${response.statusText}`);
+        throw new Error(`Failed to fetch app files: ${response.status} ${response.statusText}`);
       }
 
-      const data = (await response.json()) as {
-        files?: Record<string, string>;
-      };
+      const data = response.data;
 
       await this.ensureDirectoryWithPermissions(appPath);
 

@@ -274,90 +274,12 @@ export class InferenceTools implements OnModuleInit {
       },
     });
 
-    // ─── hub_inference_chat ─────────────────────────────────────────
-    this.registry.register({
-      name: 'hub_inference_chat',
-      description: 'Send a chat completion request through the inference router. Routes to local backend or cloud automatically.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          model: { type: 'string', description: 'Model ID or "auto" for default. Defaults to "auto".' },
-          messages: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                role: { type: 'string', enum: ['system', 'user', 'assistant'] },
-                content: { type: 'string' },
-              },
-              required: ['role', 'content'],
-            },
-            description: 'Chat messages array',
-          },
-          temperature: { type: 'number', description: 'Sampling temperature (0-2)' },
-          max_tokens: { type: 'number', description: 'Maximum tokens to generate' },
-        },
-        required: ['messages'],
-      },
-      handler: async (params) => {
-        const result = await this.inferenceRouter.routeChatCompletion({
-          model: (params.model as string) || 'auto',
-          messages: params.messages,
-          temperature: params.temperature,
-          max_tokens: params.max_tokens,
-          stream: false,
-        });
-        return { backend: result.backend, response: result.data };
-      },
-    });
+    // NOTE: The Hub no longer proxies inference requests. Apps (and agents) talk
+    // to the Ollama container's OpenAI-compatible /v1 (or a cloud provider)
+    // directly using the connection info from GET /api/inference/apps/:slug/credentials.
+    // The former hub_inference_chat / hub_inference_tts / hub_inference_stt proxy
+    // tools were removed accordingly.
 
-    // ─── hub_inference_tts ──────────────────────────────────────────
-    this.registry.register({
-      name: 'hub_inference_tts',
-      description: 'Generate speech from text through the inference router.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          input: { type: 'string', description: 'Text to synthesize' },
-          model: { type: 'string', description: 'TTS model (default: kokoro-v1)' },
-          voice: { type: 'string', description: 'Voice name (default: "default")' },
-        },
-        required: ['input'],
-      },
-      handler: async (params) => {
-        const result = await this.inferenceRouter.routeTts({
-          input: params.input as string,
-          model: (params.model as string) || 'kokoro-v1',
-          voice: (params.voice as string) || 'default',
-        });
-        return {
-          backend: result.backend,
-          audioSize: result.data.length,
-          message: 'Audio generated. Use /api/inference/v1/audio/speech endpoint directly for binary audio data.',
-        };
-      },
-    });
-
-    // ─── hub_inference_stt ──────────────────────────────────────────
-    this.registry.register({
-      name: 'hub_inference_stt',
-      description:
-        'Transcribe audio through the inference router. Note: use the /api/inference/v1/audio/transcriptions endpoint directly for file uploads.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          audioUrl: { type: 'string', description: 'URL of audio to transcribe (if available)' },
-        },
-        required: [],
-      },
-      handler: async () => {
-        return {
-          message: 'Audio transcription requires file upload. Use POST /api/inference/v1/audio/transcriptions with multipart form data.',
-          endpoint: '/api/inference/v1/audio/transcriptions',
-        };
-      },
-    });
-
-    this.logger.info('[InferenceTools] Registered 17 inference MCP tools');
+    this.logger.info('[InferenceTools] Registered 14 inference MCP tools');
   }
 }

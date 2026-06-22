@@ -3,6 +3,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import axios from 'axios';
 
 vi.mock('axios');
@@ -10,6 +11,11 @@ vi.mock('axios');
 describe('OllamaBackend', () => {
   let backend: OllamaBackend;
   let loggerService: MockProxy<LoggerService>;
+  type InspectableOllamaBackend = OllamaBackend & {
+    configuredUrl: string;
+    resolvedUrl: string;
+    urlResolved: boolean;
+  };
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
@@ -20,6 +26,8 @@ describe('OllamaBackend', () => {
 
     backend = module.get<OllamaBackend>(OllamaBackend);
   });
+
+  const inspectable = () => backend as unknown as InspectableOllamaBackend;
 
   // ─── S-BL-2.1: Health Check ─────────────────────────────────────
 
@@ -62,6 +70,19 @@ describe('OllamaBackend', () => {
       expect(models[0].id).toBe('phi4-mini');
     });
 
+    it('should invalidate the cached URL when listModels fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('timeout'));
+
+      const models = await backend.listModels();
+
+      expect(models).toEqual([]);
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
+    });
+
     it('should load model with keep_alive=-1 (pin)', async () => {
       (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
 
@@ -72,6 +93,18 @@ describe('OllamaBackend', () => {
         expect.objectContaining({ model: 'phi4-mini', keep_alive: -1 }),
         expect.any(Object),
       );
+    });
+
+    it('should log error and rethrow when loadModel fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.post as any) = vi.fn().mockRejectedValue(new Error('connection refused'));
+
+      await expect(backend.loadModel('phi4-mini')).rejects.toThrow('connection refused');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to load model phi4-mini'));
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
     });
 
     it('should unload model with keep_alive=0', async () => {
@@ -86,6 +119,44 @@ describe('OllamaBackend', () => {
       );
     });
 
+    it('should log error and rethrow when unloadModel fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.post as any) = vi.fn().mockRejectedValue(new Error('timeout'));
+
+      await expect(backend.unloadModel('phi4-mini')).rejects.toThrow('timeout');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to unload model phi4-mini'));
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
+    });
+
+    it('should load embedding models via /api/embed (not /api/generate)', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.loadModel('nomic-embed-text', { embedding: true });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/embed'),
+        expect.objectContaining({ model: 'nomic-embed-text', keep_alive: -1 }),
+        expect.any(Object),
+      );
+      const url = (axios.post as any).mock.calls[0][0] as string;
+      expect(url).not.toContain('/api/generate');
+    });
+
+    it('should unload embedding models via /api/embed with keep_alive=0', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.unloadModel('nomic-embed-text', { embedding: true });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/embed'),
+        expect.objectContaining({ model: 'nomic-embed-text', keep_alive: 0 }),
+        expect.any(Object),
+      );
+    });
+
     it('should check if model is loaded via /api/ps', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
         data: { models: [{ name: 'phi4-mini' }] },
@@ -93,6 +164,93 @@ describe('OllamaBackend', () => {
 
       const loaded = await backend.isModelLoaded('phi4-mini');
       expect(loaded).toBe(true);
+    });
+
+    it('should invalidate the cached URL when isModelLoaded fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const loaded = await backend.isModelLoaded('phi4-mini');
+
+      expect(loaded).toBe(false);
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
+    });
+  });
+
+  // ─── Pull model (streamed NDJSON) ──────────────────────────────────
+
+  describe('Pull model', () => {
+    /** Make resolveUrl() succeed, and have /api/pull stream the given NDJSON lines then end. */
+    const mockPullStream = (lines: string[]) => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: {} }); // probe() in resolveUrl
+      (axios.post as any) = vi.fn().mockImplementation(async () => {
+        const stream = new EventEmitter();
+        // Emit after the current microtask queue drains so pullModel has attached its listeners.
+        setImmediate(() => {
+          for (const line of lines) {
+            stream.emit('data', Buffer.from(`${line}\n`));
+          }
+          stream.emit('end');
+        });
+        return { data: stream };
+      });
+    };
+
+    it('resolves and reports progress when the stream ends with a success status', async () => {
+      mockPullStream([
+        JSON.stringify({ status: 'pulling manifest' }),
+        JSON.stringify({ status: 'downloading', digest: 'sha256:abc', total: 100, completed: 50 }),
+        JSON.stringify({ status: 'success' }),
+      ]);
+      const onProgress = vi.fn();
+
+      await expect(backend.pullModel('phi4-mini', onProgress)).resolves.toBeUndefined();
+
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ status: 'downloading', percent: 50 }));
+      expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
+    });
+
+    it('reassembles JSON lines split across chunk boundaries', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: {} });
+      (axios.post as any) = vi.fn().mockImplementation(async () => {
+        const stream = new EventEmitter();
+        const successLine = `${JSON.stringify({ status: 'success' })}\n`;
+        const mid = Math.floor(successLine.length / 2);
+        setImmediate(() => {
+          // Split the terminal success line across two chunks.
+          stream.emit('data', Buffer.from(`${JSON.stringify({ status: 'pulling manifest' })}\n${successLine.slice(0, mid)}`));
+          stream.emit('data', Buffer.from(successLine.slice(mid)));
+          stream.emit('end');
+        });
+        return { data: stream };
+      });
+
+      await expect(backend.pullModel('phi4-mini')).resolves.toBeUndefined();
+      expect(loggerService.info).toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
+    });
+
+    it('rejects when the stream reports an error (e.g. Ollama 412 manifest failure)', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      mockPullStream([
+        JSON.stringify({ status: 'pulling manifest' }),
+        JSON.stringify({ error: 'pull model manifest: 412: The model you are attempting to pull requires a newer version of Ollama.' }),
+      ]);
+
+      await expect(backend.pullModel('nemotron-3-nano:4b')).rejects.toThrow(/requires a newer version of Ollama/);
+      expect(loggerService.info).not.toHaveBeenCalledWith('[Ollama] Model pulled: nemotron-3-nano:4b');
+      expect(state.urlResolved).toBe(false);
+    });
+
+    it('rejects when the stream ends without a success status', async () => {
+      mockPullStream([JSON.stringify({ status: 'pulling manifest' })]);
+
+      await expect(backend.pullModel('phi4-mini')).rejects.toThrow(/without a success status/);
+      expect(loggerService.info).not.toHaveBeenCalledWith('[Ollama] Model pulled: phi4-mini');
     });
   });
 

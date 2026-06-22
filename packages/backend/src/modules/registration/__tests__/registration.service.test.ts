@@ -6,11 +6,13 @@ import { CloudflareClientService } from '../../cloudflare/cloudflare-client.serv
 import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
+import axios from 'axios';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
 
 vi.mock('systeminformation');
+vi.mock('axios');
 
 describe('RegistrationService', () => {
   let service: RegistrationService;
@@ -20,6 +22,7 @@ describe('RegistrationService', () => {
   let traefikConfigService: MockProxy<TraefikConfigService>;
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
+  const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
     configService = mock<ConfigurationService>();
@@ -29,6 +32,8 @@ describe('RegistrationService', () => {
     traefikConfigService.writeHubRoute.mockResolvedValue(undefined);
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
+    mockedAxios.post.mockReset();
+    mockedAxios.head.mockReset();
 
     configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
     (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'uuid-123' });
@@ -702,8 +707,7 @@ describe('RegistrationService', () => {
       await service.setPhase('locally_ready');
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
-      const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
-      global.fetch = mockFetch as any;
+      mockedAxios.post.mockResolvedValue({ status: 500 } as any);
 
       // First two calls should NOT transition to degraded
       await (service as any).validateRegistrationWithCloud();
@@ -720,20 +724,24 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toContain('cloud_validation_failed');
     });
 
-    it('transitions to degraded immediately on 400 (device inactive)', async () => {
+    it('clears local registration immediately on 400 (device removed from Portal)', async () => {
       await service.setPhase('paired');
       await service.setPhase('provisioning');
       await service.setPhase('locally_ready');
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
-      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      mockedAxios.post.mockResolvedValue({ status: 400 } as any);
 
-      // Single call should be enough — 400 is definitive
-      await (service as any).validateRegistrationWithCloud();
+      try {
+        await (service as any).validateRegistrationWithCloud();
 
-      const status = service.getRegistrationStatus();
-      expect(status.phase).toBe('degraded');
-      expect(status.degradedReasons).toContain('cloud_validation_failed');
+        const status = service.getRegistrationStatus();
+        expect(status.phase).toBe('unregistered');
+        expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
+      } finally {
+        service.onApplicationShutdown();
+      }
     });
 
     it('counts network/timeout errors toward the failure threshold', async () => {
@@ -742,7 +750,7 @@ describe('RegistrationService', () => {
       await service.setPhase('locally_ready');
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
-      global.fetch = vi.fn().mockRejectedValue(new Error('Network error')) as any;
+      mockedAxios.post.mockRejectedValue(new Error('Network error'));
 
       await (service as any).validateRegistrationWithCloud();
       expect(service.getRegistrationStatus().phase).toBe('locally_ready');
@@ -761,11 +769,8 @@ describe('RegistrationService', () => {
       await service.setPhase('degraded', ['cloud_validation_failed']);
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ status: 'active' }),
-      });
-      global.fetch = mockFetch as any;
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'active' } } as any);
+      mockedAxios.head.mockResolvedValue({ status: 200 } as any);
 
       await (service as any).validateRegistrationWithCloud();
 

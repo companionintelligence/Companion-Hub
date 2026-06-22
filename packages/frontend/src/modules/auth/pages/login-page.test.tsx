@@ -2,12 +2,13 @@ import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
 
-const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm } = vi.hoisted(() => ({
+const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm, mockClientGetConfig } = vi.hoisted(() => ({
   mockUseUserContext: vi.fn(),
   mockUseMutation: vi.fn(),
   mockNavigate: vi.fn(),
   mockSearchParams: vi.fn(),
   mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
+  mockClientGetConfig: vi.fn(),
 }));
 
 vi.mock('@/api-client', () => ({
@@ -19,8 +20,23 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   verifyTotpMutation: vi.fn(() => ({})),
 }));
 
+vi.mock('@/api-client/client.gen', () => ({
+  client: {
+    getConfig: () => mockClientGetConfig(),
+  },
+}));
+
 vi.mock('@/lib/api-fetch', () => ({
+  apiFetch: vi.fn(),
   setTauriSessionId: vi.fn(),
+}));
+
+vi.mock('@/lib/deep-link-auth', () => ({
+  takePendingDesktopPortalAuth: vi.fn(async () => null),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => vi.fn()),
 }));
 
 vi.mock('@/context/user-context', () => ({
@@ -64,6 +80,7 @@ vi.mock('../components/totp-form/totp-form', () => ({
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
     mockUseUserContext.mockReturnValue({
       isLoggedIn: false,
       isConfigured: true,
@@ -80,6 +97,23 @@ describe('LoginPage', () => {
   it('defaults the login heading to the local admin account copy', () => {
     render(<LoginPage />);
 
-    expect(screen.getByTestId('login-type')).toHaveTextContent('your local admin account');
+    expect(screen.getByTestId('login-type')).toHaveTextContent('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
+  });
+
+  it('uses the local backend desktop callback flow in Tauri', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: 'http://localhost:5002/api/auth/portal/start?desktop=1',
+      }),
+    );
+
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 });

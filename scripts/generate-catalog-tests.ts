@@ -12,7 +12,7 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const APP_STORE_PATH = '../CI-App-Store/apps';
+const APP_STORE_PATH = process.env.APP_STORE_PATH ?? '../CI-Marketplace/apps';
 const OUTPUT_PATH = './e2e/generated';
 
 interface AppConfig {
@@ -22,8 +22,9 @@ interface AppConfig {
   url_suffix?: string;
   no_gui?: boolean;
   supported_architectures?: string[];
-  tipiVersion?: number;
+  cihubAppVersion?: number;
   categories?: string[];
+  mcp?: { transport?: string };
 }
 
 interface AppTestSpec {
@@ -35,6 +36,9 @@ interface AppTestSpec {
   hasGui: boolean;
   categories: string[];
   priority: 'high' | 'medium' | 'low';
+  // MCP-server apps: verified via the JSON-RPC protocol smoke (qa-mcp.ts), not the HTTP path.
+  mcp: boolean;
+  mcpTransport?: string;
 }
 
 // High priority apps - commonly used, should always work
@@ -83,6 +87,13 @@ async function generateTestCatalog(): Promise<AppTestSpec[]> {
     const config = await loadAppConfig(appId);
     if (!config) continue;
 
+    // Skip delisted apps: `available: false` means the catalog has pulled the app (e.g. a broken
+    // upstream image) — QA'ing it just re-reports a known-bad verdict every run.
+    if ((config as { available?: boolean }).available === false) {
+      console.log(`Skipping ${appId}: available=false (delisted)`);
+      continue;
+    }
+
     // Skip if doesn't support amd64
     if (config.supported_architectures && !config.supported_architectures.includes('amd64')) {
       console.log(`Skipping ${appId}: no amd64 support`);
@@ -104,6 +115,8 @@ async function generateTestCatalog(): Promise<AppTestSpec[]> {
       hasGui: !config.no_gui,
       categories: config.categories || [],
       priority,
+      mcp: !!config.mcp,
+      mcpTransport: config.mcp?.transport,
     });
   }
 
@@ -124,55 +137,40 @@ async function generateTestFile(apps: AppTestSpec[], serverIndex: number): Promi
  * Apps: ${apps.length}
  */
 
-import { expect, installApp, loginUser, test } from '../fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = ${JSON.stringify(apps, null, 2)};
 
 test.describe('App Catalog Batch ${serverIndex}', () => {
-  test.beforeEach(async ({ page, context }) => {
-    await loginUser(page, context);
-  });
-
   for (const app of APPS) {
-    test.describe(\`App: \${app.name}\`, () => {
-      test(\`install \${app.id}\`, async ({ page }) => {
-        await page.goto(\`/app-store/\${app.storeSlug}/\${app.id}\`);
-        await page.getByRole('button', { name: 'Install' }).click();
-        await expect(page.getByText(/running|installed/i)).toBeVisible({ 
-          timeout: 180000 
-        });
-      });
+    // One test per app so install -> access -> cleanup share a single Hub/DB state.
+    // The custom \`page\` fixture resets the backend DB the first time it is used, so
+    // splitting these into separate tests wiped the install record (and left the Docker
+    // deployment behind) before access/cleanup ran.
+    test(\`App: \${app.name}\`, async ({ page, context }) => {
+      await loginUser(page, context);
 
+      // Install
+      await page.goto(\`/app-store/\${app.storeSlug}/\${app.id}\`);
+      await page.getByRole('button', { name: 'Install' }).click();
+      await expect(page.getByText(/running|installed/i)).toBeVisible({ timeout: 180000 });
+
+      // Access via subdomain (GUI apps only) + screenshot for evidence
       if (app.hasGui) {
-        test(\`access \${app.id} via subdomain\`, async ({ page, context }) => {
-          const subdomain = \`test-\${app.id}\`;
-          const url = \`https://\${subdomain}.\${process.env.TEST_DOMAIN || 'test.ci.computer'}\${app.healthEndpoint}\`;
-          
-          const appPage = await context.newPage();
-          const response = await appPage.goto(url, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 60000 
-          });
-          
-          expect(response?.status()).toBeLessThan(500);
-          
-          await appPage.screenshot({
-            path: \`./e2e/screenshots/catalog/\${app.id}.png\`,
-            fullPage: true,
-          });
-          
-          await appPage.close();
-        });
+        const subdomain = \`test-\${app.id}\`;
+        const url = \`https://\${subdomain}.\${process.env.TEST_DOMAIN || 'test.ci.computer'}\${app.healthEndpoint}\`;
+        const appPage = await context.newPage();
+        const response = await appPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        expect(response?.status()).toBeLessThan(500);
+        await appPage.screenshot({ path: \`./e2e/screenshots/catalog/\${app.id}.png\`, fullPage: true });
+        await appPage.close();
       }
 
-      test(\`cleanup \${app.id}\`, async ({ page }) => {
-        await page.goto(\`/apps/\${app.id}\`);
-        await page.getByRole('button', { name: /delete|uninstall/i }).click();
-        await page.getByRole('button', { name: /confirm/i }).click();
-        await expect(page.getByText(/deleted|removed/i)).toBeVisible({ 
-          timeout: 60000 
-        });
-      });
+      // Cleanup (uninstall) — the same state that performed the install
+      await page.goto(\`/apps/\${app.id}\`);
+      await page.getByRole('button', { name: /delete|uninstall/i }).click();
+      await page.getByRole('button', { name: /confirm/i }).click();
+      await expect(page.getByText(/deleted|removed/i)).toBeVisible({ timeout: 60000 });
     });
   }
 });
@@ -196,8 +194,8 @@ async function main() {
   // Save full catalog
   await writeFile(join(OUTPUT_PATH, 'catalog.json'), JSON.stringify(catalog, null, 2));
 
-  // Split into batches for 7 servers
-  const SERVERS = 7;
+  // Split into batches for 10 servers (full online fleet, core-4-kvm excluded)
+  const SERVERS = 10;
   const batchSize = Math.ceil(catalog.length / SERVERS);
 
   for (let i = 0; i < SERVERS; i++) {

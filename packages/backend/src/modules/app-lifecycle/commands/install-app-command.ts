@@ -1,9 +1,9 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
-import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -12,13 +12,35 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'yaml';
+
+const DOWNLOAD_PROGRESS_START = 60;
+const DOWNLOAD_PROGRESS_END = 99;
+const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
+const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
+
+export function extractComposeImages(composeContent: unknown): string[] {
+  const { services } = parseComposeJson(composeContent);
+  return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
+}
+
+export function mapPullProgressToInstallProgress(completedBytes: number, totalBytes: number): number {
+  if (totalBytes <= 0) {
+    return DOWNLOAD_PROGRESS_START;
+  }
+
+  const normalized = Math.max(0, Math.min(1, completedBytes / totalBytes));
+  const mapped = DOWNLOAD_PROGRESS_START + Math.floor(normalized * (DOWNLOAD_PROGRESS_END - DOWNLOAD_PROGRESS_START));
+  return Math.max(DOWNLOAD_PROGRESS_START, Math.min(DOWNLOAD_PROGRESS_MAX_DURING_PULL, mapped));
+}
 
 /**
  * Load the Openclaw fallback entrypoint script from file.
@@ -109,30 +131,43 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
+    const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
 
-    const emitProgress = (progress: number) => {
+    const emitProgress = async (progress: number) => {
       if (sseService) {
         sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress }, appUrn);
       }
+      if (appsRepository) {
+        const app = await appsRepository.getAppByUrn(appUrn);
+        if (app?.status === 'installing') {
+          await appsRepository.updateAppById(app.id, { updatedAt: new Date().toISOString() });
+        }
+      }
     };
 
+    let composeToInstallContent: unknown;
     try {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseComposeJson(composeToInstall.content);
+      if (!composeToInstall.content) {
+        throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
+      }
+      composeToInstallContent = composeToInstall.content;
+      parseComposeJson(composeToInstallContent);
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
     }
 
     try {
-      emitProgress(5);
+      const appImages = extractComposeImages(composeToInstallContent);
+      await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
       } else {
         logger.info(`Installing app ${appUrn}. No User ID or Group ID found.`);
       }
 
-      emitProgress(15);
+      await emitProgress(15);
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
       // Host-device preflight — run before any port/env mutation so a failed
@@ -142,12 +177,12 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       // Create app.env file
-      emitProgress(25);
+      await emitProgress(25);
       logger.info(`Creating app.env file for app ${appUrn}`);
       await appHelpers.generateEnvFile(appUrn, form);
 
       // Allocate ports via the port manager
-      emitProgress(27);
+      await emitProgress(27);
       try {
         const portManager = this.moduleRef.get(PortManagerService, { strict: false });
         const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -206,9 +241,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
               const envMap = envUtils.envStringToMap(appEnvData.content);
               envMap.set('APP_PORT', String(mainAlloc.hostPort));
 
-              // Update APP_INTERNAL_AUTHORITY with allocated port
-              const internalIp = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
-              envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${mainAlloc.hostPort}`);
+              // Keep URL/origin vars aligned with generateEnvFile (browser host, not bind address).
+              const bindHost = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
+              const browserHost = resolveBrowserHost(bindHost);
+              const internalAuthority = `${browserHost}:${mainAlloc.hostPort}`;
+              envMap.set('APP_INTERNAL_AUTHORITY', internalAuthority);
+              if (envMap.get('APP_EXPOSED') !== 'true') {
+                envMap.set('APP_HOST', browserHost);
+                envMap.set('APP_DOMAIN', internalAuthority);
+                envMap.set('APP_URL', `http://${internalAuthority}`);
+              }
 
               // Also update form.port so ensureAppDir uses the right port
               form.port = mainAlloc.hostPort;
@@ -222,11 +264,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
-      emitProgress(30);
+      await emitProgress(30);
       await this.ensureAppDir(appUrn, form);
 
       // Copy data dir
-      emitProgress(35);
+      await emitProgress(35);
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envMap = envUtils.envStringToMap(appEnv.content);
 
@@ -270,6 +312,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
+        const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
         await fs.promises.mkdir(targetDir, { recursive: true });
 
@@ -277,20 +320,23 @@ export class InstallAppCommand extends AppLifecycleCommand {
         // falling back to the provided content string if the source is absent.
         const ensureScript = async (filename: string, fallbackContent: string, fallbackWarning: string) => {
           const targetPath = path.join(targetDir, filename);
-          const sourcePath = path.join(appInstalledDir, 'data', filename);
+          const candidateSources = [path.join(appInstalledDir, 'data', filename), path.join(appRepoDir, 'data', filename)];
           let restoredFromSource = false;
-          try {
-            await fs.promises.access(sourcePath);
-            await fs.promises.copyFile(sourcePath, targetPath);
-            restoredFromSource = true;
-            logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-              logger.warn(
-                `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
-                  err instanceof Error ? err.message : String(err)
-                }. Falling back to bundled script.`,
-              );
+          for (const sourcePath of candidateSources) {
+            try {
+              await fs.promises.access(sourcePath);
+              await fs.promises.copyFile(sourcePath, targetPath);
+              restoredFromSource = true;
+              logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
+              break;
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+                logger.warn(
+                  `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }. Trying next source.`,
+                );
+              }
             }
           }
           if (restoredFromSource) {
@@ -326,7 +372,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         );
       }
 
-      emitProgress(45);
+      await emitProgress(45);
 
       // Pre-create volume mount directories and set permissions BEFORE compose up
       // so containers don't crash on first start due to root-owned mount dirs
@@ -375,30 +421,66 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       if (form.skipRun) {
         logger.info(`Skipping docker-compose up for app ${appUrn} as per request`);
-        emitProgress(99);
+        await emitProgress(99);
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
       }
 
-      emitProgress(55);
+      await emitProgress(55);
       try {
         await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
-      emitProgress(60);
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
-      emitProgress(80);
+      await emitProgress(60);
+      if (appImages.length > 0) {
+        let lastPullProgress = DOWNLOAD_PROGRESS_START;
+        let lastPullProgressAt = 0;
+        dockerService.pullImages
+          ? await dockerService.pullImages(appImages, {
+              forcePull,
+              onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
+                const nextProgress =
+                  totalBytes > 0
+                    ? mapPullProgressToInstallProgress(completedBytes, totalBytes)
+                    : totalImages > 0
+                      ? mapPullProgressToInstallProgress(completedImages, totalImages)
+                      : DOWNLOAD_PROGRESS_START;
+                const now = Date.now();
+                if (
+                  nextProgress > lastPullProgress &&
+                  (nextProgress - lastPullProgress >= 2 ||
+                    now - lastPullProgressAt >= DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS ||
+                    nextProgress >= DOWNLOAD_PROGRESS_MAX_DURING_PULL)
+                ) {
+                  lastPullProgress = nextProgress;
+                  lastPullProgressAt = now;
+                  void emitProgress(nextProgress);
+                }
+              },
+            })
+          : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
+      }
+
+      await emitProgress(99);
+      await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Post-start health check: fire-and-forget — don't block install completion
-      emitProgress(85);
       setTimeout(async () => {
         try {
           const diagResults = await dockerService.diagnoseAppContainers(appUrn);
           if (diagResults.unhealthy.length > 0) {
             const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
             logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+
+            const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
+            errorReportingService?.reportAppFailure({
+              appUrn,
+              phase: 'post_start',
+              message: errorSummary,
+              containers: diagResults.unhealthy,
+            });
           } else {
             logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
           }
@@ -407,24 +489,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
         }
       }, 30000);
 
-      // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
-      // This part now uses CloudflareClientService to SYNC state with CI-Cloud
-      // CI-Cloud will handle the actual DNS and Tunnel updates via the trigger in AppLifecycleService
-      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposureMode: ${form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local')}`);
-      try {
-        const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
-        if (cloudflareService) {
-          logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
-        } else {
-          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
-        }
-      } catch (error) {
-        logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);
-        if (error instanceof Error) {
-          logger.error(`[Cloudflare] Error stack: ${error.stack}`);
-        }
-        // Don't fail the installation if Cloudflare sync fails
-      }
+      // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
+      // once the install completes and the app is marked running — not here.
 
       // Regenerate Traefik file-based config after app is installed and started
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
@@ -478,10 +544,33 @@ export class InstallAppCommand extends AppLifecycleCommand {
         }
       }
 
-      emitProgress(99);
+      await emitProgress(99);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
       return this.handleAppError(err, appUrn, 'install');
     }
+  }
+
+  private async markInstallSucceeded(
+    appUrn: AppUrn,
+    sseService: SSEService | undefined,
+    appsRepository: AppsRepository | undefined,
+    logger: LoggerService,
+  ): Promise<void> {
+    if (!appsRepository) return;
+
+    const app = await appsRepository.getAppByUrn(appUrn);
+    if (!app) {
+      logger.warn(`Install completed for ${appUrn} but no app record exists; skipping status update`);
+      return;
+    }
+
+    if (app.status !== 'installing') {
+      return;
+    }
+
+    await appsRepository.updateAppById(app.id, { status: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
   }
 }

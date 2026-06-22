@@ -1,4 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { eq } from 'drizzle-orm';
 import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 import { emptyDir } from './settings';
 
@@ -22,6 +23,10 @@ export const clearDatabase = async () => {
   await db.delete(schema.app);
   await db.delete(schema.appStore);
   await db.delete(schema.deviceRegistration);
+};
+
+export const deleteAppByName = async (appName: string) => {
+  await db.delete(schema.app).where(eq(schema.app.appName, appName));
 };
 
 export const seedOrganization = async () => {

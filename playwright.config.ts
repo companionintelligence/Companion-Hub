@@ -38,7 +38,7 @@ const backendEnv: Record<string, string> = {
   ALLOW_AUTO_THEMES: 'true',
   ALLOW_ERROR_MONITORING: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',
-  PRIVATE_VPN_ENABLED: 'false',
+  PRIVATE_VPN_USER_DISABLED: 'true',
   DEVICE_ID: process.env.DEVICE_ID || 'test-device-e2e',
   ADVANCED_SETTINGS: 'false',
   DISABLE_PASSWORD_RESET: 'true',
@@ -51,7 +51,13 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**', ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts'])],
+  testIgnore: [
+    '**/future/**',
+    '**/generated/**',
+    '**/cross-domain/**',
+    '**/platform/**',
+    ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts']),
+  ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -86,7 +92,21 @@ export default defineConfig({
             },
           },
         ]
-      : []),
+      : [
+          {
+            // Lightweight mock portal — simulates CI Portal for local/CI E2E without hitting production.
+            command: 'pnpm exec tsx e2e/mock-portal/server.ts',
+            url: `http://localhost:${MOCK_PORTAL_PORT}/___control`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 15000,
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: {
+              MOCK_PORTAL_PORT,
+              MOCK_PORTAL_SCENARIO: 'registered',
+            },
+          },
+        ]),
     {
       command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,

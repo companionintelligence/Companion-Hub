@@ -21,12 +21,15 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
-import { DOCKERODE } from '@/modules/docker/docker.module';
+import { DOCKERODE } from '@/modules/docker/constants';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
@@ -39,11 +42,13 @@ import { eq } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import waitFor from 'wait-for-expect';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { FsMock } from '../__mocks__/fs';
 import { createAppInStore } from '../utils/create-app-in-store';
 import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/create-test-database';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -54,8 +59,8 @@ function cleanTree(tree: Record<string, string | null>) {
     if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
       try {
         const json = JSON.parse(value);
-        if (json.created_at) json.created_at = 1769810550000;
-        if (json.updated_at) json.updated_at = 1769810550000;
+        if (json.created_at !== undefined) json.created_at = 1769810550000;
+        if (json.updated_at !== undefined) json.updated_at = 1769810550000;
         newTree[key] = JSON.stringify(json, null, 2);
       } catch (_e) {
         newTree[key] = value;
@@ -85,6 +90,8 @@ describe('App lifecycle', () => {
   const cloudflareClientService = mock<CloudflareClientService>();
   const traefikConfigService = mock<TraefikConfigService>();
   const registrationService = mock<RegistrationService>();
+  const imageSizeService = mock<ImageSizeService>();
+  const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -94,6 +101,13 @@ describe('App lifecycle', () => {
     password: 'guest',
     username: 'guest',
     port: Number(process.env.RABBITMQ_PORT) || 5672,
+  });
+  configurationService.get.calledWith('domain').mockReturnValue('ci.test');
+  configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
+  configurationService.get.calledWith('userSettings').mockReturnValue({
+    appDataPath: '/opt/ci-hub',
+    domain: 'ci.test',
+    localDomain: 'ci.lan',
   });
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
 
@@ -112,11 +126,35 @@ describe('App lifecycle', () => {
 
   beforeEach(async () => {
     await cleanTestData(db);
+    // Best-effort arch check: null = registry unreachable, do not block install in tests.
+    imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+    appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
+      appUrn: 'test:test',
+      appName: 'test',
+      status: 'running',
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+      highCpu: false,
+      sustainedHighCpu: false,
+      responsive: true,
+      degraded: false,
+      forceStopEligible: false,
+      reason: null,
+      cpuLimit: null,
+      usesDefaultCpuLimit: false,
+      sampledAt: new Date().toISOString(),
+      containers: [],
+    } as any);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
         MarketplaceService,
+        {
+          provide: ImageSizeService,
+          useValue: imageSizeService,
+        },
         AppStoreService,
         {
           provide: AppStoreRepository,
@@ -131,7 +169,17 @@ describe('App lifecycle', () => {
         EnvUtils,
         AppHelpers,
         AppsService,
-        SubnetManagerService,
+        {
+          provide: AppRuntimeMonitorService,
+          useValue: appRuntimeMonitorService,
+        },
+        InstallPipelineTracker,
+        {
+          provide: SubnetManagerService,
+          useFactory: (appsRepository: AppsRepository, loggerService: LoggerService, docker: typeof DOCKERODE) =>
+            new SubnetManagerService(appsRepository, loggerService, docker as never),
+          inject: [AppsRepository, LoggerService, DOCKERODE],
+        },
         {
           provide: ReposHelpers,
           useValue: reposHelpers,
@@ -200,6 +248,10 @@ describe('App lifecycle', () => {
           provide: LoggerService,
           useValue: loggerService,
         },
+        {
+          provide: InferenceEnvResolver,
+          useValue: mock<InferenceEnvResolver>(),
+        },
       ],
     }).compile();
 
@@ -213,12 +265,17 @@ describe('App lifecycle', () => {
     configurationService.getConfig.mockReturnValue(
       fromPartial({
         demoMode: false,
+        architecture: 'amd64',
+        domain: 'ci.test',
+        localDomain: 'ci.lan',
         directories: { dataDir: DATA_DIR, appDir: APP_DIR, appDataDir: APP_DATA_DIR },
         internalIp: '127.0.0.1',
         envFilePath: '/data/.env',
         rootFolderHost: '/opt/ci-hub',
         userSettings: {
           appDataPath: '/opt/ci-hub',
+          domain: 'ci.test',
+          localDomain: 'ci.lan',
         },
       }),
     );
@@ -266,7 +323,7 @@ describe('App lifecycle', () => {
   describe('update app', () => {
     it('should successfully update an app to a newer version', async () => {
       // arrange
-      const appInfo = await createAppInStore('test', { tipi_version: 1 });
+      const appInfo = await createAppInStore('test', { cihub_app_version: 1 });
 
       await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
 
@@ -276,7 +333,7 @@ describe('App lifecycle', () => {
         expect(app?.version).toBe(1);
       });
 
-      await createAppInStore('test', { id: appInfo.id, tipi_version: 2 });
+      await createAppInStore('test', { id: appInfo.id, cihub_app_version: 2 });
 
       await fs.promises.mkdir(`${APP_DATA_DIR}/test/${appInfo.id}/data`, { recursive: true });
       await fs.promises.writeFile(`${APP_DATA_DIR}/test/${appInfo.id}/data/preserved.txt`, 'data to preserve');
@@ -301,9 +358,9 @@ describe('App lifecycle', () => {
   describe('update all apps', () => {
     it('should update multiple apps that have newer versions available', async () => {
       // arrange
-      const app1Info = await createAppInStore('test', { id: 'app1', tipi_version: 1 });
-      const app2Info = await createAppInStore('test', { id: 'app2', tipi_version: 2 });
-      const app3Info = await createAppInStore('test', { id: 'app3', tipi_version: 3 });
+      const app1Info = await createAppInStore('test', { id: 'app1', cihub_app_version: 1 });
+      const app2Info = await createAppInStore('test', { id: 'app2', cihub_app_version: 2 });
+      const app3Info = await createAppInStore('test', { id: 'app3', cihub_app_version: 3 });
 
       await appLifecycleService.installApp({ appUrn: app1Info.urn, form: {} });
       await appLifecycleService.installApp({ appUrn: app2Info.urn, form: {} });
@@ -318,8 +375,8 @@ describe('App lifecycle', () => {
         expect(app3?.status).toBe('running');
       });
 
-      await createAppInStore('test', { id: 'app1', tipi_version: 2 });
-      await createAppInStore('test', { id: 'app3', tipi_version: 4 });
+      await createAppInStore('test', { id: 'app1', cihub_app_version: 2 });
+      await createAppInStore('test', { id: 'app3', cihub_app_version: 4 });
 
       // act
       await appLifecycleService.updateAllApps();
@@ -349,6 +406,68 @@ describe('App lifecycle', () => {
       expect(app2?.status).toBe('running');
       expect(app3?.status).toBe('running');
       expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
+    });
+  });
+
+  describe('uninstall app', () => {
+    it('should preserve app-data when deleteAllData is false', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'preserve-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`, 'keep-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: false });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(true);
+    });
+
+    it('should remove app-data when deleteAllData is true', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'delete-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`, 'remove-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: true });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(false);
     });
   });
 
@@ -391,6 +510,7 @@ describe('App lifecycle', () => {
       configurationService.get.calledWith('architecture').mockReturnValue('arm64');
       const appInfo = await createAppInStore('test', { id: 'arch-test' });
       const composeJson = {
+        schemaVersion: 2,
         services: [
           {
             name: 'app',

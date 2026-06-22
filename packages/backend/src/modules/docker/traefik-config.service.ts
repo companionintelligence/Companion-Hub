@@ -1,6 +1,7 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
@@ -304,7 +305,7 @@ export class TraefikConfigService {
       const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
       this.logger.debug(`Writing Traefik config to ${configPath}`);
-      await this.filesystem.writeTextFile(configPath, yamlContent);
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
 
       // Verify the file was written correctly
       const writtenContent = await this.filesystem.readTextFile(configPath);
@@ -364,7 +365,7 @@ export class TraefikConfigService {
       };
 
       const yamlContent = yaml.stringify(config, { indent: 2 });
-      await this.filesystem.writeTextFile(configPath, yamlContent);
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
       this.logger.info(`Wrote Traefik hub route for ${hostname}`);
     } catch (error) {
       this.logger.error(`Failed to write hub route for ${hostname}:`, error);

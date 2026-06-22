@@ -56,4 +56,10 @@ describe('AppStoreSidebar', () => {
     expect(mockStoreState.setSearch).toHaveBeenCalledWith('router');
     expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('router');
   });
+
+  it('keeps the desktop sidebar elevated and sticky while the store page scrolls', () => {
+    const { container } = render(<AppStoreSidebar />);
+
+    expect(container.querySelector('aside')).toHaveClass('sticky', 'top-4', 'shadow-sm', 'shadow-slate-300/70', 'bg-card/90');
+  });
 });

@@ -13,6 +13,18 @@ export type {
   AvailableDomain,
   AvailableDomainsResponse,
 } from './domains.js';
+export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
+export type { BuildTailscalePortUrlInput, BuildTailscaleWebIdentityInput, TailscaleWebIdentity } from '../tailscale/identity.js';
+// biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
+export {
+  buildPublicWebIdentity,
+  buildFqdnSubdomain,
+  buildOriginServerName,
+  extractDeviceSlug,
+  resolvePublicDomainRoot,
+  sanitizeAppSubdomain,
+} from '../public-web/identity.js';
+export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type {
   HardwareProfile,
   HardwareTier,
@@ -32,3 +44,13 @@ export type {
   BackendModelInfo,
   PullProgress,
 } from './inference.js';
+export type {
+  HostPlatform,
+  HostCpuArch,
+  HostMetricsSource,
+  RuntimeKind,
+  HostMetricsHostSection,
+  HostMetricsContainerSection,
+  HostMetricsProbeFile,
+  HostMetricsDisplayLoad,
+} from './host-metrics.js';

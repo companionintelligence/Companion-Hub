@@ -43,10 +43,17 @@ services:
 
   ci-os-hub:
     privileged: true
+    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:-973}"
     build:
       context: .
       dockerfile: Dockerfile.dev
-    command: npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
+    command: sh -lc "pnpm --filter @ci-hub/common run build && npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common"
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -62,6 +69,7 @@ services:
       retries: 10
     ports:
       - 3000:3000
+      - 5005:5005
       - 9091:9091
     volumes:
       # Hot reload
@@ -82,9 +90,10 @@ services:
       - .internal/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
-      - ./.internal/cache:/cache
+      - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
       - ./docker-compose.local.yml:/data/docker-compose.yml
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -94,7 +103,12 @@ services:
     environment:
       LOCAL: true
       NODE_ENV: development
+      HOME: /data/user-config
+      CI_HUB_DATA_DIR: /data
       ROOT_FOLDER_HOST: ${PWD}/.internal
+      DOCKER_CONFIG: /data/.docker
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: companion
       POSTGRES_DBNAME: companiondb

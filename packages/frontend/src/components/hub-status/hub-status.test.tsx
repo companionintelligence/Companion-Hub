@@ -1,7 +1,13 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
+import * as hubStatusModule from './hub-status';
+
+const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
+
+vi.mock('@/lib/theme/theme', () => ({
+  getLogo: () => '/logo.svg',
+}));
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
@@ -55,6 +61,12 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
     if (cmd === 'get_hub_status_command') {
       return status;
     }
+    if (cmd === 'check_docker_access_command') {
+      return { state: 'daemon_unavailable', detail: 'No container engine found at /var/run/docker.sock' };
+    }
+    if (cmd === 'get_startup_progress_command') {
+      return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+    }
 
     throw new Error(`Unexpected invoke command: ${cmd}`);
   });
@@ -101,7 +113,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('windows', false)).toEqual({
       platformLabel: 'Windows',
       downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Start Menu',
+        "Wait for Docker to start (you'll see the whale icon in your system tray)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Windows',
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
@@ -116,7 +135,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('macos', true)).toEqual({
       platformLabel: 'Mac',
       downloadUrl: 'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Applications folder',
+        "Wait for Docker to start (you'll see the whale icon in your menu bar)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Mac',
         'Open the .dmg and drag Docker to Applications',
         'Launch Docker Desktop and grant permissions',
@@ -139,11 +165,10 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(
-      screen.getByText(
-        'Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready.',
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Companion Hub needs Docker Desktop/)).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
+    expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
     expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
@@ -158,8 +183,65 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
     );
+    expect(screen.getByText('Open Docker Desktop from your Applications folder')).toBeInTheDocument();
     expect(screen.getByText('Open the .dmg and drag Docker to Applications')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
+  });
+
+  it('offers the WSL2 Docker Engine alternative on Windows and surfaces the restart state', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByText('Licensing-free alternative')).toBeInTheDocument();
+    expect(screen.getByText(/paid subscription for organizations/)).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Auto-Install Docker Engine in WSL2' });
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'install_docker_engine_alternative_command') {
+        return { state: 'needs_restart', detail: null };
+      }
+      if (cmd === 'get_hub_status_command') return 'DockerNotAvailable';
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: '' };
+      }
+      return undefined;
+    });
+
+    fireEvent.click(button);
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
+    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
+  });
+
+  it('offers the Colima alternative on macOS and reports success', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
+
+    expect(await screen.findByText('Licensing-free alternative')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Auto-Install Colima' });
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'install_docker_engine_alternative_command') {
+        return { state: 'completed', detail: null };
+      }
+      if (cmd === 'get_hub_status_command') return 'DockerNotAvailable';
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: '' };
+      }
+      return undefined;
+    });
+
+    fireEvent.click(button);
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
+    expect(screen.getByText(/Docker should become available momentarily/)).toBeInTheDocument();
+  });
+
+  it('does not show the alternative panel on Linux (the Engine is already licensing-free)', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (X11; Linux x86_64)');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument();
+    expect(screen.queryByText('Licensing-free alternative')).not.toBeInTheDocument();
   });
 
   it('shows Linux manual guidance and docs only, with no install button', async () => {
@@ -185,6 +267,10 @@ describe('HubStatus Docker guidance', () => {
           return 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'daemon_unavailable', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -229,6 +315,10 @@ describe('HubStatus Docker guidance', () => {
           return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'available', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -276,9 +366,11 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
       if (extraHandler) {
         return extraHandler();
       }
-      // get_startup_progress_command is polled by StartupScreen — safe to return null
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: null };
+      }
       if (cmd === 'get_startup_progress_command') {
-        return null;
+        return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
       }
       throw new Error(`Unexpected invoke command: ${cmd}`);
     });
@@ -353,5 +445,31 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     // No blocking screens should be shown
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
     expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+  });
+
+  it('does not reload after a transient Starting blip once the hub is already running', async () => {
+    vi.useFakeTimers();
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+
+    mockMacTauriWithStatus(['Running', 'Starting', 'Running']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
   });
 });

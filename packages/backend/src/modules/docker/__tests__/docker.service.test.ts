@@ -10,7 +10,13 @@ import { mock, MockProxy } from 'vitest-mock-extended';
 import * as child_process from 'node:child_process';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 import type Dockerode from 'dockerode';
+
+// The Hub compose args are built with path.join (platform-aware: `\` on Windows), so
+// derive the expected paths the same way to keep these assertions correct on Windows.
+const HUB_ENV_FILE = path.join('/data', '.env');
+const HUB_COMPOSE_FILE = path.join('/data', 'docker-compose.yml');
 
 const createMockSpawnProcess = () => {
   const process = new EventEmitter() as any;
@@ -163,20 +169,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        [
-          'compose',
-          '--env-file',
-          '/data/.env',
-          '--project-name',
-          'ci-hub',
-          '-f',
-          '/data/docker-compose.yml',
-          'logs',
-          '--follow',
-          '-n',
-          '300',
-          'ci-os-hub',
-        ],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-os-hub'],
         { stdio: 'pipe' },
       );
       expect(result.on).toBeTypeOf('function');
@@ -197,7 +190,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker-compose',
-        ['--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', 'logs', '--follow', '-n', '300', 'ci-os-hub'],
+        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-os-hub'],
         { stdio: 'pipe' },
       );
       expect(loggerService.warn).toHaveBeenCalledWith('docker compose plugin not available for logs, falling back to docker-compose binary');
@@ -219,7 +212,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        ['compose', '--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', 'logs', '--no-color', 'ci-os-hub'],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
         { stdio: 'pipe' },
       );
       expect(result.stdout).toBe(mockSpawnProcess.stdout);
@@ -241,7 +234,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker-compose',
-        ['--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', 'logs', '--no-color', 'ci-os-hub'],
+        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
         { stdio: 'pipe' },
       );
       expect(loggerService.warn).toHaveBeenCalledWith('docker compose plugin not available for log download, falling back to docker-compose binary');
@@ -263,18 +256,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        [
-          'compose',
-          '--env-file',
-          '/data/.env',
-          '--project-name',
-          'ci-hub-log-download',
-          '-f',
-          '/data/docker-compose.yml',
-          'logs',
-          '--no-color',
-          'ci-os-hub',
-        ],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub-log-download', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
         { stdio: 'pipe' },
       );
     });
@@ -332,7 +314,7 @@ describe('DockerService', () => {
       (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
 
       await service.ensureContainerRunning('cloudflared', {
-        composeFile: '/data/docker-compose.yml',
+        composeFile: HUB_COMPOSE_FILE,
         profile: 'cloudflare',
       });
 
@@ -341,11 +323,12 @@ describe('DockerService', () => {
         [
           'compose',
           '--env-file',
+          // composeUpService pushes the raw envFilePath config value (not path.join'd).
           '/data/.env',
           '--project-name',
           'ci-hub',
           '-f',
-          '/data/docker-compose.yml',
+          HUB_COMPOSE_FILE,
           '--profile',
           'cloudflare',
           'up',
@@ -355,7 +338,7 @@ describe('DockerService', () => {
           '--no-deps',
         ],
         expect.objectContaining({
-          cwd: '/data',
+          cwd: path.dirname(HUB_COMPOSE_FILE),
           env: expect.objectContaining({
             ENV_FILE: '.env',
             UNRELATED_VAR: 'still-here',
@@ -400,6 +383,31 @@ describe('DockerService', () => {
         filters: { label: ['com.docker.compose.project=test_store'] },
       });
       expect(result).toEqual(['sha256:a', 'sha256:b']);
+    });
+  });
+
+  describe('getAppRuntimeStats', () => {
+    it('should skip containers that disappear between list and inspect', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'gone', Names: ['/gone'], State: 'running', Status: 'Up' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockRejectedValue(new Error('404 no such container')),
+      } as any);
+
+      await expect(service.getAppRuntimeStats('test:store' as any)).resolves.toEqual([]);
+      expect(loggerService.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('forceStopApp', () => {
+    it('should default to a 10 second graceful stop before escalation', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'abc', Names: ['/svc'], State: 'running', Status: 'Up' }] as any);
+      const stop = vi.fn().mockResolvedValue(undefined);
+      const kill = vi.fn().mockResolvedValue(undefined);
+      dockerode.getContainer.mockReturnValue({ stop, kill } as any);
+
+      await expect(service.forceStopApp('test:store' as any)).resolves.toEqual({ stopped: ['svc'], killed: [] });
+      expect(stop).toHaveBeenCalledWith({ t: 10 });
+      expect(kill).not.toHaveBeenCalled();
     });
   });
 
@@ -469,6 +477,41 @@ describe('DockerService', () => {
 
       await expect(service.removeAppNetworks('test:store' as any)).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('getAppNetworkTarget', () => {
+    it('returns the direct container target using the Traefik service port label', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'abc123' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          Config: {
+            Labels: {
+              'traefik.enable': 'true',
+              'traefik.http.services.anything-llm-ci-marketplace.loadbalancer.server.port': '3001',
+            },
+          },
+          NetworkSettings: {
+            Networks: {
+              'ci-os-hub_network': {
+                IPAddress: '172.18.0.10',
+              },
+            },
+          },
+        }),
+      } as any);
+
+      await expect(service.getAppNetworkTarget('anything-llm:ci-marketplace' as any)).resolves.toEqual({
+        url: 'http://172.18.0.10:3001',
+        internalPort: 3001,
+      });
+
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: false,
+        filters: {
+          label: ['ci-os-hub.appurn=anything-llm:ci-marketplace', 'traefik.enable=true'],
+        },
+      });
     });
   });
 });

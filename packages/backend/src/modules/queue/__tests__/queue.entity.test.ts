@@ -59,6 +59,33 @@ describe('Queue', () => {
     expect(rpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-1' });
   });
 
+  it('retries once when the queue is briefly closing channels during reconnect', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    const queue = new Queue(
+      rabbit,
+      rpcClient,
+      publisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    rpcClient.send
+      .mockRejectedValueOnce(new Error('channel creation failed; connection is closing') as never)
+      .mockResolvedValueOnce({ body: { success: true, message: 'ok-after-retry' } } as never);
+
+    const result = await queue.publish({ requestId: 'req-1' });
+
+    expect(result).toEqual({ success: true, message: 'ok-after-retry' });
+    expect(rpcClient.send).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Transient queue error for app-events-queue; retrying once'));
+  });
+
   it('skips cron execution when the queue connection is not ready', async () => {
     vi.useFakeTimers();
 
@@ -89,6 +116,39 @@ describe('Queue', () => {
 
     queue.stopAllCronTasks();
     vi.useRealTimers();
+  });
+
+  it('refreshes RPC client when rebound on the same connection instance', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const staleRpcClient = mock<RPCClient>();
+    const stalePublisher = mock<EventPublisher>();
+    staleRpcClient.close.mockResolvedValue(undefined);
+    stalePublisher.close.mockResolvedValue(undefined);
+
+    const queue = new Queue(
+      rabbit,
+      staleRpcClient,
+      stalePublisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    const freshRpcClient = mock<RPCClient>();
+    const freshPublisher = mock<EventPublisher>();
+    freshRpcClient.send.mockResolvedValue({ body: { success: true, message: 'fresh client' } } as never);
+
+    queue.rebindConnection(rabbit, freshRpcClient, freshPublisher);
+
+    const result = await queue.publish({ requestId: 'req-same-conn' });
+
+    expect(result).toEqual({ success: true, message: 'fresh client' });
+    expect(freshRpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-same-conn' });
+    expect(staleRpcClient.send).not.toHaveBeenCalled();
+    expect(staleRpcClient.close).toHaveBeenCalled();
   });
 
   it('uses new RPC client and publisher after rebindConnection', async () => {

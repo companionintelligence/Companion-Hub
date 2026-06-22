@@ -7,10 +7,12 @@ export interface TailscaleStatus {
   connected: boolean;
   version: string | null;
   hostname: string | null;
+  nodeFqdn: string | null;
   tailnet: string | null;
   ip: string | null;
   supportsServices: boolean;
   backendState: string | null;
+  authUrl: string | null;
 }
 
 export interface TailscaleServeEntry {
@@ -18,6 +20,8 @@ export interface TailscaleServeEntry {
   proto: string;
   mountPoint: string;
   dest: string;
+  listenPort?: number;
+  rawServiceName?: string;
 }
 
 interface TailscaleServeServiceConfig {
@@ -29,7 +33,24 @@ interface TailscaleServeWebHandler {
   Path?: string;
 }
 
+interface ExecError extends Error {
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+}
+
 type ExecStrategy = 'host' | 'sidecar';
+
+const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
+const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes', '--advertise-routes=172.18.0.0/16'];
+
+function normalizeDnsName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.replace(/\.+$/, '') || null;
+}
 
 @Injectable()
 export class TailscaleService {
@@ -46,8 +67,12 @@ export class TailscaleService {
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile(this.binaryPath, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) reject(err);
-        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) {
+          const execErr = err as ExecError;
+          execErr.stdout = stdout;
+          execErr.stderr = stderr;
+          reject(execErr);
+        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
   }
@@ -55,10 +80,69 @@ export class TailscaleService {
   private execDocker(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile('docker', ['exec', this.sidecarContainer, 'tailscale', ...args], { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) reject(err);
-        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) {
+          const execErr = err as ExecError;
+          execErr.stdout = stdout;
+          execErr.stderr = stderr;
+          reject(execErr);
+        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
+  }
+
+  private getConfiguredLoginServerHost(extraArgs: string[]): string | null {
+    const inline = extraArgs.find((arg) => arg.startsWith('--login-server='));
+    const explicitIndex = extraArgs.indexOf('--login-server');
+    const rawValue = inline ? inline.slice('--login-server='.length) : explicitIndex >= 0 ? (extraArgs[explicitIndex + 1] ?? '') : '';
+
+    if (!rawValue) {
+      return null;
+    }
+
+    try {
+      return new URL(rawValue).host;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractAuthUrl(output: string, expectedHost?: string | null): string | null {
+    const candidates = (output.match(/https?:\/\/[^\s"']+/gi) ?? []).map((url) => url.replace(/[),.;]+$/, ''));
+    if (!candidates.length) {
+      return null;
+    }
+
+    if (expectedHost) {
+      const hostMatch = candidates.find((url) => {
+        try {
+          return new URL(url).host === expectedHost;
+        } catch {
+          return false;
+        }
+      });
+      if (hostMatch) {
+        return hostMatch;
+      }
+    }
+
+    const tailscaleLoginMatch = candidates.find((url) => {
+      try {
+        return new URL(url).host === 'login.tailscale.com';
+      } catch {
+        return false;
+      }
+    });
+    return tailscaleLoginMatch ?? candidates[0] ?? null;
+  }
+
+  private getExecErrorOutput(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return '';
+    }
+    const execErr = error as ExecError;
+    const stdout = execErr.stdout?.toString() ?? '';
+    const stderr = execErr.stderr?.toString() ?? '';
+    return [stdout, stderr, error.message].filter(Boolean).join('\n');
   }
 
   /**
@@ -103,7 +187,16 @@ export class TailscaleService {
   /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
   private getTailscaleUpExtraArgs(): string[] {
     const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
-    return extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
+    if (!extra) {
+      return [...DEFAULT_TAILSCALE_EXTRA_ARGS];
+    }
+
+    const parsed = extra.split(/\s+/).filter(Boolean);
+    if (parsed.some((arg) => arg === '--login-server' || arg.startsWith('--login-server='))) {
+      return parsed;
+    }
+
+    return [DEFAULT_TAILSCALE_LOGIN_SERVER, ...parsed];
   }
 
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
@@ -146,10 +239,12 @@ export class TailscaleService {
       connected: false,
       version: null,
       hostname: null,
+      nodeFqdn: null,
       tailnet: null,
       ip: null,
       supportsServices: false,
       backendState: null,
+      authUrl: null,
     };
 
     try {
@@ -175,10 +270,14 @@ export class TailscaleService {
         connected,
         version,
         hostname: (self.HostName as string) || null,
-        tailnet: ((status.CurrentTailnet as Record<string, unknown>)?.Name as string) || null,
+        nodeFqdn: normalizeDnsName((self.DNSName as string) || ((status.CertDomains as string[] | undefined)?.[0] ?? null)),
+        tailnet:
+          normalizeDnsName((status.MagicDNSSuffix as string) || ((status.CurrentTailnet as Record<string, unknown>)?.MagicDNSSuffix as string)) ??
+          null,
         ip: (self.TailscaleIPs as string[])?.[0] || null,
         supportsServices,
         backendState: (status.BackendState as string) || null,
+        authUrl: (status.AuthURL as string) || null,
       };
     } catch (error) {
       this.logger.warn(`Failed to parse tailscale status JSON: ${error}`);
@@ -192,16 +291,35 @@ export class TailscaleService {
       connected: false,
       version: null,
       hostname: null,
+      nodeFqdn: null,
       tailnet: null,
       ip: null,
       supportsServices: false,
       backendState: null,
+      authUrl: null,
     };
 
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
       return notInstalled;
     }
+
+    return this.getStatusForStrategy(strategy);
+  }
+
+  private async getStatusForStrategy(strategy: ExecStrategy, suppressErrors = true): Promise<TailscaleStatus> {
+    const notInstalled: TailscaleStatus = {
+      installed: false,
+      connected: false,
+      version: null,
+      hostname: null,
+      nodeFqdn: null,
+      tailnet: null,
+      ip: null,
+      supportsServices: false,
+      backendState: null,
+      authUrl: null,
+    };
 
     try {
       const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
@@ -210,6 +328,9 @@ export class TailscaleService {
     } catch (error) {
       this.logger.warn(`Failed to get Tailscale status: ${error}`);
       this.invalidateStrategyCache();
+      if (!suppressErrors) {
+        throw error;
+      }
       return { ...notInstalled, installed: true };
     }
   }
@@ -251,6 +372,7 @@ export class TailscaleService {
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
+    const publicErrorMessage = 'Failed to start Tailscale auth. Check server logs for details.';
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
       throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
@@ -263,27 +385,68 @@ export class TailscaleService {
       await this.waitForSidecarDaemon();
     }
 
+    // If the daemon is already in interactive auth mode, reuse the current URL
+    // instead of running another `tailscale up` that can churn login state.
+    const preAuthStatus = await this.getStatusForStrategy(strategy);
+    if (preAuthStatus.connected || preAuthStatus.backendState === 'Running') {
+      return { authUrl: '' };
+    }
+    if (preAuthStatus.backendState === 'NeedsLogin' && preAuthStatus.authUrl) {
+      return { authUrl: preAuthStatus.authUrl };
+    }
+
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--json', ...this.getTailscaleUpExtraArgs()];
+    const extraArgs = this.getTailscaleUpExtraArgs();
+    const loginServerHost = this.getConfiguredLoginServerHost(extraArgs);
+    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...extraArgs];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
 
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
-    const { stdout } = await execFn(args, 30000);
-    const result = JSON.parse(stdout) as Record<string, unknown>;
+    let upOutput = '';
+    try {
+      const { stdout, stderr } = await execFn(args, 30000);
+      upOutput = `${stdout}\n${stderr}`;
+      const authUrl = this.extractAuthUrl(upOutput, loginServerHost);
+      if (authUrl) {
+        return { authUrl };
+      }
 
-    if (result.AuthURL) {
-      return { authUrl: result.AuthURL as string };
+      let status: TailscaleStatus;
+      try {
+        status = await this.getStatusForStrategy(strategy, false);
+      } catch (statusError) {
+        const statusOutput = this.getExecErrorOutput(statusError);
+        const combinedOutput = [upOutput, statusOutput].filter(Boolean).join('\n');
+        const authUrlFromCombinedOutput = this.extractAuthUrl(combinedOutput, loginServerHost);
+        if (authUrlFromCombinedOutput) {
+          return { authUrl: authUrlFromCombinedOutput };
+        }
+        this.logger.error(`[TailscaleService] startAuth status check failed after tailscale up\n${combinedOutput || '(no diagnostic output)'}`);
+        throw new Error(publicErrorMessage);
+      }
+
+      if (status.connected || status.backendState === 'Running') {
+        return { authUrl: '' };
+      }
+
+      if (status.backendState === 'NeedsLogin' && status.authUrl) {
+        return { authUrl: status.authUrl };
+      }
+
+      throw new Error('Failed to get Tailscale auth URL from tailscale up output');
+    } catch (error) {
+      const output = [upOutput, this.getExecErrorOutput(error)].filter(Boolean).join('\n');
+      const authUrl = this.extractAuthUrl(output, loginServerHost);
+      if (authUrl) {
+        return { authUrl };
+      }
+      this.logger.error(`[TailscaleService] startAuth failed\n${output || '(no diagnostic output)'}`);
+      throw new Error(publicErrorMessage);
     }
-
-    if (result.BackendState === 'Running') {
-      return { authUrl: '' };
-    }
-
-    throw new Error('Failed to get Tailscale auth URL');
   }
 
   /**
@@ -317,59 +480,82 @@ export class TailscaleService {
   }
 
   /**
-   * Disconnect from Tailscale (host or sidecar)
+   * Disconnect from Tailscale.
+   *
+   * Host mode performs a normal `tailscale down`.
+   * Sidecar mode performs a stronger reset by force-stopping `tailscaled`
+   * and deleting the persisted state file, which effectively logs the
+   * sidecar out of Tailscale rather than only disconnecting it.
    */
   async disconnect(): Promise<void> {
-    await this.execTailscale(['down']);
+    const strategy = await this.resolveStrategy();
+    if (strategy === 'host') {
+      await this.execTailscale(['down']);
+    } else if (strategy === 'sidecar') {
+      await new Promise((resolve, reject) => {
+        execFile(
+          'docker',
+          [
+            'exec',
+            this.sidecarContainer,
+            'sh',
+            '-c',
+            'kill -9 $(pidof tailscaled 2>/dev/null) >/dev/null 2>&1 || true; rm -f /var/lib/tailscale/tailscaled.state',
+          ],
+          { timeout: 15000 },
+          (err, stdout, stderr) => {
+            if (err) {
+              const execErr = err as ExecError;
+              execErr.stdout = stdout;
+              execErr.stderr = stderr;
+              reject(execErr);
+            } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+          },
+        );
+      });
+    } else {
+      throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
+    }
     this.invalidateStrategyCache();
   }
 
   private async getServeUpstreamTarget(localPort: number): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
-      return this.serveUpstreamSidecar.includes(':') ? this.serveUpstreamSidecar : `${this.serveUpstreamSidecar}:${localPort}`;
+      const sidecarTarget = this.serveUpstreamSidecar.includes(':') ? this.serveUpstreamSidecar : `${this.serveUpstreamSidecar}:${localPort}`;
+      return sidecarTarget.includes('://') ? sidecarTarget : `http://${sidecarTarget}`;
     }
-    return `localhost:${localPort}`;
+    return `http://localhost:${localPort}`;
   }
 
   /**
-   * Serve an app via Tailscale Serve (path-based)
+   * Serve an app via Tailscale Serve on a dedicated HTTPS port.
    */
-  async serveApp(params: { subdomain: string; localPort: number }): Promise<void> {
-    const { subdomain, localPort } = params;
-    const upstream = await this.getServeUpstreamTarget(localPort);
-
-    const status = await this.getStatus();
-
-    if (status.supportsServices) {
-      try {
-        await this.execTailscale(['serve', '--bg', '--yes', `--service=${subdomain}`, '--https=443', upstream]);
-        this.logger.log(`Tailscale Serve (service): ${subdomain} → ${upstream}`);
-        return;
-      } catch (error) {
-        this.logger.warn(`Tailscale Services failed, falling back to path-based: ${error}`);
-      }
-    }
-
-    await this.execTailscale(['serve', '--bg', '--yes', `--set-path=/${subdomain}`, upstream]);
-    this.logger.log(`Tailscale Serve (path): /${subdomain} → ${upstream}`);
+  async serveApp(params: { appName: string; httpsPort: number; upstreamUrl?: string; localPort?: number }): Promise<void> {
+    const { appName, httpsPort, upstreamUrl, localPort = httpsPort } = params;
+    const upstream = upstreamUrl || (await this.getServeUpstreamTarget(localPort));
+    await this.execTailscale(['serve', '--bg', '--yes', `--https=${httpsPort}`, upstream]);
+    this.logger.log(`Tailscale Serve (port): ${appName} on :${httpsPort} → ${upstream}`);
   }
 
   /**
-   * Remove a served app
+   * Remove a served app from a dedicated HTTPS port.
    */
-  async unserveApp(subdomain: string): Promise<void> {
-    const status = await this.getStatus();
-
+  async unservePort(httpsPort: number): Promise<void> {
     try {
-      if (status.supportsServices) {
-        await this.execTailscale(['serve', `--service=${subdomain}`, 'off']);
-      } else {
-        await this.execTailscale(['serve', `--set-path=/${subdomain}`, 'off']);
-      }
-      this.logger.log(`Tailscale Serve removed: ${subdomain}`);
+      await this.execTailscale(['serve', `--https=${httpsPort}`, 'off']);
+      this.logger.log(`Tailscale Serve removed from :${httpsPort}`);
     } catch (error) {
-      this.logger.warn(`Failed to remove Tailscale serve for ${subdomain}: ${error}`);
+      this.logger.warn(`Failed to remove Tailscale serve for :${httpsPort}: ${error}`);
+    }
+  }
+
+  async clearService(serviceName: string): Promise<void> {
+    try {
+      await this.execTailscale(['serve', 'clear', serviceName]);
+      this.logger.log(`Tailscale Service removed: ${serviceName}`);
+    } catch (error) {
+      this.logger.warn(`Failed to remove Tailscale Service ${serviceName}: ${error}`);
     }
   }
 
@@ -386,22 +572,26 @@ export class TailscaleService {
       if (data.Services) {
         for (const [name, config] of Object.entries(data.Services as Record<string, TailscaleServeServiceConfig>)) {
           entries.push({
-            service: name,
+            service: name.replace(/^svc:/, ''),
             proto: 'https',
             mountPoint: '/',
             dest: config.Dest || '',
+            rawServiceName: name,
           });
         }
       }
 
       if (data.Web) {
-        for (const [, handlers] of Object.entries(data.Web as Record<string, Record<string, TailscaleServeWebHandler>>)) {
+        for (const [listener, handlers] of Object.entries(data.Web as Record<string, Record<string, TailscaleServeWebHandler>>)) {
+          const portMatch = listener.match(/:(\d+)$/);
+          const listenPort = portMatch ? Number.parseInt(portMatch[1] || '', 10) : undefined;
           for (const [path, config] of Object.entries(handlers)) {
             entries.push({
-              service: path.replace(/^\//, ''),
+              service: listenPort ? String(listenPort) : path.replace(/^\//, ''),
               proto: 'https',
               mountPoint: path,
               dest: config.Proxy || config.Path || '',
+              listenPort,
             });
           }
         }

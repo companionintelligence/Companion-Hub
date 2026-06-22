@@ -1,17 +1,21 @@
+import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { UserRepository } from '@/modules/user/user.repository';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthController } from '../auth.controller';
 import { AuthService } from '../auth.service';
+import { SessionManager } from '../session.manager';
 
 describe('AuthController', () => {
   let authController: AuthController;
   let _authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
   let _config: MockProxy<ConfigurationService>;
+  let cache: MockProxy<CacheService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -20,6 +24,9 @@ describe('AuthController', () => {
         { provide: AuthService, useValue: mock<AuthService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: CacheService, useValue: mock<CacheService>() },
+        { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: SessionManager, useValue: mock<SessionManager>() },
       ],
     }).compile();
 
@@ -27,6 +34,7 @@ describe('AuthController', () => {
     _authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
     _config = moduleRef.get(ConfigurationService);
+    cache = moduleRef.get(CacheService);
   });
 
   it('should be defined', () => {
@@ -83,6 +91,19 @@ describe('AuthController', () => {
         'Unauthenticated Traefik forward auth request',
         expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' }),
       );
+    });
+  });
+
+  describe('exchangePortalDesktopLogin', () => {
+    it('returns the cached desktop handoff once', async () => {
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth' }));
+
+      await expect(authController.exchangePortalDesktopLogin('desktop-token')).resolves.toEqual({
+        sessionId: 'session-123',
+        redirectPath: '/settings?tab=auth',
+      });
+      expect(cache.get).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+      expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
     });
   });
 });

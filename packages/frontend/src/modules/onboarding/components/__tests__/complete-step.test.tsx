@@ -67,7 +67,7 @@ describe('CompleteStep', () => {
     render(<CompleteStep installSummary={makeSummary(3, 0, 0)} />);
 
     expect(screen.getByTestId('complete-heading')).toHaveTextContent('All Apps Running');
-    expect(screen.getByTestId('complete-body')).toHaveTextContent('3 apps are confirmed running');
+    expect(screen.getByTestId('complete-body')).toHaveTextContent('All 3 apps confirmed running on your Hub.');
   });
 
   it('shows truthful mixed summary when some apps are incomplete', () => {
@@ -104,12 +104,12 @@ describe('CompleteStep', () => {
     render(<CompleteStep installSummary={makeSummary(1, 0, 0)} />);
 
     await userEvent.click(screen.getByTestId('complete-cta'));
-    expect(mockNavigate).toHaveBeenCalledWith('/app-store', { replace: true });
+    expect(mockNavigate).toHaveBeenCalledWith('/store', { replace: true });
   });
 
   it('singular grammar for single app', () => {
     render(<CompleteStep installSummary={makeSummary(1, 0, 0)} />);
 
-    expect(screen.getByTestId('complete-body')).toHaveTextContent('1 app is confirmed running');
+    expect(screen.getByTestId('complete-body')).toHaveTextContent('All 1 app confirmed running on your Hub.');
   });
 });

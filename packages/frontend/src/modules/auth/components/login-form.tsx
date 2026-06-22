@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -18,9 +19,10 @@ interface IProps {
   onSubmit: (values: FormValues) => void;
   loading: boolean;
   loginType: string;
+  portalSsoHref?: string;
 }
 
-export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) => {
+export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref }) => {
   const { t } = useTranslation();
   const {
     register,
@@ -39,6 +41,19 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_LOGIN_TITLE', { type: loginType })}</h2>
+
+      {portalSsoHref ? (
+        <div className="mb-4">
+          <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
+            <a href={portalSsoHref}>{t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON', 'Sign in using your Companion Account')}</a>
+          </Button>
+          <div className="text-xs text-muted-foreground text-center mt-2">
+            {t('AUTH_LOGIN_COMPANION_ACCOUNT_HINT', 'Uses your Companion Account.')}
+          </div>
+          <div className="my-4 h-px bg-border" />
+        </div>
+      ) : null}
+
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
           {...register('email')}
@@ -50,19 +65,18 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
           className="mb-3"
           placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}
         />
-        <Input
+        <PasswordInput
           {...register('password')}
           name="password"
-          label={t('AUTH_FORM_PASSWORD')}
+          label={t('COMMON_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
-          type="password"
           className="mb-3 password-input"
           placeholder={t('AUTH_FORM_PASSWORD_PLACEHOLDER')}
         />
         <div className="mt-4">
           <Button disabled={isDisabled} loading={loading} type="submit" intent="primary" className="w-full">
-            {t('AUTH_LOGIN_SUBMIT')}
+            {t('COMMON_LOGIN')}
           </Button>
         </div>
         <div className="text-sm text-muted-foreground text-center mt-3">

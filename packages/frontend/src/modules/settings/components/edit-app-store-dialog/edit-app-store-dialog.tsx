@@ -54,7 +54,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
   return (
     <div>
       <Button loading={editAppStore.isPending} size="sm" variant="ghost" onClick={() => editAppStoreDisclosure.open()} className="mr-2">
-        {t('APP_STORE_TABLE_EDIT')}
+        {t('COMMON_EDIT')}
       </Button>
       <Dialog open={editAppStoreDisclosure.isOpen} onOpenChange={editAppStoreDisclosure.toggle}>
         <DialogContent size="sm">
@@ -64,7 +64,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
           <DialogDescription className="flex flex-col">
             <form onSubmit={handleSubmit(validate)} id={formId}>
               <Input
-                label="Name"
+                label={t('COMMON_NAME')}
                 className="mb-3"
                 error={formState.errors.name?.message}
                 disabled={editAppStore.isPending}
@@ -91,7 +91,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
           </DialogDescription>
           <DialogFooter>
             <Button loading={editAppStore.isPending} type="submit" intent="success" form={formId}>
-              {t('APP_STORE_EDIT_DIALOG_SUBMIT')}
+              {t('COMMON_SAVE')}
             </Button>
           </DialogFooter>
         </DialogContent>

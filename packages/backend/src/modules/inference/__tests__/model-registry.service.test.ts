@@ -3,6 +3,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { CuratedModel, HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 
 describe('ModelRegistryService', () => {
   let service: ModelRegistryService;
@@ -27,6 +28,48 @@ describe('ModelRegistryService', () => {
       expect(modalities.has('llm')).toBe(true);
       expect(modalities.has('tts')).toBe(true);
       expect(modalities.has('stt')).toBe(true);
+      expect(modalities.has('embedding')).toBe(true);
+    });
+
+    it('S-MM-1.5: exposes a 768-dim embedding model recommended on every runnable tier', () => {
+      const emb = service.getRecommendedEmbeddingModel('cpu-only');
+      expect(emb?.id).toBe('nomic-embed-text');
+      expect(emb?.modality).toBe('embedding');
+      expect(service.getRecommendedEmbeddingModel('insufficient')).toBeNull();
+    });
+
+    it('returns null for vision recommendations on an insufficient tier', () => {
+      expect(service.getRecommendedVisionModel('insufficient')).toBeNull();
+    });
+
+    it('returns a vision-capable LLM for runnable tiers that have one', () => {
+      const vision = service.getRecommendedVisionModel('high');
+      expect(vision).not.toBeNull();
+      expect(vision?.modality).toBe('llm');
+      expect(vision?.metadata?.capabilities?.vision).toBe(true);
+      expect(service.getModelsForTier('high').some((model) => model.id === vision?.id)).toBe(true);
+    });
+
+    it('ranks vision recommendations best-first instead of relying on catalog order', () => {
+      const visionCandidates = service
+        .getModelsForTier('high')
+        .filter((model) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true);
+
+      expect(visionCandidates.length).toBeGreaterThan(0);
+
+      const expectedBest = [...visionCandidates].sort((a, b) => {
+        const intel = (b.metadata?.intelligenceIndex ?? 0) - (a.metadata?.intelligenceIndex ?? 0);
+        if (intel !== 0) return intel;
+        const aSubQ4 = (a.runtime.quantization ?? '') === 'q3_K_M' ? 1 : 0;
+        const bSubQ4 = (b.runtime.quantization ?? '') === 'q3_K_M' ? 1 : 0;
+        if (aSubQ4 !== bSubQ4) return aSubQ4 - bSubQ4;
+        const params = (b.parameterScale ?? 0) - (a.parameterScale ?? 0);
+        if (params !== 0) return params;
+        const rank = (q: string | undefined) => ({ q8_0: 6, q6_K: 5, q5_K_M: 4, q4_K_M: 3, fp16: 2, q3_K_M: 1 })[q ?? ''] ?? 0;
+        return rank(b.runtime.quantization) - rank(a.runtime.quantization);
+      })[0];
+
+      expect(service.getRecommendedVisionModel('high')?.id).toBe(expectedBest?.id);
     });
 
     it('S-MM-1.2: each model SHALL include minimum hardware requirements', () => {
@@ -64,6 +107,254 @@ describe('ModelRegistryService', () => {
 
       const mediumRec = service.getRecommendedModels('medium');
       expect(mediumRec.length).toBeGreaterThan(0);
+    });
+
+    describe('Hardware-aware recommendations (computed from catalog)', () => {
+      const GB = 1024;
+
+      const profile = (overrides: {
+        vendor?: HardwareProfile['gpu']['vendor'];
+        available?: boolean;
+        vramMb?: number;
+        unifiedMemory?: boolean;
+        arch?: HardwareProfile['cpu']['arch'];
+        ramMb: number;
+        tier: HardwareTier;
+      }): HardwareProfile => ({
+        gpu: {
+          available: overrides.available ?? true,
+          vendor: overrides.vendor ?? 'nvidia',
+          model: 'Test GPU',
+          vramMb: overrides.vramMb ?? 0,
+          unifiedMemory: overrides.unifiedMemory ?? false,
+          driverVersion: '550.0',
+          runtimeAvailable: true,
+        },
+        npu: { available: false, model: '' },
+        ram: { totalMb: overrides.ramMb, availableMb: overrides.ramMb },
+        cpu: { arch: overrides.arch ?? 'x86_64', cores: 16, model: 'Test CPU' },
+        effectiveInferenceMemoryMb: overrides.unifiedMemory ? overrides.ramMb : (overrides.vramMb ?? 0),
+        tier: overrides.tier,
+      });
+
+      const topLlm = (models: CuratedModel[]): CuratedModel | undefined => models.find((m) => m.modality === 'llm');
+
+      it('picks a runnable, size-capped LLM for CPU-only machines (regression: previously returned none)', () => {
+        const recs = service.getRecommendedModelsForHardware(
+          'cpu-only',
+          profile({ available: false, vendor: 'none', ramMb: 32 * GB, tier: 'cpu-only' }),
+        );
+        const top = topLlm(recs);
+        expect(top).toBeDefined();
+        expect(top?.backend).toBe('ollama');
+        // CPU inference is slow for big models, so the pick is capped to small/fast sizes...
+        expect(top?.parameterScale ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(14);
+        // ...and it actually fits within system-RAM headroom.
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
+      });
+
+      it('fully uses discrete VRAM with a sizable model that actually fits (24GB GPU)', () => {
+        const recs = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }));
+        const top = topLlm(recs);
+        expect(top).toBeDefined();
+        // A 24GB GPU should land on a substantial (~30B-class) model, not a tiny one…
+        expect(top?.parameterScale ?? 0).toBeGreaterThanOrEqual(24);
+        expect(top?.runtime.quantization).not.toBe('q3_K_M');
+        // …and the pick must genuinely fit the VRAM budget.
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(24 * GB * 0.9);
+      });
+
+      it('sizes a discrete GPU by its VRAM, not system RAM (same GPU, different RAM → same pick)', () => {
+        const lessRam = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }));
+        const moreRam = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 64 * GB, tier: 'high' }));
+        expect(topLlm(lessRam)?.id).toBe(topLlm(moreRam)?.id);
+      });
+
+      // The default (index 0) is the most capable model that fits — measured by Artificial Analysis
+      // Intelligence Index, not parameter count (a smarter 27B can beat a weaker 70B).
+      const intel = (m: CuratedModel | undefined) => m?.metadata?.intelligenceIndex ?? 0;
+
+      it('picks the highest-intelligence model that fits a unified-memory Mac (16GB)', () => {
+        const recs = service
+          .getRecommendedModelsForHardware('high', profile({ vendor: 'apple', unifiedMemory: true, vramMb: 16 * GB, ramMb: 16 * GB, tier: 'high' }))
+          .filter((m) => m.modality === 'llm');
+        const top = recs[0];
+        expect(top).toBeDefined();
+        // index 0 is the highest Intelligence Index among the fitting picks…
+        expect(intel(top)).toBe(Math.max(...recs.map(intel)));
+        // …and it actually fits the unified-memory budget.
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
+      });
+
+      it('excludes bandwidth-bound large dense models on a shared-memory APU (prefers MoE / low active params)', () => {
+        const activeOf = (m: CuratedModel) => m.activeParameterScale ?? m.parameterScale ?? Number.POSITIVE_INFINITY;
+        // Same huge memory budget, two memory architectures.
+        const discrete = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ vendor: 'amd', unifiedMemory: false, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        const apu = service
+          .getRecommendedModelsForHardware('high', profile({ vendor: 'amd', unifiedMemory: true, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }))
+          .filter((m) => m.modality === 'llm');
+
+        // Discrete VRAM: no per-token bandwidth penalty, so the high-intelligence dense 27B is the default.
+        expect(topLlm(discrete)?.id).toBe('qwen3-6-27b');
+
+        // Shared-memory APU: that dense 27B "fits" the budget but is bandwidth-bound, so it is excluded…
+        expect(apu.length).toBeGreaterThan(0);
+        expect(apu.some((m) => m.id === 'qwen3-6-27b')).toBe(false);
+        // …and every pick is within the shared-memory active-param cap (MoE like qwen3:30b-a3b qualify).
+        for (const m of apu) {
+          expect(activeOf(m)).toBeLessThanOrEqual(14);
+        }
+      });
+
+      it('does NOT apply the cap to ARM unified memory (Apple Silicon / NVIDIA Grace are high-bandwidth)', () => {
+        // Same shared-memory budget as the AMD APU above, but on an arm64 unified-memory part:
+        // the cap is x86-UMA-only (gated on cpu.arch), so the dense 27B remains a valid default.
+        const apple = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        expect(topLlm(apple)?.id).toBe('qwen3-6-27b');
+      });
+
+      it('never lowers the picked model intelligence as the budget grows', () => {
+        const gpu16 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 16 * GB, ramMb: 32 * GB, tier: 'high' })));
+        const gpu24 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' })));
+        const gpu48 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' })));
+        // A larger budget only adds candidates, so the best-fit's intelligence is non-decreasing.
+        expect(intel(gpu24)).toBeGreaterThanOrEqual(intel(gpu16));
+        expect(intel(gpu48)).toBeGreaterThanOrEqual(intel(gpu24));
+      });
+
+      it('picks the highest-intelligence catalog model for datacenter-class VRAM', () => {
+        const recs = service.getRecommendedModelsForHardware('high', profile({ vramMb: 2097152, ramMb: 10000000, tier: 'high' }));
+        const top = topLlm(recs);
+        const maxCatalogIntel = Math.max(
+          ...service
+            .getCatalog()
+            .filter((m) => m.modality === 'llm')
+            .map((m) => m.metadata?.intelligenceIndex ?? 0),
+        );
+        // Everything fits, so the default is the single most capable model in the catalog.
+        expect(intel(top)).toBe(maxCatalogIntel);
+        expect(top?.runtime.quantization).not.toBe('q3_K_M');
+      });
+
+      it('never recommends an LLM that is not browsable for that tier (recommended ⊆ getModelsForTier)', () => {
+        const scenarios: Array<{ tier: HardwareTier; hw: HardwareProfile }> = [
+          { tier: 'high', hw: profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }) },
+          { tier: 'medium', hw: profile({ vramMb: 8 * GB, ramMb: 16 * GB, tier: 'medium' }) },
+          { tier: 'low', hw: profile({ vramMb: 6 * GB, ramMb: 16 * GB, tier: 'low' }) },
+          { tier: 'cpu-only', hw: profile({ available: false, vendor: 'none', ramMb: 32 * GB, tier: 'cpu-only' }) },
+        ];
+        for (const { tier, hw } of scenarios) {
+          const browsableIds = new Set(service.getModelsForTier(tier).map((m) => m.id));
+          const recommendedLlms = service.getRecommendedModelsForHardware(tier, hw).filter((m) => m.modality === 'llm');
+          expect(recommendedLlms.length).toBeGreaterThan(0);
+          for (const m of recommendedLlms) {
+            expect(browsableIds.has(m.id)).toBe(true);
+          }
+        }
+      });
+
+      it('returns no models for an insufficient tier', () => {
+        expect(
+          service.getRecommendedModelsForHardware('insufficient', profile({ available: false, vendor: 'none', ramMb: 4 * GB, tier: 'insufficient' })),
+        ).toEqual([]);
+      });
+
+      // ─── Expanded hardware ladder (2GB → 2048GB VRAM) ───────────────────
+      const VRAM_LADDER_GB = [2, 4, 8, 12, 16, 24, 32, 64, 96, 128, 256, 512, 1024, 2048];
+
+      it('recommends a runnable, non-decreasing model across the full VRAM ladder (2GB → 2048GB)', () => {
+        let prevParams = -1;
+        for (const vramGb of VRAM_LADDER_GB) {
+          const ramGb = Math.max(8, vramGb * 2); // RAM tracks VRAM on real machines
+          const hw = profile({ vramMb: vramGb * GB, ramMb: ramGb * GB, tier: 'high' });
+          const top = topLlm(service.getRecommendedModelsForHardware('high', hw));
+          expect(top, `VRAM ${vramGb}GB should yield a runnable LLM`).toBeDefined();
+          // Fits dedicated VRAM (GPU-resident) or, for a sub-minimum GPU, system RAM (CPU fallback).
+          const fitsVram = (top?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY) <= vramGb * GB * 0.9;
+          const fitsRam = (top?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY) <= ramGb * GB * 0.7;
+          expect(fitsVram || fitsRam, `VRAM ${vramGb}GB pick must fit VRAM or RAM`).toBe(true);
+          // Capability never regresses as the budget grows.
+          expect(top?.parameterScale ?? 0, `VRAM ${vramGb}GB should not regress capability`).toBeGreaterThanOrEqual(prevParams);
+          prevParams = top?.parameterScale ?? 0;
+        }
+      });
+
+      it('falls back to a CPU/RAM model when the GPU is too small to hold any model (2GB VRAM + RAM)', () => {
+        const hw = profile({ vramMb: 2 * GB, ramMb: 32 * GB, tier: 'cpu-only' });
+        const top = topLlm(service.getRecommendedModelsForHardware('cpu-only', hw));
+        expect(top).toBeDefined();
+        expect(top?.parameterScale ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(14); // CPU speed cap
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
+      });
+
+      it('recommends the real default (q4_K_M) build and never overflows the VRAM budget', () => {
+        // The catalog lists only the bare `model:size` tag each model actually ships, which is the
+        // q4_K_M default pull — so every pick is real/installable and must fit the budget.
+        for (const vramGb of [8, 12, 16, 24, 32, 64, 96]) {
+          const top = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: vramGb * GB, ramMb: vramGb * 2 * GB, tier: 'high' })));
+          expect(top, `VRAM ${vramGb}GB should yield a runnable LLM`).toBeDefined();
+          expect(top?.runtime.quantization).toBe('q4_K_M');
+          expect(top?.runtime.memoryFootprintMb, `VRAM ${vramGb}GB pick must fit VRAM`).toBeLessThanOrEqual(vramGb * GB * 0.9);
+        }
+      });
+
+      // ─── Frontier model coverage (installer recommend/include set) ──────
+      // Every id here is verified to exist on ollama.com/library (the catalog lists only real,
+      // pullable model:size tags). Earlier this list held speculative models (Kimi K2.6, DeepSeek V4,
+      // GLM-5.1, MiniMax-M2.7, Mistral Medium 3.5, …) that 404 on ollama.com — they were removed.
+      const FRONTIER_MODEL_IDS = [
+        'gemma4-31b', // Gemma 4 31B
+        'qwen3-6-35b', // Qwen 3.6 35B (MoE)
+        'qwen3-5-122b', // Qwen 3.5 122B
+        'qwen3-235b', // Qwen 3 235B
+        'nemotron3-33b', // Nemotron 3 33B
+        'nemotron-3-super-120b', // NVIDIA Nemotron 3 Super 120B (MoE)
+        'gpt-oss-120b', // gpt-oss 120B
+        'gpt-oss-20b', // gpt-oss 20B
+        'qwq-32b', // QwQ 32B
+        'deepseek-r1-671b', // DeepSeek R1 671B
+        'deepseek-r1-70b', // DeepSeek R1 70B
+        'deepseek-coder-v2-236b', // DeepSeek Coder V2 236B
+        'llama3-1-405b', // Llama 3.1 405B
+        'llama3-3-70b', // Llama 3.3 70B
+        'llama4-128x17b', // Llama 4 Maverick (128x17B MoE)
+        'llama4-16x17b', // Llama 4 Scout (16x17B MoE)
+        'mistral-large-123b', // Mistral Large 123B
+        'mixtral-8x22b', // Mixtral 8x22B
+        'minimax-m2-community-230b', // MiniMax M2 230B (community upload)
+      ];
+
+      it('leads with the highest-intelligence pick and still spans multiple size classes', () => {
+        const recs = service
+          .getRecommendedModelsForHardware('high', profile({ vramMb: 96 * GB, ramMb: 192 * GB, tier: 'high' }))
+          .filter((m) => m.modality === 'llm');
+        const classOf = (p?: number) => ((p ?? 0) > 70 ? 'large' : (p ?? 0) > 14 ? 'medium' : 'small');
+        const classes = new Set(recs.map((m) => classOf(m.parameterScale)));
+        // index 0 is the most capable (highest Intelligence Index) model that fits — the auto-install default.
+        expect(intel(recs[0])).toBe(Math.max(...recs.map(intel)));
+        // the list still covers more than one size class instead of clustering at one size.
+        expect(classes.size).toBeGreaterThanOrEqual(2);
+      });
+
+      it('includes every listed frontier model in the catalog and makes each installable on a top-tier box', () => {
+        const workstationBudgetMb = 2048 * GB * 0.9;
+        const highTierIds = new Set(service.getModelsForTier('high').map((m) => m.id));
+        for (const id of FRONTIER_MODEL_IDS) {
+          const model = service.getCuratedModel(id);
+          expect(model, `frontier model ${id} should exist in the catalog`).toBeDefined();
+          expect(model?.modality).toBe('llm');
+          expect(model?.parameterScale, `frontier model ${id} should declare a parameter scale`).toBeGreaterThan(0);
+          // Runs on a top-tier workstation and is browsable/installable in the high tier.
+          expect(model?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(workstationBudgetMb);
+          expect(highTierIds.has(id), `frontier model ${id} should be installable in the high tier`).toBe(true);
+        }
+      });
     });
 
     it('should filter by modality', () => {

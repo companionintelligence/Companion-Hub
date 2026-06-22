@@ -1,6 +1,83 @@
 .action-button {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 120px;
+}
+
+.retry-install-action-button {
+  min-height: 3rem;
+  border-color: color-mix(in srgb, rgb(245 158 11) 30%, transparent);
+  background: color-mix(in srgb, rgb(245 158 11) 12%, var(--color-card));
+  color: color-mix(in srgb, rgb(245 158 11) 72%, var(--color-foreground));
+  box-shadow: 0 8px 24px color-mix(in srgb, rgb(245 158 11) 14%, transparent);
+  font-weight: 600;
+}
+
+.retry-install-action-button:hover {
+  background: color-mix(in srgb, rgb(245 158 11) 16%, var(--color-card));
+  color: color-mix(in srgb, rgb(245 158 11) 80%, var(--color-foreground));
+}
+
+.install-action-button {
+  flex: 1 1 100%;
+  width: 100%;
+  min-height: 3rem;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+@media (min-width: 768px) {
+  .install-action-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 180px;
+    padding-inline: 1.5rem;
+  }
+}
+
+.launch-action-button {
+  flex: 1 1 100%;
+  width: 100%;
+  min-height: 3rem;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--color-primary) 22%, transparent);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+@media (min-width: 768px) {
+  .launch-action-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 180px;
+    padding-inline: 1.5rem;
+  }
+}
+
+.hero-action-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  border-radius: var(--radius);
+  padding: 0.25rem;
+}
+
+.hero-actions-layout {
+  width: 100%;
+}
+
+.hero-inline-install-error {
+  flex: 1 1 18rem;
+  max-width: 32rem;
+}
+
+.hero-action-icon {
+  border-radius: calc(var(--radius) - 2px);
+  width: 2.5rem;
+  height: 2.5rem;
 }
 
 .installation-progress-button {
@@ -8,6 +85,47 @@
   font-size: 0.875rem;
   padding: 0.5rem 1rem;
   font-weight: 500;
+}
+
+.installation-progress-shell {
+  display: flex;
+  min-width: 120px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+
+@media (min-width: 1280px) {
+  .hero-actions-layout {
+    align-items: flex-start;
+    justify-content: flex-end;
+  }
+
+  .hero-action-bar,
+  .hero-actions-layout > .action-button,
+  .hero-actions-layout > .installation-progress-shell {
+    flex-shrink: 0;
+  }
+}
+
+.installation-progress-track {
+  height: 0.25rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.installation-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--color-primary);
+  transition: width 200ms ease-out;
+}
+
+.installation-progress-stage {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
 }
 
 .more-button {

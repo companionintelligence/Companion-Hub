@@ -6,6 +6,7 @@ import { Suspense } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Navigate, useOutlet } from 'react-router';
 import { ErrorPage } from '../error/error-page';
+import { captureHubException } from '@/lib/sentry';
 import { DashboardLayout, DashboardLayoutSuspense } from '../layouts/dashboard/layout';
 import { SSEProvider } from '../providers/sse/sse-provider';
 import { RouteWrapper } from './route-wrapper';
@@ -69,6 +70,9 @@ export default () => {
               </DashboardLayoutSuspense>
             )}
             onReset={reset}
+            onError={(error, info) => {
+              captureHubException(error, { componentStack: info.componentStack ?? undefined });
+            }}
           >
             <Suspense fallback={null}>
               <AppContextProvider>

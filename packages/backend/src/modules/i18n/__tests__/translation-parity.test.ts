@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
  * keys, otherwise the UI falls back to rendering the raw key string.
  *
  * Historically the canonical superset has lived in `en-US.json` and drifted
- * ahead of `en.json` (15 keys at one point — APP_INSTALL_FORM_PORT,
+ * ahead of `en.json` (15 keys at one point — COMMON_PORT,
  * MY_APPS_BATCH_ACTIONS, MY_APPS_{START,STOP,RESTART}_ALL_*…). This test
  * asserts the no-drift invariant going forward.
  *
@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
  * pull the unmocked module via `vi.importActual` before any other code does.
  */
 
-const TRANSLATIONS_DIR = join(__dirname, '..', 'translations');
+const TRANSLATIONS_DIR = join(__dirname, '..', '..', '..', '..', '..', 'common', 'i18n', 'translations');
 
 async function loadKeys(file: string): Promise<Set<string>> {
   const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');

@@ -12,6 +12,8 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
 import '@/styles/app-grid.css';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { QueuedInstallsIndicator } from '@/modules/dashboard/components/queued-installs-indicator';
+import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 
 export default () => {
   const { data: apps, isLoading: appsLoading } = useQuery({
@@ -30,6 +32,8 @@ export default () => {
 
   const installed = apps?.installed ?? [];
   const customLinks = links?.links ?? [];
+  const installingCount = installed.filter((entry) => entry.app.status === 'installing').length;
+  const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue(installingCount > 0);
 
   const renderApp = ({ info, app, metadata }: (typeof installed)[number]) => {
     const versionIsIgnored = app.ignoredVersion === metadata.latestVersion;
@@ -46,6 +50,7 @@ export default () => {
           updateAvailable={updateAvailable}
           pendingRestart={app.pendingRestart}
           available={info.available}
+          installConfig={app.config}
         />
       </Link>
     );
@@ -66,8 +71,8 @@ export default () => {
   return (
     <div className="h-full flex flex-col px-6 pt-4">
       <div className="flex-shrink-0 mb-6">
-        <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-1 text-foreground">My Apps</h2>
-        <p className="text-lg text-muted-foreground">Manage your installed applications and links</p>
+        <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-1 text-foreground">{t('COMMON_MY_APPS')}</h2>
+        <p className="text-lg text-muted-foreground">{t('MY_APPS_SUBTITLE')}</p>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">
         {(appsLoading || linksLoading) && !apps && !links ? (
@@ -106,6 +111,7 @@ export default () => {
                     {t('MY_APPS_SECTION_APPS')}
                   </h3>
                 )}
+                <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading && installingCount > 0} />
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="apps-list">
                   {installed.map(renderApp)}
                   <ButtonTile

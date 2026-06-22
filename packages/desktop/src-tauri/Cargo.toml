@@ -1,9 +1,13 @@
 [package]
 name = "ci-os-hub-desktop"
 version = "0.1.0"
-description = "Companion Hub Desktop — native wrapper for the Companion Intelligence Hub"
+description = "Desktop app for managing and accessing the Companion Intelligence Hub"
 authors = ["Companion Intelligence"]
 edition = "2021"
+license-file = "../../../LICENSE.md"
+readme = "../README.md"
+homepage = "https://ci.computer"
+repository = "https://github.com/companionintelligence"
 
 [lib]
 name = "ci_os_hub_desktop_lib"
@@ -19,25 +23,35 @@ tauri-plugin-store = "2"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 mdns-sd = "0.11"
 log = "0.4"
 env_logger = "0.11"
 dirs = "5"
 rand = "0.8"
-sha2 = "0.10"
+sentry = { version = "0.36", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
 tauri-plugin-os = "2.3.2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 tempfile = "3"
 tauri-plugin-opener = "2"
 
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# tauri-plugin-updater removed — full installers from dl.ci.computer via updater.rs
+
+# `panic = "unwind"` (the Rust default) is deliberate: background work runs in
+# `tokio::task::spawn_blocking` and tray/menu callbacks, and the recovery code
+# in main.rs / tray.rs relies on panics unwinding so a panic in one operation is
+# caught and logged instead of aborting the whole desktop app. `panic = "abort"`
+# would turn any stray panic into an instant process kill and make that
+# recovery code dead. Keep the size optimizations below.
 [profile.release]
-panic = "abort"
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"

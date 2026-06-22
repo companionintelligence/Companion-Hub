@@ -6,10 +6,10 @@ on:
     branches:
       - dev
     paths:
-      - "packages/desktop/**"
-      - "packages/frontend/**"
-      - "packages/common/**"
-      - ".github/workflows/desktop-build.yml"
+      - 'packages/desktop/**'
+      - 'packages/frontend/**'
+      - 'packages/common/**'
+      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -39,6 +39,9 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
 
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
@@ -83,12 +86,12 @@ jobs:
 
       - name: Install pnpm
         if: runner.os == 'Linux' || true
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -96,6 +99,8 @@ jobs:
       - name: Build frontend
         env:
           NODE_ENV: production
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
@@ -113,9 +118,16 @@ jobs:
           cd packages/desktop
           args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            args+=(-b deb,rpm,appimage)
+            args+=(-b "deb,rpm,appimage")
           fi
           npx --yes @tauri-apps/cli@2 build "${args[@]}"
+
+      - name: Patch Linux deb maintainer scripts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd packages/desktop
+          sh scripts/patch-deb-maintainer-scripts.sh
 
       - name: List artifacts
         shell: bash
@@ -127,7 +139,7 @@ jobs:
 
       - name: Upload macOS DMG
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-dmg
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
@@ -135,7 +147,7 @@ jobs:
 
       - name: Upload macOS app
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-app
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
@@ -143,7 +155,7 @@ jobs:
 
       - name: Upload Linux deb
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-deb
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
@@ -151,7 +163,7 @@ jobs:
 
       - name: Upload Linux rpm
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-rpm
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
@@ -159,7 +171,7 @@ jobs:
 
       - name: Upload Linux AppImage
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-appimage
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
@@ -168,16 +180,16 @@ jobs:
       # --- Windows artifacts ---
       - name: Upload Windows MSI
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: companion-hub-windows-x64-msi
+          name: companion-hub-${{ matrix.target }}-msi
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: error
 
       - name: Upload Windows NSIS installer
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: companion-hub-windows-x64-setup
+          name: companion-hub-${{ matrix.target }}-setup
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

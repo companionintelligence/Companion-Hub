@@ -16,12 +16,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppsService } from '../apps.service';
+import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { AppFilesManager } from '../app-files-manager';
 import { AppsRepository } from '../apps.repository';
 import { MarketplaceService } from '../../marketplace/marketplace.service';
 import { RegistrationService } from '../../registration/registration.service';
 import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import { ModuleRef } from '@nestjs/core';
+import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../../tailscale/tailscale.service';
 
 describe('AppsService', () => {
   let service: AppsService;
@@ -32,8 +35,10 @@ describe('AppsService', () => {
   let configService: MockProxy<ConfigurationService>;
   let registrationService: MockProxy<RegistrationService>;
   let moduleRef: MockProxy<ModuleRef>;
+  let installPipelineTracker: InstallPipelineTracker;
 
   beforeEach(async () => {
+    installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AppsService,
@@ -43,6 +48,7 @@ describe('AppsService', () => {
         { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: PortAllocationRepository, useValue: mock<PortAllocationRepository>() },
+        { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: ModuleRef, useValue: mock<ModuleRef>() },
       ],
@@ -56,6 +62,24 @@ describe('AppsService', () => {
     configService = module.get(ConfigurationService);
     registrationService = module.get(RegistrationService);
     moduleRef = module.get(ModuleRef);
+    moduleRef.get.mockImplementation((token: unknown) => {
+      if (token === CloudflareClientService) {
+        return { getTunnelToken: () => 'token' } as any;
+      }
+      if (token === TailscaleService) {
+        return {
+          getStatus: vi.fn().mockResolvedValue({
+            installed: true,
+            connected: true,
+            hostname: 'hub-tailscale-1',
+            nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+            tailnet: 'capybara-ulmer.ts.net',
+            supportsServices: true,
+          }),
+        } as any;
+      }
+      return undefined as any;
+    });
   });
 
   it('should be defined', () => {
@@ -99,6 +123,50 @@ describe('AppsService', () => {
         latestVersion: '1.1.0',
         localSubdomain: 'test',
       });
+    });
+
+    it('falls back to marketplace info while app files are not on disk yet', async () => {
+      const mockApp = {
+        id: 2,
+        appName: 'plane',
+        appStoreSlug: 'ci-marketplace',
+        localSubdomain: 'plane',
+        port: 8080,
+        status: 'installing',
+      };
+
+      appsRepository.getApps.mockResolvedValue([mockApp] as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      const storeInfo = { id: 'plane', name: 'Plane', version: '1.0.0' };
+      marketplaceService.getAppInfoFromAppStore.mockResolvedValue(storeInfo as any);
+      marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 0, latestDockerVersion: '0.0.0' } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '' } as any);
+
+      const result = await service.getInstalledApps();
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.info).toEqual(storeInfo);
+      expect(result[0]?.app.status).toBe('installing');
+    });
+  });
+
+  describe('getInstallQueueState', () => {
+    it('returns active pipeline app and queued installers', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 1, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 2, appName: 'cloudreve', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      installPipelineTracker.setActive('plane:ci-marketplace' as AppUrn);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      marketplaceService.getAppInfoFromAppStore.mockImplementation(async (urn: AppUrn) => {
+        if (urn === 'plane:ci-marketplace') return { name: 'Plane' } as any;
+        return { name: 'Cloudreve' } as any;
+      });
+
+      const result = await service.getInstallQueueState();
+
+      expect(result.active).toEqual({ urn: 'plane:ci-marketplace', name: 'Plane' });
+      expect(result.queued).toEqual([{ urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' }]);
     });
   });
 
@@ -165,11 +233,40 @@ describe('AppsService', () => {
     });
 
     it('MUST construct local URL (http://internalIp:port) when exposureMode is local', async () => {
-      setupApp({ exposureMode: 'local', port: 8080 });
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
+    });
+
+    it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists and a host port is published', async () => {
+      setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 });
+      moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('http://192.168.1.100:8080');
+      expect(mockAxiosGet).not.toHaveBeenCalled();
+    });
+
+    it('MUST map 0.0.0.0 internal IP to 127.0.0.1 for local URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '0.0.0.0', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://127.0.0.1:8080');
+    });
+
+    it('MUST bracket IPv6 internal IPs for local URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '::1', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://[::1]:8080');
     });
 
     it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {
@@ -196,7 +293,7 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('https://myapp-test1-myorg.example.com');
     });
 
-    it('MUST always include device slug even when it equals org slug', async () => {
+    it('MUST omit duplicate device slug when it equals org slug', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         slug: 'myorg',
@@ -204,7 +301,7 @@ describe('AppsService', () => {
       } as any);
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
-      expect(result.appUrl).toBe('https://myapp-myorg-myorg.example.com');
+      expect(result.appUrl).toBe('https://myapp-myorg.example.com');
     });
 
     it('MUST return appUrl in response when available', async () => {
@@ -284,7 +381,7 @@ describe('AppsService', () => {
     });
 
     it("MUST return errorCode 'PROXY_UPSTREAM_ERROR' for non-Cloudflare 502/503", async () => {
-      setupApp({ exposureMode: 'local', port: 0 });
+      setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockResolvedValue({ status: 502, data: '<html>Bad Gateway</html>' });
       const result = await service.checkAppAvailability(appUrn);
       // Non-CF 502 is now treated as available (any HTTP response = reachable)
@@ -355,7 +452,7 @@ describe('AppsService', () => {
 
     it('MUST call syncExposurePublic for CF/DNS errors', async () => {
       const mockSync = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({ syncExposurePublic: mockSync, restartContainer: vi.fn() })) as any);
+      moduleRef.get.mockImplementation((() => ({ syncExposurePublic: mockSync, restartContainer: vi.fn(), getTunnelToken: () => 'token' })) as any);
 
       setupForResolve('dns');
       await service.resolveAppAvailability(appUrn);
@@ -364,23 +461,45 @@ describe('AppsService', () => {
 
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({ restartContainer: mockRestart, syncExposurePublic: vi.fn() })) as any);
+      moduleRef.get.mockImplementation((() => ({
+        restartContainer: mockRestart,
+        syncExposurePublic: vi.fn(),
+        getTunnelToken: () => 'token',
+      })) as any);
 
       setupForResolve('proxy502');
       await service.resolveAppAvailability(appUrn);
       expect(mockRestart).toHaveBeenCalledWith('test-app');
     });
 
-    it('SHOULD call tailscaleService.serveApp for tailscale + CONNECTION_REFUSED', async () => {
-      const mockServeApp = vi.fn().mockResolvedValue(undefined);
-      moduleRef.get.mockImplementation((() => ({
-        serveApp: mockServeApp,
-        restartContainer: vi.fn().mockResolvedValue(undefined),
-      })) as any);
+    it('SHOULD call syncExposurePublic for tailscale + CONNECTION_REFUSED', async () => {
+      const mockSync = vi.fn().mockResolvedValue(undefined);
+      moduleRef.get.mockImplementation(((token: unknown) => {
+        if (token === TailscaleService) {
+          return {
+            getStatus: vi.fn().mockResolvedValue({
+              installed: true,
+              connected: true,
+              hostname: 'hub-tailscale-1',
+              nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+              tailnet: 'capybara-ulmer.ts.net',
+              supportsServices: true,
+            }),
+          };
+        }
+        if ((token as { name?: string } | undefined)?.name === 'AppLifecycleService') {
+          return {
+            syncExposurePublic: mockSync,
+          };
+        }
+        return {
+          restartContainer: vi.fn().mockResolvedValue(undefined),
+        };
+      }) as any);
 
       setupForResolve('connrefused', { exposureMode: 'tailscale' });
       await service.resolveAppAvailability(appUrn);
-      expect(mockServeApp).toHaveBeenCalled();
+      expect(mockSync).toHaveBeenCalled();
     });
   });
 });

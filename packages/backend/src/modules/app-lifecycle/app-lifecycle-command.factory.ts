@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import type { z } from 'zod';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/constants';
 import type { appEventSchema } from '../queue/entities/app-events';
 import { BackupAppCommand } from './commands/backup-app-command';
 import { GenerateAppEnvCommand } from './commands/generate-env-command';
@@ -35,7 +35,7 @@ export class AppLifecycleCommandFactory {
       case 'restart':
         return new RestartAppCommand(this.moduleRef, this.docker);
       case 'uninstall':
-        return new UninstallAppCommand(this.moduleRef, this.docker);
+        return new UninstallAppCommand(this.moduleRef, this.docker, eventData.deleteAllData);
       case 'reset':
         return new ResetAppCommand(this.moduleRef, this.docker);
       case 'backup':

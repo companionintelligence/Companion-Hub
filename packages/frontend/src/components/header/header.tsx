@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -21,7 +21,6 @@ import { useMutation } from '@tanstack/react-query';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 
 type HeaderProps = {
-  isUpdateAvailable?: boolean;
   isLoggedIn?: boolean;
   allowAutoThemes?: boolean;
 };
@@ -46,18 +45,22 @@ export const Header = (props: HeaderProps) => {
     logout.mutate({});
   };
 
+  const navButtonBase =
+    'cursor-pointer text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
+  const navButtonActive = 'bg-primary/12 text-primary shadow-sm dark:bg-accent dark:text-accent-foreground dark:shadow-none';
+
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
-    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), 'cursor-pointer', isActive ? 'bg-accent text-accent-foreground btn-active' : '');
+    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), navButtonBase, isActive ? clsx(navButtonActive, 'btn-active') : '');
 
   return (
     <header
-      className="fixed left-1/2 z-50 flex h-14 w-[96%] md:w-[77%] lg:w-[70%] xl:w-[53%] -translate-x-1/2 items-center gap-2 rounded-full border bg-background/80 px-3 shadow-md backdrop-blur-md"
-      style={{ top: 'calc(var(--titlebar-height, 0px) + 1rem)' }}
+      className="fixed left-0 top-0 z-50 flex h-14 w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
+      style={{ top: 'var(--titlebar-height, 0px)' }}
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
-        <Link to="/dashboard" className="flex items-center">
+        <Link to="/home" className="flex items-center">
           <img
             src="/2024_CI__Logo_Banner_Color_small.svg"
             alt="Companion Intelligence Logo"
@@ -74,13 +77,17 @@ export const Header = (props: HeaderProps) => {
       {/* Navigation (Center) — aligned with CI Portal (absolute center, lg+ only) */}
       {isLoggedIn && (
         <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
-          <NavLink to="/dashboard" className={getNavLinkClass}>
+          <NavLink to="/home" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
-            Home
+            {t('COMMON_HOME')}
           </NavLink>
-          <NavLink to="/app-store" className={getNavLinkClass}>
+          <NavLink to="/store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
-            Store
+            {t('COMMON_APP_STORE')}
+          </NavLink>
+          <NavLink to="/resource-monitor" className={getNavLinkClass}>
+            <Activity className="mr-2 size-4" />
+            {t('RESOURCE_MONITOR_NAV')}
           </NavLink>
         </nav>
       )}
@@ -101,16 +108,22 @@ export const Header = (props: HeaderProps) => {
             {/* Settings Link */}
             <NavLink
               to="/settings"
-              title={t('HEADER_SETTINGS', 'Settings')}
+              title={t('COMMON_SETTINGS', 'Settings')}
               className={({ isActive }) =>
-                clsx(buttonVariants({ variant: 'ghost', size: 'icon' }), isActive ? 'bg-accent text-accent-foreground btn-active' : '')
+                clsx(buttonVariants({ variant: 'ghost', size: 'icon' }), navButtonBase, isActive ? clsx(navButtonActive, 'btn-active') : '')
               }
             >
               <Settings className="size-4" />
-              <span className="sr-only">{t('HEADER_SETTINGS', 'Settings')}</span>
+              <span className="sr-only">{t('COMMON_SETTINGS', 'Settings')}</span>
             </NavLink>
 
-            <Button variant="ghost" size="icon" title={t('HEADER_LOGOUT', 'Logout')} onClick={handleLogout}>
+            <Button
+              variant="ghost"
+              size="icon"
+              title={t('HEADER_LOGOUT', 'Logout')}
+              onClick={handleLogout}
+              className="text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground"
+            >
               <LogOut className="size-4" />
               <span className="sr-only">{t('HEADER_LOGOUT', 'Logout')}</span>
             </Button>
@@ -124,29 +137,35 @@ export const Header = (props: HeaderProps) => {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon">
               <Menu className="size-5" />
-              <span className="sr-only">Open menu</span>
+              <span className="sr-only">{t('HEADER_OPEN_MENU')}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             {isLoggedIn ? (
               <>
                 <DropdownMenuItem asChild>
-                  <Link to="/dashboard" className="w-full cursor-pointer flex items-center">
+                  <Link to="/home" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
-                    Home
+                    {t('COMMON_HOME')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link to="/app-store" className="w-full cursor-pointer flex items-center">
+                  <Link to="/store" className="w-full cursor-pointer flex items-center">
                     <Store className="mr-2 size-4" />
-                    Store
+                    {t('COMMON_APP_STORE')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
-                    {t('HEADER_SETTINGS', 'Settings')}
+                    {t('COMMON_SETTINGS', 'Settings')}
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
+                    <Activity className="mr-2 size-4" />
+                    {t('RESOURCE_MONITOR_NAV')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -156,13 +175,13 @@ export const Header = (props: HeaderProps) => {
                       <Sun className="absolute size-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                       <Moon className="absolute size-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                     </div>
-                    <span>Theme</span>
+                    <span>{t('HEADER_THEME')}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuPortal>
                     <DropdownMenuSubContent>
-                      <DropdownMenuItem onClick={() => setTheme('light')}>Light</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('dark')}>Dark</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('system')}>System</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('light')}>{t('THEME_LIGHT')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('dark')}>{t('THEME_DARK')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
                     </DropdownMenuSubContent>
                   </DropdownMenuPortal>
                 </DropdownMenuSub>

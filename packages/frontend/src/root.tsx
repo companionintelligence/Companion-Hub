@@ -1,8 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
-import { UpdateBanner } from './components/update-banner/update-banner';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -11,10 +10,29 @@ import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
+import { I18nProvider } from './components/providers/i18n/i18n-provider';
+import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { TranslatableError } from './types/error.types';
-import { apiFetch, getTauriSessionId } from './lib/api-fetch';
+import { getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
+import { resolveRegistrationStatus } from './lib/registration-cache';
+import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
+import i18next from 'i18next';
+
+const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
+
+/** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
+function describeUnknownError(error: unknown): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return Object.prototype.toString.call(error);
+  }
+}
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
@@ -37,7 +55,8 @@ client.interceptors.response.use(async (res) => {
       }
     } catch (_e) {
       // If JSON parsing fails, use a default error message
-      data = { message: res.statusText || 'An error occurred' };
+      const fallbackMessage = i18next.isInitialized ? i18next.t('COMMON_AN_ERROR_OCCURRED') : 'An error occurred';
+      data = { message: res.statusText || fallbackMessage };
     }
 
     const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
@@ -60,10 +79,10 @@ client.setConfig({
   credentials: credentialMode,
 });
 
-// Probe the backend port — try 5002 (prod) then 3000 (dev)
+// Probe the backend port — try 5002 (prod) then 5004 (local source dev)
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
   ? (async () => {
-      for (const port of [5002, 3000]) {
+      for (const port of [5002, 5004]) {
         try {
           const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
           if (res.ok) {
@@ -92,41 +111,13 @@ export const links: Route.LinksFunction = () => [
 
 type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: 'unavailable' };
 
-const CACHED_OPERATIONAL_STATUS: RegistrationStatus = {
-  phase: 'locally_ready',
-  degradedReasons: [],
-  registered: true,
-};
-
 async function loadRegistrationLookup(): Promise<RegistrationLookup> {
-  const CACHE_TTL_MS = 60 * 1000;
-  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
-  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
-
-  if (cacheValid) {
-    return { kind: 'ok', status: CACHED_OPERATIONAL_STATUS };
-  }
-
-  try {
-    const res = await apiFetch('/api/registration/status');
-    if (!res.ok) {
-      return { kind: 'unavailable' };
-    }
-
-    const status = (await res.json()) as RegistrationStatus;
-
-    if (isRegistrationOperational(status)) {
-      sessionStorage.setItem('device-registered', 'true');
-      sessionStorage.setItem('device-registered-at', String(Date.now()));
-    } else {
-      sessionStorage.removeItem('device-registered');
-      sessionStorage.removeItem('device-registered-at');
-    }
-
+  const status = await resolveRegistrationStatus();
+  if (status) {
     return { kind: 'ok', status };
-  } catch {
-    return { kind: 'unavailable' };
   }
+
+  return { kind: 'unavailable' };
 }
 
 export async function clientLoader({ request }: Route.ActionArgs) {
@@ -175,11 +166,56 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/login');
   }
 
-  return redirect('/dashboard');
+  return redirect('/home');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { update, dismiss } = useUpdateChecker();
+  useUpdateChecker();
+  const [apiReady, setApiReady] = useState(() => !isTauriRelease);
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+  const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
+
+  useEffect(() => {
+    if (!isTauriRelease) return;
+
+    let cancelled = false;
+    void tauriBaseUrlReady.then(() => {
+      if (!cancelled) {
+        setApiReady(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!apiReady) {
+      return;
+    }
+
+    void loadHubSentryDeviceId();
+  }, [apiReady]);
+
+  useEffect(() => {
+    const syncDocumentTitle = () => {
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+      setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
+    };
+
+    syncDocumentTitle();
+    i18next.on('initialized', syncDocumentTitle);
+    i18next.on('languageChanged', syncDocumentTitle);
+    i18next.on('loaded', syncDocumentTitle);
+
+    return () => {
+      i18next.off('initialized', syncDocumentTitle);
+      i18next.off('languageChanged', syncDocumentTitle);
+      i18next.off('loaded', syncDocumentTitle);
+    };
+  }, []);
+
   useEffect(() => {
     const handlePreloadError = () => {
       window.location.reload();
@@ -204,6 +240,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         const shouldShow = text.length === 0 && location.pathname !== '/login';
         if (shouldShow) {
           if (!document.getElementById('ci-hub-dev-fallback')) {
+            const fallbackLabel = i18next.t('ROOT_DEV_UI_MODULES_NOT_LOADED');
+            const reloadLabel = i18next.t('COMMON_RELOAD');
             const el = document.createElement('div');
             el.id = 'ci-hub-dev-fallback';
             el.style.position = 'fixed';
@@ -215,11 +253,30 @@ export function Layout({ children }: { children: React.ReactNode }) {
             el.style.padding = '8px 12px';
             el.style.borderRadius = '8px';
             el.style.fontSize = '13px';
-            el.innerHTML =
-              '<div style="display:flex; gap:8px; align-items:center;"><span>Dev: UI modules not loaded</span><button id="ci-hub-dev-reload" style="background:#fff;color:#000;border:none;padding:6px 8px;border-radius:6px;cursor:pointer">Reload</button></div>';
+            const wrapper = document.createElement('div');
+            wrapper.style.display = 'flex';
+            wrapper.style.gap = '8px';
+            wrapper.style.alignItems = 'center';
+
+            const label = document.createElement('span');
+            label.textContent = fallbackLabel;
+
+            const button = document.createElement('button');
+            button.id = 'ci-hub-dev-reload';
+            button.type = 'button';
+            button.style.background = '#fff';
+            button.style.color = '#000';
+            button.style.border = 'none';
+            button.style.padding = '6px 8px';
+            button.style.borderRadius = '6px';
+            button.style.cursor = 'pointer';
+            button.textContent = reloadLabel;
+            button.addEventListener('click', () => location.reload());
+
+            wrapper.appendChild(label);
+            wrapper.appendChild(button);
+            el.appendChild(wrapper);
             document.body.appendChild(el);
-            const btn = document.getElementById('ci-hub-dev-reload');
-            btn?.addEventListener('click', () => location.reload());
           }
         } else {
           const exist = document.getElementById('ci-hub-dev-fallback');
@@ -240,9 +297,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang="en">
+    <html lang={documentLang}>
       <head>
-        <title>Companion Hub</title>
+        <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
         <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -250,14 +307,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        <Titlebar />
-        {update && <UpdateBanner update={update} onDismiss={dismiss} />}
-        <HubStatus>
-          <main id="root">
-            {children}
-            <ScrollRestoration />
-          </main>
-        </HubStatus>
+        {apiReady ? (
+          <ThemeProvider defaultTheme="dark">
+            <I18nProvider>
+              <Titlebar />
+              <HubStatus>
+                <main id="root">
+                  {children}
+                  <ScrollRestoration />
+                </main>
+              </HubStatus>
+            </I18nProvider>
+          </ThemeProvider>
+        ) : (
+          <ThemeProvider defaultTheme="dark">
+            <Titlebar />
+            <main id="root" className="flex min-h-screen items-center justify-center px-6 text-sm text-muted-foreground">
+              {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+            </main>
+          </ThemeProvider>
+        )}
         <Scripts />
       </body>
     </html>
@@ -284,23 +353,40 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster position="bottom-center" />
     </Providers>
   );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = 'Oops!';
-  let details = 'An unexpected error occurred.';
+  let message = safeI18nText('ROOT_ERROR_BOUNDARY_OOPS', 'Oops!');
+  let details = safeI18nText('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR', 'An unexpected error occurred.');
   let stack: string | undefined;
 
   if (import.meta.env.DEV) {
     console.error('Route ErrorBoundary captured error:', error);
+  } else if (isRouteErrorResponse(error)) {
+    // Route error responses are plain objects, not Error instances. Preserve
+    // the actionable HTTP fields instead of stringifying to "[object Object]".
+    captureHubException(new Error(`Route error ${error.status}: ${error.statusText || 'Unknown'}`), {
+      status: error.status,
+      statusText: error.statusText,
+      data: error.data,
+    });
+  } else if (error instanceof Error) {
+    captureHubException(error);
+  } else {
+    captureHubException(new Error(`Non-error thrown in route boundary: ${describeUnknownError(error)}`), {
+      rawError: error,
+    });
   }
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : 'Error';
-    details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+    message = error.status === 404 ? '404' : safeI18nText('COMMON_ERROR', 'Error');
+    details =
+      error.status === 404
+        ? safeI18nText('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND', 'The requested page could not be found.')
+        : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;

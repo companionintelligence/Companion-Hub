@@ -1,6 +1,9 @@
+import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
+import { assertSafeOutboundUrl } from '@/common/helpers/ssrf-url';
 import { CloudflareClientService } from './cloudflare-client.service';
+import { CloudflareHostnameService } from './cloudflare-hostname.service';
 import { ApiResponse } from '@nestjs/swagger';
 import axios from 'axios';
 import * as https from 'node:https';
@@ -8,12 +11,27 @@ import * as https from 'node:https';
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
 export class CloudflareController {
-  constructor(private readonly cloudflareClientService: CloudflareClientService) {}
+  constructor(
+    private readonly cloudflareClientService: CloudflareClientService,
+    private readonly cloudflareHostnameService: CloudflareHostnameService,
+  ) {}
+
+  private parseOptionalAppUrn(appUrn?: string) {
+    if (!appUrn?.includes(':') || appUrn.startsWith(':') || appUrn.endsWith(':')) {
+      return undefined;
+    }
+
+    return castAppUrn(appUrn);
+  }
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
-  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string) {
+  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string, @Query('appUrn') appUrn?: string) {
     if (!subdomain) {
+      return { available: true };
+    }
+
+    if (await this.cloudflareHostnameService.resolvesToExistingAppHostname(subdomain, domain, this.parseOptionalAppUrn(appUrn))) {
       return { available: true };
     }
 
@@ -57,12 +75,12 @@ export class CloudflareController {
     }
 
     try {
-      // Use axios with relaxed SSL verification to handle self-signed certs or local dev environments
+      const safeUrl = await assertSafeOutboundUrl(url);
       const agent = new https.Agent({
         rejectUnauthorized: false,
       });
 
-      const response = await axios.head(url, {
+      const response = await axios.head(safeUrl.toString(), {
         httpsAgent: agent,
         timeout: 10000,
         validateStatus: (status) => status < 500, // resolved for status < 500

@@ -7,11 +7,14 @@ vi.mock('node:fs', () => {
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn(),
+    chmod: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockResolvedValue(undefined),
   };
   return {
-    default: { existsSync, promises },
+    default: { existsSync, promises, constants: { R_OK: 4, W_OK: 2 } },
     existsSync,
     promises,
+    constants: { R_OK: 4, W_OK: 2 },
   };
 });
 
@@ -46,7 +49,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile } from '../env-helpers';
+import { generateSystemEnvFile, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -56,7 +59,7 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE']) {
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY']) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
@@ -100,7 +103,7 @@ describe('env-helpers — resolve() priority chain', () => {
     delete process.env.DOMAIN;
     setupMocks({ dataEnv: '' });
     const envMap = await generateSystemEnvFile();
-    expect(envMap.get('DOMAIN')).toBe('example.com');
+    expect(envMap.get('DOMAIN')).toBe('companionintelligence.com');
   });
 
   it('MUST have process.env win over settings.json for GUEST_DASHBOARD', async () => {
@@ -135,5 +138,94 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: true } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST keep process.env JWT_SECRET when set, even if data .env differs', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.JWT_SECRET).toBe('runtime-jwt-secret');
+  });
+
+  it('MUST keep process.env MCP_API_KEY when set, even if data .env differs', async () => {
+    process.env.MCP_API_KEY = 'runtime-mcp-key';
+    setupMocks({ dataEnv: 'MCP_API_KEY=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.MCP_API_KEY).toBe('runtime-mcp-key');
+  });
+
+  it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('JWT_SECRET')).toBe('runtime-jwt-secret');
+  });
+
+  it('MUST complete bootstrap when state/.env.resolved cannot be written (EACCES)', async () => {
+    setupMocks({});
+    const target = '/tmp/ci-hub-env-test/state/.env.resolved';
+    (mockedFs.promises.writeFile as any).mockImplementation(async (filePath: string) => {
+      if (String(filePath).endsWith('.env.resolved')) {
+        const error = new Error('EACCES') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+    });
+
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/home/user/ci-os-hub');
+    expect(process.env.ROOT_FOLDER_HOST).toBe('/home/user/ci-os-hub');
+    expect(mockedFs.promises.writeFile).toHaveBeenCalled();
+    void target;
+  });
+
+  it.each([
+    ['C:/foo/bar', 'C:/foo/bar'],
+    ['C:\\foo\\bar', 'C:\\foo\\bar'],
+    ['\\\\server\\share\\folder', '\\\\server\\share\\folder'],
+    ['/home/user/ci-os-hub', '/home/user/ci-os-hub'],
+  ])('accepts absolute host ROOT_FOLDER_HOST (%s)', async (input, expected) => {
+    process.env.ROOT_FOLDER_HOST = input;
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('ROOT_FOLDER_HOST')).toBe(expected);
+  });
+});
+
+describe('writeResolvedEnvFile', () => {
+  it('returns false when the target path is not writable', async () => {
+    (mockedFs.promises.writeFile as any).mockImplementation(async () => {
+      const error = new Error('EACCES') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    });
+
+    const wrote = await writeResolvedEnvFile('/data/state/.env.resolved', 'KEY=value\n');
+    expect(wrote).toBe(false);
+  });
+});
+
+describe('ensureSettingsJsonReady', () => {
+  beforeEach(() => {
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+    (mockedFs.promises.access as any).mockResolvedValue(undefined);
+  });
+
+  it('creates settings.json when missing', async () => {
+    mockedFs.existsSync.mockImplementation((p) => !String(p).includes('settings.json'));
+    await ensureSettingsJsonReady('/data/state/settings.json');
+    expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/state/settings.json', '{}', {
+      encoding: 'utf8',
+      mode: 0o666,
+    });
+  });
+
+  it('retries chmod when settings.json is not writable', async () => {
+    mockedFs.existsSync.mockReturnValue(true);
+    (mockedFs.promises.access as any).mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' })).mockResolvedValue(undefined);
+
+    await ensureSettingsJsonReady('/data/state/settings.json');
+
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state', 0o777);
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/settings.json', 0o666);
   });
 });

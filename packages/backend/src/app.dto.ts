@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
+import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
+import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 
 import { userSchema } from './modules/user/dto/user.dto';
 
 import { LOG_LEVEL_ENUM } from './core/logger/logger.service';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { appInfoObjectSchema } from '@ci-hub/common/schemas';
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -12,6 +14,9 @@ export const settingsSchema = z.object({
   allowErrorMonitoring: z.boolean(),
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
+  defaultAppCpuLimit: optionalCpuLimitSchema,
+  defaultAppMemoryLimit: optionalMemoryLimitSchema,
+  autoAllocateAppResources: z.boolean().optional(),
   demoMode: z.boolean(),
   disablePasswordReset: z.boolean(),
   dnsIp: z.string().ipv4(),
@@ -38,9 +43,12 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade']).optional(),
+  inferenceModel: z.string().trim().optional(),
+  inferenceEmbeddingModel: z.string().trim().optional(),
+  inferenceVisionModel: z.string().trim().optional(),
 });
 
-const simpleAppInfoSchema = appInfoSchema.pick({
+const simpleAppInfoSchema = appInfoObjectSchema.pick({
   id: true,
   urn: true,
   name: true,
@@ -68,14 +76,13 @@ const appContextSchema = z.object({
   isProduction: z.boolean(),
   cloudflareAvailable: z.boolean(),
   tailscaleAvailable: z.boolean(),
+  tailscaleNodeFqdn: z.string().trim().nullable().optional(),
+  tailscaleSupportsServices: z.boolean().optional(),
 });
-
-export class UserSettingsDto extends createZodDto(settingsSchema) {}
 
 export class UserSettingsBody extends createZodDto(settingsSchema.partial()) {}
 
 export type { z as ZodType } from 'zod';
-export type UserSettingsBodyType = z.infer<typeof settingsSchema>;
 
 export class AppContextDto extends createZodDto(appContextSchema) {}
 

@@ -1,10 +1,15 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
+import { client } from '@/api-client/client.gen';
 import { setTauriSessionId } from '@/lib/api-fetch';
+import { apiFetch } from '@/lib/api-fetch';
+import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
+import { resolveRegistrationStatus } from '@/lib/registration-cache';
+import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { Navigate, redirect, useNavigate, useSearchParams } from 'react-router';
@@ -15,6 +20,11 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
 export async function clientLoader() {
+  const registrationStatus = await resolveRegistrationStatus();
+  if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
+    return redirect('/device-registration');
+  }
+
   const user = await userContext();
 
   if (!user.data?.isConfigured) {
@@ -22,7 +32,7 @@ export async function clientLoader() {
   }
 
   if (user.data?.isLoggedIn) {
-    return redirect('/dashboard');
+    return redirect('/home');
   }
 }
 
@@ -34,10 +44,60 @@ export default () => {
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
 
-  const loginType = capitalize(app ?? '') || 'your local admin account';
-
   const { t } = useTranslation();
+  const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
   const navigate = useNavigate();
+  const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  const completeDesktopPortalLogin = useCallback(
+    async (payload: DesktopPortalAuthPayload | null) => {
+      if (!payload) {
+        return;
+      }
+
+      try {
+        const res = await apiFetch(`/api/auth/portal/desktop-exchange?token=${encodeURIComponent(payload.token)}`);
+        if (!res.ok) {
+          throw new Error(`Desktop portal exchange failed with status ${res.status}`);
+        }
+
+        const data = (await res.json()) as { sessionId: string; redirectPath: string };
+        setTauriSessionId(data.sessionId);
+        setUserContext({ isLoggedIn: true });
+        await refreshUserContext();
+        navigate(data.redirectPath || '/home');
+      } catch {
+        toast.error(t('COMMON_AN_ERROR_OCCURRED'));
+      }
+    },
+    [navigate, refreshUserContext, setUserContext, t],
+  );
+
+  useEffect(() => {
+    if (!isTauriDesktop) {
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<DesktopPortalAuthPayload>('deep-link-auth', (event) => {
+          void completeDesktopPortalLogin(event.payload);
+        });
+      } catch {
+        // Non-desktop or deep-link listener unavailable.
+      }
+
+      const pending = await takePendingDesktopPortalAuth();
+      await completeDesktopPortalLogin(pending);
+    })();
+
+    return () => {
+      void unlisten?.();
+    };
+  }, [completeDesktopPortalLogin, isTauriDesktop]);
 
   const login = useMutation({
     ...loginMutation(),
@@ -56,7 +116,7 @@ export default () => {
           window.location.href = redirect_url;
           return;
         }
-        navigate('/dashboard');
+        navigate('/home');
       }
     },
     onError: (e: TranslatableError) => {
@@ -77,7 +137,7 @@ export default () => {
         window.location.href = redirect_url;
         return;
       }
-      navigate('/dashboard');
+      navigate('/home');
     },
   });
 
@@ -86,7 +146,7 @@ export default () => {
       window.location.href = redirect_url;
       return;
     }
-    return <Navigate to="/dashboard" />;
+    return <Navigate to="/home" />;
   }
 
   if (!isConfigured) {
@@ -97,11 +157,24 @@ export default () => {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
 
+  const portalSsoHref = (() => {
+    const baseUrl = isTauriDesktop ? client.getConfig().baseUrl || 'http://localhost:5002' : window.location.origin;
+    const url = new URL('/api/auth/portal/start', baseUrl);
+    if (redirect_url) {
+      url.searchParams.set('redirect_url', redirect_url);
+    }
+    if (isTauriDesktop) {
+      url.searchParams.set('desktop', '1');
+    }
+    return url.toString();
+  })();
+
   return (
     <LoginForm
       onSubmit={(values) => login.mutate({ body: { password: values.password, username: values.email } })}
       loading={login.isPending}
       loginType={loginType}
+      portalSsoHref={portalSsoHref}
     />
   );
 };

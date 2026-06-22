@@ -1,143 +1,195 @@
+import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { useState } from 'react';
-import { Navigate } from 'react-router';
-import { WelcomeStep } from '../components/welcome-step';
-import { RecommendationsStep } from '../components/recommendations-step';
-import { SelectAppsStep } from '../components/select-apps-step';
-import { AiSetupStep } from '../components/ai-setup-step';
-import { TailscaleSetupStep } from '../components/tailscale-setup-step';
-import { InstallStep } from '../components/install-step';
-import { CompleteStep } from '../components/complete-step';
-import { Stepper, StepTrigger, StepTriggerList, StepContent } from '@/components/ui/Stepper/Stepper';
-import type { OnboardingApp, InstallSummary, AiSetupConfig } from '../helpers/types';
-import type { DetectedService } from '../helpers/service-detection';
+import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
-import { Suspense } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Navigate, useNavigate } from 'react-router';
+import { useTranslation } from 'react-i18next';
+import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
+import { AiSetupStep } from '../components/ai-setup-step';
+import { StepSection } from '../components/ai-setup/primitives';
+import { InstallStep } from '../components/install-step';
+import { RecommendationsStep } from '../components/recommendations-step';
+import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
+import { identifyServices, type DetectedService } from '../helpers/service-detection';
+import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
-function OnboardingWizard() {
-  const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
-  const defaultExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
-  const [currentStep, setCurrentStep] = useState(0);
-  const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
-  const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
-  const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
-  const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
+const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
+  Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
+    [framework, slug],
+    [slug, slug],
+  ]),
+);
 
-  // If already completed onboarding, redirect to dashboard
-  if (user.hasCompletedOnboarding) {
-    return <Navigate to="/dashboard" replace />;
+function appIdentityKeys(app: OnboardingApp): string[] {
+  const keys: string[] = [];
+  if (app.urn) keys.push(`urn:${app.urn.toLowerCase()}`);
+
+  const slug = app.appSlug?.trim().toLowerCase();
+  if (slug) {
+    keys.push(`slug:${slug}`);
+    const canonical = AGENT_APP_ALIAS_CANONICAL[slug];
+    if (canonical && canonical !== slug) keys.push(`slug:${canonical}`);
   }
 
-  const stepTitles = ['Welcome', 'Discover', 'Select', 'AI Setup', 'Private VPN', 'Install', 'Done'];
+  return keys;
+}
+
+function dedupeOnboardingApps(apps: OnboardingApp[]): OnboardingApp[] {
+  const seen = new Set<string>();
+  const deduped: OnboardingApp[] = [];
+
+  for (const app of apps) {
+    const keys = appIdentityKeys(app);
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
+    deduped.push(app);
+  }
+
+  return deduped;
+}
+
+/** Page chrome shared by every onboarding phase: brand header + centered container. */
+function Shell({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
 
   return (
-    <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <div className="w-full max-w-3xl">
-        <div className="text-center mb-6">
+    <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+      <div className="w-full max-w-[82.94rem]">
+        <div className="mb-6 flex items-center gap-3">
           <img
-            alt="Companion Hub logo"
+            alt={t('APP_NAME_LOGO_ALT')}
             src={getLogo(true)}
-            height={80}
-            width={80}
-            className="mx-auto mb-4"
+            height={48}
+            width={48}
+            className="flex-shrink-0"
             style={{ maxWidth: '100%', height: 'auto' }}
           />
-          <h1 className="text-2xl font-bold text-foreground">Set Up Your Hub</h1>
-        </div>
-
-        <Stepper currentStep={currentStep}>
-          <StepTriggerList>
-            {stepTitles.map((title, i) => {
-              const isLastStep = i === stepTitles.length - 1;
-              // Allow clicking the last step from any step as a "skip to end" shortcut
-              const alwaysClickable = isLastStep && currentStep < i;
-              const disabled = !alwaysClickable && i > currentStep;
-              const allowStepChange = (s: number) => s <= currentStep || s === stepTitles.length - 1;
-              return (
-                <StepTrigger
-                  key={title}
-                  step={i}
-                  title={title}
-                  disabled={disabled}
-                  alwaysClickable={alwaysClickable}
-                  onStepChange={(s) => allowStepChange(s) && setCurrentStep(s)}
-                />
-              );
-            })}
-          </StepTriggerList>
-
-          <div className="mt-6">
-            <StepContent step={0}>
-              <WelcomeStep
-                onDetected={(services) => {
-                  setDetectedServices(services);
-                  setCurrentStep(1);
-                }}
-                onSkip={() => setCurrentStep(3)}
-              />
-            </StepContent>
-
-            <StepContent step={1}>
-              <RecommendationsStep
-                detectedServices={detectedServices}
-                onSelect={(apps) => {
-                  setSelectedApps(apps);
-                  setCurrentStep(2);
-                }}
-                onSkip={() => setCurrentStep(3)}
-                onBack={() => setCurrentStep(0)}
-              />
-            </StepContent>
-
-            <StepContent step={2}>
-              <SelectAppsStep
-                selectedApps={selectedApps}
-                onConfirm={(apps) => {
-                  setSelectedApps(apps);
-                  setCurrentStep(3);
-                }}
-                onBack={() => setCurrentStep(1)}
-              />
-            </StepContent>
-
-            <StepContent step={3}>
-              <AiSetupStep
-                onComplete={(config) => {
-                  setAiSetupConfig(config);
-                  setCurrentStep(4);
-                }}
-                onSkip={() => {
-                  setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
-                  setCurrentStep(4);
-                }}
-                onBack={() => setCurrentStep(2)}
-              />
-            </StepContent>
-
-            <StepContent step={4}>
-              <TailscaleSetupStep onComplete={() => setCurrentStep(5)} onSkip={() => setCurrentStep(5)} onBack={() => setCurrentStep(3)} />
-            </StepContent>
-
-            <StepContent step={5}>
-              <InstallStep
-                apps={selectedApps}
-                defaultExposureMode={defaultExposureMode}
-                aiSetupConfig={aiSetupConfig}
-                onComplete={(summary) => {
-                  setInstallSummary(summary);
-                  setCurrentStep(6);
-                }}
-              />
-            </StepContent>
-
-            <StepContent step={6}>
-              <CompleteStep installSummary={installSummary} aiSetupConfig={aiSetupConfig} />
-            </StepContent>
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
+            <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
-        </Stepper>
+        </div>
+        {children}
       </div>
     </div>
+  );
+}
+
+const SKIPPED_AI_CONFIG: AiSetupConfig = {
+  agentFrameworks: [],
+  selectedModels: [],
+  backend: 'ollama',
+  cloudProviders: [],
+  remoteAccess: [],
+  skipped: true,
+  installedCatalogIds: [],
+  installBlocked: false,
+};
+
+function OnboardingWizard() {
+  const { t } = useTranslation();
+  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const navigate = useNavigate();
+
+  const [phase, setPhase] = useState<'form' | 'installing'>('form');
+  const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
+  const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
+  const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setDetectedServices(identifyServices(data.services || []));
+      } catch {
+        // Non-fatal — recommendations fall back to popular apps.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
+  const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+
+  const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
+  const agentApps = useMemo(
+    () => agentFrameworks.map((framework) => ({ framework, app: buildAgentApp(framework, storeApps) })),
+    [agentFrameworks, storeApps],
+  );
+  const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
+  const installApps = useMemo(() => {
+    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...selectedApps]);
+  }, [includedAgentApps, selectedApps]);
+
+  if (user.hasCompletedOnboarding) {
+    return <Navigate to="/home" replace />;
+  }
+
+  if (phase === 'installing') {
+    return (
+      <Shell>
+        <InstallStep
+          apps={installApps}
+          start={true}
+          defaultExposureMode={installExposureMode}
+          operatorUsername={user.username}
+          aiSetupConfig={aiSetupConfig}
+          onComplete={async (summary) => {
+            try {
+              await apiFetch('/api/complete-onboarding', { method: 'PATCH', credentials: 'include' });
+            } catch {
+              // Non-fatal — navigate anyway.
+            }
+            // Update the shared app-context cache (correct query key) so route guards
+            // on /home and /store do not send the user back to onboarding.
+            setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
+            await refreshAppContext();
+            navigate('/home', {
+              replace: true,
+              state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
+            });
+          }}
+        />
+      </Shell>
+    );
+  }
+
+  return (
+    <Shell>
+      <div className="space-y-5">
+        {/* Steps 1–3 + step 5 (Advanced) rendered by AiSetupStep in embedded mode.
+            Step 4 (Recommended Apps) is passed as children, inserted between step 3 and step 5. */}
+        <AiSetupStep
+          embedded
+          onConfigChange={setAiSetupConfig}
+          onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
+          cloudflareAvailable={cloudflareAvailable}
+          tailscaleAvailable={tailscaleAvailable}
+        >
+          <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
+            <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
+          </StepSection>
+        </AiSetupStep>
+
+        <div aria-hidden className="h-2" />
+
+        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            {aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE'))}
+          </p>
+          <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
+            {t('ONBOARDING_INSTALL_AND_FINISH')}
+          </Button>
+        </div>
+      </div>
+    </Shell>
   );
 }
 

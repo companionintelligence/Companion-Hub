@@ -1,8 +1,8 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import { Brain, RefreshCw, Loader2 } from 'lucide-react';
+import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import type {
@@ -12,16 +12,43 @@ import type {
   RuntimeModelInfo,
   RuntimeModelsResponse,
 } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
-import { HardwareProfileCard } from '@/modules/onboarding/components/ai-setup/hardware-profile-card';
+import type { CloudProviderType, CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from '@/modules/onboarding/components/ai-setup/resource-summary-bar';
+import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
+import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
+import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
+import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
+import { useTranslation } from 'react-i18next';
+
+// Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
+// Only LLMs can be the agent default; embeddings / speech models must never become the chat model.
+const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
+const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
+const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
+
+// Pick the preferred model for a role from the user's selection, preferring a recommended model.
+// Returns null (which clears the stored preference) when no selected model fits the role.
+const resolvePreferredModelId = (
+  profile: HardwareProfileResponse,
+  backend: InferenceBackendType,
+  match: (model: CuratedModel) => boolean,
+  selectedIds: string[],
+): string | null => {
+  const selectedSet = new Set(selectedIds);
+  const recommended = profile.recommendedModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id));
+  if (recommended) return recommended.id;
+  return profile.availableModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id))?.id ?? null;
+};
 
 export const AiSettingsContainer = () => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
@@ -138,10 +165,11 @@ export const AiSettingsContainer = () => {
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProfile(true);
     } catch (e) {
-      toast.error(`Rescan failed: ${(e as Error).message}`);
+      toast.error(t('AI_SETTINGS_RESCAN_FAILED', { error: (e as Error).message }));
       setRescanning(false);
     }
   };
@@ -179,15 +207,29 @@ export const AiSettingsContainer = () => {
     setSaving(true);
     try {
       if (!profile) {
-        toast.error('AI profile is not loaded yet. Please retry in a moment.');
+        toast.error(t('AI_SETTINGS_PROFILE_NOT_READY'));
         return;
       }
+
+      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
+      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+
+      // Resolve the default model for each role from the user's selection so agents/RAG/vision
+      // tasks have a usable default. null clears any previously stored preference for that role.
+      const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, selectedBackend, isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       const backendRes = await apiFetch('/api/inference/preferences', {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backend: selectedBackend }),
+        body: JSON.stringify({
+          backend: selectedBackend,
+          model: preferredModel,
+          embeddingModel: preferredEmbeddingModel,
+          visionModel: preferredVisionModel,
+        }),
       });
       if (!backendRes.ok) {
         throw new Error(`Failed to save preferred backend: HTTP ${backendRes.status}`);
@@ -214,8 +256,6 @@ export const AiSettingsContainer = () => {
         }
       }
 
-      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const modelOperationErrors: string[] = [];
 
@@ -273,14 +313,14 @@ export const AiSettingsContainer = () => {
       }
 
       if (modelOperationErrors.length > 0) {
-        toast.success(`AI settings saved with ${modelOperationErrors.length} model issue(s).`);
+        toast.success(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length }));
       } else {
-        toast.success('AI settings saved');
+        toast.success(t('AI_SETTINGS_SAVED'));
       }
       // Refresh to show updated state
       await fetchProfile(true);
     } catch (e) {
-      toast.error(`Failed to save: ${(e as Error).message}`);
+      toast.error(t('AI_SETTINGS_SAVE_FAILED', { message: (e as Error).message }));
     } finally {
       setSaving(false);
     }
@@ -288,181 +328,215 @@ export const AiSettingsContainer = () => {
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Brain className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-xl">AI & Inference</CardTitle>
+      <div className="space-y-5">
+        <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+          <div className="flex flex-col items-center gap-4 py-4 text-center">
+            <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
+          </div>
+          <div className="space-y-4 mt-2">
+            <Skeleton className="h-40 w-full rounded-2xl" />
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton count never changes
+                <Skeleton key={`sk-${i}`} className="h-40 w-full rounded-2xl" />
+              ))}
             </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex flex-col items-center gap-4 py-4 text-center">
-                <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
-                <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
-              </div>
-              <Skeleton className="h-24 w-full rounded-lg" />
-              <Skeleton className="h-48 w-full rounded-lg" />
-              <Skeleton className="h-32 w-full rounded-lg" />
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     );
   }
 
   if (error || !profile) {
     return (
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Brain className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-xl">AI & Inference</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-center py-8">
-              <p className="text-destructive mb-4">Failed to load AI settings: {error}</p>
-              <Button variant="outline" onClick={() => fetchProfile()}>
-                <RefreshCw className="mr-2" size={16} />
-                Retry
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="space-y-5">
+        <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
+          <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
+          <Button variant="outline" onClick={() => fetchProfile()}>
+            <RefreshCw className="mr-2" size={16} />
+            {t('COMMON_RETRY')}
+          </Button>
+        </div>
       </div>
     );
   }
 
   const isInsufficient = profile.tier === 'insufficient';
   const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
-  const selectedModels = profile.availableModels.filter((model) => selectedModelIds.includes(model.id) && model.backend === selectedBackend);
-  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
+  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
+  const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
+  const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
+  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
+  const installedCatalogIds = profile.installedCatalogIds ?? [];
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Brain className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">AI & Inference</CardTitle>
-          </div>
-          <CardDescription>Manage local AI models, inference backends, and cloud provider fallbacks.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
+    <div className="space-y-5">
+      {/* Hardware overview — same component as FTUE */}
+      <SystemOverview
+        hardware={profile.hardware}
+        tier={profile.tier}
+        onRescan={handleRescan}
+        rescanning={rescanning}
+        availableDiskMb={profile.resourceEstimate.availableDiskMb}
+        diskTotalMb={profile.resourceEstimate.diskTotalMb}
+      />
 
-          {!isInsufficient && (
-            <>
-              <Card>
-                <CardContent className="p-4">
-                  <h3 className="text-sm font-semibold mb-1">Recommended Models</h3>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    Select curated models optimized for your hardware tier ({profile.tier}). Saving will pull and pin selected models.
-                  </p>
+      {!isInsufficient && (
+        <>
+          {/* Recommended Models — FTUE ModelCard grid */}
+          <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-bold uppercase tracking-wide">{t('COMMON_RECOMMENDED_MODELS')}</h2>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
-                  {backendCompatibleRecommendedModels.length === 0 && (
-                    <p className="text-xs text-muted-foreground">No models recommended for your hardware tier.</p>
-                  )}
-
-                  {backendCompatibleRecommendedModels.length > 0 && (
-                    <div className="space-y-2">
-                      {backendCompatibleRecommendedModels.map((model) => {
-                        const selected = selectedModelIds.includes(model.id);
-                        const memoryMb = model.runtime.memoryFootprintMb;
-                        const trackedModel = trackedModels[model.id];
-                        const statusLabel = trackedModel
-                          ? trackedModel.state === 'pulling' && typeof trackedModel.pullProgress === 'number'
-                            ? `Downloading ${trackedModel.pullProgress}%`
-                            : trackedModel.state.charAt(0).toUpperCase() + trackedModel.state.slice(1)
-                          : null;
-                        return (
-                          <label
-                            key={model.id}
-                            className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              onChange={() => handleToggleModel(model.id)}
-                              className="rounded border-border"
-                              data-testid={`recommended-model-checkbox-${model.id}`}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium">{model.displayName}</div>
-                              <div className="text-xs text-muted-foreground">{model.id}</div>
-                            </div>
-                            {statusLabel && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{statusLabel}</span>
-                            )}
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">
-                              {(memoryMb / 1024).toFixed(1)}GB
-                            </span>
-                          </label>
-                        );
-                      })}
+            {backendCompatibleRecommendedModels.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_NO_RECOMMENDED_MODELS')}</p>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {backendCompatibleRecommendedModels.map((model) => {
+                  const isSelected = selectedModelIds.includes(model.id);
+                  const tracked = trackedModels[model.id];
+                  const statusBadge = (() => {
+                    if (!tracked) return null;
+                    if (tracked.state === 'pulling' && typeof tracked.pullProgress === 'number')
+                      return {
+                        text: t('AI_SETTINGS_DOWNLOADING_PROGRESS', { progress: tracked.pullProgress }),
+                        cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+                      };
+                    if (tracked.state === 'pinned')
+                      return { text: t('AI_SETTINGS_PINNED_BADGE'), cls: 'border-primary/30 bg-primary/10 text-primary' };
+                    if (tracked.state === 'pulled' || tracked.state === 'loaded')
+                      return { text: t('AI_SETTINGS_DOWNLOADED_BADGE'), cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' };
+                    return {
+                      text: tracked.state.charAt(0).toUpperCase() + tracked.state.slice(1),
+                      cls: 'border-border bg-foreground/5 text-muted-foreground',
+                    };
+                  })();
+                  return (
+                    <div key={model.id} className="relative">
+                      <ModelCard
+                        testId={`model-row-${model.id}`}
+                        checkboxTestId={`recommended-model-checkbox-${model.id}`}
+                        title={model.displayName}
+                        icon={<ModelIcon model={model} />}
+                        tags={modelTags(model, t)}
+                        selected={isSelected}
+                        onToggle={() => handleToggleModel(model.id)}
+                        meta={modelMeta(model)}
+                        scores={modelScores(model)}
+                      />
+                      {statusBadge && (
+                        <span
+                          className={`absolute top-3 right-9 text-[10px] px-1.5 py-0.5 rounded-md border font-medium pointer-events-none ${statusBadge.cls}`}
+                        >
+                          {statusBadge.text}
+                        </span>
+                      )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                  );
+                })}
+              </div>
+            )}
 
-              <Card>
-                <CardContent className="p-4">
-                  <h3 className="text-sm font-semibold mb-1">Loaded Models</h3>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    Read-only list of models currently loaded in the selected inference backend at runtime.
-                  </p>
+            {/* Other installable models */}
+            {backendAvailableModels.length > backendCompatibleRecommendedModels.length && (
+              <div className="mt-4">
+                <OtherModelsSection
+                  recommendedModels={backendCompatibleRecommendedModels}
+                  availableModels={backendAvailableModels}
+                  installedCatalogIds={installedCatalogIds}
+                  selectedModelIds={selectedModelIds}
+                  onToggleModel={handleToggleModel}
+                />
+              </div>
+            )}
+          </section>
 
-                  {runtimeModelsLoading && <p className="text-xs text-muted-foreground">Loading runtime models…</p>}
+          {/* Downloaded Models */}
+          <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+            <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
+            <p className="text-xs text-muted-foreground mb-4">{t('AI_SETTINGS_DOWNLOADED_MODELS_SUBTITLE')}</p>
 
-                  {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
-                    <p className="text-xs text-amber-600">Runtime model discovery unavailable for the selected inference backend.</p>
-                  )}
+            {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
 
-                  {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
-                    <p className="text-xs text-muted-foreground">No models loaded in the selected inference backend.</p>
-                  )}
+            {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
+                {t('AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE')}
+              </div>
+            )}
 
-                  {!runtimeModelsLoading && runtimeModels.length > 0 && (
-                    <div className="space-y-2">
-                      {runtimeModels.map((model) => {
-                        return (
-                          <div key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-muted/20">
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium">{model.name}</div>
-                              <div className="text-xs text-muted-foreground">{model.id}</div>
-                            </div>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">{model.state}</span>
-                          </div>
-                        );
-                      })}
+            {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
+              <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_NO_ACTIVE_MODELS')}</p>
+            )}
+
+            {!runtimeModelsLoading && runtimeModels.length > 0 && (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {runtimeModels.map((model) => (
+                  <div key={model.id} className="flex items-center gap-3 rounded-2xl border border-border bg-foreground/[0.015] p-4">
+                    <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
+                      <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{model.name}</div>
+                      <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-medium">
+                      {t('AI_SETTINGS_DOWNLOADED_BADGE')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
 
-              <BackendSelectionCard
-                recommended={profile.backends.recommended}
-                available={profile.backends.available}
-                selected={selectedBackend}
-                onSelect={setSelectedBackend}
-              />
+          <BackendSelectionCard
+            recommended={profile.backends.recommended}
+            available={profile.backends.available}
+            selected={selectedBackend}
+            onSelect={setSelectedBackend}
+            unavailableTypes={['vllm', 'lemonade']}
+          />
 
-              <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
-            </>
-          )}
+          <ResourceSummaryBar
+            selectedModels={selectedModels}
+            installedCatalogIds={installedCatalogIds}
+            availableStorageMb={availableStorageMb}
+            availableMemoryMb={availableMemoryMb}
+          />
+        </>
+      )}
 
-          <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />
+      <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />
 
-          <div className="flex justify-end pt-2">
-            <Button intent="primary" onClick={handleSave} loading={saving} data-testid="ai-settings-save-btn">
-              Save AI Settings
+      <div className="flex justify-end">
+        <Button intent="primary" onClick={() => setConfirmOpen(true)} loading={saving} data-testid="ai-settings-save-btn">
+          Save AI Settings
+        </Button>
+      </div>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
+              {t('COMMON_CANCEL')}
             </Button>
-          </div>
-        </CardContent>
-      </Card>
+            <Button
+              intent="primary"
+              onClick={() => {
+                setConfirmOpen(false);
+                void handleSave();
+              }}
+              data-testid="ai-settings-confirm-btn"
+            >
+              {t('COMMON_CONTINUE')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -6,6 +6,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
+import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { z } from 'zod';
 
 interface Network {
@@ -23,11 +24,12 @@ interface Network {
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
-  private domain: string;
   private localDomain: string;
+  private cloudflareOriginHostname?: string;
+  private defaultCpuLimit?: string;
+  private defaultMemoryLimit?: string;
 
-  constructor(domain: string, localDomain: string) {
-    this.domain = domain;
+  constructor(_domain: string, localDomain: string) {
     this.localDomain = localDomain;
   }
 
@@ -69,14 +71,9 @@ export class DockerComposeBuilder {
     });
   }
 
-  private fullSubdomain?: string; // Full subdomain including device + org slug (e.g., mattermost-test1-bdc), extracted from APP_PUBLIC_HOSTNAME
-  private publicDomain?: string;
-
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
-    // Use domain values set in getDockerCompose (from app env file or defaults)
-    const _domain = this.domain;
     const localDomain = this.localDomain;
     const result = serviceSchema.safeParse(params);
 
@@ -85,6 +82,26 @@ export class DockerComposeBuilder {
         `! Service ${params.name} has invalid schema: \n${JSON.stringify(z.treeifyError(result.error), null, 2)}\nNotify the app maintainer`,
       );
     }
+
+    const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultCpuLimit;
+    const effectiveMemoryLimit = (typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() : undefined) || this.defaultMemoryLimit;
+    // App-provided limits always win; defaults only fill the gaps
+    const applyCpuLimit = Boolean(effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus);
+    const applyMemoryLimit = Boolean(effectiveMemoryLimit && !params.deploy?.resources?.limits?.memory);
+    const deployConfig =
+      applyCpuLimit || applyMemoryLimit
+        ? {
+            ...(params.deploy ?? {}),
+            resources: {
+              ...(params.deploy?.resources ?? {}),
+              limits: {
+                ...(params.deploy?.resources?.limits ?? {}),
+                ...(applyCpuLimit ? { cpus: effectiveCpuLimit } : {}),
+                ...(applyMemoryLimit ? { memory: effectiveMemoryLimit } : {}),
+              },
+            },
+          }
+        : params.deploy;
 
     const service = new ServiceBuilder();
     service
@@ -101,7 +118,7 @@ export class DockerComposeBuilder {
       .setPorts(params.addPorts)
       .setNetworkMode(params.networkMode)
       .setCapAdd(params.capAdd)
-      .setDeploy(params.deploy)
+      .setDeploy(deployConfig)
       .setHostname(params.hostname)
       .setDevices(params.devices)
       .setEntrypoint(params.entrypoint)
@@ -126,18 +143,15 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    // Add main service to ci_os_hub_network for inter-app communication
-    // This allows apps to communicate with each other when needed
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
     if (params.isMain || params.addToMainNetwork) {
       service.setNetwork(mainNetworkName, 1);
     }
 
+    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+
     if (params.isMain) {
-      // Only expose port on host if openPort is true (for direct local network access)
-      // When exposedLocal=true but openPort=false, Traefik uses Docker internal networking
-      // and doesn't need the host port mapping
-      if (form.openPort && params.internalPort) {
+      if (publishesHostPort(form) && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -146,45 +160,30 @@ export class DockerComposeBuilder {
       }
     }
 
-    // Set default labels
     const defaultLabels: Record<string, string | boolean> = {
       'ci-os-hub.managed': true,
       'ci-os-hub.appurn': appUrn,
     };
 
-    // Generate Traefik labels based on exposure mode
-    // Traefik routes using Docker internal networking (container IP + internalPort)
-    // It does NOT use host port mappings - only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
     if (effectiveExposureMode !== 'local' && params.isMain && params.internalPort) {
-      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
-      // Fallback to using this.domain as public domain if not found
-      const publicDomainToUse = this.publicDomain || this.domain;
-
-      // Use full subdomain from APP_PUBLIC_HOSTNAME if available (includes org slug)
-      // Otherwise fall back to constructing it from localSubdomain
-      const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
-
       const traefikBuilder = new TraefikLabelsBuilder({
         internalPort: params.internalPort,
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: form.enableAuth,
-        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
-        publicDomain: publicDomainToUse,
+        cloudflareOriginHostname: this.cloudflareOriginHostname,
         localDomain: this.localDomain,
         httpsBackend: params.httpsBackend,
       });
-      traefikBuilder.addExposedLocalLabels();
+
+      traefikBuilder.addCloudflareLabels();
       traefikBuilder.addTailscaleLabels();
       traefikLabels = traefikBuilder.build();
     }
 
-    // Merge default labels, Traefik labels, and extra labels from app config
-    // Pass localDomain to interpolateVariables to replace ${LOCAL_DOMAIN} with actual value
     service.setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`, localDomain);
 
     return service.build();
@@ -195,88 +194,25 @@ export class DockerComposeBuilder {
     form: AppEventFormInput,
     appUrn: AppUrn,
     subnet: string,
-    domain?: string,
+    _domain?: string,
     localDomain?: string,
     envFile?: string,
+    cloudflareOriginHostname?: string,
+    defaultCpuLimit?: string,
+    defaultMemoryLimit?: string,
   ) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
-    // Store domain values for use in buildService
-    this.domain = domain || process.env.DOMAIN || 'example.com';
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
+    this.cloudflareOriginHostname = cloudflareOriginHostname;
+    this.defaultCpuLimit = defaultCpuLimit?.trim() || undefined;
+    this.defaultMemoryLimit = defaultMemoryLimit?.trim() || undefined;
 
-    // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
-    // APP_PUBLIC_HOSTNAME format: appname-deviceslug-orgslug.publicdomain.com
-    // We extract the full subdomain (appname-deviceslug-orgslug) directly instead of reconstructing it
-    this.fullSubdomain = undefined; // Full subdomain including device + org slug (e.g., mattermost-test1-bdc)
-    this.publicDomain = undefined;
-
-    if (envFile) {
-      try {
-        const fs = await import('node:fs/promises');
-        const envContent = await fs.readFile(envFile, 'utf-8');
-        const envLines = envContent.split('\n');
-
-        // Parse all relevant env vars in a single pass.
-        // Prefer APP_PUBLIC_DOMAIN (set since it was added to avoid fragile hostname parsing)
-        // and fall back to splitting APP_PUBLIC_HOSTNAME for backward-compatibility with
-        // older app installations that pre-date APP_PUBLIC_DOMAIN.
-        let appPublicHostname: string | undefined;
-        let appPublicDomain: string | undefined;
-
-        for (const line of envLines) {
-          if (line.startsWith('APP_PUBLIC_DOMAIN=')) {
-            appPublicDomain = line.split('=')[1]?.trim();
-          } else if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
-            appPublicHostname = line.split('=')[1]?.trim();
-          }
-        }
-
-        if (appPublicHostname) {
-          // Derive fullSubdomain from APP_PUBLIC_HOSTNAME.
-          // Priority order for the domain portion:
-          //   1. APP_PUBLIC_DOMAIN (written alongside APP_PUBLIC_HOSTNAME for new installs)
-          //   2. form.publicDomain (DB-stored value; covers apps whose env predates APP_PUBLIC_DOMAIN,
-          //      including multi-label domains like my.lifescope.io that the slice(-2) heuristic
-          //      would truncate incorrectly)
-          //   3. Slice-last-2 heuristic (backward-compat for simple 2-part TLDs only)
-          const formPublicDomain = typeof form.publicDomain === 'string' ? form.publicDomain.trim() || undefined : undefined;
-          const resolvedDomain =
-            appPublicDomain ||
-            formPublicDomain ||
-            (() => {
-              const parts = appPublicHostname?.split('.');
-              return parts && parts.length >= 2 ? parts.slice(-2).join('.') : undefined;
-            })();
-
-          if (resolvedDomain) {
-            this.publicDomain = resolvedDomain;
-            // Full subdomain is everything before the first occurrence of the domain suffix.
-            const domainSuffix = `.${resolvedDomain}`;
-            if (appPublicHostname.endsWith(domainSuffix)) {
-              this.fullSubdomain = appPublicHostname.slice(0, -domainSuffix.length);
-            } else {
-              // Fallback: strip as many trailing segments as the domain has parts.
-              const parts = appPublicHostname.split('.');
-              const domainParts = resolvedDomain.split('.').length;
-              this.fullSubdomain = parts.slice(0, -domainParts).join('.');
-            }
-          }
-        }
-      } catch (_error) {
-        // If we can't read the env file, continue without org info
-        // Traefik will still work with just the local domain
-      }
-    }
-
-    // Build a map of service names to their healthcheck status for validation
     const serviceHealthcheckMap = new Map<string, boolean>();
     for (const service of services) {
       serviceHealthcheckMap.set(service.name, !!service.healthCheck);
     }
 
-    // Validate and fix depends_on conditions: if a service depends on another with
-    // condition: service_healthy but the target has no healthcheck, change to service_started
     const fixedServices = services.map((service) => {
       if (service.dependsOn && typeof service.dependsOn === 'object' && !Array.isArray(service.dependsOn)) {
         const fixedDependsOn: Record<string, { condition: 'service_healthy' | 'service_started' | 'service_completed_successfully' }> = {};
@@ -286,7 +222,6 @@ export class DockerComposeBuilder {
             if (targetHasHealthcheck) {
               fixedDependsOn[depName] = depConfig;
             } else {
-              // Target service has no healthcheck, downgrade to service_started
               fixedDependsOn[depName] = { condition: 'service_started' as const };
             }
           } else {

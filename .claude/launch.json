@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fleet-qa",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["exec", "tsx", "scripts/fleet-qa-server.ts"],
+      "port": 4242,
+      "autoPort": false
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "frontend", "dev"],
+      "port": 9091,
+      "autoPort": false
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "backend", "dev"],
+      "port": 3000
+    }
+  ]
+}

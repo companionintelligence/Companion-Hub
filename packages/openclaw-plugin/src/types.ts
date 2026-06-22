@@ -61,6 +61,9 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+/** Provider API modes supported by OpenClaw's model catalog. */
+export type OpenClawProviderApi = 'openai-completions' | 'ollama';
+
 /** Provider registration for OpenClaw model catalog */
 export interface OpenClawProvider {
   id: string;
@@ -72,7 +75,7 @@ export interface OpenClawProvider {
       provider: {
         baseUrl: string;
         apiKey: string;
-        api: 'openai-completions';
+        api: OpenClawProviderApi;
         models: OpenClawModelEntry[];
       };
     }>;
@@ -87,6 +90,8 @@ export interface OpenClawModelEntry {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  /** Native backend options forwarded to the provider (e.g. Ollama `num_ctx`). */
+  options?: { num_ctx?: number };
 }
 
 /** Speech provider registration */

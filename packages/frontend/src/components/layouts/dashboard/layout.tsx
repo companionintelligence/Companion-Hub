@@ -1,6 +1,5 @@
 import { Header } from '@/components/header/header';
 import { type PropsWithChildren, useEffect, useRef } from 'react';
-import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -8,13 +7,15 @@ import { useLocation, Navigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
+import { detectClientPlatform, shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { apiFetch } from '@/lib/api-fetch';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={false} isUpdateAvailable={false} allowAutoThemes={false} />
-      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
+      <Header isLoggedIn={false} allowAutoThemes={false} />
+      <div className="flex flex-1 flex-col pt-16 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
         <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
     </div>
@@ -22,32 +23,44 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { user, userSettings, version } = useAppContext();
+  const { user, userSettings } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
   const { isDismissed, dismiss } = useCoreServerBanner();
+  const clientPlatform = detectClientPlatform();
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
     staleTime: 30_000,
   });
 
+  const { data: deviceId } = useQuery({
+    queryKey: ['registration', 'device-id'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/registration/device-id');
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as { device_id?: string };
+      return data.device_id;
+    },
+    staleTime: 300_000,
+  });
+
+  const systemSnapshot = systemData
+    ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores }
+    : undefined;
+
+  const showCoreServerBanner =
+    !isDismissed &&
+    shouldShowCoreServerBanner({
+      clientPlatform,
+      deviceId,
+      system: systemSnapshot,
+    });
+
   useEffect(() => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
-
-  // Version check logic
-  let isLatest = false;
-  try {
-    isLatest = (semver.valid(version?.current) && semver.valid(version?.latest) && semver.gte(version.current, version.latest)) || false;
-  } catch (_e) {
-    // ignore semver errors
-  }
-
-  if (version?.current === 'nightly') {
-    isLatest = true;
-  }
 
   // Redirect to onboarding if not completed
   if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
@@ -56,8 +69,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   // Transition logic
   const getDepth = (path: string) => {
-    if (path === '/dashboard') return 0;
-    if (path.startsWith('/apps') || path.startsWith('/app-store') || path.startsWith('/settings')) {
+    if (path === '/home') return 0;
+    if (path.startsWith('/apps') || path.startsWith('/store') || path.startsWith('/settings') || path.startsWith('/resource-monitor')) {
       const parts = path.split('/').filter(Boolean);
       if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'app-store')) return 2;
       return 1;
@@ -69,7 +82,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   // animation key so the outer wrapper (sidebar + header) doesn't re-mount
   // and swipe during navigation within the same section.
   const getAnimationKey = (path: string) => {
-    if (path.startsWith('/app-store')) return '/app-store';
+    if (path.startsWith('/store')) return '/store';
+    if (path.startsWith('/resource-monitor')) return '/resource-monitor';
     return path;
   };
 
@@ -99,14 +113,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-      <main className="relative flex flex-1 flex-col gap-4 pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
-        {!isDismissed && (
-          <CoreServerBanner
-            onDismiss={dismiss}
-            system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
-          />
-        )}
+      <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
+      <main className="relative flex flex-1 flex-col gap-4 pt-16 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+        {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={getAnimationKey(location.pathname)}

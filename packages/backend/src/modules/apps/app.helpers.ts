@@ -1,16 +1,28 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
+import { InferenceEnvResolver } from '../inference/inference-env-resolver';
+
+/**
+ * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
+ * (\\server\share). The backend often runs in a Linux container, so use both
+ * path.isAbsolute and path.win32.isAbsolute.
+ */
+function isAbsoluteHostPath(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
 
 @Injectable()
 export class AppHelpers {
@@ -22,6 +34,7 @@ export class AppHelpers {
     private readonly logger: LoggerService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
+    private readonly inferenceEnv: InferenceEnvResolver,
   ) {}
 
   /**
@@ -122,17 +135,17 @@ export class AppHelpers {
 
     // Ensure absolute path - resolve relative paths
     let appDataHostBase: string;
-    if (path.isAbsolute(baseAppDataPath)) {
+    if (isAbsoluteHostPath(baseAppDataPath)) {
       appDataHostBase = baseAppDataPath;
       this.logger.debug(`Using absolute baseAppDataPath: ${appDataHostBase}`);
-    } else if (path.isAbsolute(rootFolderHost)) {
+    } else if (isAbsoluteHostPath(rootFolderHost)) {
       // Resolve relative path - try multiple strategies
       appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
       this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
     } else {
       // Try environment variable
       const envRoot = process.env.ROOT_FOLDER_HOST;
-      if (envRoot && path.isAbsolute(envRoot)) {
+      if (envRoot && isAbsoluteHostPath(envRoot)) {
         appDataHostBase = path.resolve(envRoot, baseAppDataPath);
         this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
       } else {
@@ -163,7 +176,7 @@ export class AppHelpers {
     const finalAppDataDir = path.join(appDataHostPath, appStoreId, appName);
 
     // CRITICAL: Verify this is an absolute host path, not a container path
-    if (!path.isAbsolute(finalAppDataDir)) {
+    if (!isAbsoluteHostPath(finalAppDataDir)) {
       this.logger.error(`APP_DATA_DIR is not absolute: ${finalAppDataDir}. This will cause Docker mount errors.`);
       throw new Error(`APP_DATA_DIR must be an absolute path, got: ${finalAppDataDir}`);
     }
@@ -174,7 +187,7 @@ export class AppHelpers {
           'This will cause Docker mount errors. Using fallback path construction.',
       );
       // Fallback: construct path from ROOT_FOLDER_HOST
-      const fallbackBase = path.isAbsolute(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
+      const fallbackBase = isAbsoluteHostPath(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
       const fallbackPath = path.join(fallbackBase, 'app-data', appStoreId, appName);
       envMap.set('APP_DATA_DIR', fallbackPath);
       this.logger.warn(`Using fallback APP_DATA_DIR: ${fallbackPath}`);
@@ -234,14 +247,18 @@ export class AppHelpers {
     // --- Core Identity Variables ---
     // These variables represent the fundamental identity of the service.
 
-    // 1. APP_HOSTNAME: The internal IP address (e.g. 192.168.1.5)
+    // 1. APP_HOSTNAME: bind/listen address (e.g. 0.0.0.0 or 192.168.1.5) — kept raw for containers.
     envMap.set('APP_HOSTNAME', internalIp);
 
     // 2. APP_PORT (Already set earlier): The internal port
 
-    // 3. APP_INTERNAL_AUTHORITY: The combination of internal IP and port
+    // Browser-reachable host: listen-all sentinels (0.0.0.0 / ::) map to loopback so ORIGIN,
+    // APP_URL, and Hub "Open" URLs stay consistent (see resolveBrowserHost in apps.service.ts).
+    const browserHost = resolveBrowserHost(internalIp);
+
+    // 3. APP_INTERNAL_AUTHORITY: host:port suitable for URLs and CSRF origin checks
     if (config.port || form.port) {
-      envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${form.port ? form.port : config.port}`);
+      envMap.set('APP_INTERNAL_AUTHORITY', `${browserHost}:${form.port ? form.port : config.port}`);
     }
 
     // --- Exposure State Variables ---
@@ -251,40 +268,37 @@ export class AppHelpers {
     let scheme = 'http';
     let publicHostname = '';
     let publicUrl = '';
-
     // Handle Local Exposure (Cloudflare Tunnel via Traefik)
     if (form.exposedLocal) {
-      let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+      const appSubdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       const configDomain = this.config.getConfig().domain;
-      // User-selected domain from install form; falls back to current device domain.
       const selectedPublicDomain = typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined;
-      const hasUserSelectedPublicDomain = Boolean(selectedPublicDomain);
-      let selectedDomain = selectedPublicDomain ?? envMap.get('DOMAIN') ?? configDomain;
+      const publicDomainRoot = resolvePublicDomainRoot({
+        selectedPublicDomain,
+        envDomain: envMap.get('DOMAIN'),
+        configDomain,
+      });
 
-      // Keep existing env-derived collapse behavior, but never rewrite
-      // an explicit user selection from the install form.
-      if (!hasUserSelectedPublicDomain && selectedDomain.endsWith(`.${configDomain}`)) {
-        selectedDomain = configDomain;
-      }
-
-      if (org?.slug) {
-        // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
-        // to construct full subdomain: {appSubdomain}-{deviceSlug}-{orgSlug}
-        const deviceSlug = org.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${org.slug}$`), '');
-        if (deviceSlug && deviceSlug !== org.slug) {
-          subdomain = `${subdomain}-${deviceSlug}-${org.slug}`;
-        } else {
-          subdomain = `${subdomain}-${org.slug}`;
-        }
-      }
+      const localSubdomainBase = org?.slug ? buildFqdnSubdomain(appSubdomain, org.hubSubdomain, org.slug) : sanitizeAppSubdomain(appSubdomain);
 
       // APP_LOCAL_DOMAIN is distinct - used for local network access
-      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
+      envMap.set('APP_LOCAL_DOMAIN', `${localSubdomainBase}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
 
-      if (!form.openPort) {
+      if (!form.openPort && org?.slug) {
         isExposed = true;
         scheme = 'https';
-        publicHostname = `${subdomain}.${selectedDomain}`;
+        const identity = buildPublicWebIdentity({
+          appSubdomain,
+          hubSubdomain: org.hubSubdomain,
+          orgSlug: org.slug,
+          publicDomainRoot,
+        });
+        publicHostname = identity.hostname;
+        publicUrl = identity.publicUrl;
+      } else if (!form.openPort) {
+        isExposed = true;
+        scheme = 'https';
+        publicHostname = `${appSubdomain}.${publicDomainRoot}`;
         publicUrl = `https://${publicHostname}`;
       }
     }
@@ -304,13 +318,7 @@ export class AppHelpers {
     if (isExposed) {
       envMap.set('APP_PUBLIC_HOSTNAME', publicHostname);
       envMap.set('APP_PUBLIC_URL', publicUrl);
-      // Store the public domain separately so compose.builder.ts can read it
-      // directly without needing to parse APP_PUBLIC_HOSTNAME (which is fragile
-      // for domains with more than two parts, e.g. my.lifescope.io).
-      if (publicHostname.includes('.')) {
-        const hostnamePublicDomain = publicHostname.substring(publicHostname.indexOf('.') + 1);
-        envMap.set('APP_PUBLIC_DOMAIN', hostnamePublicDomain);
-      }
+      envMap.delete('APP_PUBLIC_DOMAIN');
     }
 
     // --- Derived Variables ---
@@ -318,8 +326,8 @@ export class AppHelpers {
 
     envMap.set('APP_PROTOCOL', scheme);
 
-    // APP_HOST: Internal IP in internal mode, Public FQDN in exposed mode.
-    envMap.set('APP_HOST', isExposed ? publicHostname : internalIp);
+    // APP_HOST: browser-reachable host in internal mode, public FQDN in exposed mode.
+    envMap.set('APP_HOST', isExposed ? publicHostname : browserHost);
 
     // APP_DOMAIN: IP:PORT in internal mode, Public FQDN in exposed mode.
     if (isExposed) {
@@ -376,13 +384,36 @@ export class AppHelpers {
       }
     }
 
-    // --- Inference Integration for all Hub apps ---
-    // Inject inference endpoint URL so any app can use Hub-managed inference
-    {
-      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
-      const hubPort = process.env.API_PORT || '3000';
-      envMap.set('HUB_INFERENCE_URL', `http://${hubContainerName}:${hubPort}/api/inference/v1`);
+    // --- Standardized AI Environment Variables (opt-in) ---
+    // Apps declare which inference variables they need in config.json via
+    // hub_integration.inference. The Hub resolves the values and maps them
+    // to the app's expected env variable names. Apps without this field
+    // receive no inference variables — zero overhead for non-AI apps.
+    const inferenceMapping = config.hub_integration?.inference;
+    if (inferenceMapping && Object.keys(inferenceMapping).length > 0) {
+      try {
+        const aiEnv = await this.inferenceEnv.resolve();
+        const HUB_TO_RESOLVED: Record<string, string | undefined> = {
+          llm_base_url: aiEnv.CI_LLM_BASE_URL,
+          llm_api_key: aiEnv.CI_LLM_API_KEY,
+          chat_model: aiEnv.CI_CHAT_MODEL,
+          embedding_model: aiEnv.CI_EMBEDDING_MODEL,
+          vision_model: aiEnv.CI_VISION_MODEL,
+          ollama_host: aiEnv.OLLAMA_HOST,
+          num_ctx: aiEnv.CI_LLM_NUM_CTX,
+        };
+        for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
+          const resolved = HUB_TO_RESOLVED[hubKey];
+          if (resolved !== undefined && appEnvVar) {
+            envMap.set(appEnvVar, resolved);
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`[AppHelpers] Failed to resolve inference env for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+
+    envMap.delete('APP_PUBLIC_DOMAIN');
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };

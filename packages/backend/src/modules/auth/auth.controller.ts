@@ -1,11 +1,31 @@
+import crypto from 'node:crypto';
 import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Body, Controller, Delete, Get, Patch, Post, Req, Res, UseGuards } from '@nestjs/common';
+import axios from 'axios';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
+import { UserRepository } from '@/modules/user/user.repository';
+import { SessionManager } from './session.manager';
 import {
   ChangePasswordBody,
   ChangeUsernameBody,
@@ -20,6 +40,7 @@ import {
   PasswordResetRequestBody,
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
+  PortalDesktopExchangeDto,
   RegisterBody,
   RegisterDto,
   ResetPasswordBody,
@@ -28,6 +49,13 @@ import {
   VerifyTotpBody,
 } from './dto/auth.dto';
 import { ApiResponse } from '@nestjs/swagger';
+import {
+  buildPortalDesktopDeepLink,
+  type PortalDesktopExchange,
+  type PortalSsoState,
+  resolveSameOriginRedirectUrl,
+  toDesktopRedirectPath,
+} from './portal-sso';
 
 @Controller('auth')
 export class AuthController {
@@ -35,6 +63,9 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
+    private readonly cache: CacheService,
+    private readonly userRepository: UserRepository,
+    private readonly sessionManager: SessionManager,
   ) {}
 
   private async setSessionCookie(res: Response, sessionId: string, req: Request) {
@@ -108,6 +139,186 @@ export class AuthController {
     await this.authService.logout(sessionId);
 
     return res.status(204).send();
+  }
+
+  /**
+   * Start Portal OIDC (PKCE) login flow.
+   *
+   * Desktop opens Portal in the system browser, then returns to the Tauri app via cihub://.
+   * Browser-based Hub logins continue to return directly to the Hub origin that initiated the flow.
+   */
+  @Get('/portal/start')
+  async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
+    const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
+
+    if (!host) {
+      throw new BadRequestException('Missing host header');
+    }
+
+    const hubOrigin = `${proto}://${host}`;
+    const callbackUrl = new URL('/api/auth/portal/callback', hubOrigin).toString();
+
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    if (!portalBaseUrl) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    const state = crypto.randomUUID();
+    const codeVerifier = crypto.randomBytes(32).toString('base64url');
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    const isDesktop = desktop === '1' || desktop === 'true';
+
+    // Persist PKCE verifier + redirect target for the callback.
+    // 10 min is plenty and avoids stale entries.
+    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
+    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
+
+    const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
+    authorizeUrl.searchParams.set('client_id', 'ci-hub');
+    authorizeUrl.searchParams.set('redirect_uri', callbackUrl);
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('scope', 'openid email profile');
+    authorizeUrl.searchParams.set('code_challenge', codeChallenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+    authorizeUrl.searchParams.set('state', state);
+
+    return res.redirect(authorizeUrl.toString());
+  }
+
+  @Get('/portal/callback')
+  async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
+    if (!code || !state) {
+      throw new BadRequestException('Missing code or state');
+    }
+
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    if (!portalBaseUrl) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    const cached = this.cache.get(`portal_sso:${state}`);
+    this.cache.del(`portal_sso:${state}`);
+
+    if (!cached) {
+      throw new BadRequestException('Invalid or expired Portal SSO state');
+    }
+
+    let codeVerifier: string;
+    let redirectUrl: string | null;
+    let hubOrigin: string;
+    let desktop = false;
+
+    try {
+      const parsed = JSON.parse(cached) as PortalSsoState;
+      codeVerifier = parsed.codeVerifier;
+      redirectUrl = parsed.redirectUrl;
+      hubOrigin = parsed.hubOrigin;
+      desktop = parsed.desktop;
+    } catch {
+      throw new BadRequestException('Malformed Portal SSO state');
+    }
+
+    const callbackUrl = new URL('/api/auth/portal/callback', hubOrigin).toString();
+
+    // Exchange code -> tokens
+    const tokenUrl = new URL('/api/auth/oauth2/token', portalBaseUrl).toString();
+    const body = new URLSearchParams();
+    body.set('grant_type', 'authorization_code');
+    body.set('client_id', 'ci-hub');
+    body.set('redirect_uri', callbackUrl);
+    body.set('code', code);
+    body.set('code_verifier', codeVerifier);
+
+    const tokenRes = await axios.post(tokenUrl, body.toString(), {
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      // better-auth sometimes uses cookies; but token exchange should be pure.
+      validateStatus: () => true,
+    });
+
+    if (tokenRes.status < 200 || tokenRes.status >= 300) {
+      this.logger.warn('Portal token exchange failed', { status: tokenRes.status, data: tokenRes.data });
+      throw new UnauthorizedException('Portal token exchange failed');
+    }
+
+    const accessToken = (tokenRes.data as { access_token?: string } | undefined)?.access_token;
+    if (!accessToken) {
+      this.logger.warn('Portal token exchange missing access_token', { data: tokenRes.data });
+      throw new UnauthorizedException('Portal token exchange missing access token');
+    }
+
+    // Fetch userinfo
+    const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
+    const userinfoRes = await axios.get(userinfoUrl, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      validateStatus: () => true,
+    });
+
+    if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
+      this.logger.warn('Portal userinfo fetch failed', { status: userinfoRes.status, data: userinfoRes.data });
+      throw new UnauthorizedException('Portal userinfo request failed');
+    }
+
+    const email = (userinfoRes.data as { email?: string } | undefined)?.email;
+    if (!email) {
+      this.logger.warn('Portal userinfo missing email', { data: userinfoRes.data });
+      throw new UnauthorizedException('Portal userinfo missing email');
+    }
+
+    const operator = await this.userRepository.getFirstOperator();
+    if (!operator) {
+      throw new ForbiddenException('No operator user is configured on this Hub');
+    }
+
+    if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
+      // For now, only allow Portal login for the operator email already configured on this Hub.
+      // This avoids silently elevating a Portal user to local admin.
+      throw new UnauthorizedException('Portal account does not match this Hub operator');
+    }
+
+    const sessionId = await this.sessionManager.createSession(operator.id);
+    await this.setSessionCookie(res, sessionId, req);
+
+    if (desktop) {
+      const desktopToken = crypto.randomUUID();
+      const exchangePayload: PortalDesktopExchange = {
+        sessionId,
+        redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+      };
+      this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
+      return res.redirect(buildPortalDesktopDeepLink(desktopToken));
+    }
+
+    // Redirect back to the requested URL if it's same-origin; otherwise go home.
+    const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
+    if (safeRedirect) {
+      return res.redirect(safeRedirect);
+    }
+
+    return res.redirect('/home');
+  }
+
+  @Get('/portal/desktop-exchange')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async exchangePortalDesktopLogin(@Query('token') token?: string) {
+    if (!token) {
+      throw new BadRequestException('Missing desktop exchange token');
+    }
+
+    const cacheKey = `portal_sso_desktop:${token}`;
+    const cached = this.cache.get(cacheKey);
+    this.cache.del(cacheKey);
+
+    if (!cached) {
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    try {
+      const parsed = JSON.parse(cached) as PortalDesktopExchange;
+      return PortalDesktopExchangeDto.parse(parsed, { reportOnly: true });
+    } catch {
+      throw new BadRequestException('Malformed desktop exchange payload');
+    }
   }
 
   @Patch('/username')

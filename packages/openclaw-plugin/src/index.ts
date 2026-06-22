@@ -122,14 +122,45 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
       );
     }
 
-    // S-OC-1.2: Register local models as an OpenClaw provider
-    const localModels = inferenceStatus.models.filter(
-      (m) => m.local && m.modality.includes('text') && (m.state === 'loaded' || m.state === 'pinned'),
-    );
+    // S-OC-1.2: Register local models as an OpenClaw provider.
+    // Prefer direct Ollama discovery so OpenClaw always receives the native model IDs
+    // it must pass to the native Ollama API surface.
+    const ollamaNativeUrl = (process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '');
+    const isEmbeddingModel = (id: string) => /embed/i.test(id);
+    let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
+    try {
+      const response = await fetch(`${ollamaNativeUrl}/api/tags`);
+      if (response.ok) {
+        const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+        localModels = (payload.models ?? [])
+          .filter((model): model is { name: string } => typeof model.name === 'string' && model.name.length > 0 && !isEmbeddingModel(model.name))
+          .map((model) => ({
+            id: model.name,
+          }));
+      }
+    } catch {
+      api.log.debug('Direct Ollama model discovery unavailable — falling back to Hub inference status');
+    }
+
+    if (localModels.length === 0) {
+      localModels = inferenceStatus.models
+        .filter((m) => m.local && m.modality.includes('text') && (m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned'))
+        .map((m) => ({
+          id: m.id,
+          context_window: m.context_window,
+          max_tokens: m.max_tokens,
+        }))
+        .filter((m) => m.id.includes(':'));
+    }
+
+    // Hardware-aware context window injected by the Hub (CI_LLM_NUM_CTX). Caps
+    // both the agent's token budget and the native Ollama `num_ctx`, so OpenClaw
+    // doesn't pack to Ollama's oversized memory-based default (e.g. 262144 on
+    // unified-memory APUs).
+    const hubNumCtx = Number.parseInt(process.env.CI_LLM_NUM_CTX ?? '', 10);
+    const numCtx = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : undefined;
 
     if (localModels.length > 0 && api.registerProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
-
       api.registerProvider({
         id: 'ci-hub',
         label: 'CI Hub (Local)',
@@ -141,18 +172,33 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
           order: 'simple',
           run: async () => ({
             provider: {
-              baseUrl: inferenceBaseUrl,
-              apiKey,
-              api: 'openai-completions',
-              models: localModels.map((m) => ({
-                id: m.id,
-                name: m.id,
-                reasoning: false,
-                input: ['text'],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: m.context_window ?? 32768,
-                maxTokens: m.max_tokens ?? 8192,
-              })),
+              baseUrl: ollamaNativeUrl,
+              apiKey: 'ollama',
+              api: 'ollama',
+              models: localModels.map((m) => {
+                // Never advertise / request more context than the model supports.
+                // CI_LLM_NUM_CTX is computed for the Hub's default chat model and
+                // may exceed a smaller model's window (which Ollama would reject).
+                // When the window is unknown (e.g. /api/tags discovery only gives
+                // the id), stay conservative at the prior 32768 default rather than
+                // the possibly-larger numCtx.
+                const DEFAULT_CTX = 32768;
+                const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? DEFAULT_CTX) : undefined;
+                // Without an explicit num_ctx, advertise the historical default but
+                // never more than what Ollama will actually allocate for the model.
+                const contextWindow = effCtx ?? Math.min(DEFAULT_CTX, m.context_window ?? DEFAULT_CTX);
+                return {
+                  id: m.id,
+                  name: m.id,
+                  reasoning: false,
+                  input: ['text'],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow,
+                  // Output budget can't exceed the total context window.
+                  maxTokens: Math.min(m.max_tokens ?? 8192, contextWindow),
+                  ...(effCtx ? { options: { num_ctx: effCtx } } : {}),
+                };
+              }),
             },
           }),
         },
@@ -165,7 +211,10 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     const lemonadeBackend = inferenceStatus.backends.find((b) => b.type === 'lemonade');
 
     if (ttsModels.length > 0 && lemonadeBackend?.running && api.registerSpeechProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
+      // The Hub no longer proxies inference — point OpenClaw at the Ollama
+      // container's own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected
+      // into every Hub-installed app).
+      const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
 
       api.registerSpeechProvider({
         id: 'ci-hub',

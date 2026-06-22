@@ -225,7 +225,7 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
       query: { search: 'sidebar term', category: undefined, pageSize: 24, storeId: 'ci-apps' },
     });
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('sidebar term');
+    expect(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS')).toHaveValue('sidebar term');
 
     mockStoreState.search = 'updated elsewhere';
 
@@ -235,6 +235,6 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('updated elsewhere');
+    expect(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS')).toHaveValue('updated elsewhere');
   });
 });

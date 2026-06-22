@@ -84,8 +84,8 @@ export class BackupsService {
       if (success) {
         const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-        if (typeof restoredAppConfig?.tipi_version === 'number') {
-          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig?.tipi_version });
+        if (typeof restoredAppConfig?.cihub_app_version === 'number') {
+          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
         }
 
         if (appStatusBeforeUpdate === 'running') {

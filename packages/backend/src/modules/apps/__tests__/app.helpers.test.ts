@@ -13,6 +13,11 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 
+// APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
+// `\` on Windows. Normalize to POSIX separators before asserting so these path tests
+// stay stable cross-platform (they encode a Linux/container bind-mount contract).
+const toPosix = (p: string) => p.replace(/\\/g, '/');
+
 describe('AppHelpers', () => {
   let appHelpers: AppHelpers;
   let appFilesManager = mock<AppFilesManager>();
@@ -61,7 +66,7 @@ describe('AppHelpers', () => {
       created_at: Date.now(),
       updated_at: Date.now(),
       deprecated: false,
-      tipi_version: 1,
+      cihub_app_version: 1,
       force_expose: false,
       force_pull: false,
       generate_vapid_keys: false,
@@ -111,9 +116,32 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_PORT')).toBe('9091');
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
-      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
+      expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
       expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
+    });
+
+    it.each(['C:/foo/bar', 'C:\\foo\\bar', '\\\\server\\share\\folder'])('accepts Windows absolute ROOT_FOLDER_HOST (%s)', async (rootFolderHost) => {
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost,
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: rootFolderHost,
+            domain: 'example.com',
+          },
+        }),
+      );
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const appDataDir = envMap.get('APP_DATA_DIR');
+      expect(appDataDir).toBeDefined();
+      expect(toPosix(appDataDir ?? '')).toContain('app-data/test-store/test-app');
     });
 
     it('should omit unavailable hub variables without failing env generation', async () => {
@@ -165,7 +193,7 @@ describe('AppHelpers', () => {
 
       // APP_DATA_DIR must be under ROOT_FOLDER_HOST/app-data so that the bind mount
       // ${ROOT_FOLDER_HOST}/app-data:/app-data aligns with container path /app-data
-      expect(envMap.get('APP_DATA_DIR')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
+      expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
     });
 
     it('should align APP_DATA_DIR host path with container seeded data path', async () => {
@@ -191,12 +219,16 @@ describe('AppHelpers', () => {
 
       await appHelpers.generateEnvFile(testAppUrn, {});
 
-      const appDataDir = envMap.get('APP_DATA_DIR');
-      expect(appDataDir).toBeDefined();
+      const appDataDirRaw = envMap.get('APP_DATA_DIR');
+      expect(appDataDirRaw).toBeDefined();
 
-      if (!appDataDir) {
+      if (!appDataDirRaw) {
         throw new Error('APP_DATA_DIR was not generated');
       }
+
+      // Normalize to POSIX separators — the production path is built with path.join, so
+      // it uses `\` on Windows even though it encodes a Linux bind-mount contract.
+      const appDataDir = toPosix(appDataDirRaw);
 
       // The host path must be: ${ROOT_FOLDER_HOST}/app-data/{storeId}/{appName}
       // The container path is: /app-data/{storeId}/{appName}
@@ -288,7 +320,7 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_PUBLIC_URL')).toBe(`https://${domain}`);
     });
 
-    it('should write APP_PUBLIC_DOMAIN derived from APP_PUBLIC_HOSTNAME', async () => {
+    it('does not write APP_PUBLIC_DOMAIN (consolidated to APP_PUBLIC_HOSTNAME)', async () => {
       const envMap = new Map<string, string>();
       envUtils.envStringToMap.mockReturnValue(envMap);
 
@@ -297,21 +329,8 @@ describe('AppHelpers', () => {
         domain: 'myapp-device1-myorg.example.com',
       });
 
-      // APP_PUBLIC_DOMAIN is everything after the first dot in the hostname
-      expect(envMap.get('APP_PUBLIC_DOMAIN')).toBe('example.com');
-    });
-
-    it('should write APP_PUBLIC_DOMAIN correctly for multi-label domains', async () => {
-      const envMap = new Map<string, string>();
-      envUtils.envStringToMap.mockReturnValue(envMap);
-
-      await appHelpers.generateEnvFile(testAppUrn, {
-        exposed: true,
-        domain: 'myapp-device1-myorg.my.lifescope.io',
-      });
-
-      // Must preserve all labels after the first dot — slice(-2) heuristic would give 'lifescope.io'
-      expect(envMap.get('APP_PUBLIC_DOMAIN')).toBe('my.lifescope.io');
+      expect(envMap.has('APP_PUBLIC_DOMAIN')).toBe(false);
+      expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('myapp-device1-myorg.example.com');
     });
 
     it('should set correct domain settings for local exposure', async () => {
@@ -355,6 +374,63 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_HOSTNAME')).toBe('127.0.0.1');
       expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:9091');
       expect(envMap.get('APP_SCHEME')).toBe('http');
+    });
+
+    it('maps listen-all INTERNAL_IP to loopback for URL vars while keeping APP_HOSTNAME raw', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      const port = 9091;
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '0.0.0.0',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, { port });
+
+      expect(envMap.get('APP_HOSTNAME')).toBe('0.0.0.0');
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_HOST')).toBe('127.0.0.1');
+      expect(envMap.get('APP_URL')).toBe('http://127.0.0.1:9091');
+      expect(envMap.get('APP_DOMAIN')).not.toContain('0.0.0.0');
+      expect(envMap.get('APP_URL')).not.toContain('0.0.0.0');
+    });
+
+    it('preserves real LAN IP in URL vars when INTERNAL_IP is not a listen-all sentinel', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      const lanIp = '192.168.1.100';
+      const port = 8080;
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: lanIp,
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, { port });
+
+      expect(envMap.get('APP_HOSTNAME')).toBe(lanIp);
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe(`${lanIp}:${port}`);
+      expect(envMap.get('APP_DOMAIN')).toBe(`${lanIp}:${port}`);
+      expect(envMap.get('APP_HOST')).toBe(lanIp);
+      expect(envMap.get('APP_URL')).toBe(`http://${lanIp}:${port}`);
     });
 
     it('should throw error for required form fields', async () => {

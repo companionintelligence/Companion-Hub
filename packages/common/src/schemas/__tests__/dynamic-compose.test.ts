@@ -204,6 +204,41 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
         });
       });
 
+      describe('Security Constraints', () => {
+        it('should reject privileged services', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            privileged: true,
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject docker.sock host mounts', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject root filesystem mounts', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            volumes: [{ hostPath: '/', containerPath: '/host' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+      });
+
       describe('Health Check Configuration', () => {
         it('should validate complete health check', () => {
           const service = {

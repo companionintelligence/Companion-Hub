@@ -1,0 +1,5 @@
+ Companion Hub is the desktop app for managing and accessing the
+ Companion Intelligence Hub appliance.
+ .
+ Use it to install and manage apps, review Hub status, configure AI
+ and network settings, and access your private local-first workspace.

@@ -102,19 +102,19 @@ export const AppUserConfigEditors = ({ info, initialAppEnv, initialDockerCompose
             <AlertCircle strokeWidth={2} />
           </AlertIcon>
           <div>
-            <AlertHeading>{t('USER_CONFIG_WARNING_TITLE')}</AlertHeading>
+            <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
             <AlertDescription>{t('USER_CONFIG_WARNING_DESCRIPTION')}</AlertDescription>
           </div>
         </Alert>
         <div className="flex mb-3 items-center justify-between">
           <Switch className="mt-2" label={t('USER_CONFIG_ENABLE')} checked={isEnabled} onCheckedChange={handleToggleEnabled} />
-          <Button onClick={handleSave}>{t('SAVE')}</Button>
+          <Button onClick={handleSave}>{t('COMMON_SAVE')}</Button>
         </div>
         <div>
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList>
-              <TabsTrigger value="docker-compose">docker-compose.yml</TabsTrigger>
-              <TabsTrigger value="app-env">app.env</TabsTrigger>
+              <TabsTrigger value="docker-compose">{t('USER_CONFIG_DOCKER_COMPOSE_FILE_LABEL')}</TabsTrigger>
+              <TabsTrigger value="app-env">{t('USER_CONFIG_APP_ENV_FILE_LABEL')}</TabsTrigger>
             </TabsList>
             <TabsContent value="docker-compose">
               <CodeMirror

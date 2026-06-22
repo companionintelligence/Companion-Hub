@@ -4,7 +4,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { AppsRepository } from '../apps/apps.repository';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/constants';
 
 const SUBNET_MASK = '/24';
 const MAX_RETRIES = 3;
@@ -30,6 +30,11 @@ export class SubnetManagerService {
 
     if (!existingApp) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
+    }
+
+    if (existingApp.subnet) {
+      this.logger.info(`App ${appUrn} already has subnet ${existingApp.subnet}`);
+      return existingApp.subnet;
     }
 
     const allocatedSubnets = await this.getAllocatedSubnets();
@@ -61,7 +66,7 @@ export class SubnetManagerService {
     const appSubnets = (await this.appsRepository.getApps().then((apps) => apps.map((app) => app.subnet))).filter((subnet) => subnet !== null);
 
     const networks = await this.docker.listNetworks();
-    return networks
+    return (networks ?? [])
       .flatMap((network) => network.IPAM?.Config?.map((c) => c))
       .map((c) => c?.Subnet)
       .filter((c) => c !== undefined)

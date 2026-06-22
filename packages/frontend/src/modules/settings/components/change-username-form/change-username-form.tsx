@@ -49,12 +49,12 @@ export const ChangeUsernameForm = ({ username }: Props) => {
     <div className="mb-4">
       <Input disabled type="email" value={username} />
       <Button className="mt-3" onClick={() => changeUsernameDisclosure.open()}>
-        {t('SETTINGS_SECURITY_CHANGE_USERNAME_TITLE')}
+        {t('COMMON_CHANGE_USERNAME')}
       </Button>
       <Dialog open={changeUsernameDisclosure.isOpen} onOpenChange={changeUsernameDisclosure.toggle}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>{t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD')}</DialogTitle>
+            <DialogTitle>{t('COMMON_PASSWORD')}</DialogTitle>
           </DialogHeader>
           <DialogDescription className="flex flex-col">
             <form onSubmit={handleSubmit(onSubmit)} className="w-full" id={formId}>
@@ -71,14 +71,14 @@ export const ChangeUsernameForm = ({ username }: Props) => {
                 error={formState.errors.password?.message}
                 disabled={changeUsername.isPending}
                 type="password"
-                placeholder={t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD')}
+                placeholder={t('COMMON_PASSWORD')}
                 {...register('password')}
               />
             </form>
           </DialogDescription>
           <DialogFooter>
             <Button loading={changeUsername.isPending} type="submit" intent="success" form={formId}>
-              {t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_SUBMIT')}
+              {t('COMMON_CHANGE_USERNAME')}
             </Button>
           </DialogFooter>
         </DialogContent>

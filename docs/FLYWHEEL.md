@@ -1,12 +1,12 @@
-# App Explorer Flywheel — Handoff Guide
+# App Explorer Test — Handoff Guide
 
-> **Who this is for:** Any agent or engineer picking this up on a new machine to run app-explorer tests, triage failures, and submit fixes to ci-marketplace via automated PRs.
+> **Who this is for:** Any agent or engineer picking this up on a new machine to run the App Explorer Test, triage failures, and submit fixes to ci-marketplace via automated PRs.
 
 ---
 
 ## What this is
 
-A three-part flywheel for continuously verifying and improving apps in the ci-marketplace:
+This guide covers the App Explorer Test and the automated diagnose/fix loop it feeds for ci-marketplace apps:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -146,7 +146,7 @@ docker-compose -f e2e/docker-compose.e2e.yml up -d
 
 ---
 
-## Running the flywheel
+## Running App Explorer
 
 ### Single app — full loop
 
@@ -254,6 +254,8 @@ Reports are JSON written to `reports/<app-id>-<timestamp>.json`.
 }
 ```
 
+The JSON report is the source of truth for pass/fail and triage. Screenshots are optional debug artifacts only; the App Explorer Test does not use screenshot assertions.
+
 **Verdict meanings:**
 
 | Verdict | Meaning |
@@ -293,7 +295,7 @@ Every PR includes:
 
 ---
 
-## Adding a new app to the flywheel
+## Adding a new app to App Explorer coverage
 
 1. Add the app to ci-marketplace (`apps/<id>/config.json` + `docker-compose.json`)
 2. Run the explorer:
@@ -304,7 +306,7 @@ Every PR includes:
 4. If the agent opens a PR → review + merge
 5. Run again to confirm `verdict: healthy`
 
-That's the full loop. Iterate until green.
+That's the full App Explorer loop. Iterate until green.
 
 ---
 

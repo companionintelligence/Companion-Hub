@@ -1,10 +1,7 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { ServiceInput } from '@ci-hub/common/schemas';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { writeFile, unlink } from 'node:fs/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
@@ -174,7 +171,7 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should NOT add port mapping when exposedLocal is enabled but openPort is false', async () => {
+  it('should publish host port for cloudflare exposed apps even when openPort is false', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -182,12 +179,15 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = await composeBuilder.getDockerCompose([service], { exposedLocal: true, openPort: false, port: 8080 }, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose(
+      [service],
+      { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 },
+      urn,
+      subnet,
+    );
     const yamlObject = yaml.parse(compose);
 
-    // Ports should not be exposed when exposedLocal=true but openPort=false
-    // Traefik uses Docker internal networking and doesn't need host port mapping
-    expect(yamlObject.services.service.ports).toBeUndefined();
+    expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:440']);
   });
 
   it('should add port mapping when openPort is enabled', async () => {
@@ -205,7 +205,21 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
   });
 
-  it('should only add default labels when service is not exposed', async () => {
+  it('should only add default labels when service is not main', async () => {
+    const service: ServiceInput = {
+      name: 'service',
+      image: 'image',
+      internalPort: 440,
+      isMain: false,
+    };
+
+    const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
+    const yamlObject = yaml.parse(compose);
+
+    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+  });
+
+  it('should publish host port for local exposure mode even when openPort is false', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -213,10 +227,19 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose(
+      [service],
+      { exposureMode: 'local', openPort: false, localSubdomain: 'myapp' },
+      urn,
+      subnet,
+      'example.com',
+      'ci.lan',
+    );
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+    expect(yamlObject.services.service.ports).toBeDefined();
+    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
   it('should be able to parse a compose.json file', async () => {
@@ -289,13 +312,6 @@ describe('DockerComposeBuilder', () => {
   });
 });
 
-// Helper: write a temp env file and return its path
-async function writeTempEnvFile(content: string): Promise<string> {
-  const path = join(tmpdir(), `compose-test-${Date.now()}.env`);
-  await writeFile(path, content, 'utf-8');
-  return path;
-}
-
 const mainService: ServiceInput = {
   name: 'nginx',
   image: 'nginx:latest',
@@ -303,76 +319,32 @@ const mainService: ServiceInput = {
   isMain: true,
 };
 
-describe('DockerComposeBuilder — public domain resolution from env file', () => {
+describe('DockerComposeBuilder — public web hostname in Traefik labels', () => {
   let builder: DockerComposeBuilder;
-  let envFilePath: string;
 
   beforeEach(() => {
     builder = new DockerComposeBuilder('example.com', 'ci.lan');
   });
 
-  afterEach(async () => {
-    if (envFilePath) {
-      await unlink(envFilePath).catch(() => {});
-    }
-  });
-
-  it('(1) new install: APP_PUBLIC_DOMAIN present — uses it as domain, derives correct subdomain', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.example.com\nAPP_PUBLIC_DOMAIN=example.com\n');
-
-    const result = await builder.getDockerCompose([mainService], { exposureMode: 'cloudflare' }, urn, subnet, 'example.com', 'ci.lan', envFilePath);
-    const parsed = yaml.parse(result);
-    const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
-
-    expect(hostRule).toBe('Host(`myapp-dev1-org.example.com`)');
-  });
-
-  it('(2) old install: APP_PUBLIC_DOMAIN absent — form.publicDomain used as fallback', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.example.com\n');
-
+  it('uses the cloudflare origin hostname passed to getDockerCompose', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
-      { exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { exposureMode: 'cloudflare' },
       urn,
       subnet,
       'example.com',
       'ci.lan',
-      envFilePath,
+      undefined,
+      'myapp-dev1-org.ci.lan',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
+    const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
-    expect(hostRule).toBe('Host(`myapp-dev1-org.example.com`)');
+    expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
   });
 
-  it('(3) multi-label domain: slice(-2) heuristic would truncate — form.publicDomain preserves full domain', async () => {
-    // Without APP_PUBLIC_DOMAIN, slice(-2) of 'myapp-dev1-org.my.lifescope.io'
-    // would give 'lifescope.io' — wrong. form.publicDomain corrects this.
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.my.lifescope.io\n');
-
-    const result = await builder.getDockerCompose(
-      [mainService],
-      { exposureMode: 'cloudflare', publicDomain: 'my.lifescope.io' },
-      urn,
-      subnet,
-      'my.lifescope.io',
-      'ci.lan',
-      envFilePath,
-    );
-    const parsed = yaml.parse(result);
-    const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
-
-    // Subdomain should be just 'myapp-dev1-org', domain 'my.lifescope.io'
-    expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
-    expect(hostRule).not.toContain('lifescope.io.my.lifescope.io');
-  });
-
-  it('(4) multi-label domain: APP_PUBLIC_DOMAIN present — used directly, no heuristic needed', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.my.lifescope.io\nAPP_PUBLIC_DOMAIN=my.lifescope.io\n');
-
+  it('keeps the same origin hostname even when the public domain has multiple labels', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
       { exposureMode: 'cloudflare' },
@@ -380,12 +352,74 @@ describe('DockerComposeBuilder — public domain resolution from env file', () =
       subnet,
       'my.lifescope.io',
       'ci.lan',
-      envFilePath,
+      undefined,
+      'myapp-dev1-org.ci.lan',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
+    const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
-    expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
+    expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
+  });
+});
+
+describe('DockerComposeBuilder resource limits', () => {
+  let builder: DockerComposeBuilder;
+
+  const service: ServiceInput = {
+    name: 'nginx',
+    image: 'nginx:latest',
+    internalPort: 80,
+    isMain: true,
+  };
+
+  beforeEach(() => {
+    builder = new DockerComposeBuilder('example.com', 'ci.lan');
+  });
+
+  const build = (form: Parameters<DockerComposeBuilder['getDockerCompose']>[1], services = [service], defaults?: { cpu?: string; memory?: string }) =>
+    builder.getDockerCompose(services, form, urn, subnet, 'example.com', 'ci.lan', undefined, undefined, defaults?.cpu, defaults?.memory);
+
+  it('applies default cpu and memory limits when the app defines none', async () => {
+    const compose = await build({}, [service], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '4', memory: '4096M' });
+  });
+
+  it('prefers form limits over defaults', async () => {
+    const compose = await build({ cpuLimit: '2', memoryLimit: '2048M' }, [service], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '2', memory: '2048M' });
+  });
+
+  it('never overrides limits the app defines itself', async () => {
+    const limitedService: ServiceInput = {
+      ...service,
+      deploy: { resources: { limits: { cpus: '0.5', memory: '256M' } } },
+    };
+    const compose = await build({}, [limitedService], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '256M' });
+  });
+
+  it('fills only the missing limit when the app defines the other', async () => {
+    const cpuOnlyService: ServiceInput = {
+      ...service,
+      deploy: { resources: { limits: { cpus: '0.5' } } },
+    };
+    const compose = await build({}, [cpuOnlyService], { cpu: '4', memory: '4096M' });
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '4096M' });
+  });
+
+  it('adds no deploy section when there are no limits at all', async () => {
+    const compose = await build({});
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.nginx.deploy).toBeUndefined();
   });
 });

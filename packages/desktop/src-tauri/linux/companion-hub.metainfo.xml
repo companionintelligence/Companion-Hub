@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>computer.ci.app.hub</id>
+  <name>Companion Hub</name>
+  <summary>Manage and access the Companion Intelligence Hub appliance</summary>
+  <developer id="computer.ci">
+    <name>Companion Intelligence</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-CI-Commercial-1.0</project_license>
+  <launchable type="desktop-id">Companion Hub.desktop</launchable>
+  <url type="homepage">https://ci.computer</url>
+  <description>
+    <p>Companion Hub is the desktop app for managing and accessing the Companion Intelligence Hub appliance.</p>
+    <p>Use it to install and manage apps, review hub status, configure AI and network settings, and access your private local-first workspace from Linux.</p>
+  </description>
+  <content_rating type="oars-1.1" />
+</component>

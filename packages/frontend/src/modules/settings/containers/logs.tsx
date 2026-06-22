@@ -14,7 +14,7 @@ export const LogsContainer = () => {
   let nextId = 0;
   const [logs, setLogs] = useState<{ id: number; text: string }[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
-  const maxLines = useRef(300);
+  const maxLines = useRef(1000);
 
   useSSE({
     topic: 'ci-hub-logs',
@@ -50,7 +50,7 @@ export const LogsContainer = () => {
 
       await downloadResponseAsFile(response, 'ci-hub-logs.log');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('SETTINGS_LOGS_DOWNLOAD_ERROR', 'Failed to download logs.'));
+      toast.error(error instanceof Error ? error.message : t('SETTINGS_LOGS_DOWNLOAD_ERROR'));
     } finally {
       setIsDownloading(false);
     }
@@ -73,9 +73,7 @@ export const LogsContainer = () => {
           }
         />
       </Suspense>
-      <div className="mt-4 text-center text-muted-foreground">
-        Powered by Docker, Node, React, TypeScript, PostgreSQL, Ubuntu, Debian, and many other OSS projects we love. See release notes for details.
-      </div>
+      <div className="mt-4 text-center text-muted-foreground">{t('SETTINGS_LOGS_POWERED_BY')}</div>
     </div>
   );
 };

@@ -1,6 +1,54 @@
 import { z } from 'zod';
 import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 
+const DENIED_CUSTOM_APP_HOST_PATHS = [
+  '/',
+  '/var/run/docker.sock',
+  '/proc',
+  '/sys',
+  '/dev',
+  '/etc',
+  '/root',
+  '/boot',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/lib',
+  '/lib64',
+];
+
+function normalizeCustomAppHostPath(hostPath: string): string {
+  const normalized = hostPath.replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (normalized.length > 1 && normalized.endsWith('/')) {
+    return normalized.slice(0, -1);
+  }
+  return normalized || '/';
+}
+
+function isDeniedCustomAppHostPath(hostPath: string): boolean {
+  const normalized = normalizeCustomAppHostPath(hostPath);
+  return DENIED_CUSTOM_APP_HOST_PATHS.some((denied) => normalized === denied || normalized.startsWith(`${denied}/`));
+}
+
+function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath: string }[] }, ctx: z.RefinementCtx) {
+  if (service.privileged === true) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED',
+      path: ['privileged'],
+    });
+  }
+  for (const [index, volume] of (service.volumes ?? []).entries()) {
+    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
+        path: ['volumes', index, 'hostPath'],
+      });
+    }
+  }
+}
+
 /**
  * Minimum supported schema version
  * Apps with schema version below this will be blocked from installation/update
@@ -13,7 +61,7 @@ export const MIN_SCHEMA_VERSION = 1;
  */
 export const CURRENT_SCHEMA_VERSION = 2;
 
-export const serviceSchemaV2 = z.object({
+const serviceSchemaV2Object = z.object({
   image: z.string('CUSTOM_APP_ERROR_IMAGE_REQUIRED'),
   name: z.string('CUSTOM_APP_ERROR_NAME_REQUIRED'),
   internalPort: z
@@ -185,18 +233,30 @@ export const serviceSchemaV2 = z.object({
     .or(z.array(z.string('CUSTOM_APP_ERROR_DNS_INVALID')).optional()),
 });
 
-export const dynamicComposeSchemaV2 = z.object({
-  schemaVersion: z.literal(2),
-  services: serviceSchemaV2.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
-  overrides: z
-    .array(
-      z.object({
-        architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
-        services: serviceSchemaV2.partial().array(),
-      }),
-    )
-    .optional(),
+export const serviceSchemaV2 = serviceSchemaV2Object.superRefine((service, ctx) => {
+  assertCustomAppServiceSecurity(service, ctx);
 });
+
+export const dynamicComposeSchemaV2 = z
+  .object({
+    schemaVersion: z.literal(2),
+    services: serviceSchemaV2.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+    overrides: z
+      .array(
+        z.object({
+          architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
+          services: serviceSchemaV2Object.partial().array(),
+        }),
+      )
+      .optional(),
+  })
+  .superRefine((compose, ctx) => {
+    for (const override of compose.overrides ?? []) {
+      for (const service of override.services) {
+        assertCustomAppServiceSecurity(service, ctx);
+      }
+    }
+  });
 
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchemaV2]);
 

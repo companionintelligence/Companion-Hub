@@ -1,0 +1,143 @@
+name: E2E Platform Tests
+
+on:
+  pull_request:
+    branches: [dev, main]
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: e2e-platform-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-platform:
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+          (github.head_ref == 'dev' || github.head_ref == 'main') }}
+    runs-on: [self-hosted, ci-core]
+    timeout-minutes: 15
+
+    env:
+      HUB_URL: http://localhost:5002
+      APP_URL: http://localhost:7100
+      HUB_USERNAME: admin@core1hub.local
+      HUB_PASSWORD: CIComputer2026!
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Add tools to PATH
+        run: |
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build test app images
+        run: |
+          cd e2e/platform-test-app/services/web && docker build -t ci-e2e-test-app-web:latest .
+          cd "$GITHUB_WORKSPACE"
+          cd e2e/platform-test-app/services/worker && docker build -t ci-e2e-test-app-worker:latest .
+          cd "$GITHUB_WORKSPACE"
+          cd e2e/platform-test-app/services/udp-echo && docker build -t ci-e2e-test-app-udp:latest .
+
+      - name: Acquire file lock
+        run: |
+          LOCK=/tmp/ci-hub-e2e.lock
+          TIMEOUT=600
+          START=$(date +%s)
+          while ! (set -o noclobber; echo $$ > "$LOCK") 2>/dev/null; do
+            NOW=$(date +%s)
+            if [ $((NOW - START)) -ge $TIMEOUT ]; then
+              echo "Lock timeout after ${TIMEOUT}s — removing stale lock"
+              rm -f "$LOCK"
+              echo $$ > "$LOCK"
+              break
+            fi
+            echo "Waiting for lock... ($((NOW - START))s)"
+            sleep 5
+          done
+          echo "Lock acquired"
+
+      - name: Clean previous test app
+        run: |
+          docker ps -a --filter "name=ci-e2e-test-app" --format "{{.Names}}" | xargs -r docker rm -f || true
+          docker network ls --filter "name=ci-e2e-test-app" --format "{{.Name}}" | xargs -r docker network rm || true
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Seed test app into Hub marketplace
+        run: |
+          # The Hub resolves app configs from its data dir at repos/<store>/apps/<id>/
+          # Discover the Hub's data directory from the running process env or common paths
+          HUB_DATA=""
+          HUB_PID=$(pgrep -f "ci-os-hub-desktop\|ci-hub-desktop\|main\.js" | head -1 || true)
+          if [ -n "$HUB_PID" ]; then
+            HUB_DATA=$(tr '\0' '\n' < "/proc/$HUB_PID/environ" 2>/dev/null \
+              | grep "^CI_HUB_DATA_DIR=" | cut -d= -f2 || true)
+          fi
+          if [ -z "$HUB_DATA" ]; then
+            for d in /opt/ci-hub "$HOME/.ci-hub" "$HOME/ci-hub" /var/lib/ci-hub; do
+              [ -d "$d/repos" ] && HUB_DATA="$d" && break
+            done
+          fi
+          if [ -z "$HUB_DATA" ]; then
+            echo "ERROR: Could not find Hub data directory. Set HUB_DATA_DIR or ensure the Hub is running."
+            exit 1
+          fi
+          echo "Hub data dir: $HUB_DATA"
+          APP_DEST="$HUB_DATA/repos/ci-marketplace/apps/ci-e2e-test-app"
+          mkdir -p "$APP_DEST"
+          cp e2e/platform-test-app/config.json e2e/platform-test-app/docker-compose.json "$APP_DEST/"
+          echo "Seeded ci-e2e-test-app to $APP_DEST"
+
+      - name: Install test app via Hub API
+        run: |
+          # Login
+          curl -sf -X POST http://localhost:5002/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ env.HUB_USERNAME }}","password":"${{ env.HUB_PASSWORD }}"}' \
+            -c /tmp/e2e-cookies.txt
+
+          # Install
+          curl -sf -X POST "http://localhost:5002/api/app-lifecycle/ci-e2e-test-app:ci-marketplace/install" \
+            -H "Content-Type: application/json" \
+            -b /tmp/e2e-cookies.txt \
+            -d '{"E2E_TEXT_FIELD":"hello-e2e","E2E_PASSWORD":"secret123","E2E_EMAIL":"e2e@test.com","E2E_NUMBER":"42","E2E_URL":"https://example.com","E2E_BOOLEAN":"true"}'
+
+          # Wait for running
+          for _ in $(seq 1 60); do
+            sleep 5
+            STATUS=$(docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}" | wc -l)
+            echo "Running containers: $STATUS"
+            [ "$STATUS" -ge 5 ] && break
+          done
+
+      - name: Run Playwright platform tests
+        run: bunx playwright test e2e/platform/ --reporter=html
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Uninstall via API (best-effort)
+          curl -sf -X POST http://localhost:5002/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ env.HUB_USERNAME }}","password":"${{ env.HUB_PASSWORD }}"}' \
+            -c /tmp/e2e-cookies.txt || true
+          curl -sf -X DELETE "http://localhost:5002/api/app-lifecycle/ci-e2e-test-app:ci-marketplace/uninstall" \
+            -b /tmp/e2e-cookies.txt || true
+          sleep 10
+          docker ps -a --filter "name=ci-e2e-test-app" --format "{{.Names}}" | xargs -r docker rm -f || true
+          docker network ls --filter "name=ci-e2e-test-app" --format "{{.Name}}" | xargs -r docker network rm || true
+          rm -f /tmp/ci-hub-e2e.lock /tmp/e2e-cookies.txt
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-platform
+          path: playwright-report/
+          retention-days: 7

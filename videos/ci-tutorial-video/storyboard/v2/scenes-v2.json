@@ -1,0 +1,359 @@
+{
+  "meta": {
+    "title": "Companion Intelligence — Platform Walkthrough v2",
+    "fps": 30,
+    "formats": {
+      "landscape": "1920x1080",
+      "portrait": "1080x1920"
+    },
+    "totalDurationInSeconds": 236,
+    "narrationWordsPerSecondTarget": 2.5,
+    "notes": "One master timeline for both formats; portrait restages composition per portraitNotes. One booked gag per chapter (gag: null elsewhere); demoted gags live in storyboard-v2.md Appendix A. Org slug placeholder 'acme' — substitute the real QA org slug uniformly at capture time. Every screens[].shotId resolves in shots-v2.json."
+  },
+  "scenes": [
+    {
+      "id": "c1-open-brand-intro",
+      "chapter": "c1-open",
+      "kind": "intro",
+      "durationInSeconds": 7,
+      "caption": "Your data. Your hardware. Your AI.",
+      "narration": "This is Companion Intelligence — AI that lives in your home, with data that never has to leave it.",
+      "gag": null,
+      "screens": [],
+      "motionNotes": "Modified IntroScene (src/scenes/IntroScene.tsx) as built: orb glow blooms 0.2->0.6 opacity over 60f; CIBanner (single combined banner SVG from src/components/CILogo.tsx — no separate wordmark, no type-on) fades in and rises translateY 30->0 from f18; tagline rises beneath from f40, settles ~f70. GradientBackground flat near-black teal-navy (#041620 per theme.ts, never pure black) with radial depth lift and drifting mint/cyan glows. Montserrat throughout; calm pace, no camera move. (v2 edit: upload-arrow gag demoted to appendix.)",
+      "portraitNotes": "Logo mark above wordmark in upper two-thirds of 1080x1920. ASSET DECISION REQUIRED: public/logos has only 2024_CI__LogoMark_Color_med.svg plus two combined banner SVGs — crop the wordmark out of 2024_CI__Logo_Banner_Color_small.svg or set it as Montserrat ExtraLight text under the mark; flag for the responsive-component task. Tagline at the lower-third scrim."
+    },
+    {
+      "id": "c1-open-platform-map",
+      "chapter": "c1-open",
+      "kind": "diagram",
+      "durationInSeconds": 9,
+      "caption": "One Hub. Everything under your roof.",
+      "narration": "At the center is the Hub: a small computer in your home. Your apps, your AI, your memory — all under one roof.",
+      "gag": null,
+      "screens": [],
+      "motionNotes": "Modified PlatformDiagram (src/components/PlatformDiagram.tsx). As built: five label+sub TEXT CARDS (no icons) scale-pop in array order — Portal ('Cloud control plane'), Marketplace ('App catalog'), Hub ('App runtime — your appliance', accent card with pulsing orb), Server ('Private memory brain'), 'Clients & devices / Capture · XR · wearables' — i*5f stagger. Each edge draws ONCE, outer node toward the Hub, strokeDashoffset, i*6f stagger from f14 (data-flows-home texture, not synced to narration). ONE-LINE CHANGE: give the Hub stagger index 0 (or reorder NODES) so it lands first to match narration. NEW WORK: roofline draws over the Hub card after it settles, porch light turns on cleanly with it — SET DRESSING in v2, played straight (the delayed-blink punchline is demoted; the porch light must exist as the responder for the c1-open-cloud-joke payoff). 'All under one roof' is true at the appliance level (Hub installs CI-Server alongside marketplace apps), so Server's sub-label stays as built.",
+      "portraitNotes": "Vertical re-flow: Portal top, Hub centered (already the 460px accent card ~1.2x the 380px standard cards — scale to ~1.4x if hierarchy needs more), Server and Marketplace flanking below, Clients & devices card along the bottom. All remain text cards — no icon substitutes. Edges draw along the vertical axis, still toward the Hub. Labels >=28px; sub-labels may truncate ('Capture · XR · wearables' -> 'Capture · XR'). Roofline and porch light above the Hub card on the vertical centerline."
+    },
+    {
+      "id": "c1-open-cloud-joke",
+      "chapter": "c1-open",
+      "kind": "diagram",
+      "durationInSeconds": 6,
+      "caption": "the cloud (n.) — somebody else's computer. / the Hub (n.) — yours.",
+      "narration": "We read the fine print, so you don't have to. This one is yours.",
+      "gag": "CHAPTER GAG — A generic gray cloud puff drifts in dragging a small 'We've updated our Terms of Service' banner behind it like a parade streamer, then deflates unprompted — streamer crumpling with it — as the Hub's porch light glows a touch brighter in answer.",
+      "screens": [],
+      "motionNotes": "Camera holds on the completed diagram. Gray cloud enters from the frame edge opposite the Portal card so it is never read as our Portal; the deflate runs ~20f and is the beat's only visual joke — NO dictionary stamp on screen; the caption is the sole carrier of the definition, rendered as two dictionary entries with the second ('the Hub (n.) — yours.') in accent teal #82FCFC. ONE-LINE PROP on PlatformDiagram: Portal's sub-label crossfades 'Cloud control plane' -> 'Control plane' for the duration of this beat, so the word 'cloud' is not on screen while clouds are being mocked; Portal stays fully lit. Exit on the timeline's standard 15-frame fade (timeline.tsx ships fade() only; the teal-rule wipe motif is logged as new TransitionSeries work — see production notes — not this beat's dependency).",
+      "portraitNotes": "Gray cloud and ToS streamer enter from the top of the portrait frame, clearly above and separate from the Portal card. The deflate-and-glow exchange happens along the vertical centerline so the cloud and the Hub's porch light are both visible without a camera move. Dual dictionary caption stacks as two lines in the lower-third scrim, second line teal, >=32px."
+    },
+    {
+      "id": "c2-portal-signup",
+      "chapter": "c2-portal",
+      "kind": "screen",
+      "durationInSeconds": 9,
+      "caption": "Sign up free. Your data stays yours.",
+      "narration": "Start at hub dot ci dot computer and create a free account. The Portal manages your devices and apps — never your data.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-signup", "frame": "browser", "url": "hub.ci.computer/signup" },
+        { "shotId": "portal-signup-mobile", "frame": "phone", "url": "hub.ci.computer/signup" }
+      ],
+      "motionNotes": "Dark browser frame slides up into place showing hub.ci.computer/signup (rising from roughly the Portal card's diagram position — the node becomes the product). Slow push-in 1.0->1.05 on the form. Simulated cursor fills email then password. Cut on a soft submit ripple. 12-frame cross-dissolve out. All caption/overlay text Montserrat per style.MD. (v2 edit: padlock click-and-nod gag demoted to appendix; no padlock element exists on the page.)",
+      "portraitNotes": "Lead with the phone-framed mobile signup (portal-signup-mobile) centered at ~85% width. Desktop browser frame omitted. Caption in the upper third above the phone frame. Same cursor fill, vertically biased push-in."
+    },
+    {
+      "id": "c2-portal-window-shop",
+      "chapter": "c2-portal",
+      "kind": "screen",
+      "durationInSeconds": 9,
+      "caption": "Browse first. Sign in later.",
+      "narration": "Before you sign in to anything, browse the public App Store — two hundred apps, every one of them yours to keep.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-store-public", "frame": "browser", "url": "hub.ci.computer/store" },
+        { "shotId": "portal-store-public-mobile", "frame": "phone", "url": "hub.ci.computer/store" }
+      ],
+      "motionNotes": "No login — URL bar reads hub.ci.computer/store to make the 'public' point silently. Open at the top of the default All Apps view ('Browse every app in the Companion App Store' heading, alphabetical grid — there is no Featured row at this URL), hold a beat, then slow vertical drift down to the H–J alphabetical band where Home Assistant (row ~16, col 1), Immich (row ~17, col 4), and Jellyfin (row ~18, col 1) share a single desktop frame. Keep drift under 40px/s so logos stay readable. (v2 edits: caption changed from 'Browse before you buy. There's nothing to buy.' — buying-joke dedup; price-tag soap-bubble gag demoted, the coral tag now appears only in c6.)",
+      "portraitNotes": "Phone-framed mobile store (portal-store-public-mobile) fills the frame. Vertical scroll drift — but in the 1-column list Home Assistant is ~card 61, so open on the top-of-page take, then dissolve (don't scroll sixty cards) to the H–J-region take so the flagship cards pass through center-frame."
+    },
+    {
+      "id": "c2-portal-workspace",
+      "chapter": "c2-portal",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Mission control, minus the mission creep.",
+      "narration": "Once you're in, this is your workspace. Every app you've launched on the left, every device you own on the right. One quiet dashboard.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-home", "frame": "browser", "url": "hub.ci.computer/home" },
+        { "shotId": "portal-home-mobile", "frame": "phone", "url": "hub.ci.computer/home" }
+      ],
+      "motionNotes": "Open wide on desktop /home: WorkspaceHeader, AppLauncherGrid, DevicesSidebar. App tiles snap into the launcher grid one by one with soft ticks — motion polish, not a booked laugh. Highlight ring sweeps the grid, then settles on the sidebar. At the 6s mark a phone frame slides in from the right at ~60% height showing portal-home-mobile — hold both in a split composition to sell 'same workspace, any screen'. Caption fallback if the voice-read test stumbles: 'Every app you've launched. Every device you own. That's the whole dashboard.'",
+      "portraitNotes": "Invert the composition: portal-home-mobile in a phone frame is dominant and full-height; the desktop browser frame appears as a scaled wide card tucked behind/above it at ~70% width so the sidebar layout still reads. Highlight ring runs inside the phone frame."
+    },
+    {
+      "id": "c2-portal-name-device",
+      "chapter": "c2-portal",
+      "kind": "screen",
+      "durationInSeconds": 8,
+      "caption": "Name it like you'll keep it. You will.",
+      "narration": "To claim a machine, add a device and give it a name. Living Room Server. That'll do.",
+      "gag": "CHAPTER GAG — The slug preview types out 'Slug: living-room-server' in its code chip half a beat behind the name field, like a diligent stenographer keeping up. The lag itself reads on screen — no caption needed. Fully supported by the product's generateSlugPreview().",
+      "screens": [
+        { "shotId": "portal-add-device-dialog", "frame": "browser", "url": "hub.ci.computer/home" }
+      ],
+      "motionNotes": "From /home, background dims 40%; the 'Name your device' dialog scales 0.96->1.0. Simulated cursor clicks the field; 'Living Room Server' types in over ~2s at human cadence with one believable pause — it exactly matches the field's real placeholder ('e.g. Living Room Server'). CTA click at the end leads directly into the pairing beat. (v2 edit: trimmed 9s -> 8s; narration was slack at 1.9 w/s.)",
+      "portraitNotes": "Crop to the centered dialog from the desktop capture and scale to ~90% of portrait width — the dialog card is naturally tall and reads native in portrait. Keep the dimmed workspace visible at the edges for context. Caption below the dialog."
+    },
+    {
+      "id": "c2-portal-pairing-code",
+      "chapter": "c2-portal",
+      "kind": "screen",
+      "durationInSeconds": 11,
+      "caption": "Six characters between you and ownership.",
+      "narration": "The Portal answers with a pairing code. No verification email, no expiring link — six characters is the whole ceremony. Carry it to your Hub, and the machine becomes yours.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-pairing-code-dialog", "frame": "browser", "url": "hub.ci.computer/home" },
+        { "shotId": "portal-pairing-code-dialog-mobile", "frame": "phone", "url": "hub.ci.computer/home" }
+      ],
+      "motionNotes": "Cross-dissolve from the name dialog to the 'Device Pairing Code' dialog. The real dialog is content-tall: Shield icon header, 'Your Pairing Code' label, the primary-bordered gradient code card (NOT teal — reads as a faint light border in dark mode; any teal glow is a deliberate Remotion overlay, not the capture), a security-warning box, and 'Open in Companion Hub' / 'I've Saved My Code' buttons. Code glyphs land sequentially over ~1.5s with typewriter weight; gentle glow pulse on the code card. Copy micro-interaction at the 6s mark exactly as the product does it: the icon button flips Copy to a green Check, and a separate '✓ Copied to clipboard!' line fades in below the code row — no 'Copied' label on the button itself (sincere craft, kept as polish). Then a phone frame with the mobile dialog slides in beside it — the code visually exists on both screens. End on a slow push that crops tight to the code card, past the dialog's other chrome; begin the teal-rule horizontal wipe that hands off to the Hub chapter. (v2 edit: 0->1 odometer device-count gag demoted to appendix.)",
+      "portraitNotes": "Phone-framed portal-pairing-code-dialog-mobile is the hero, near full-height. The final push-in crops to the code card itself — past the Shield header, security note, and buttons (the dialog is content-tall, not a bare code card) — so the code crop fills the width. Desktop dialog appears briefly as a scaled card behind it, then recedes. Teal-rule wipe exits vertically (bottom to top) in portrait."
+    },
+    {
+      "id": "c3-hub-claim",
+      "chapter": "c3-hub",
+      "kind": "screen",
+      "durationInSeconds": 13,
+      "caption": "Six characters. Then it's alive.",
+      "narration": "Over on the Hub, type in the code and watch it work — provisioning your domain, setting up your Hub, done. Your machine now has its own secure address on the internet.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-device-registration-empty", "frame": "browser" },
+        { "shotId": "hub-device-registration-provisioning", "frame": "browser" },
+        { "shotId": "hub-device-registration-complete", "frame": "browser" },
+        { "shotId": "hub-device-registration-mobile-code", "frame": "phone" },
+        { "shotId": "hub-device-registration-mobile-provisioning", "frame": "phone" }
+      ],
+      "motionNotes": "Teal horizontal wipe in (machine-switch language). hub-device-registration-empty: the 6 mono characters type in one by one with soft keystroke micro-scales on the pairing-code input (Step 2 panel; the page auto-focuses it). Cross-dissolve to provisioning: status card phases advance as the real strings — 'Provisioning your domain' then 'Setting up your Hub' — rendered as three small stops on a thin overlay progress line, a teal dot sliding between them (texture, not a joke). The live page replaces the form with the status card in pending phases, so the dissolve is a state change, not a scroll. Hard cut on a beat to the complete state; 6-frame hold before transition out. (v2 edits: trimmed 14s -> 13s; dropped '— owned, not rented —' from narration for roast dedup; EKG heartbeat blip demoted to appendix — first to reinstate if runtime allows.)",
+      "portraitNotes": "Phone frame leads, and the two mobile captures play in sequence rather than stacked (the live page never renders the input and the status card together — the progress card replaces the form, and the code clears on success): hub-device-registration-mobile-code full-height as the 6 mono characters type in above the Register button; teal cross-wipe to hub-device-registration-mobile-provisioning showing the status card alone on 'Setting up your Hub', the three-stop overlay progress line running vertically beside it. End on a 1.5s scaled browser-frame insert of the complete state."
+    },
+    {
+      "id": "c3-hub-onboarding",
+      "chapter": "c3-hub",
+      "kind": "screen",
+      "durationInSeconds": 12,
+      "caption": "Install & Finish. The button means it.",
+      "narration": "First boot is one guided pass: pick local AI models, choose remote access, check a few recommended apps, and press Install and Finish. The Hub handles the rest.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-onboarding-form", "frame": "browser" },
+        { "shotId": "hub-onboarding-installing", "frame": "browser" }
+      ],
+      "motionNotes": "Slow vertical pan down the 'Set Up Your Hub' wizard (hub-onboarding-form): hold briefly on the local AI models / Ollama step, keep the camera moving past the remote-access step (its visible heading is 'Set Up Private VPN', so don't hold long enough for a framing mismatch), then settle on Step 4 'Recommended Apps'. Pinned apps are already selected on the real page; animate the circular select indicators on two additional app cards ticking on in sequence on a 6-frame grid. Highlight ring lands on the sticky footer 'Install & Finish' (data-testid finish-setup-btn); simulated click depresses it; cut to hub-onboarding-installing with the InstallStep progress list animating two rows. (v2 edits: dropped 'No welcome-email series.' — second roast in chapter; Install & Finish glint demoted per its own animatic-read clause.)",
+      "portraitNotes": "The wizard is desktop-first: show the browser frame scaled to ~94% portrait width and do the vertical pan inside it, keeping the sticky Install & Finish footer pinned at the crop's bottom edge the whole time. Crop tighter (~1.3x) on the Recommended Apps grid for the select-indicator ticks so the cards read at phone size."
+    },
+    {
+      "id": "c3-hub-dashboard",
+      "chapter": "c3-hub",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Numbers you can point at.",
+      "narration": "And this is home. Disk, CPU, memory — real numbers from a box you can physically point at. Same view from your phone.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-home-dashboard", "frame": "browser", "url": "hub-living-room-server-acme.ci.computer/home" },
+        { "shotId": "hub-home-dashboard-mobile", "frame": "phone", "url": "hub-living-room-server-acme.ci.computer/home" }
+      ],
+      "motionNotes": "hub-home-dashboard enters with the three stat cards' (DISK SPACE, CPU LOAD, MEMORY USED — rendered uppercase) progress bars filling and numbers counting up, staggered 6 frames apart. On 'Same view from your phone', the phone frame (hub-home-dashboard-mobile) slides in from the right at ~38% height, slightly overlapping the browser frame; the mobile layout keeps the same 3-across stat-card row (fixed grid), which helps the side-by-side read as one machine. (v2 edits: trimmed 12s -> 10s; dropped 'Go ahead — point.' along with the demoted pointing-hand gag.)",
+      "portraitNotes": "Inverted: the phone frame leads full-height. At 390px the three stat cards keep their real single-row 3-across layout (grid-cols-3 has no responsive breakpoint — they do not stack), counting up side by side above the installed-apps list. The desktop browser frame slides in scaled (~70% width) behind and below the phone for the final 2s — same numbers, two screens, one machine."
+    },
+    {
+      "id": "c3-hub-controls",
+      "chapter": "c3-hub",
+      "kind": "screen",
+      "durationInSeconds": 13,
+      "caption": "Every dial. No tickets.",
+      "narration": "Want the dials? They're all here — security, network, app stores, AI, logs. The resource monitor charts every app's CPU in real time. Every dial is yours — and reading your own logs costs nothing.",
+      "gag": "CHAPTER GAG — A small perforated support-ticket stub — torn perforation edge plus two lines of mono microtext, 'SUPPORT TICKET' / 'EST. WAIT: 6 DAYS' — detaches from the corner of the settings frame, drifts down-right like a falling leaf, and dissolves before it leaves frame. Fires on 'Every dial is yours', while the caption 'No tickets' is on screen.",
+      "screens": [
+        { "shotId": "hub-settings-overview", "frame": "browser", "url": "hub-living-room-server-acme.ci.computer/settings" },
+        { "shotId": "hub-resource-monitor", "frame": "browser", "url": "hub-living-room-server-acme.ci.computer/resource-monitor" }
+      ],
+      "motionNotes": "hub-settings-overview: the tab row (Settings, Security, App Stores, Network, AI, System, Logs) gets a quick left-to-right highlight sweep, one tab per ~5 frames, syncing roughly with the narration list; hold on the Settings tab with the public hub hostname field (hub-living-room-server-acme.ci.computer) visible. Ticket-stub gag fires on 'Every dial is yours' with the caption carrying 'No tickets'. Cross-dissolve to hub-resource-monitor: per-app CPU polylines draw on like pen strokes in their series colors, legend chips pop in with soft ticks, then a short pan down to the app table with green 'Responsive' cells, landing as 'costs nothing' resolves. Exit: simulated click on the Store nav item carries into c4 — same machine, no wipe. (v2 edit: trimmed 14s -> 13s, narration tightened to ~2.5 w/s.)",
+      "portraitNotes": "Sequence rather than stack: settings browser frame first at ~94% width with the tab sweep cropped tight on the tab row, then the resource monitor. The CPU chart is wide (960x320), so crop to the left two-thirds and pan right as the lines draw; the table shows as a 2-column crop (App, CPU). The ticket stub falls vertically past the frame edge, microtext readable at phone scale."
+    },
+    {
+      "id": "c4-store-catalog",
+      "chapter": "c4-store",
+      "kind": "feature",
+      "durationInSeconds": 12,
+      "caption": "200 apps. 0 subscriptions.",
+      "narration": "This is the App Store, fed by the open Marketplace — two hundred apps and counting. Photos, media, home automation, passwords — everything you've been renting, ready to own.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-store-grid", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/store" },
+        { "shotId": "hub-store-featured", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/store" },
+        { "shotId": "hub-store-featured-mobile", "frame": "phone" }
+      ],
+      "motionNotes": "Open on hub /store in a browser frame: the real index view (alphabetical by URN, activepieces / adguardhome-sync / etc., 24-per-page infinite scroll) with a slow lateral drift for ~4s to convey scale. Then cut to the Featured category view (16 apps — includes all 8 flagships) for the highlight-ring hop: Immich -> Jellyfin -> Home Assistant -> Nextcloud -> n8n -> Open WebUI -> Vaultwarden -> Pi-hole (about 0.8s each, eased). Top-left, a quiet pipeline chip animates in: 'Open Marketplace -> 200 apps -> your Hub', with a single pulse along the arrow when the narration credits the Marketplace — this chip and the narration are the only two Marketplace credits; the caption stays out of it. App count ticks 195 -> 200 odometer-style in the caption corner on entry (overlay only — the store UI shows no count; re-verify the number against the live /api search total at capture time). Category selection lives in Zustand, not the URL — set the Featured category in UI state before capture. (v2 edit: price-tag peel gag demoted; the coral tag appears only in c6.)",
+      "portraitNotes": "Mobile-led: hub-store-featured-mobile in a phone frame fills the center column with a vertical scroll drift (Featured puts Home Assistant, Immich, and Jellyfin near the top alphabetically, so flagships are above the fold). The desktop browser frame slides in scaled to ~55% behind/above it for 3s as a 'same store, every screen' stack, then exits. Marketplace pipeline chip rides the top third; caption sits above the phone on the navy scrim."
+    },
+    {
+      "id": "c4-store-exclusives",
+      "chapter": "c4-store",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "The Companion exclusives shelf. Only here — still yours.",
+      "narration": "Or head straight for the Companion exclusives — Companion Earth, Photo Time Machine, Just In Case, Spellbook — apps you won't find on anyone else's shelf.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-store-ci-category", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/store" }
+      ],
+      "motionNotes": "Straight cut to the store pre-filtered to the companion-intelligence category (13 apps return); the grid settles in with a card shuffle-and-settle, stagger 3 frames per card. Do NOT animate a sidebar category click — companion-intelligence has no sidebar entry (iconForCategory omits it); the filter is set in Zustand state before capture. Highlight ring passes over Companion Earth, Photo Time Machine, Just In Case, then Spellbook as each is named. Motion polish (not a gag): a quiet teal sheen sweeps once across the exclusives row, like light moving along a shelf. Hold 1.5s on the filtered grid before exit. (v2 edit: 'Also available on: —' spec-line gag demoted to appendix.)",
+      "portraitNotes": "Crop the desktop capture to a two-column slice of the exclusives grid and pan vertically down the cards instead of laterally; the cards settle in the same stagger. Caption below center."
+    },
+    {
+      "id": "c4-store-privacy",
+      "chapter": "c4-store",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Data Collection: 'No data collected.' That's the whole list.",
+      "narration": "Every app page carries an App Privacy card. Here's Immich's — under Data Collection, the entire list: no data collected. It's a quick read.",
+      "gag": "CHAPTER GAG — A footnote asterisk fades in beside 'No data collected' — oversized to ~1.4x footnote scale so it reads at video size — drifts to the bottom of the card looking for fine print with two small left-right nudges (4-6 frames each), holds one beat of stillness, finds none, and politely fades out.",
+      "screens": [
+        { "shotId": "hub-app-details-immich", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/store" }
+      ],
+      "motionNotes": "Land on the Immich details page (logo, 'About this app' description panel, right-column Information panel). After 2s, push in 1.0 -> 1.18 on the App Privacy card while the rest of the page dims 30%. Hold the card 3 full seconds in silence after the narration line lands — let the card do the joke. The asterisk's stillness beat before its fade is where the laugh lives; no other UI motion during the hold.",
+      "portraitNotes": "The App Privacy card is nearly square — center it full-width in the portrait safe column with the rest of the details page blurred behind. Push-in is identical; caption sits under the card."
+    },
+    {
+      "id": "c4-store-install",
+      "chapter": "c4-store",
+      "kind": "screen",
+      "durationInSeconds": 8,
+      "caption": "One dialog. Secrets handle themselves.",
+      "narration": "Hit install. Secrets generate themselves — you never see them. Upload location, pre-filled. One click to your own photo server.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-install-dialog-immich", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/store" }
+      ],
+      "motionNotes": "Install button gets a highlight ring and a click; the 'Install Immich' dialog springs open (scale 0.96 -> 1.0 over 8 frames, soft overshoot). The dialog shows NO secret fields — Immich's three secrets are type 'random' and filtered out of the form entirely; do not animate secret characters filling in. Instead, the pre-filled Upload Location field ('/nfs/tipi/immich') gets a brief underline pulse as the narration mentions it. Cursor moves to the submit button and clicks on the final word of narration — the click is the transition into the lifecycle beat. (v2 edits: caption changed from 'One dialog. No account. No card. Nothing that expires.' — third money-joke dedup; '(We don't know them either.)' annotation demoted; narration tightened to 2.5 w/s.)",
+      "portraitNotes": "The dialog is naturally narrow — render it near full-width in the portrait column with the page dimmed behind; no desktop frame needed. Keep the submit click as the hard cut to the lifecycle beat."
+    },
+    {
+      "id": "c4-store-lifecycle",
+      "chapter": "c4-store",
+      "kind": "feature",
+      "durationInSeconds": 11,
+      "caption": "installing → running",
+      "narration": "Then the Hub does the work — preparing, downloading, setting up — and running. That green badge means Immich is live, on your hardware.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-app-installing-immich", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/apps" },
+        { "shotId": "hub-app-install-progress-immich", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/apps" },
+        { "shotId": "hub-app-running-immich", "frame": "browser", "url": "https://hub-living-room-server-acme.ci.computer/apps" }
+      ],
+      "motionNotes": "Cut to /apps/:storeId/immich. Real UI behavior: the status badge is a gray-400 dot labeled 'installing' for the whole install (it never turns amber — amber is install_failed), while the 'Installing X%' button beneath shows a live percentage with a small stage line that ticks through the real strings in sync with the narration: 'Preparing' (<20%), 'Downloading' (<40%), 'Setting up' (<70%), 'Starting' (<90%), 'Almost ready' (90%+). A small overlay strip along the bottom mirrors these stage strings, each node lighting as it's reached; the final node holds its glow a half-beat longer than the others, like a small bow. Then the badge flips directly to 'running' — pulsing green-500 dot — with a single mint pulse (#58EBBF): one soft ring ripple from the green dot, then stillness; KEPT AS POLISH, not a booked gag. No confetti. Open and Stop buttons fade in under the green badge (Restart lives in the actions dropdown, not as a button). A fresh install never shows a 'starting' badge — that state only appears on manual stop/start; do not depict it here. (v2 edits: trimmed 12s -> 11s; dropped 'No signup, no card on file, no monthly anything.' — the subscription roast belongs to c6's tally alone.)",
+      "portraitNotes": "Stack vertically: status badge large at center, install-progress button and stage line directly beneath it, the stage strip below that, action buttons last — crop away the page chrome. The mint pulse reads full-frame in both formats."
+    },
+    {
+      "id": "c4-store-live",
+      "chapter": "c4-store",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Your photos. Your domain. The URL bar is the receipt.",
+      "narration": "And here it is — your full photo timeline, served from your own machine, on your own domain. Read the URL bar.",
+      "gag": null,
+      "screens": [
+        { "shotId": "app-immich-live", "frame": "browser", "url": "https://immich-living-room-server-acme.ci.computer" },
+        { "shotId": "app-immich-live-mobile", "frame": "phone", "url": "https://immich-living-room-server-acme.ci.computer" }
+      ],
+      "motionNotes": "Click 'Open' carries over from the previous beat; the browser frame slides in with the URL typing on character by character: immich-living-room-server-acme.ci.computer — the URL animation IS the moment, give it a full 2s with a soft teal underline sweep beneath the address bar. The caption lands the receipt line; the narration only sets it up — do not repeat 'receipt' in VO. Then slow push-in (1.0 -> 1.06) on the populated Immich photo timeline. Hold 2s, no other motion. (v2 edit: URL-bar padlock bounce demoted to appendix.)",
+      "portraitNotes": "Phone frame with app-immich-live-mobile dominant, full-height. Mobile browsers hide URLs, so render a custom URL chip pinned above the phone frame with the same type-on animation — the proof has to survive the portrait crop. Desktop frame not needed in this orientation."
+    },
+    {
+      "id": "c5-mobile-portal-pocket",
+      "chapter": "c5-mobile",
+      "kind": "screen",
+      "durationInSeconds": 12,
+      "caption": "Every device you own. One pocket.",
+      "narration": "Everything you just built fits in your pocket. Open the Portal on your phone — every device, every app, one tap away. No app store between you and what you own.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-home-mobile", "frame": "phone", "url": "hub.ci.computer/home" }
+      ],
+      "motionNotes": "Teal-navy gradient stage (#041620 ground, #244859 lift — never neutral black). Phone frame slides up from the bottom edge (as if drawn from a pocket — a single subtle stitched-line graphic at the bottom sells it), settles slightly right of center with a soft teal rim glow. Portal /home mobile layout scrolls slowly upward inside the frame: WorkspaceHeader, then AppLauncherGrid, then the devices list (DevicesSidebar genuinely inlines below the grid on mobile — this scroll order is exactly what the UI does). Caption sits in the left negative space. (v2 edit: priced pocket-cloud gag demoted — the coral tag appears only in c6.)",
+      "portraitNotes": "Phone frame near-fullscreen (~85% height, centered); the pocket slide-up reads even better since the frame matches the viewer's own phone. Caption moves to the top third on a 40% navy scrim."
+    },
+    {
+      "id": "c5-mobile-hub-vitals",
+      "chapter": "c5-mobile",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Your server's vitals, live on your phone",
+      "narration": "Check on the Hub itself from anywhere. Disk, CPU, memory, at a glance. It's doing fine. It usually is.",
+      "gag": "CHAPTER GAG — The CPU load bar visibly exhales — it eases down 2-3% right as the narrator says 'It's doing fine,' like the server relaxing because you checked in. Pin it to cubic-bezier(0.4,0,0.2,1) so it reads as a breath, not a data glitch. Nothing follows it — no third sentence, no visual rimshot; the understatement is the beat.",
+      "screens": [
+        { "shotId": "hub-home-dashboard-mobile", "frame": "phone", "url": "hub-living-room-server-acme.ci.computer/home" }
+      ],
+      "motionNotes": "Cross-dissolve keeps the phone in the same stage position on the teal-navy gradient stage (#041620 ground, #244859 lift). Inside the frame the Hub /home stat cards — 'Disk space', 'CPU load', 'Memory used', rendered three-across in the dashboard's fixed three-column grid (they do NOT stack at mobile width) — animate their bars and count-up numbers on entry, then the installed-apps list peeks in from below. Slow 1.0->1.04 push-in on the phone over the full beat; hold the frame steady during the exhale so the 2-3% drop reads. (v2 edit: shot id canonicalized from the section draft's 'hub-home-mobile' to hub-home-dashboard-mobile.)",
+      "portraitNotes": "Phone frame near-fullscreen; the three-across cards are compact at 390px, so let the count-up numbers carry the beat and keep the camera still through the CPU exhale. Caption drops to the bottom third under the frame's chin."
+    },
+    {
+      "id": "c5-mobile-open-anywhere",
+      "chapter": "c5-mobile",
+      "kind": "screen",
+      "durationInSeconds": 12,
+      "caption": "Any couch. Any café. Same URL.",
+      "narration": "And your apps open right here too. Tap Open, and your photo library loads from your own domain — home wifi, coffee shop, anywhere. The address doesn't change because you moved.",
+      "gag": null,
+      "screens": [
+        { "shotId": "hub-app-running-immich-mobile", "frame": "phone" },
+        { "shotId": "app-immich-live-mobile", "frame": "phone", "url": "immich-living-room-server-acme.ci.computer" }
+      ],
+      "motionNotes": "First phone shows the installed Immich page — green pulsing status dot with the muted 'Running' label next to the action buttons (it's a dot plus text, not a badge); a simulated tap ripple lands on Open (Stop and Open are the visible buttons; Restart lives in the overflow menu), then the screen content slides left-to-right within the same frame to the live Immich timeline — one phone, one continuous gesture. Mid-scroll, the status-bar signal flips wifi -> 5G with zero interruption and no callout — the literal coffee-shop proof, there for rewatchers (ambient texture, kept). Hold on the URL bar for a half-second beat — no underline, no highlight; the stillness IS the callout. End on a slow push-in: the payoff shot of the chapter. (v2 edits: pin-hop bench gag and background-cloud callback demoted to appendix.)",
+      "portraitNotes": "The climax of the portrait cut — phone frame at full bleed, the tap and slide transition feel native, and the wifi -> 5G status-bar flip reads at native scale. The URL is duplicated above the frame at caption size so the *.ci.computer domain is legible at vertical-video glance speed. No underline on the URL in either placement."
+    },
+    {
+      "id": "c6-close-fleet",
+      "chapter": "c6-close",
+      "kind": "screen",
+      "durationInSeconds": 10,
+      "caption": "Every device. Every app. One quiet dashboard.",
+      "narration": "Back in the Portal, your Hub is online and your new apps are one click away — everything you just built, on hardware you own.",
+      "gag": null,
+      "screens": [
+        { "shotId": "portal-home-with-device", "frame": "browser", "url": "hub.ci.computer/home" },
+        { "shotId": "portal-home-with-device-mobile", "frame": "phone" }
+      ],
+      "motionNotes": "Enter via the horizontal teal-rule wipe (machine-switch language, Portal direction — specced in v1 prose only; timeline.tsx uses fade(), so build the wipe new in v2). Device card status dot ticks from grey (--ci-offline #6f808a) to green (--ci-success) with a 2-frame overshoot, timed to the narration word 'online' (polish). A teal connector line draws from the 'Living Room Server' card in the DevicesSidebar to the Immich tile in the AppLauncherGrid (connector specced in v1 s12 notes; ScreenScene.tsx has no connector code — build new). Slow push-in 1.00 -> 1.04 across the beat. PLANT for the tally gag: a tiny coral (#F47C6C) price tag already dangles faintly off the dashboard's corner, unexplained — first-watch setup, second-watch Easter egg. Landscape: browser frame full-bleed, phone frame absent. (v2 edit: diagram-ghost snap demoted to appendix.)",
+      "portraitNotes": "Phone frame leads, centered and dominant, showing the mobile Portal /home in its real single-column order: WorkspaceHeader (org name, '1 device · 1 app' counts) at top, AppLauncherGrid with the Immich tile next, and the 'Living Room Server' device card inline below the grid. The teal connector runs vertically UPWARD from the device card to the app tile. Capture is scrolled so both the tile and the device card sit in frame at 390x844 (the device card lives below the grid and won't fit unscrolled). The desktop browser frame appears small and angled behind the phone at ~55% scale, dimmed 30%, just enough to say 'same dashboard everywhere.' Coral tag dangles from the phone frame's top corner."
+    },
+    {
+      "id": "c6-close-tally",
+      "chapter": "c6-close",
+      "kind": "feature",
+      "durationInSeconds": 8,
+      "caption": "Your hardware. Your domain. Your data. $0/month.",
+      "narration": "Your own hardware, your own domain, your own data — and exactly zero subscriptions. Nothing left to cancel.",
+      "gag": "CHAPTER GAG — The coral (#F47C6C) price tag reading \"$9.99/mo*\" — planted dangling off the dashboard corner since the fleet beat — unhooks itself as the fourth chip lands and floats up out of frame, fading as it goes, its asterisk pointing to fine print too small to read. Coral is the style guide's single warm accent, reserved for the one element in the video that doesn't belong to the user. No confetti — the joke is the silence. This is the video's only price-tag and only coral object.",
+      "screens": [],
+      "motionNotes": "The fleet view from the previous beat dims to ~25% and blurs slightly (the coral tag stays faintly legible on its corner until the unhook); four pill chips pop in sequentially on a 6-frame stagger across a 2x2 grid (Montserrat 600, teal border on navy): 'Your hardware' / 'Your domain' / 'Your data' / '$0/month', each landing with a small check tick. The fourth chip settles with a gentle scale ease, no bounce, and triggers the price-tag unhook. After the tag fades off the top of frame, hold 12-15 frames with no motion at all — the silence is the button — then cross-dissolve to the outro.",
+      "portraitNotes": "Chips stack vertically as a single centered column (four rows) over the dimmed phone frame; coral tag dangles from the phone frame's top corner and floats off the top edge. Keep chips inside the 80%-width caption-safe zone so the stack reads at 9:16."
+    },
+    {
+      "id": "c6-close-outro",
+      "chapter": "c6-close",
+      "kind": "outro",
+      "durationInSeconds": 6,
+      "caption": "ci.computer — Own your AI.",
+      "narration": "Companion Intelligence. ci dot computer. Own your AI.",
+      "gag": null,
+      "screens": [],
+      "motionNotes": "Cross-dissolve into the existing OutroScene (src/scenes/OutroScene.tsx), matching its real order: CI logo fades/slides in (opacity + translateY) from frame 0, CTA line 'Own your AI.' enters at frame 16, and the gradient 'ci.computer' chip pops in LAST at frame 34 with its springy scale-in (damping 13). The chip's bounce settle triggers a plain teal rule drawing left-to-right beneath it — NEW element, absent from OutroScene.tsx; kept as CTA punctuation, no label (the '100% / nothing follows it' joke framing is demoted to appendix). Hold 2s on the settled frame, then fade to black. The extra second of hold lets the TTS line finish clean.",
+      "portraitNotes": "Re-stack the existing component for 9:16 without changing element or animation order: logo at the upper-third anchor, CTA line 'Own your AI.' mid-frame, gradient 'ci.computer' chip below it (still entering last with its spring). Teal rule draws at the chip's width rather than full-bleed. All within 9:16 title-safe margins."
+    }
+  ]
+}

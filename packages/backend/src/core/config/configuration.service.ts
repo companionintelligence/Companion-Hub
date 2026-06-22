@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
+import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
@@ -97,10 +98,26 @@ export class ConfigurationService {
     const { NODE_ENV } = process.env;
 
     // Load settings.json manually to get credentials, bypassing .env
-    let settingsValues: { ciHubApiKey: string | null; ciHubOrganizationId: string | null; inferenceBackend: InferenceBackendType | undefined } = {
+    let settingsValues: {
+      ciHubApiKey: string | null;
+      ciHubOrganizationId: string | null;
+      defaultAppCpuLimit?: string;
+      defaultAppMemoryLimit?: string;
+      autoAllocateAppResources?: boolean;
+      inferenceBackend: InferenceBackendType | undefined;
+      inferenceModel: string | undefined;
+      inferenceEmbeddingModel: string | undefined;
+      inferenceVisionModel: string | undefined;
+    } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
+      defaultAppCpuLimit: undefined,
+      defaultAppMemoryLimit: undefined,
+      autoAllocateAppResources: undefined,
       inferenceBackend: undefined,
+      inferenceModel: undefined,
+      inferenceEmbeddingModel: undefined,
+      inferenceVisionModel: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -110,7 +127,13 @@ export class ConfigurationService {
         settingsValues = {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
+          defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
+          defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
+          autoAllocateAppResources: settings.autoAllocateAppResources,
           inferenceBackend: settings.inferenceBackend,
+          inferenceModel: settings.inferenceModel,
+          inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
+          inferenceVisionModel: settings.inferenceVisionModel,
         };
       }
     } catch (_e) {
@@ -141,7 +164,12 @@ export class ConfigurationService {
       isProduction: NODE_ENV === 'production',
       userSettings: {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
-        allowErrorMonitoring: env.data.ALLOW_ERROR_MONITORING && NODE_ENV === 'production',
+        // Consent plumbing retained; error reporting is always-on when SENTRY_DSN is configured.
+        allowErrorMonitoring: true,
+        defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
+        defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
+        // Auto resource allocation is opt-out: undefined means enabled
+        autoAllocateAppResources: settingsValues.autoAllocateAppResources ?? true,
         demoMode: env.data.DEMO_MODE,
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,
@@ -164,6 +192,9 @@ export class ConfigurationService {
         themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
         inferenceBackend: settingsValues.inferenceBackend,
+        inferenceModel: settingsValues.inferenceModel,
+        inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
+        inferenceVisionModel: settingsValues.inferenceVisionModel,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -207,7 +238,7 @@ export class ConfigurationService {
       }
       const currentSettings = currentSettingsResult.data;
 
-      await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
+      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`);
 
       this.config.userSettings = { ...this.config.userSettings, ...settings };
 
@@ -227,11 +258,39 @@ export class ConfigurationService {
   public getInferencePreferences() {
     return {
       preferredBackend: this.config.userSettings.inferenceBackend ?? null,
+      preferredModel: this.config.userSettings.inferenceModel ?? null,
+      preferredEmbeddingModel: this.config.userSettings.inferenceEmbeddingModel ?? null,
+      preferredVisionModel: this.config.userSettings.inferenceVisionModel ?? null,
     };
   }
 
-  public async setInferencePreferences(backend: InferenceBackendType) {
-    await this.setUserSettings({ inferenceBackend: backend });
+  /**
+   * Persist inference preferences. `model` is the catalog id of the default model Companion agents
+   * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
+   * unchanged. `embeddingModel` and `visionModel` follow the same convention.
+   */
+  public async setInferencePreferences(
+    backend: InferenceBackendType,
+    model?: string | null,
+    embeddingModel?: string | null,
+    visionModel?: string | null,
+  ) {
+    const settings: {
+      inferenceBackend: InferenceBackendType;
+      inferenceModel?: string;
+      inferenceEmbeddingModel?: string;
+      inferenceVisionModel?: string;
+    } = { inferenceBackend: backend };
+    if (model !== undefined) {
+      settings.inferenceModel = model ?? undefined;
+    }
+    if (embeddingModel !== undefined) {
+      settings.inferenceEmbeddingModel = embeddingModel ?? undefined;
+    }
+    if (visionModel !== undefined) {
+      settings.inferenceVisionModel = visionModel ?? undefined;
+    }
+    await this.setUserSettings(settings);
     return this.getInferencePreferences();
   }
 

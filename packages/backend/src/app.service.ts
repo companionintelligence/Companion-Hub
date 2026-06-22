@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR } from './common/constants';
+import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from './common/constants';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -20,6 +20,20 @@ import { AppsRepository } from './modules/apps/apps.repository';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
+  private isDockerBootstrapPermissionIssue(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+
+    const err = error as NodeJS.ErrnoException;
+    const message = error.message.toLowerCase();
+    return (
+      err.code === 'EACCES' ||
+      err.code === 'EPERM' ||
+      message.includes('connect eacces') ||
+      message.includes('permission denied') ||
+      message.includes('docker.sock')
+    );
+  }
+
   constructor(
     private readonly cache: CacheService,
     private readonly configuration: ConfigurationService,
@@ -50,8 +64,19 @@ export class AppService implements OnApplicationShutdown {
       // Validate data directory integrity
       await this.validateDataDirectories();
 
-      await this.docker.pruneNetworks();
-      this.logger.info('Docker networks pruned');
+      try {
+        await this.docker.pruneNetworks();
+        this.logger.info('Docker networks pruned');
+      } catch (error) {
+        if (!this.isDockerBootstrapPermissionIssue(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
@@ -115,7 +140,7 @@ export class AppService implements OnApplicationShutdown {
   public async getVersion() {
     const { version: currentVersion } = this.configuration.getConfig();
 
-    const [releasesSince] = await Promise.all([this.registryService.getTagsSince('ci-os-hub', currentVersion)]);
+    const [releasesSince] = await Promise.all([this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion)]);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,
@@ -158,9 +183,13 @@ export class AppService implements OnApplicationShutdown {
       // Ensure config directory exists
       await this.filesystem.createDirectory(traefikConfigDest);
 
-      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) =>
-        content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com'),
-      );
+      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
+        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com');
+        if (process.env.NODE_ENV === 'production') {
+          next = next.replace(/^(\s*)insecure:\s*true\s*$/m, '$1insecure: false');
+        }
+        return next;
+      });
 
       // Copy dynamic config
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
@@ -242,9 +271,10 @@ export class AppService implements OnApplicationShutdown {
    * Creates missing directories and logs warnings for potential data loss.
    */
   private async validateDataDirectories(): Promise<void> {
+    // Bind-mounted subtrees must be writable; /data itself is often root-owned in the image.
     const criticalDirs = [
-      { name: 'data', path: DATA_DIR },
       { name: 'app-data', path: APP_DATA_DIR },
+      { name: 'cache', path: path.join(DATA_DIR, 'cache') },
       { name: 'state', path: path.join(DATA_DIR, 'state') },
       { name: 'apps', path: path.join(DATA_DIR, 'apps') },
       { name: 'user-config', path: path.join(DATA_DIR, 'user-config') },

@@ -16,6 +16,8 @@ export class FilesystemService {
     // /host/proc is Linux-only (Docker host /proc mount)
     if (process.platform !== 'win32') {
       allowedDirs.push(path.resolve('/host/proc/'));
+      allowedDirs.push(path.resolve('/dev/kfd'));
+      allowedDirs.push(path.resolve('/dev/dri'));
     }
 
     // Resolve and normalize the file path to an absolute path

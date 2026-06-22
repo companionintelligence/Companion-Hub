@@ -1,11 +1,12 @@
 import { installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { AlertCircle } from 'lucide-react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
 import { useCallback, useId, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -21,9 +22,11 @@ interface IProps {
 
 export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
   const formId = useId();
   const [isFormValid, setIsFormValid] = useState(false);
+  const [appSlug] = info.urn.split(':');
 
   const installMutation = useMutation({
     ...installAppMutation(),
@@ -32,6 +35,13 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
     },
     onMutate: () => {
       setOptimisticStatus('installing', info.urn);
+      if (appSlug) {
+        addOptimisticInstalledApp(queryClient, {
+          urn: info.urn,
+          name: info.name,
+          slug: appSlug,
+        });
+      }
       onClose();
     },
   });
@@ -51,7 +61,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t('APP_INSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
@@ -61,7 +71,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
               <AlertCircle strokeWidth={2} />
             </AlertIcon>
             <div>
-              <AlertHeading>{t('WARNING')}</AlertHeading>
+              <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
               <AlertDescription>
                 <Trans i18nKey={'APP_INSTALL_FORM_FORCE_PULL_WARNING'} values={{ tag: info.version }} components={{ code: <code /> }} />
               </AlertDescription>

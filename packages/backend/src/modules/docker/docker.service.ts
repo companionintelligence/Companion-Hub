@@ -11,6 +11,71 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { DOCKERODE } from './constants';
 
+interface DockerCpuStatsSnapshot {
+  cpu_usage?: {
+    total_usage?: number;
+    percpu_usage?: number[];
+  };
+  system_cpu_usage?: number;
+  online_cpus?: number;
+}
+
+interface DockerMemoryStatsSnapshot {
+  usage?: number;
+  limit?: number;
+  stats?: {
+    cache?: number;
+  };
+}
+
+interface DockerStatsSnapshot {
+  cpu_stats?: DockerCpuStatsSnapshot;
+  precpu_stats?: DockerCpuStatsSnapshot;
+  memory_stats?: DockerMemoryStatsSnapshot;
+}
+
+interface DockerPullProgressDetail {
+  current?: number;
+  total?: number;
+}
+
+interface DockerPullProgressEventMessage {
+  id?: string;
+  status?: string;
+  progressDetail?: DockerPullProgressDetail;
+}
+
+interface DockerPullLayerSnapshot {
+  current: number;
+  total: number;
+  status: string;
+}
+
+export interface AppContainerRuntimeStats {
+  containerId: string;
+  name: string;
+  state: string;
+  status: string;
+  health: string | null;
+  cpuPercent: number;
+  memoryUsageBytes: number;
+  memoryLimitBytes: number;
+}
+
+export interface DockerPullProgressEvent {
+  activeImage: string;
+  completedBytes: number;
+  totalBytes: number;
+  completedImages: number;
+  totalImages: number;
+  stage: 'downloading' | 'extracting' | 'complete';
+}
+
+export interface AppNetworkTarget {
+  url: string;
+  internalPort: number;
+}
+
 @Injectable()
 export class DockerService {
   constructor(
@@ -30,6 +95,18 @@ export class DockerService {
    */
   private getComposeProjectName(appUrn: AppUrn): string {
     return appUrn.replace(':', '_');
+  }
+
+  private calculateCpuPercent(stats: DockerStatsSnapshot): number {
+    const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) - (stats.precpu_stats?.cpu_usage?.total_usage ?? 0);
+    const systemDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) - (stats.precpu_stats?.system_cpu_usage ?? 0);
+    const onlineCpus = stats.cpu_stats?.online_cpus ?? stats.cpu_stats?.cpu_usage?.percpu_usage?.length ?? stats.precpu_stats?.online_cpus ?? 1;
+
+    if (cpuDelta <= 0 || systemDelta <= 0 || onlineCpus <= 0) {
+      return 0;
+    }
+
+    return (cpuDelta / systemDelta) * onlineCpus * 100;
   }
 
   /**
@@ -87,6 +164,130 @@ export class DockerService {
       this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
       return [];
     }
+  }
+
+  public async getAppRuntimeStats(appUrn: AppUrn): Promise<AppContainerRuntimeStats[]> {
+    const projectName = this.getComposeProjectName(appUrn);
+    return this.getComposeProjectRuntimeStats(projectName, appUrn);
+  }
+
+  public async getHubRuntimeStats(): Promise<AppContainerRuntimeStats[]> {
+    return this.getComposeProjectRuntimeStats('ci-hub', 'ci-hub');
+  }
+
+  private async getComposeProjectRuntimeStats(projectName: string, logLabel: string): Promise<AppContainerRuntimeStats[]> {
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`com.docker.compose.project=${projectName}`] },
+    });
+
+    const results = await Promise.all(
+      containers.map((container) =>
+        (async () => {
+          const dockerContainer = this.docker.getContainer(container.Id);
+          const inspect = await dockerContainer.inspect();
+          const stats = inspect.State?.Running ? ((await dockerContainer.stats({ stream: false })) as DockerStatsSnapshot) : null;
+
+          const usage = stats?.memory_stats?.usage ?? 0;
+          const cache = stats?.memory_stats?.stats?.cache ?? 0;
+          return {
+            containerId: container.Id,
+            name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
+            state: container.State,
+            status: container.Status,
+            health: inspect.State?.Health?.Status ?? null,
+            cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
+            memoryUsageBytes: Math.max(usage - cache, 0),
+            memoryLimitBytes: stats?.memory_stats?.limit ?? 0,
+          };
+        })().catch((error) => {
+          if (this.isResourceMissingError(error)) {
+            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${logLabel}): ${error}`);
+            return null;
+          }
+
+          throw error;
+        }),
+      ),
+    );
+
+    return results.filter((result): result is AppContainerRuntimeStats => result !== null);
+  }
+
+  public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
+    const containers = await this.docker.listContainers({
+      all: false,
+      filters: {
+        label: [`ci-os-hub.appurn=${appUrn}`, 'traefik.enable=true'],
+      },
+    });
+
+    for (const containerInfo of containers) {
+      const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
+      const labels = inspect.Config?.Labels || {};
+      const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
+      const containerIP = networkSettings?.IPAddress;
+
+      if (!containerIP) {
+        continue;
+      }
+
+      const portEntry = Object.entries(labels).find(([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'));
+
+      if (!portEntry) {
+        continue;
+      }
+
+      const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
+      const internalPort = Number.parseInt(String(portEntry[1]), 10);
+
+      if (Number.isNaN(internalPort)) {
+        continue;
+      }
+
+      const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
+      const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
+
+      return {
+        url: `${scheme}://${containerIP}:${internalPort}`,
+        internalPort,
+      };
+    }
+
+    return null;
+  }
+
+  public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
+    const projectName = this.getComposeProjectName(appUrn);
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`com.docker.compose.project=${projectName}`] },
+    });
+
+    const stopped: string[] = [];
+    const killed: string[] = [];
+
+    for (const container of containers) {
+      const dockerContainer = this.docker.getContainer(container.Id);
+      const name = container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12);
+
+      if (container.State !== 'running') {
+        continue;
+      }
+
+      try {
+        await dockerContainer.stop({ t: graceSeconds });
+        stopped.push(name);
+      } catch (error) {
+        this.logger.warn(`Graceful stop failed for ${name} (${appUrn}), escalating to kill: ${error}`);
+        await dockerContainer.kill().catch((killError) => {
+          throw new Error(`Failed to kill container ${name}: ${killError instanceof Error ? killError.message : String(killError)}`);
+        });
+        killed.push(name);
+      }
+    }
+
+    return { stopped, killed };
   }
 
   /**
@@ -249,18 +450,7 @@ export class DockerService {
     // Prefer docker compose (v2 plugin) over docker-compose (v1 binary) for better compatibility
     // Try docker compose first, fallback to docker-compose binary if needed
     try {
-      // Verify docker compose is available before using it
-      const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
-      await new Promise<void>((resolve, reject) => {
-        testCmd.on('close', (code) => {
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`docker compose not available (exit code: ${code})`));
-          }
-        });
-        testCmd.on('error', reject);
-      });
+      await this.assertComposePluginAvailable();
 
       this.logger.debug('docker compose plugin is available, using it');
       // Use docker compose plugin (docker-cli is installed in the container)
@@ -273,6 +463,180 @@ export class DockerService {
         throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
       });
     }
+  }
+
+  private async imageExistsLocally(image: string): Promise<boolean> {
+    try {
+      await this.docker.getImage(image).inspect();
+      return true;
+    } catch (error) {
+      if (this.isResourceMissingError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private summarizePullLayers(layers: Map<string, DockerPullLayerSnapshot>): {
+    completedBytes: number;
+    totalBytes: number;
+    stage: DockerPullProgressEvent['stage'];
+  } {
+    let completedBytes = 0;
+    let totalBytes = 0;
+    let hasExtractingLayer = false;
+    let hasActiveLayer = false;
+
+    for (const layer of layers.values()) {
+      const total = Math.max(layer.total, layer.current);
+      totalBytes += total;
+
+      const normalizedStatus = layer.status.toLowerCase();
+      const isComplete = normalizedStatus.includes('pull complete') || normalizedStatus.includes('already exists');
+      const isExtracting = normalizedStatus.includes('extract');
+
+      if (isExtracting) {
+        hasExtractingLayer = true;
+      }
+
+      if (!isComplete) {
+        hasActiveLayer = true;
+      }
+
+      completedBytes += isComplete ? total : Math.min(layer.current, total);
+    }
+
+    const stage: DockerPullProgressEvent['stage'] = hasActiveLayer ? (hasExtractingLayer ? 'extracting' : 'downloading') : 'complete';
+    return { completedBytes, totalBytes, stage };
+  }
+
+  public async pullImages(
+    imageRefs: string[],
+    options: {
+      forcePull?: boolean;
+      onProgress?: (event: DockerPullProgressEvent) => void;
+    } = {},
+  ): Promise<void> {
+    const uniqueImages = [...new Set(imageRefs.map((image) => image.trim()).filter(Boolean))];
+
+    if (uniqueImages.length === 0) {
+      return;
+    }
+
+    const completedImages = new Set<string>();
+    const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
+
+    const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
+      if (!options.onProgress) {
+        return;
+      }
+
+      const summary = this.summarizePullLayers(layerSnapshots);
+      options.onProgress({
+        activeImage,
+        completedBytes: summary.completedBytes,
+        totalBytes: summary.totalBytes,
+        completedImages: completedImages.size,
+        totalImages: uniqueImages.length,
+        stage: stageOverride ?? summary.stage,
+      });
+    };
+
+    await Promise.all(
+      uniqueImages.map(async (image) => {
+        if (!options.forcePull && (await this.imageExistsLocally(image))) {
+          completedImages.add(image);
+          emitProgress(image, 'complete');
+          return;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          this.docker.pull(image, (pullError: Error | null, stream?: NodeJS.ReadableStream) => {
+            if (pullError) {
+              reject(pullError);
+              return;
+            }
+
+            if (!stream) {
+              reject(new Error(`Docker did not provide a pull stream for ${image}`));
+              return;
+            }
+
+            const modem = (
+              this.docker as Dockerode & {
+                modem?: {
+                  followProgress?: (
+                    stream: NodeJS.ReadableStream,
+                    onFinished: (error: Error | null, output: unknown[]) => void,
+                    onProgress?: (event: DockerPullProgressEventMessage) => void,
+                  ) => void;
+                };
+              }
+            ).modem;
+
+            if (!modem?.followProgress) {
+              reject(new Error('Docker pull progress tracking is unavailable'));
+              return;
+            }
+
+            modem.followProgress(
+              stream,
+              (followError) => {
+                if (followError) {
+                  reject(followError);
+                  return;
+                }
+
+                completedImages.add(image);
+                emitProgress(image, 'complete');
+                resolve();
+              },
+              (event) => {
+                if (event?.id) {
+                  const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
+                  const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
+                  const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
+                  layerSnapshots.set(event.id, {
+                    current,
+                    total,
+                    status: event.status ?? snapshot.status,
+                  });
+                }
+
+                emitProgress(image);
+              },
+            );
+          });
+        }).catch((error) => {
+          throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }),
+    );
+  }
+
+  // Plugin availability doesn't change at runtime; probe once and reuse so
+  // every compose operation doesn't pay for an extra process spawn.
+  private composePluginAvailable?: Promise<void>;
+
+  private assertComposePluginAvailable(): Promise<void> {
+    if (!this.composePluginAvailable) {
+      this.composePluginAvailable = new Promise<void>((resolve, reject) => {
+        const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
+        testCmd.on('close', (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`docker compose not available (exit code: ${code})`));
+          }
+        });
+        testCmd.on('error', reject);
+      });
+      // A failed probe should not be cached forever — allow retry on the next call
+      this.composePluginAvailable.catch(() => {
+        this.composePluginAvailable = undefined;
+      });
+    }
+    return this.composePluginAvailable;
   }
 
   private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {

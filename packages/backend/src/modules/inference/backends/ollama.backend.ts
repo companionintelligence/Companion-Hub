@@ -4,22 +4,84 @@ import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 
+/** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
+const OLLAMA_FALLBACK_URLS = [
+  'http://host.docker.internal:11434',
+  'http://172.17.0.1:11434', // default Docker bridge gateway (Linux)
+  'http://localhost:11434',
+];
+
 @Injectable()
 export class OllamaBackend implements InferenceBackend {
   readonly type = 'ollama' as const;
-  private baseUrl: string;
+  private configuredUrl: string;
+  /** Resolved URL after probing — updated once on first successful contact. */
+  private resolvedUrl: string;
+  private urlResolved = false;
 
   constructor(private readonly logger: LoggerService) {
-    this.baseUrl = process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434';
+    // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
+    // container reaches the host's native Ollama over the host-gateway bridge). When the backend
+    // runs directly on the host (`pnpm dev`), there is no compose env and no ci-hub-ollama
+    // container, so default to the loopback address where a host Ollama listens.
+    this.configuredUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+    this.resolvedUrl = this.configuredUrl;
   }
 
+  /**
+   * Probe the configured URL and, on failure, try well-known fallback addresses.
+   * Once a reachable URL is found it is cached for the lifetime of the process.
+   */
+  private async resolveUrl(): Promise<string> {
+    if (this.urlResolved) return this.resolvedUrl;
+
+    // Try configured URL first
+    if (await this.probe(this.configuredUrl)) {
+      this.urlResolved = true;
+      return this.resolvedUrl;
+    }
+
+    // Try fallbacks (skip the configured one since we already tried it)
+    for (const candidate of OLLAMA_FALLBACK_URLS) {
+      if (candidate === this.configuredUrl) continue;
+      if (await this.probe(candidate)) {
+        this.logger.info(`[Ollama] Configured URL ${this.configuredUrl} unreachable — discovered Ollama at ${candidate}`);
+        this.resolvedUrl = candidate;
+        this.urlResolved = true;
+        return this.resolvedUrl;
+      }
+    }
+
+    // Nothing reachable — keep using configuredUrl so callers get meaningful errors
+    this.logger.warn(`[Ollama] Could not reach Ollama at ${this.configuredUrl} or any fallback address`);
+    return this.resolvedUrl;
+  }
+
+  private async probe(url: string): Promise<boolean> {
+    try {
+      await axios.get(`${url}/api/version`, { timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Reset resolved URL so the next call re-probes. Called when a request fails with a network error. */
+  private invalidateResolvedUrl(): void {
+    this.urlResolved = false;
+    this.resolvedUrl = this.configuredUrl;
+  }
+
+  /** URL exposed to app containers and external callers (compose / env contract). */
   getBaseUrl(): string {
-    return this.baseUrl;
+    // Return the resolved URL if we've found one, otherwise the configured one.
+    return this.resolvedUrl;
   }
 
   async healthCheck(): Promise<BackendHealthStatus> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/tags`, { timeout: 5000 });
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/tags`, { timeout: 5000 });
       const models = response.data?.models ?? [];
       return {
         running: true,
@@ -27,6 +89,7 @@ export class OllamaBackend implements InferenceBackend {
         modelsLoaded: models.map((m: { name: string }) => m.name),
       };
     } catch (err) {
+      this.invalidateResolvedUrl();
       return {
         running: false,
         healthy: false,
@@ -38,92 +101,150 @@ export class OllamaBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/tags`, { timeout: 10000 });
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/tags`, { timeout: 10000 });
       const models = response.data?.models ?? [];
       return models.map((m: { name: string; size: number; details?: { family?: string } }) => ({
         id: m.name,
         name: m.name,
         size: m.size || 0,
-        loaded: true, // Ollama only lists pulled models
+        loaded: true,
       }));
     } catch {
+      this.invalidateResolvedUrl();
       return [];
     }
   }
 
   async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
     this.logger.info(`[Ollama] Pulling model: ${modelId}`);
-    const response = await axios.post(`${this.baseUrl}/api/pull`, { name: modelId, stream: true }, { responseType: 'stream', timeout: 0 });
 
-    return new Promise((resolve, reject) => {
-      let lastPercent = 0;
-      response.data.on('data', (chunk: Buffer) => {
-        try {
-          const lines = chunk.toString().split('\n').filter(Boolean);
-          for (const line of lines) {
-            const data = JSON.parse(line);
-            const total = data.total || 0;
-            const completed = data.completed || 0;
-            const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-            if (percent !== lastPercent) {
-              lastPercent = percent;
-              onProgress?.({
-                status: data.status || 'pulling',
-                digest: data.digest,
-                total,
-                completed,
-                percent,
-              });
-            }
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.post(`${url}/api/pull`, { name: modelId, stream: true }, { responseType: 'stream', timeout: 0 });
+
+      await new Promise<void>((resolve, reject) => {
+        // Ollama's /api/pull streams NDJSON with HTTP 200 even on failure: a failed pull is
+        // delivered as a line like {"error":"pull model manifest: 412: ..."} rather than an HTTP
+        // error, and a successful pull terminates with {"status":"success"}. We must inspect the
+        // stream — resolving purely on 'end' reports a failed pull as success.
+        let streamError: string | null = null;
+        let sawSuccess = false;
+
+        const handleLine = (line: string) => {
+          let data: { status?: string; error?: string; digest?: string; total?: number; completed?: number };
+          try {
+            data = JSON.parse(line);
+          } catch {
+            return; // Ignore parse errors in stream
           }
-        } catch {
-          // Ignore parse errors in stream
-        }
+
+          if (typeof data.error === 'string' && data.error.length > 0) {
+            streamError = data.error;
+            return;
+          }
+
+          if (data.status === 'success') {
+            sawSuccess = true;
+          }
+
+          const total = data.total || 0;
+          const completed = data.completed || 0;
+          const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+          onProgress?.({
+            status: data.status || 'pulling',
+            digest: data.digest,
+            total,
+            completed,
+            percent,
+          });
+        };
+
+        // A single JSON object can be split across chunk boundaries, so buffer partial lines
+        // and only parse complete (newline-terminated) ones — otherwise a split `success`/`error`
+        // line would be dropped and silently flip the resolve/reject decision.
+        let buffer = '';
+        response.data.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString();
+          const segments = buffer.split('\n');
+          // The last segment may be an incomplete line — keep it buffered for the next chunk.
+          buffer = segments.pop() ?? '';
+          for (const segment of segments) {
+            const line = segment.trim();
+            if (line) handleLine(line);
+          }
+        });
+        response.data.on('end', () => {
+          const remaining = buffer.trim();
+          if (remaining) handleLine(remaining);
+          if (streamError) {
+            reject(new Error(streamError));
+            return;
+          }
+          if (!sawSuccess) {
+            reject(new Error(`Ollama pull stream ended without a success status for ${modelId}`));
+            return;
+          }
+          this.logger.info(`[Ollama] Model pulled: ${modelId}`);
+          resolve();
+        });
+        response.data.on('error', (streamErr: Error) => {
+          this.logger.error(`[Ollama] Pull stream failed for ${modelId}: ${streamErr.message}`);
+          reject(streamErr);
+        });
       });
-      response.data.on('end', () => {
-        this.logger.info(`[Ollama] Model pulled: ${modelId}`);
-        resolve();
-      });
-      response.data.on('error', (err: Error) => {
-        this.logger.error(`[Ollama] Pull failed for ${modelId}: ${err.message}`);
-        reject(err);
-      });
-    });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Pull failed for ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
   }
 
-  async loadModel(modelId: string): Promise<void> {
-    // Ollama loads models on first inference. We can pre-warm with keep_alive.
-    await axios.post(
-      `${this.baseUrl}/api/generate`,
-      {
-        model: modelId,
-        prompt: '',
-        keep_alive: -1, // Keep loaded indefinitely
-      },
-      { timeout: 120000 },
-    );
-    this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+  async loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    this.logger.info(`[Ollama] Loading model: ${modelId}`);
+    try {
+      const url = await this.resolveUrl();
+      if (options?.embedding) {
+        await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: -1 }, { timeout: 120000 });
+      } else {
+        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
+      }
+      this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to load model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
   }
 
-  async unloadModel(modelId: string): Promise<void> {
-    await axios.post(
-      `${this.baseUrl}/api/generate`,
-      {
-        model: modelId,
-        prompt: '',
-        keep_alive: 0, // Unload immediately
-      },
-      { timeout: 30000 },
-    );
-    this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
+  async unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    this.logger.info(`[Ollama] Unloading model: ${modelId}`);
+    try {
+      const url = await this.resolveUrl();
+      if (options?.embedding) {
+        await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: 0 }, { timeout: 30000 });
+      } else {
+        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
+      }
+      this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to unload model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
   }
 
   async isModelLoaded(modelId: string): Promise<boolean> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/ps`, { timeout: 5000 });
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
       const models = response.data?.models ?? [];
       return models.some((m: { name: string }) => m.name === modelId || m.name.startsWith(modelId));
     } catch {
+      this.invalidateResolvedUrl();
       return false;
     }
   }

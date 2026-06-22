@@ -25,7 +25,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let start_hub = MenuItem::with_id(app, "start_hub", "Start Hub", true, None::<&str>)?;
     let stop_hub = MenuItem::with_id(app, "stop_hub", "Stop Hub", false, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let open_portal = MenuItem::with_id(app, "open_portal", "Account Management", true, None::<&str>)?;
+    let open_portal =
+        MenuItem::with_id(app, "open_portal", "Account Management", true, None::<&str>)?;
     let view_logs = MenuItem::with_id(app, "view_logs", "View Logs", true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let reset_hub = MenuItem::with_id(
@@ -100,12 +101,20 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     let show_hide_for_menu = Arc::clone(&show_hide_item);
 
-    let _tray = TrayIconBuilder::new()
-        .icon(Image::from_path("icons/icon.png").unwrap_or_else(|_| {
-            Image::from_bytes(include_bytes!("../icons/icon.png"))
-                .expect("failed to load tray icon")
-        }))
-        .icon_as_template(true)
+    // Load the tray icon defensively: prefer the packaged file, fall back to the
+    // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
+    // the tray without an icon instead of panicking. A missing tray icon must
+    // never abort startup.
+    let tray_icon = Image::from_path("icons/icon.png")
+        .or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")))
+        .map_err(|error| log::warn!("Tray icon unavailable, continuing without one: {error}"))
+        .ok();
+
+    let mut tray_builder = TrayIconBuilder::new();
+    if let Some(icon) = tray_icon {
+        tray_builder = tray_builder.icon(icon).icon_as_template(true);
+    }
+    let _tray = tray_builder
         .menu(&menu)
         .tooltip("Companion Hub")
         .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -286,8 +295,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_portal" => {
-                let portal_url = option_env!("CI_HUB_CLOUD_URL")
-                    .unwrap_or("https://hub.companionintelligence.com");
+                let portal_url =
+                    option_env!("CI_HUB_CLOUD_URL").unwrap_or(crate::hub_env::default_ci_cloud_url());
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
@@ -322,7 +331,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         let mut last_ok: Option<bool> = None;
         loop {
             let api_port = crate::port_manager::read_api_port(&env_path_for_health);
-            // Try resolved port first, then dev port
+            // Try resolved port first, then local source-dev port
             let ok = client
                 .get(format!("http://localhost:{}/api/health", api_port))
                 .send()
@@ -330,7 +339,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
                 || client
-                    .get("http://localhost:3000/api/health")
+                    .get("http://localhost:5004/api/health")
                     .send()
                     .await
                     .map(|r| r.status().is_success())
