@@ -117,6 +117,7 @@ describe('ModelRegistryService', () => {
         available?: boolean;
         vramMb?: number;
         unifiedMemory?: boolean;
+        arch?: HardwareProfile['cpu']['arch'];
         ramMb: number;
         tier: HardwareTier;
       }): HardwareProfile => ({
@@ -131,7 +132,7 @@ describe('ModelRegistryService', () => {
         },
         npu: { available: false, model: '' },
         ram: { totalMb: overrides.ramMb, availableMb: overrides.ramMb },
-        cpu: { arch: 'x86_64', cores: 16, model: 'Test CPU' },
+        cpu: { arch: overrides.arch ?? 'x86_64', cores: 16, model: 'Test CPU' },
         effectiveInferenceMemoryMb: overrides.unifiedMemory ? overrides.ramMb : (overrides.vramMb ?? 0),
         tier: overrides.tier,
       });
@@ -208,12 +209,12 @@ describe('ModelRegistryService', () => {
         }
       });
 
-      it('does NOT apply the APU active-param cap to Apple Silicon (its unified memory is high-bandwidth)', () => {
-        // Same shared-memory budget as the AMD APU above, but Apple Silicon is high-bandwidth:
-        // the large dense 27B must remain a valid default, i.e. the cap is AMD/Intel-APU-only.
+      it('does NOT apply the cap to ARM unified memory (Apple Silicon / NVIDIA Grace are high-bandwidth)', () => {
+        // Same shared-memory budget as the AMD APU above, but on an arm64 unified-memory part:
+        // the cap is x86-UMA-only (gated on cpu.arch), so the dense 27B remains a valid default.
         const apple = service.getRecommendedModelsForHardware(
           'high',
-          profile({ vendor: 'apple', unifiedMemory: true, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
+          profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
         );
         expect(topLlm(apple)?.id).toBe('qwen3-6-27b');
       });

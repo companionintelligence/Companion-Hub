@@ -184,13 +184,15 @@ export class ModelRegistryService implements OnModuleInit {
     const totalRamMb = profile.ram.totalMb;
     if (profile.gpu.unifiedMemory && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
       // Shared-memory GPU (Apple Silicon, or an AMD APU): the GPU draws from system RAM
-      // shared with the OS and apps. An x86 APU is bandwidth-bound per token; Apple
-      // Silicon's unified memory is high-bandwidth, so only non-Apple is constrained.
+      // shared with the OS and apps. Only an x86 UMA APU is bandwidth-bound per token —
+      // its "VRAM" is ordinary DDR/LPDDR system RAM. ARM unified-memory parts (Apple
+      // Silicon, NVIDIA Grace) are purpose-built high-bandwidth and run dense models
+      // well, so gate on the CPU arch rather than vendor (which also excludes them).
       return {
         budgetMb: Math.floor(totalRamMb * UNIFIED_MEMORY_BUDGET_FRACTION),
         cpuOnly: false,
         vendor: profile.gpu.vendor as GpuVendorKey,
-        bandwidthConstrained: profile.gpu.vendor !== 'apple',
+        bandwidthConstrained: profile.cpu.arch === 'x86_64',
       };
     }
     if (profile.gpu.available && profile.gpu.vramMb > 0 && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
