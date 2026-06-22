@@ -48,41 +48,48 @@ describe('AuthService', () => {
   });
 
   describe('login', () => {
-    it('should return sessionId for valid credentials', async () => {
-      // Arrange
-      const loginBody: LoginBody = { username: 'testuser', password: 'password' };
+    it('should return sessionId after Companion Account sign-in', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
       const mockUser = { id: 1, password: 'hashedPassword', totpEnabled: false };
 
-      userRepository.getUserByUsername.calledWith('testuser').mockResolvedValue(mockUser as any);
-      passwordService.verify.mockResolvedValue(true);
-      sessionManager.createSession.mockResolvedValue('session-id' as any);
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({}),
+        }),
+      );
+      userRepository.getUserByUsername.mockResolvedValue(mockUser as never);
+      sessionManager.createSession.mockResolvedValue('session-id' as never);
 
-      // Act
       const result = await authService.login(loginBody);
 
-      // Assert
       expect(result).toEqual({ sessionId: 'session-id' });
-      expect(userRepository.getUserByUsername).toHaveBeenCalledWith('testuser');
-      expect(passwordService.verify).toHaveBeenCalledWith('password', 'hashedPassword');
       expect(sessionManager.createSession).toHaveBeenCalledWith(1);
+      vi.unstubAllGlobals();
     });
 
     it('should return totpSessionId if totp is enabled', async () => {
-      // Arrange
-      const loginBody: LoginBody = { username: 'totpuser', password: 'password' };
-      // Use 1 to simulate truthy value if boolean mapping is issue
+      const loginBody: LoginBody = { username: 'totp@example.com', password: 'Password1!' };
       const mockUser = { id: 2, password: 'hashedPassword', totpEnabled: 1 };
 
-      userRepository.getUserByUsername.calledWith('totpuser').mockResolvedValue(mockUser as any);
-      passwordService.verify.mockResolvedValue(true);
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({}),
+        }),
+      );
+      userRepository.getUserByUsername.mockResolvedValue(mockUser as never);
 
-      // Act
       const result = await authService.login(loginBody);
 
-      // Assert
       expect(result).toHaveProperty('totpSessionId');
       expect(cacheService.set).toHaveBeenCalled();
       expect(sessionManager.createSession).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
     });
   });
 

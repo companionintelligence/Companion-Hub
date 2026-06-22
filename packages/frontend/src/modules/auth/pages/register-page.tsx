@@ -28,7 +28,13 @@ export default () => {
 
   const register = useMutation({
     ...registerMutation(),
-    onSuccess: async () => {
+    onSuccess: async (data) => {
+      if (data?.requiresEmailVerification) {
+        toast.success(t('AUTH_REGISTER_VERIFY_EMAIL'));
+        navigate('/login');
+        return;
+      }
+
       setUserContext({ isLoggedIn: true });
       refreshUserContext();
       navigate('/onboarding');

@@ -39,6 +39,8 @@ const resetPasswordSchema = z.object({
 
 const passwordResetRequestSchema = z.object({
   email: z.string().email(),
+  returnOrigin: z.string().url().optional(),
+  deviceId: z.string().min(1).optional(),
 });
 
 const passwordResetVerifySchema = z.object({
@@ -58,6 +60,7 @@ const loginResponseSchema = z.object({
 
 const registerResponseSchema = z.object({
   success: z.boolean(),
+  requiresEmailVerification: z.boolean().optional(),
 });
 
 const getTotpUriResponseSchema = z.object({

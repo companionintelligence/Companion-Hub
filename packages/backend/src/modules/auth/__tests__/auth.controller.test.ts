@@ -2,6 +2,7 @@ import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +28,7 @@ describe('AuthController', () => {
         { provide: CacheService, useValue: mock<CacheService>() },
         { provide: UserRepository, useValue: mock<UserRepository>() },
         { provide: SessionManager, useValue: mock<SessionManager>() },
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
       ],
     }).compile();
 

@@ -25,6 +25,7 @@ import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { UserRepository } from '@/modules/user/user.repository';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { SessionManager } from './session.manager';
 import {
   ChangePasswordBody,
@@ -66,6 +67,7 @@ export class AuthController {
     private readonly cache: CacheService,
     private readonly userRepository: UserRepository,
     private readonly sessionManager: SessionManager,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   private async setSessionCookie(res: Response, sessionId: string, req: Request) {
@@ -120,9 +122,15 @@ export class AuthController {
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    const { sessionId } = await this.authService.register(body);
+    const result = await this.authService.register(body);
 
-    await this.setSessionCookie(res, sessionId, req);
+    if (result.requiresEmailVerification) {
+      return RegisterDto.parse({ success: true, requiresEmailVerification: true }, { reportOnly: true });
+    }
+
+    if (result.sessionId) {
+      await this.setSessionCookie(res, result.sessionId, req);
+    }
 
     return RegisterDto.parse({ success: true }, { reportOnly: true });
   }
@@ -413,7 +421,25 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
-    await this.authService.requestPasswordReset({ email: body.email, ipAddress: req.ip });
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
+    const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
+    const hubOrigin = host ? `${proto}://${host}` : undefined;
+
+    let deviceId = body.deviceId;
+    if (!deviceId) {
+      try {
+        deviceId = (await this.registrationService.getDeviceId()) || undefined;
+      } catch {
+        deviceId = undefined;
+      }
+    }
+
+    await this.authService.requestPasswordReset({
+      email: body.email,
+      returnOrigin: body.returnOrigin ?? hubOrigin,
+      deviceId,
+      ipAddress: req.ip,
+    });
 
     return PasswordResetRequestDto.parse(
       { success: true, message: 'If this email is registered, you will receive reset instructions shortly.' },

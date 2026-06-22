@@ -57,6 +57,81 @@ export class AuthService {
     return base;
   }
 
+  private getPortalBaseUrl() {
+    return this.getPasswordResetPortalBaseUrl();
+  }
+
+  private async signInWithPortal(email: string, password: string) {
+    const base = this.getPortalBaseUrl();
+    const response = await fetch(`${base}/api/auth/sign-in/email`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: base,
+      },
+      body: JSON.stringify({ email, password }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const body = (await response.json().catch(() => ({}))) as { code?: string };
+
+    if (!response.ok) {
+      if (body.code === 'EMAIL_NOT_VERIFIED') {
+        throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  private async signUpWithPortal(email: string, password: string, name: string) {
+    const base = this.getPortalBaseUrl();
+    const response = await fetch(`${base}/api/auth/sign-up/email`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: base,
+      },
+      body: JSON.stringify({ email, password, name }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const body = (await response.json().catch(() => ({}))) as { code?: string; token?: string | null };
+
+    if (!response.ok) {
+      if (body.code === 'USER_ALREADY_EXISTS') {
+        throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    return body.token !== null && body.token !== undefined;
+  }
+
+  private async ensureLocalCompanionUser(email: string) {
+    const existing = await this.userRepository.getUserByUsername(email);
+
+    if (existing) {
+      return existing;
+    }
+
+    const operators = await this.userRepository.getOperators();
+
+    if (operators.length > 0) {
+      throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const hash = await this.passwordService.hash(crypto.randomUUID());
+    const created = await this.userRepository.createUser({ username: email, password: hash, operator: true });
+
+    if (!created) {
+      throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    return created;
+  }
+
   private getPasswordResetRateLimitKey(email: string) {
     return `auth:password-reset:rate:${email}`;
   }
@@ -102,18 +177,11 @@ export class AuthService {
    */
   public login = async (input: LoginBody) => {
     const { username, password } = input;
+    const email = username.trim().toLowerCase();
 
-    const user = await this.userRepository.getUserByUsername(username);
+    await this.signInWithPortal(email, password);
 
-    if (!user) {
-      throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
-    }
-
-    const isPasswordValid = await this.passwordService.verify(password, user.password);
-
-    if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
-    }
+    const user = await this.ensureLocalCompanionUser(email);
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
@@ -198,7 +266,20 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const hash = await this.passwordService.hash(password);
+    const passwordStrengthRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
+    if (!passwordStrengthRegex.test(password)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const signedInImmediately = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+
+    if (!signedInImmediately) {
+      return {
+        requiresEmailVerification: true,
+      };
+    }
+
+    const hash = await this.passwordService.hash(crypto.randomUUID());
     const newUser = await this.userRepository.createUser({ username: email, password: hash, operator: true });
 
     if (!newUser) {
@@ -385,11 +466,16 @@ export class AuthService {
     return true;
   };
 
-  public requestPasswordReset = async (params: { email: string; ipAddress?: string }) => {
+  public requestPasswordReset = async (params: { email: string; ipAddress?: string; returnOrigin?: string; deviceId?: string }) => {
     const email = params.email.trim().toLowerCase();
     const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
 
-    this.logger.info('Password reset requested', { email, ipAddress: params.ipAddress, rateLimitAllowed });
+    this.logger.info('Password reset requested', {
+      email,
+      deviceId: params.deviceId,
+      ipAddress: params.ipAddress,
+      rateLimitAllowed,
+    });
 
     if (!rateLimitAllowed) {
       this.logger.warn('Password reset rate limited', { email, ipAddress: params.ipAddress });
@@ -402,7 +488,11 @@ export class AuthService {
       const response = await fetch(`${base}/api/auth/password-reset/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({
+          email,
+          returnOrigin: params.returnOrigin,
+          deviceId: params.deviceId,
+        }),
         signal: AbortSignal.timeout(15_000),
       });
 

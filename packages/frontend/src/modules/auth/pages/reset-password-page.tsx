@@ -57,7 +57,8 @@ export default () => {
         if (!active) {
           return;
         }
-        setTokenStatus(response.ok ? 'valid' : 'invalid');
+        const body = (await response.json().catch(() => ({}))) as { valid?: boolean };
+        setTokenStatus(response.ok && body.valid !== false ? 'valid' : 'invalid');
       } catch {
         if (!active) {
           return;
