@@ -82,6 +82,15 @@ export interface CuratedModel {
    * for non-sized modalities like TTS/STT.
    */
   parameterScale?: number;
+  /**
+   * Approximate ACTIVE parameter count in billions — the parameters actually read
+   * per token. For dense models this equals `parameterScale`; for Mixture-of-Experts
+   * (MoE) models it is the active-expert size (e.g. Qwen3-30B-A3B → 3), which is far
+   * smaller than the total and is what governs per-token memory bandwidth on
+   * shared-memory GPUs (Apple unified memory / AMD-Intel APUs). Falls back to
+   * `parameterScale` when unspecified.
+   */
+  activeParameterScale?: number;
   requirements: {
     minVramMb: number;
     recommendedVramMb: number;

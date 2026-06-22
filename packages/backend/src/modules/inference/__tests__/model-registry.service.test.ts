@@ -185,6 +185,39 @@ describe('ModelRegistryService', () => {
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
       });
 
+      it('excludes bandwidth-bound large dense models on a shared-memory APU (prefers MoE / low active params)', () => {
+        const activeOf = (m: CuratedModel) => m.activeParameterScale ?? m.parameterScale ?? Number.POSITIVE_INFINITY;
+        // Same huge memory budget, two memory architectures.
+        const discrete = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ vendor: 'amd', unifiedMemory: false, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        const apu = service
+          .getRecommendedModelsForHardware('high', profile({ vendor: 'amd', unifiedMemory: true, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }))
+          .filter((m) => m.modality === 'llm');
+
+        // Discrete VRAM: no per-token bandwidth penalty, so the high-intelligence dense 27B is the default.
+        expect(topLlm(discrete)?.id).toBe('qwen3-6-27b');
+
+        // Shared-memory APU: that dense 27B "fits" the budget but is bandwidth-bound, so it is excluded…
+        expect(apu.length).toBeGreaterThan(0);
+        expect(apu.some((m) => m.id === 'qwen3-6-27b')).toBe(false);
+        // …and every pick is within the shared-memory active-param cap (MoE like qwen3:30b-a3b qualify).
+        for (const m of apu) {
+          expect(activeOf(m)).toBeLessThanOrEqual(14);
+        }
+      });
+
+      it('does NOT apply the APU active-param cap to Apple Silicon (its unified memory is high-bandwidth)', () => {
+        // Same shared-memory budget as the AMD APU above, but Apple Silicon is high-bandwidth:
+        // the large dense 27B must remain a valid default, i.e. the cap is AMD/Intel-APU-only.
+        const apple = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ vendor: 'apple', unifiedMemory: true, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        expect(topLlm(apple)?.id).toBe('qwen3-6-27b');
+      });
+
       it('never lowers the picked model intelligence as the budget grows', () => {
         const gpu16 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 16 * GB, ramMb: 32 * GB, tier: 'high' })));
         const gpu24 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' })));
