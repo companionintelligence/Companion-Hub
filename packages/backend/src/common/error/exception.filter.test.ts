@@ -2,7 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 import { BadRequestException } from '@nestjs/common';
 import type { ArgumentsHost } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LoggerService } from '@/core/logger/logger.service';
 import { MainExceptionFilter } from './exception.filter';
