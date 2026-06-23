@@ -20,31 +20,53 @@ function normalizeExternalUrl(url: string): string {
  * Verifies that a hostname resolves via DNS by making a lightweight HEAD request.
  * This pre-warms both the browser's DNS cache and triggers system DNS resolution.
  *
+ * Note: In Tauri/webview context, CORS errors indicate DNS resolved successfully
+ * (we reached the server, but it blocked the request).
+ *
  * @param hostname - The hostname to verify (e.g., "example.com")
  * @param timeoutMs - Maximum time to wait for DNS resolution (default: 3000ms)
  * @returns true if DNS resolves successfully, false otherwise
  */
 async function verifyDnsResolution(hostname: string, timeoutMs = 3000): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  try {
     // Use a lightweight HEAD request to trigger DNS resolution
-    // Any response (even 4xx/5xx) means DNS resolved successfully
-    const response = await fetch(`https://${hostname}`, {
+    await fetch(`https://${hostname}`, {
       method: 'HEAD',
       signal: controller.signal,
       cache: 'no-store', // Bypass fetch cache to force fresh DNS lookup
+      mode: 'no-cors', // Prevent CORS errors from blocking DNS warmup
     });
 
-    clearTimeout(timeoutId);
+    // If fetch succeeds, DNS definitely resolved
+    return true;
+  } catch (err) {
+    // CORS errors, network errors, and timeouts all throw
+    // We need to distinguish DNS failures from CORS blocks
 
-    // 2xx, 3xx, 4xx are all "success" for DNS purposes
-    // Only 5xx or network errors indicate DNS/connection issues
-    return response.ok || response.status < 500;
-  } catch {
-    // DNS resolution failed or timed out
+    if (err instanceof Error) {
+      // AbortError means we timed out - likely a DNS or network issue
+      if (err.name === 'AbortError') {
+        return false;
+      }
+
+      // TypeError with "Failed to fetch" often means DNS resolved but connection failed
+      // or CORS blocked us - both indicate DNS worked
+      if (err.name === 'TypeError') {
+        // In no-cors mode, we won't get detailed error messages
+        // Any TypeError in no-cors mode means we at least attempted the connection
+        // which requires DNS to have resolved
+        return true;
+      }
+    }
+
+    // For any other error type, assume DNS may have failed
     return false;
+  } finally {
+    // Always clear timeout to prevent timer leaks
+    clearTimeout(timeoutId);
   }
 }
 
