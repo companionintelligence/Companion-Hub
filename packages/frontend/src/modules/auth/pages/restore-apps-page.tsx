@@ -39,6 +39,19 @@ interface RehydrationStatus {
   restoreIntent: boolean;
 }
 
+async function readApiJson<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 function RestoreAppsContent() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -63,7 +76,10 @@ function RestoreAppsContent() {
           throw new Error(t('RESTORE_APPS_STATUS_FAILED'));
         }
 
-        const status = (await statusRes.json()) as RehydrationStatus;
+        const status = await readApiJson<RehydrationStatus>(statusRes);
+        if (!status) {
+          throw new Error(t('RESTORE_APPS_STATUS_FAILED'));
+        }
         if (status.completed) {
           clearStoredDriftChoice();
           await refreshAppContext();
@@ -77,7 +93,10 @@ function RestoreAppsContent() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ source: 'restore' }),
         });
-        const data = (await res.json()) as RehydrationExecuteResult & { message?: string };
+        const data = await readApiJson<RehydrationExecuteResult & { message?: string }>(res);
+        if (!data) {
+          throw new Error(t('RESTORE_APPS_EXECUTE_FAILED'));
+        }
 
         if (!res.ok || !data.success) {
           throw new Error(data.message ?? t('RESTORE_APPS_EXECUTE_FAILED'));
@@ -215,9 +234,9 @@ function RestoreAppsGate({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const status = (await res.json()) as { restoreIntent?: boolean; completed?: boolean };
+        const status = await readApiJson<{ restoreIntent?: boolean; completed?: boolean }>(res);
         if (!cancelled) {
-          setAllowed(Boolean(status.restoreIntent) && !status.completed);
+          setAllowed(Boolean(status?.restoreIntent) && !status?.completed);
         }
       } catch {
         if (!cancelled) {

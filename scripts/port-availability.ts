@@ -45,7 +45,12 @@ export function isPortAvailable(port: number): boolean {
   }
 
   if (!isPortAvailableViaTcpBind(port)) {
-    return false;
+    // Compiled cihub bundles cannot run `node -e` subprocess probes; fall back to lsof/ss.
+    try {
+      return !isPortListeningViaExternalTools(port);
+    } catch {
+      return false;
+    }
   }
 
   try {

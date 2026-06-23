@@ -22,12 +22,13 @@ interface HubStatusProps {
 
 type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
 
-type ServiceState = 'pending' | 'starting' | 'ready' | 'failed';
+type ServiceState = 'pending' | 'starting' | 'ready' | 'failed' | 'unavailable';
 
 interface ServiceStatus {
   label: string;
   container: string;
   state: ServiceState;
+  optional?: boolean;
 }
 
 interface StartupProgress {
@@ -456,6 +457,7 @@ const SERVICE_ICON: Record<ServiceState, string> = {
   starting: '◌',
   ready: '●',
   failed: '✕',
+  unavailable: '—',
 };
 
 const SERVICE_COLOR: Record<ServiceState, string> = {
@@ -463,6 +465,7 @@ const SERVICE_COLOR: Record<ServiceState, string> = {
   starting: 'text-yellow-500',
   ready: 'text-green-500',
   failed: 'text-destructive',
+  unavailable: 'text-muted-foreground/50',
 };
 
 function ServiceRow({ service }: { service: ServiceStatus }) {
@@ -477,7 +480,9 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
         ? t('COMMON_STARTING')
         : service.state === 'ready'
           ? t('HUB_STATUS_SERVICE_READY')
-          : t('COMMON_FAILED');
+          : service.state === 'unavailable'
+            ? t('HUB_STATUS_SERVICE_UNAVAILABLE')
+            : t('COMMON_FAILED');
 
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
@@ -526,10 +531,14 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 
   const serviceCounts = (progress?.services ?? []).reduce(
     (acc, svc) => {
+      if (svc.optional && svc.state === 'unavailable') {
+        acc.optionalUnavailable += 1;
+        return acc;
+      }
       acc[svc.state] += 1;
       return acc;
     },
-    { pending: 0, starting: 0, ready: 0, failed: 0 } as Record<ServiceState, number>,
+    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0, optionalUnavailable: 0 } as Record<ServiceState | 'optionalUnavailable', number>,
   );
 
   const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
@@ -569,6 +578,9 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('COMMON_STARTING')}, {serviceCounts.pending}{' '}
                 {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
+                {serviceCounts.optionalUnavailable > 0
+                  ? ` · ${serviceCounts.optionalUnavailable} ${t('HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE')}`
+                  : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
                 <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>

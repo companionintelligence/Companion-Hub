@@ -39,7 +39,6 @@ const resetPasswordSchema = z.object({
 
 const passwordResetRequestSchema = z.object({
   email: z.string().email(),
-  returnOrigin: z.string().url().optional(),
   deviceId: z.string().min(1).optional(),
 });
 

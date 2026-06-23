@@ -577,6 +577,10 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
     }
 
+    if (!meetsPasswordComplexity(params.newPassword)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
+    }
+
     const base = this.getPasswordResetPortalBaseUrl();
     const response = await axios.post(
       `${base}/api/auth/password-reset/complete`,

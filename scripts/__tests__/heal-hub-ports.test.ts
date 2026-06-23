@@ -12,7 +12,7 @@ vi.mock('../port-availability', () => ({
 }));
 
 import { spawnSync } from 'node:child_process';
-import { parseBindConflictPort, resolveHubPorts } from '../heal-hub-ports';
+import { healHubPortsBeforeStartup, parseBindConflictPort, resolveHubPorts } from '../heal-hub-ports';
 import { isPortAvailable } from '../port-availability';
 
 const mockedSpawnSync = vi.mocked(spawnSync);
@@ -69,6 +69,41 @@ describe('heal-hub-ports', () => {
     expect(result.assignments.POSTGRES_PORT).toBe(6544);
     expect(result.assignments.RABBITMQ_PORT).toBe(5003);
     expect(result.assignments.TRAEFIK_DASHBOARD_PORT).toBe(8080);
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('stops running Hub stack containers before resolving dev ports', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'ci-hub-ports-'));
+    const envFile = path.join(tempDir, '.env.dev');
+    writeFileSync(envFile, ['HTTP_PORT=8880', 'HTTPS_PORT=8443', 'API_PORT=5002'].join('\n'));
+
+    mockedSpawnSync.mockImplementation((command: string, args?: readonly string[]) => {
+      const argv = args ?? [];
+      if (command === 'docker' && argv[0] === 'ps' && argv.includes('status=running')) {
+        return {
+          status: 0,
+          stdout: 'abc123\ttraefik\n',
+          stderr: '',
+          output: ['abc123\ttraefik\n', ''],
+          pid: 0,
+          signal: null,
+        } as ReturnType<typeof spawnSync>;
+      }
+      return {
+        status: 0,
+        stdout: '',
+        stderr: '',
+        output: ['', ''],
+        pid: 0,
+        signal: null,
+      } as ReturnType<typeof spawnSync>;
+    });
+
+    const result = healHubPortsBeforeStartup(envFile, () => undefined);
+
+    expect(result.assignments.HTTP_PORT).toBe(8880);
+    expect(mockedSpawnSync).toHaveBeenCalledWith('docker', ['rm', '-f', 'abc123'], expect.any(Object));
 
     rmSync(tempDir, { recursive: true, force: true });
   });

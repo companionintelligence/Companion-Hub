@@ -186,4 +186,17 @@ describe('AuthService', () => {
       });
     });
   });
+
+  describe('completePasswordReset', () => {
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.example.com' } as never);
+    });
+
+    it('rejects passwords that do not meet complexity requirements', async () => {
+      await expect(authService.completePasswordReset({ token: 'token', newPassword: 'password' })).rejects.toMatchObject({
+        message: 'AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY',
+      });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+  });
 });

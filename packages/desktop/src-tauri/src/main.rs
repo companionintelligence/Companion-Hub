@@ -163,7 +163,9 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
 /// Get per-service startup progress for the frontend loading screen.
 #[tauri::command]
 async fn get_startup_progress_command() -> hub_manager::StartupProgress {
-    hub_manager::get_startup_progress()
+    tokio::task::spawn_blocking(hub_manager::get_startup_progress)
+        .await
+        .unwrap_or_else(|err| panic!("startup progress task failed: {err}"))
 }
 
 /// Read recent desktop log lines for in-app diagnostics (last 200 lines).

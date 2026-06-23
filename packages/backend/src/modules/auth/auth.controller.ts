@@ -430,7 +430,7 @@ export class AuthController {
 
     await this.authService.requestPasswordReset({
       email: body.email,
-      returnOrigin: body.returnOrigin ?? hubOrigin,
+      returnOrigin: hubOrigin,
       deviceId,
       ipAddress: req.ip,
     });

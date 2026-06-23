@@ -60,8 +60,9 @@ export default () => {
     // Remove the error param from the URL so it doesn't persist on refresh.
     setSearchParams(
       (prev) => {
-        prev.delete('portal_error');
-        return prev;
+        const next = new URLSearchParams(prev);
+        next.delete('portal_error');
+        return next;
       },
       { replace: true },
     );

@@ -81,13 +81,15 @@ export function parseBindConflictPort(output: string): number | undefined {
   return undefined;
 }
 
-function shouldRemovePublisher(names: string, status: string, forceTraefik: boolean): boolean {
+function shouldRemovePublisher(names: string, status: string, options: { forceTraefik?: boolean; forceHubStack?: boolean }): boolean {
+  const { forceTraefik = false, forceHubStack = false } = options;
   const statusLower = status.toLowerCase();
   const isRunning = statusLower.startsWith('up');
   const nameList = names.split(',').map((name) => name.trim());
   const isTraefik = nameList.some((name) => name.toLowerCase() === 'traefik');
   const isOurs = nameList.some((name) => HUB_STACK_CONTAINERS.has(name));
 
+  if (forceHubStack && isOurs) return true;
   if (forceTraefik && isTraefik) return true;
   if (isTraefik && !isRunning) return true;
   if (isOurs && !isRunning) return true;
@@ -95,18 +97,52 @@ function shouldRemovePublisher(names: string, status: string, forceTraefik: bool
   return false;
 }
 
-export function releaseStalePortPublishers(port: number, options: { forceTraefik?: boolean; log?: (message: string) => void } = {}): void {
-  const { forceTraefik = false, log = noopLog } = options;
+export function releaseStalePortPublishers(
+  port: number,
+  options: { forceTraefik?: boolean; forceHubStack?: boolean; log?: (message: string) => void } = {},
+): void {
+  const { forceTraefik = false, forceHubStack = false, log = noopLog } = options;
   const listed = docker(['ps', '-a', '--format', '{{.ID}}\t{{.Names}}\t{{.Status}}', '--filter', `publish=${port}`]);
   if (!listed.ok || !listed.out) return;
 
   for (const line of listed.out.split('\n')) {
     const [id, names, status] = line.split('\t');
     if (!id || !names || !status) continue;
-    if (!shouldRemovePublisher(names, status, forceTraefik)) continue;
+    if (!shouldRemovePublisher(names, status, { forceTraefik, forceHubStack })) continue;
 
     log(`Removing container ${id} (${names}, ${status}) to release host port ${port}.`);
     docker(['rm', '-f', id]);
+  }
+}
+
+function configuredPortsFromEnv(envFilePath: string): number[] {
+  const parsed = parseEnvFile(envFilePath);
+  const ports = new Set<number>();
+
+  for (const { defaultPort, var: varName, fallbackStart } of FIXED_PORTS) {
+    ports.add(Number(parsed[varName] || defaultPort));
+    ports.add(defaultPort);
+    ports.add(fallbackStart);
+  }
+  for (const { defaultPort, var: varName } of DYNAMIC_PORTS) {
+    ports.add(Number(parsed[varName] || defaultPort));
+    ports.add(defaultPort);
+  }
+
+  return [...ports].filter((port) => Number.isFinite(port));
+}
+
+/** Stop any running Hub stack containers before a fresh `cihub up`. */
+export function stopRunningHubStack(log: (message: string) => void = noopLog): void {
+  const filters = [...HUB_STACK_CONTAINERS].flatMap((name) => ['--filter', `name=${name}`, '--filter', 'status=running']);
+  const result = docker(['ps', '--format', '{{.ID}}\t{{.Names}}', ...filters]);
+  if (!result.ok || !result.out) return;
+
+  for (const line of result.out.split('\n')) {
+    const [id, names] = line.split('\t');
+    if (!id?.trim()) continue;
+    log(`Stopping previous Hub container ${id.trim()} (${names?.trim() || 'unknown'}).`);
+    docker(['rm', '-f', id.trim()]);
   }
 }
 
@@ -184,6 +220,10 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
 }
 
 export function healHubPortsBeforeStartup(envFilePath: string, log: (message: string) => void = noopLog): PortHealResult {
+  stopRunningHubStack(log);
+  for (const port of configuredPortsFromEnv(envFilePath)) {
+    releaseStalePortPublishers(port, { forceHubStack: true, log });
+  }
   for (const port of [80, 443]) {
     releaseStalePortPublishers(port, { log });
   }
@@ -191,10 +231,14 @@ export function healHubPortsBeforeStartup(envFilePath: string, log: (message: st
 }
 
 export function healHubPortBindConflict(envFilePath: string, errorOutput: string, log: (message: string) => void = noopLog): PortHealResult {
+  stopRunningHubStack(log);
   const conflictPort = parseBindConflictPort(errorOutput);
-  const ports = conflictPort ? [conflictPort] : [80, 443];
+  const ports = new Set<number>(conflictPort ? [conflictPort] : [80, 443]);
+  for (const port of configuredPortsFromEnv(envFilePath)) {
+    ports.add(port);
+  }
   for (const port of ports) {
-    releaseStalePortPublishers(port, { forceTraefik: true, log });
+    releaseStalePortPublishers(port, { forceTraefik: true, forceHubStack: true, log });
   }
   return resolveHubPorts(envFilePath);
 }

@@ -665,7 +665,12 @@ async function ensurePostgresInfraAndSyncPassword(envFileName: string, composeFi
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
 }
 
-async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
+async function runDockerComposeUp(
+  envFileName: string,
+  files: string[],
+  detached: boolean,
+  envOverrides: Record<string, string | undefined>,
+): Promise<void> {
   const isApkMirrorFetchFailure = (output: string): boolean => {
     const lower = output.toLowerCase();
     return lower.includes('apkindex.tar.gz') && lower.includes('temporary error (try again later)');

@@ -1248,6 +1248,8 @@
   "HUB_STATUS_VIEW_DOCKER_INSTALL_GUIDE": "Ver guía de instalación de Docker",
   "HUB_STATUS_SERVICE_WAITING": "Esperando...",
   "HUB_STATUS_SERVICE_READY": "Listo",
+  "HUB_STATUS_SERVICE_UNAVAILABLE": "No disponible",
+  "HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE": "opcional no disponible",
   "HUB_STATUS_FAILED_AUTO_START": "Error al iniciar automáticamente hub:",
   "HUB_STATUS_FAILED_START": "Error al iniciar hub:",
   "HUB_STATUS_FAILED_RESTART": "Error al reiniciar hub:",

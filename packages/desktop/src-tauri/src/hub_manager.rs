@@ -104,7 +104,15 @@ const OLLAMA_MACOS_ZIP_URL: &str = "https://ollama.com/download/Ollama-darwin.zi
 /// Synthetic startup row id — Ollama runs on the host (127.0.0.1:11434), not in compose.
 const HOST_OLLAMA_SERVICE_ID: &str = "host-ollama";
 const HOST_OLLAMA_API_URL: &str = "http://127.0.0.1:11434/api/tags";
-const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const HOST_OLLAMA_PROBE_CACHE_TTL: Duration = Duration::from_secs(10);
+
+struct CachedHostOllamaProbe {
+    checked_at: Instant,
+    available: bool,
+}
+
+static HOST_OLLAMA_PROBE_CACHE: Mutex<Option<CachedHostOllamaProbe>> = Mutex::new(None);
 
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
@@ -1692,6 +1700,8 @@ pub enum ServiceState {
     Ready,
     /// Container exited or is in an error state.
     Failed,
+    /// Optional service is not present or not running — does not block startup.
+    Unavailable,
 }
 
 /// Per-service startup info returned to the frontend.
@@ -1702,6 +1712,8 @@ pub struct ServiceStatus {
     /// Docker container name, e.g. "ci-hub-db".
     pub container: String,
     pub state: ServiceState,
+    /// When true, this row is informational only and never blocks `all_ready`.
+    pub optional: bool,
 }
 
 /// Aggregate startup progress across all core Hub services.
@@ -1717,7 +1729,7 @@ pub struct StartupProgress {
     pub image_total: u8,
     /// 0..=100 image pull progress percentage.
     pub image_pull_pct: u8,
-    /// True once every service is Ready.
+    /// True once every required core service is Ready (optional rows are ignored).
     pub all_ready: bool,
 }
 
@@ -1812,7 +1824,19 @@ fn service_state_score(state: &ServiceState) -> u8 {
         ServiceState::Starting => 60,
         ServiceState::Ready => 100,
         ServiceState::Failed => 0,
+        ServiceState::Unavailable => 0,
     }
+}
+
+/// Derive startup state for optional compose sidecars and host probes.
+///
+/// Missing containers are reported as `Unavailable` rather than `Pending` so the
+/// loading screen does not look blocked when Tunnel, VPN, or Ollama are absent.
+fn derive_optional_service_state(state: &str, health: &str) -> ServiceState {
+    if state.is_empty() {
+        return ServiceState::Unavailable;
+    }
+    derive_service_state(state, health)
 }
 
 fn startup_service_definitions(
@@ -1839,6 +1863,15 @@ fn startup_service_definitions(
 
 /// True when the host Ollama API responds on localhost (same target the Hub backend uses).
 fn probe_host_ollama() -> bool {
+    {
+        let cache = lock_recovering(&HOST_OLLAMA_PROBE_CACHE);
+        if let Some(cached) = cache.as_ref() {
+            if cached.checked_at.elapsed() < HOST_OLLAMA_PROBE_CACHE_TTL {
+                return cached.available;
+            }
+        }
+    }
+
     let client = match reqwest::blocking::Client::builder()
         .timeout(HOST_OLLAMA_PROBE_TIMEOUT)
         .build()
@@ -1847,11 +1880,19 @@ fn probe_host_ollama() -> bool {
         Err(_) => return false,
     };
 
-    client
+    let available = client
         .get(HOST_OLLAMA_API_URL)
         .send()
         .map(|response| response.status().is_success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    let mut cache = lock_recovering(&HOST_OLLAMA_PROBE_CACHE);
+    *cache = Some(CachedHostOllamaProbe {
+        checked_at: Instant::now(),
+        available,
+    });
+
+    available
 }
 
 /// Return per-service startup progress for the frontend loading screen.
@@ -1874,20 +1915,25 @@ pub fn get_startup_progress() -> StartupProgress {
     let mut ready_core: usize = 0;
     let mut core_score_sum: usize = 0;
 
-    for (container, label, _required) in core.iter().chain(optional.iter()) {
+    for (container, label, required) in core.iter().chain(optional.iter()) {
         let (state_str, health_str) = states
             .get(*container)
             .map(|(s, h)| (s.as_str(), h.as_str()))
             .unwrap_or(("", ""));
-        let svc_state = if state_str.is_empty() {
-            ServiceState::Pending
+        let svc_state = if *required {
+            if state_str.is_empty() {
+                ServiceState::Pending
+            } else {
+                derive_service_state(state_str, health_str)
+            }
         } else {
-            derive_service_state(state_str, health_str)
+            derive_optional_service_state(state_str, health_str)
         };
         services.push(ServiceStatus {
             label: label.to_string(),
             container: container.to_string(),
             state: svc_state,
+            optional: !required,
         });
     }
 
@@ -1898,8 +1944,9 @@ pub fn get_startup_progress() -> StartupProgress {
         state: if probe_host_ollama() {
             ServiceState::Ready
         } else {
-            ServiceState::Pending
+            ServiceState::Unavailable
         },
+        optional: true,
     });
 
     // Count ready core services and compute average core score for progress %.
@@ -7372,7 +7419,8 @@ mod tests {
         paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
         seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
         startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        tunnel_token_path_for, derive_optional_service_state, DockerAccessState,
+        ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(test, target_os = "macos"))]
@@ -7696,6 +7744,22 @@ mod tests {
         assert!(!optional
             .iter()
             .any(|(container, _, _)| *container == "ci-hub-ollama"));
+    }
+
+    #[test]
+    fn optional_missing_sidecar_reports_unavailable_not_pending() {
+        assert!(matches!(
+            derive_optional_service_state("", "none"),
+            ServiceState::Unavailable
+        ));
+    }
+
+    #[test]
+    fn optional_starting_sidecar_still_reports_starting() {
+        assert!(matches!(
+            derive_optional_service_state("created", "none"),
+            ServiceState::Starting
+        ));
     }
 
     #[test]
