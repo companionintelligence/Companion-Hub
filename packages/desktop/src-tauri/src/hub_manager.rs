@@ -29,21 +29,6 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> =
     Mutex::new(None);
 
-/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
-/// until this grace elapses; then skip docker inspect on steady-state polls.
-const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
-
-#[derive(Debug, Clone, Copy)]
-enum VpnSidecarPollPhase {
-    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
-    PendingReady,
-    /// Sidecar was ready at least once at `verified_at`.
-    VerifiedSince(Instant),
-}
-
-static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
-    Mutex::new(VpnSidecarPollPhase::PendingReady);
-
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -1964,12 +1949,10 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -1986,7 +1969,6 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -1994,15 +1976,8 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
-    if !(state == "running" && health == "healthy") {
-        reset_vpn_sidecar_status_poll_phase();
-    }
-
     match (state, health) {
-        ("running", "healthy") => {
-            reset_vpn_sidecar_status_poll_phase();
-            HubStatus::Running
-        }
+        ("running", "healthy") => HubStatus::Running,
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -5222,28 +5197,6 @@ fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>)
         env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()),
         Some("true")
     )
-}
-
-fn reset_vpn_sidecar_status_poll_phase() {
-    *lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE) = VpnSidecarPollPhase::PendingReady;
-}
-
-/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
-fn vpn_sidecars_ready() -> bool {
-    let names = ["hub-tailscale"];
-    let states = inspect_containers(&names);
-    for name in names {
-        match states.get(name) {
-            Some((state, health)) => {
-                let svc_state = derive_service_state(state.as_str(), health.as_str());
-                if !matches!(svc_state, ServiceState::Ready) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
-    }
-    true
 }
 
 /// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
