@@ -175,7 +175,7 @@ describe('DeviceRegistrationPage', () => {
 
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByRole('heading', { name: "This Hub's local data doesn't match your Companion Account" })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
