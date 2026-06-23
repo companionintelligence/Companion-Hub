@@ -133,7 +133,7 @@ function RestoreAppsContent() {
         </div>
 
         {error ? (
-          <Alert variant="destructive">
+          <Alert variant="danger">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
