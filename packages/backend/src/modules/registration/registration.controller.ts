@@ -58,6 +58,20 @@ export class RegistrationController {
     return this.registrationService.getLiveRegistrationStatus();
   }
 
+  @Get('state-drift')
+  @ApiOperation({ summary: 'Detect local vs CI Portal registration state drift' })
+  @ApiResponse({ status: 200, description: 'Returns drift signals when local and portal state disagree' })
+  async getStateDrift() {
+    return this.registrationService.getStateDrift();
+  }
+
+  @Post('prepare-fresh')
+  @ApiOperation({ summary: 'Clear local registration artifacts for a fresh device pairing' })
+  @ApiResponse({ status: 200, description: 'Local registration artifacts cleared' })
+  async prepareFreshSetup() {
+    return this.registrationService.prepareFreshSetup();
+  }
+
   @Get('device-id')
   @ApiOperation({ summary: 'Get device ID for registration redirect' })
   @ApiResponse({ status: 200, description: 'Returns the device ID and registration URL' })

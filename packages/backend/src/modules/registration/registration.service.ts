@@ -5,7 +5,7 @@ import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, In
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -21,6 +21,12 @@ import {
   buildRegistrationStatus,
   parseDegradedReasons,
 } from './registration-state';
+import {
+  buildStateDriftResult,
+  clearRegistrationKeysFromAppData,
+  collectStaleHubDeviceIds,
+  type RegistrationStateDrift,
+} from './registration-state-drift';
 import si from 'systeminformation';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -535,6 +541,92 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Start polling for new registration
     this.pollRegistration();
+  }
+
+  /**
+   * Detect when local Hub registration artifacts disagree with CI Portal or
+   * persisted app-data. Only meaningful while the Hub is unregistered locally.
+   */
+  public async getStateDrift(): Promise<RegistrationStateDrift> {
+    await this.refreshPhaseFromSources();
+    const status = this.getRegistrationStatus();
+    const hardwareDeviceId = await this.getDeviceId();
+    const localRegistered = status.registered;
+
+    const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
+    const hasStaleTunnelToken = !localRegistered && this.hasTunnelToken();
+
+    let portalDeviceActive: boolean | null = null;
+    const { ciCloudUrl } = this.config.getConfig();
+    if (ciCloudUrl && !localRegistered) {
+      portalDeviceActive = await this.probePortalDeviceActive(hardwareDeviceId, ciCloudUrl);
+    }
+
+    const dbRow = localRegistered ? null : await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    const hasOrphanedDbRegistration = !localRegistered && Boolean(dbRow);
+
+    return buildStateDriftResult({
+      hardwareDeviceId,
+      localRegistered,
+      portalDeviceActive,
+      staleAppEnvDeviceIds,
+      hasStaleTunnelToken,
+      hasOrphanedDbRegistration,
+    });
+  }
+
+  /**
+   * Wipe local registration artifacts so the user can pair as a fresh device.
+   * Allowed only while the Hub is unregistered (no operational registration).
+   */
+  public async prepareFreshSetup(): Promise<{ success: boolean; message: string; clearedAppEnvFiles: number }> {
+    await this.refreshPhaseFromSources();
+    if (isOperational(this._currentPhase)) {
+      return {
+        success: false,
+        message: 'Cannot prepare fresh setup while the Hub is registered. Use reset from Settings instead.',
+        clearedAppEnvFiles: 0,
+      };
+    }
+
+    await this.resetRegistration();
+    const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
+
+    this.logger.info(`Prepared fresh device setup (cleared registration keys from ${clearedAppEnvFiles} app.env file(s))`);
+
+    return {
+      success: true,
+      message: 'Local registration artifacts cleared. Pair this device as new in your Companion Account.',
+      clearedAppEnvFiles,
+    };
+  }
+
+  /** Unauthenticated Portal probe — true when hardware device_id is active in CI Portal. */
+  private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
+    try {
+      const response = await axios.post(
+        `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
+        { device_id: deviceId },
+        {
+          timeout: 10_000,
+          validateStatus: () => true,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+
+      if (response.status >= 200 && response.status < 300) {
+        return true;
+      }
+      if (response.status === 400) {
+        return false;
+      }
+
+      this.logger.debug(`Portal device probe returned ${response.status} for ${deviceId}`);
+      return null;
+    } catch (e) {
+      this.logger.debug('Portal device probe failed', e);
+      return null;
+    }
   }
 
   // Memoized device-id resolution. The detection chain (dmidecode →

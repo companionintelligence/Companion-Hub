@@ -87,6 +87,40 @@ describe('RegistrationController', () => {
     });
   });
 
+  describe('getStateDrift', () => {
+    it('should return drift detection result', async () => {
+      registrationService.getStateDrift.mockResolvedValue({
+        detected: true,
+        hardwareDeviceId: 'device-123',
+        localRegistered: false,
+        portalDeviceActive: true,
+        staleAppEnvDeviceIds: ['old-id'],
+        signals: [{ reason: 'local_unregistered_portal_active' }],
+        hasStaleTunnelToken: false,
+      });
+
+      const result = await controller.getStateDrift();
+
+      expect(result.detected).toBe(true);
+      expect(registrationService.getStateDrift).toHaveBeenCalled();
+    });
+  });
+
+  describe('prepareFreshSetup', () => {
+    it('should clear local registration artifacts', async () => {
+      registrationService.prepareFreshSetup.mockResolvedValue({
+        success: true,
+        message: 'cleared',
+        clearedAppEnvFiles: 2,
+      });
+
+      const result = await controller.prepareFreshSetup();
+
+      expect(result.success).toBe(true);
+      expect(registrationService.prepareFreshSetup).toHaveBeenCalled();
+    });
+  });
+
   describe('getDeviceId', () => {
     it('should return device ID and registration URL', async () => {
       registrationService.getDeviceId.mockResolvedValue('device-123');
