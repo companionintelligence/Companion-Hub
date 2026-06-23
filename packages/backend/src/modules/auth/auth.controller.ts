@@ -47,6 +47,7 @@ import {
   resolvePortalCallbackUrl,
   resolveRequestOriginFallback,
   resolveSameOriginRedirectUrl,
+  resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
 } from './portal-sso';
 
@@ -462,9 +463,8 @@ export class AuthController {
   @Post('/password-reset/request')
   @ApiResponse({ type: PasswordResetRequestDto })
   async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
-    const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
-    const hubOrigin = host ? `${proto}://${host}` : undefined;
+    const { domain, localDomain } = this.config.getConfig();
+    const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });
 
     let deviceId = body.deviceId;
     if (!deviceId) {
