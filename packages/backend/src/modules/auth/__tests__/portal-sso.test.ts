@@ -2,7 +2,10 @@ import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildPortalDesktopDeepLink,
+  buildPortalDesktopErrorDeepLink,
+  buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
   resolvePortalCallbackUrl,
   resolveSameOriginRedirectUrl,
   toDesktopRedirectPath,
@@ -35,6 +38,32 @@ describe('portal-sso helpers', () => {
 
   it('builds the Tauri deep link for desktop auth handoff', () => {
     expect(buildPortalDesktopDeepLink('handoff-token')).toBe('cihub://auth?token=handoff-token');
+  });
+
+  it('builds the Tauri deep link for desktop auth errors', () => {
+    expect(buildPortalDesktopErrorDeepLink('callback_error')).toBe('cihub://auth?error=callback_error');
+  });
+
+  it('redirects browser portal errors to the login page', () => {
+    expect(
+      buildPortalSsoErrorRedirectUrl({
+        hubOrigin: 'http://localhost:5002',
+        desktop: false,
+        errorCode: 'state_expired',
+        fallbackOrigin: 'http://localhost:5002',
+      }),
+    ).toBe('http://localhost:5002/login?portal_error=state_expired');
+  });
+
+  it('redirects desktop portal errors to the cihub deep link', () => {
+    expect(
+      buildPortalSsoErrorRedirectUrl({
+        hubOrigin: 'http://localhost:5002',
+        desktop: true,
+        errorCode: 'account_mismatch',
+        fallbackOrigin: 'http://localhost:5002',
+      }),
+    ).toBe('cihub://auth?error=account_mismatch');
   });
 
   it('builds the hub callback URL from the initiating origin', () => {
@@ -83,5 +112,19 @@ describe('portal-sso helpers', () => {
       reason: 'token_exchange_failed',
       status: 400,
     });
+  });
+
+  it('reads the signed-in Portal account email from get-session', async () => {
+    vi.mocked(axios.get).mockResolvedValue({
+      status: 200,
+      data: { user: { email: 'portal@example.com' } },
+    });
+
+    await expect(
+      fetchPortalSessionEmail({
+        publicPortalBaseUrl: 'https://hub.ci.computer',
+        cookieHeader: 'ci.session=abc',
+      }),
+    ).resolves.toBe('portal@example.com');
   });
 });

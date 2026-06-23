@@ -9,14 +9,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthController } from '../auth.controller';
 import { AuthService } from '../auth.service';
+import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { SessionManager } from '../session.manager';
+
+vi.mock('../portal-sso', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../portal-sso')>();
+  return {
+    ...actual,
+    exchangePortalAuthorizationCode: vi.fn(),
+    fetchPortalSessionEmail: vi.fn(),
+  };
+});
 
 describe('AuthController', () => {
   let authController: AuthController;
-  let _authService: MockProxy<AuthService>;
+  let authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
-  let _config: MockProxy<ConfigurationService>;
+  let config: MockProxy<ConfigurationService>;
   let cache: MockProxy<CacheService>;
+  let userRepository: MockProxy<UserRepository>;
+  let sessionManager: MockProxy<SessionManager>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -33,10 +45,12 @@ describe('AuthController', () => {
     }).compile();
 
     authController = moduleRef.get(AuthController);
-    _authService = moduleRef.get(AuthService);
+    authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
-    _config = moduleRef.get(ConfigurationService);
+    config = moduleRef.get(ConfigurationService);
     cache = moduleRef.get(CacheService);
+    userRepository = moduleRef.get(UserRepository);
+    sessionManager = moduleRef.get(SessionManager);
   });
 
   it('should be defined', () => {
@@ -106,6 +120,159 @@ describe('AuthController', () => {
       });
       expect(cache.get).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
       expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+    });
+  });
+
+  describe('portalCallback', () => {
+    it('redirects desktop flows to the cihub error deep link instead of returning JSON', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: true,
+        }),
+      );
+      config.get.mockReturnValue('https://hub.ci.computer');
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+      });
+      userRepository.getFirstOperator.mockResolvedValue(null);
+      authService.bootstrapOperatorFromPortalEmail.mockRejectedValue(new Error('bootstrap failed'));
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=callback_error');
+    });
+
+    it('redirects browser flows to the login page with a portal_error query param', async () => {
+      cache.get.mockReturnValue(null);
+      config.get.mockReturnValue('https://hub.ci.computer');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
+    });
+  });
+
+  describe('startPortalLogin', () => {
+    it('redirects desktop start failures to the cihub error deep link when CI Cloud is not configured', async () => {
+      config.get.mockReturnValue('');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.startPortalLogin(req, res, undefined, '1');
+
+      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=not_configured');
+    });
+  });
+
+  describe('portalSessionHint', () => {
+    it('returns the configured operator email when the hub is already set up', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+
+      await expect(
+        authController.portalSessionHint({
+          headers: {},
+        } as Request),
+      ).resolves.toEqual({
+        email: 'operator@example.com',
+        portalBaseUrl: 'https://hub.ci.computer',
+        source: 'hub_operator',
+      });
+    });
+
+    it('bootstraps the session hint from Portal cookies when no operator exists yet', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+      userRepository.getFirstOperator.mockResolvedValue(null);
+      vi.mocked(fetchPortalSessionEmail).mockResolvedValue('first@example.com');
+
+      await expect(
+        authController.portalSessionHint({
+          headers: { cookie: 'ci.session=abc' },
+        } as Request),
+      ).resolves.toEqual({
+        email: 'first@example.com',
+        portalBaseUrl: 'https://hub.ci.computer',
+        source: 'portal_session',
+      });
+
+      expect(fetchPortalSessionEmail).toHaveBeenCalledWith({
+        publicPortalBaseUrl: 'https://hub.ci.computer',
+        cookieHeader: 'ci.session=abc',
+      });
+    });
+
+    it('creates the first operator during portal callback when none exists', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: false,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'first@example.com',
+      });
+      userRepository.getFirstOperator.mockResolvedValue(null);
+      authService.bootstrapOperatorFromPortalEmail.mockResolvedValue({ id: 1, username: 'first@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(authService.bootstrapOperatorFromPortalEmail).toHaveBeenCalledWith('first@example.com');
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
   });
 });

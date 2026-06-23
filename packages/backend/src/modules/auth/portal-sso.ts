@@ -47,9 +47,41 @@ export function toDesktopRedirectPath(redirectUrl: string | null | undefined, hu
   return `${candidate.pathname}${candidate.search}${candidate.hash}` || '/home';
 }
 
+export type PortalSsoErrorCode = 'callback_error' | 'state_expired' | 'account_mismatch' | 'not_configured';
+
 export function buildPortalDesktopDeepLink(token: string): string {
   const url = new URL('cihub://auth');
   url.searchParams.set('token', token);
+  return url.toString();
+}
+
+export function buildPortalDesktopErrorDeepLink(errorCode: PortalSsoErrorCode): string {
+  const url = new URL('cihub://auth');
+  url.searchParams.set('error', errorCode);
+  return url.toString();
+}
+
+export function resolveRequestOriginFallback(req: Request): string {
+  try {
+    return resolveHubRequestOrigin(req);
+  } catch {
+    return `${req.protocol}://${req.get('host') ?? 'localhost:5002'}`;
+  }
+}
+
+export function buildPortalSsoErrorRedirectUrl(input: {
+  hubOrigin?: string | null;
+  desktop?: boolean;
+  errorCode: PortalSsoErrorCode;
+  fallbackOrigin: string;
+}): string {
+  if (input.desktop) {
+    return buildPortalDesktopErrorDeepLink(input.errorCode);
+  }
+
+  const base = input.hubOrigin || input.fallbackOrigin;
+  const url = new URL('/login', base);
+  url.searchParams.set('portal_error', input.errorCode);
   return url.toString();
 }
 
@@ -81,6 +113,30 @@ export interface PortalTokenExchangeFailure {
 }
 
 export type PortalOAuthExchangeResult = PortalTokenExchangeResult | PortalTokenExchangeFailure;
+
+export async function fetchPortalSessionEmail(input: { publicPortalBaseUrl: string; cookieHeader?: string }): Promise<string | null> {
+  const internalOverride = readPortalInternalUrlOverride();
+  const portalBaseUrl = resolveOutboundPortalBaseUrl(input.publicPortalBaseUrl, internalOverride);
+  const axiosConfig = buildPortalAxiosConfig(input.publicPortalBaseUrl, internalOverride);
+  const sessionUrl = new URL('/api/auth/get-session', portalBaseUrl).toString();
+
+  try {
+    const res = await axios.get(sessionUrl, {
+      ...withPortalAxiosHeaders(axiosConfig, input.cookieHeader ? { cookie: input.cookieHeader } : {}),
+      validateStatus: () => true,
+      timeout: 5_000,
+    });
+
+    if (res.status < 200 || res.status >= 300) {
+      return null;
+    }
+
+    const email = (res.data as { user?: { email?: string } } | undefined)?.user?.email;
+    return typeof email === 'string' && email.trim() ? email.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function exchangePortalAuthorizationCode(input: {
   publicPortalBaseUrl: string;

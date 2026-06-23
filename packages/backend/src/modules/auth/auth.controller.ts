@@ -4,20 +4,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Patch,
-  Post,
-  Query,
-  Req,
-  Res,
-  ServiceUnavailableException,
-  UseGuards,
-} from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -39,6 +26,7 @@ import {
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
   PortalDesktopExchangeDto,
+  PortalSessionHintDto,
   RegisterBody,
   RegisterDto,
   ResetPasswordBody,
@@ -49,11 +37,15 @@ import {
 import { ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
+  buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
   type PortalDesktopExchange,
+  type PortalSsoErrorCode,
   type PortalSsoState,
   resolveHubRequestOrigin,
   resolvePortalCallbackUrl,
+  resolveRequestOriginFallback,
   resolveSameOriginRedirectUrl,
   toDesktopRedirectPath,
 } from './portal-sso';
@@ -157,25 +149,35 @@ export class AuthController {
    */
   @Get('/portal/start')
   async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
+    const isDesktop = desktop === '1' || desktop === 'true';
+    const fallbackOrigin = resolveRequestOriginFallback(req);
+    const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin: hubOrigin ?? null,
+          desktop: isDesktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
+
     let hubOrigin: string;
     try {
       hubOrigin = resolveHubRequestOrigin(req);
     } catch {
-      throw new BadRequestException('Missing host header');
+      return redirectStartError('callback_error');
     }
 
     const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
 
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
     if (!portalBaseUrl) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+      return redirectStartError('not_configured', hubOrigin);
     }
 
     const state = crypto.randomUUID();
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-    const isDesktop = desktop === '1' || desktop === 'true';
-
     // Persist PKCE verifier + redirect target for the callback.
     // 10 min is plenty and avoids stale entries.
     const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
@@ -195,21 +197,17 @@ export class AuthController {
 
   @Get('/portal/callback')
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
-    // Redirect to the login page with a portal_error query param instead of returning raw JSON errors.
-    // When hubOrigin is not yet known, fall back to deriving it from the incoming request.
-    const redirectError = (hubOrigin: string | null, errorCode: string) => {
-      let base = hubOrigin;
-      if (!base) {
-        try {
-          base = resolveHubRequestOrigin(req);
-        } catch {
-          base = `${req.protocol}://${req.get('host') ?? 'localhost:5002'}`;
-        }
-      }
-      const url = new URL('/login', base);
-      url.searchParams.set('portal_error', errorCode);
-      return res.redirect(url.toString());
-    };
+    const fallbackOrigin = resolveRequestOriginFallback(req);
+    let desktop = false;
+    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) =>
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin,
+          desktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
 
     try {
       if (!code || !state) {
@@ -231,7 +229,6 @@ export class AuthController {
       let codeVerifier: string;
       let redirectUrl: string | null;
       let hubOrigin: string;
-      let desktop = false;
 
       try {
         const parsed = JSON.parse(cached) as PortalSsoState;
@@ -302,6 +299,52 @@ export class AuthController {
       this.logger.error('Portal OAuth callback crashed', error);
       return redirectError(null, 'callback_error');
     }
+  }
+
+  /**
+   * Returns a Portal account email hint for the login button when available.
+   * Prefers the configured Hub operator, then probes the Portal session using
+   * cookies forwarded from the browser (when present).
+   */
+  @Get('/portal/session-hint')
+  @ApiResponse({ type: PortalSessionHintDto })
+  async portalSessionHint(@Req() req: Request) {
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
+
+    if (!portalBaseUrl) {
+      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
+    }
+
+    const operator = await this.userRepository.getFirstOperator();
+    if (operator?.username?.trim()) {
+      return PortalSessionHintDto.parse(
+        {
+          email: operator.username.trim(),
+          portalBaseUrl,
+          source: 'hub_operator',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
+    const portalEmail = await fetchPortalSessionEmail({
+      publicPortalBaseUrl: portalBaseUrl,
+      cookieHeader,
+    });
+
+    if (portalEmail) {
+      return PortalSessionHintDto.parse(
+        {
+          email: portalEmail,
+          portalBaseUrl,
+          source: 'portal_session',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null }, { reportOnly: true });
   }
 
   @Get('/portal/desktop-exchange')
