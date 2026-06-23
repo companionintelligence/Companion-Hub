@@ -542,10 +542,12 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
 export function buildEnvOverrides(envFileName: string) {
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
   const fileVars = parseEnvFile(envFileName);
+  const resolvedHubVersion = (process.env.CI_HUB_VERSION || fileVars.CI_HUB_VERSION || packageVersion()).trim();
   const overrides: Record<string, string | undefined> = {
     ENV_FILE: envFileName,
   };
   if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
+  if (resolvedHubVersion) overrides.CI_HUB_VERSION = resolvedHubVersion;
 
   // Identity comes from init:host / the env file (e.g. UID 0 on Docker Desktop). Never
   // replace with getuid() here \u2014 shell env wins over --env-file for compose interpolation.

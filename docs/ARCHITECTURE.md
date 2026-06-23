@@ -805,7 +805,7 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CI_HUB_VERSION` | `4.5.0` | Hub version string |
+| `CI_HUB_VERSION` | `0.2.27` | Hub version string |
 | `API_PORT` | `5002` (prod) / `3000` (dev) | Backend listen port |
 | `NODE_ENV` | `production` | Node.js environment |
 | `LOG_LEVEL` | `info` | Winston log level |

@@ -48,7 +48,7 @@ describe('frontend sentry', () => {
       callback({ setTag, setExtra, setLevel });
     });
     testEnv.CI_CLOUD_URL = 'https://hub.ci.computer/';
-    testEnv.CI_HUB_VERSION = 'v0.2.22';
+    testEnv.CI_HUB_VERSION = 'v0.2.27';
     testEnv.CI_HUB_ENVIRONMENT = 'development';
     testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
     testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
@@ -80,7 +80,7 @@ describe('frontend sentry', () => {
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
-    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.22');
+    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
     expect(setTag).toHaveBeenCalledWith('device_id', 'device-123');
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
     expect(apiFetch).toHaveBeenCalledWith('/api/registration/device-id');
