@@ -15,7 +15,6 @@ import type { LoginBody } from '../dto/auth.dto';
 describe('AuthService', () => {
   let authService: AuthService;
   let userRepository: MockProxy<UserRepository>;
-  let passwordService: MockProxy<PasswordService>;
   let sessionManager: MockProxy<SessionManager>;
   let cacheService: MockProxy<CacheService>;
   let configurationService: MockProxy<ConfigurationService>;
@@ -37,7 +36,6 @@ describe('AuthService', () => {
 
     authService = moduleRef.get(AuthService);
     userRepository = moduleRef.get(UserRepository);
-    passwordService = moduleRef.get(PasswordService);
     sessionManager = moduleRef.get(SessionManager);
     cacheService = moduleRef.get(CacheService);
     configurationService = moduleRef.get(ConfigurationService);

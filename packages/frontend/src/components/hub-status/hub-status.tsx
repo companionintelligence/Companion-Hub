@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
-import { client } from '@/api-client/client.gen';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
