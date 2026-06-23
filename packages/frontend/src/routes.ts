@@ -10,6 +10,7 @@ export default [
   ]),
   // Onboarding (authenticated but outside dashboard layout)
   route('onboarding', './modules/onboarding/pages/onboarding-page.tsx', { id: 'onboarding' }),
+  route('restore-apps', './modules/auth/pages/restore-apps-page.tsx', { id: 'restore-apps' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
     route('home', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),

@@ -455,7 +455,23 @@ export default function DeviceRegistrationPage() {
     }
   };
 
-  const handleRestoreExistingDevice = () => {
+  const handleRestoreExistingDevice = async () => {
+    try {
+      const res = await apiFetch('/api/registration/mark-restore-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = (await res.json()) as { success?: boolean; message?: string };
+      if (!res.ok || !data.success) {
+        toast.error(data.message ?? t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_INTENT_FAILED'));
+        return;
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error(t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_INTENT_FAILED'));
+      return;
+    }
+
     storeDriftChoice('restore');
     setDriftChoice('restore');
     setDriftDialogOpen(false);
