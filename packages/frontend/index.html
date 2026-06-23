@@ -4,26 +4,42 @@
     <title>Companion Hub</title>
     <script>
       (() => {
-                                      var storageKey = 'vite-ui-theme';
-                                      var defaultTheme = 'system';
-                                      var storedTheme;
+                                            var storageKey = 'vite-ui-theme';
+                                            var defaultTheme = 'system';
+                                            var storedTheme;
 
-                                      try {
-                                        storedTheme = localStorage.getItem(storageKey) || defaultTheme;
-                                      } catch {
-                                        storedTheme = defaultTheme;
-                                      }
+                                            try {
+                                              storedTheme = localStorage.getItem(storageKey) || defaultTheme;
+                                            } catch {
+                                              storedTheme = defaultTheme;
+                                            }
 
-                                      var theme =
-                                        storedTheme === 'system'
-                                          ? window.matchMedia('(prefers-color-scheme: dark)').matches
-                                            ? 'dark'
-                                            : 'light'
-                                          : storedTheme;
+                                            var theme =
+                                              storedTheme === 'system'
+                                                ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                                                  ? 'dark'
+                                                  : 'light'
+                                                : storedTheme;
 
-                                      document.documentElement.classList.add(theme);
-                                    })();
+                                            document.documentElement.classList.add(theme);
+                                          })();
     </script>
+    <style>
+      html,
+            body {
+              background-color: #041620;
+            }
+
+            html.light,
+            html.light body {
+              background-color: #f3f3f3;
+            }
+
+            html.dark,
+            html.dark body {
+              background-color: #041620;
+            }
+    </style>
   </head>
 
   <body>

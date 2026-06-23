@@ -310,7 +310,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         ) : (
           <ThemeProvider defaultTheme="dark">
             <Titlebar />
-            <main id="root" className="flex min-h-screen items-center justify-center px-6 text-sm text-muted-foreground">
+            <main id="root" className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground">
               {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
             </main>
           </ThemeProvider>
