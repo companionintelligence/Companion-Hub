@@ -10,7 +10,6 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   Patch,
   Post,
@@ -18,7 +17,6 @@ import {
   Req,
   Res,
   ServiceUnavailableException,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -196,20 +194,29 @@ export class AuthController {
 
   @Get('/portal/callback')
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
+    // Redirect to the login page with a portal_error query param instead of returning raw JSON errors.
+    // When hubOrigin is not yet known, fall back to deriving it from the incoming request.
+    const redirectError = (hubOrigin: string | null, errorCode: string) => {
+      const base = hubOrigin ?? `${req.protocol}://${req.get('host') ?? 'localhost:5002'}`;
+      const url = new URL('/login', base);
+      url.searchParams.set('portal_error', errorCode);
+      return res.redirect(url.toString());
+    };
+
     if (!code || !state) {
-      throw new BadRequestException('Missing code or state');
+      return redirectError(null, 'callback_error');
     }
 
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
     if (!portalBaseUrl) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+      return redirectError(null, 'callback_error');
     }
 
     const cached = this.cache.get(`portal_sso:${state}`);
     this.cache.del(`portal_sso:${state}`);
 
     if (!cached) {
-      throw new BadRequestException('Invalid or expired Portal SSO state');
+      return redirectError(null, 'state_expired');
     }
 
     let codeVerifier: string;
@@ -224,7 +231,7 @@ export class AuthController {
       hubOrigin = parsed.hubOrigin;
       desktop = parsed.desktop;
     } catch {
-      throw new BadRequestException('Malformed Portal SSO state');
+      return redirectError(null, 'callback_error');
     }
 
     const callbackUrl = new URL('/api/auth/portal/callback', hubOrigin).toString();
@@ -246,13 +253,13 @@ export class AuthController {
 
     if (tokenRes.status < 200 || tokenRes.status >= 300) {
       this.logger.warn('Portal token exchange failed', { status: tokenRes.status, data: tokenRes.data });
-      throw new UnauthorizedException('Portal token exchange failed');
+      return redirectError(hubOrigin, 'callback_error');
     }
 
     const accessToken = (tokenRes.data as { access_token?: string } | undefined)?.access_token;
     if (!accessToken) {
       this.logger.warn('Portal token exchange missing access_token', { data: tokenRes.data });
-      throw new UnauthorizedException('Portal token exchange missing access token');
+      return redirectError(hubOrigin, 'callback_error');
     }
 
     // Fetch userinfo
@@ -264,24 +271,25 @@ export class AuthController {
 
     if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
       this.logger.warn('Portal userinfo fetch failed', { status: userinfoRes.status, data: userinfoRes.data });
-      throw new UnauthorizedException('Portal userinfo request failed');
+      return redirectError(hubOrigin, 'callback_error');
     }
 
     const email = (userinfoRes.data as { email?: string } | undefined)?.email;
     if (!email) {
       this.logger.warn('Portal userinfo missing email', { data: userinfoRes.data });
-      throw new UnauthorizedException('Portal userinfo missing email');
+      return redirectError(hubOrigin, 'callback_error');
     }
 
     const operator = await this.userRepository.getFirstOperator();
     if (!operator) {
-      throw new ForbiddenException('No operator user is configured on this Hub');
+      return redirectError(hubOrigin, 'callback_error');
     }
 
     if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
       // For now, only allow Portal login for the operator email already configured on this Hub.
       // This avoids silently elevating a Portal user to local admin.
-      throw new UnauthorizedException('Portal account does not match this Hub operator');
+      this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
+      return redirectError(hubOrigin, 'account_mismatch');
     }
 
     const sessionId = await this.sessionManager.createSession(operator.id);

@@ -40,12 +40,33 @@ export default () => {
   const { isLoggedIn, isConfigured, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
+  const portalError = searchParams.get('portal_error');
 
   const { t } = useTranslation();
   const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
+
+  useEffect(() => {
+    if (!portalError) return;
+    const key =
+      portalError === 'account_mismatch'
+        ? 'AUTH_PORTAL_ERROR_ACCOUNT_MISMATCH'
+        : portalError === 'state_expired'
+          ? 'AUTH_PORTAL_ERROR_STATE_EXPIRED'
+          : 'AUTH_PORTAL_ERROR_CALLBACK_ERROR';
+    toast.error(t(key));
+    // Remove the error param from the URL so it doesn't persist on refresh.
+    setSearchParams(
+      (prev) => {
+        prev.delete('portal_error');
+        return prev;
+      },
+      { replace: true },
+    );
+  }, [portalError, setSearchParams, t]);
+
   const navigate = useNavigate();
   const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
