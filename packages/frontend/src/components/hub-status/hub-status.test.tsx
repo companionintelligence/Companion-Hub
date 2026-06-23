@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as hubStatusModule from './hub-status';
 
@@ -8,6 +8,19 @@ const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
 vi.mock('@/lib/theme/theme', () => ({
   getLogo: () => '/logo.svg',
 }));
+
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: typeof url === 'string' && url.includes('/api/health'),
+    })),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };

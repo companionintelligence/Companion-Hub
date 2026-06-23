@@ -18,6 +18,7 @@ import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
+import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
@@ -72,30 +73,17 @@ client.interceptors.response.use(async (res) => {
 // but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
 // Cross-origin credentials ('include') are blocked by browsers when the server
 // responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
-const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+const isTauriRelease = isTauriReleaseBuild();
 const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-// Probe the backend port — try 5002 (prod) then 5004 (local source dev)
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
-  ? (async () => {
-      for (const port of [5002, 5004]) {
-        try {
-          const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
-          if (res.ok) {
-            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: credentialMode });
-            return;
-          }
-        } catch {
-          /* try next */
-        }
-      }
-      // Neither responded — default to 5002, HubStatus will show the "not running" overlay
-      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: credentialMode });
-    })()
+  ? probeHealthyHubApiPort().then((port) => {
+      configureHubApiPort(port ?? 5002);
+    })
   : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [

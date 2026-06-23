@@ -5,6 +5,7 @@ import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
+import { configureHubApiPort, getTauriInvoke, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import {
   DOCKER_MAC_ARCH_HINT,
   DOCKER_REQUIRED_HINT,
@@ -48,44 +49,7 @@ export function reloadCurrentWindow() {
   window.location.reload();
 }
 
-/**
- * Hub listens on 5002 (Docker / typical) or 5004 (local source dev). We probe both **in parallel**
- * with one Abort deadline each (`TAURI_HUB_HEALTH_PROBE_MS`), so one poll cycle stays bounded by ~that
- * duration—not twice it as with sequential tries.
- *
- * Keep `TAURI_HUB_HEALTH_PROBE_MS` strictly less than `HUB_STATUS_POLL_INTERVAL_MS`: the outer `checkStatus` timer
- * fires every 3s; a longer probe deadline would allow overlapping polls when both ports time out.
- */
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
-const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 5004] as const;
-/** Parallel probes ⇒ wall-clock ≈ this value; must stay under the poll interval to avoid stacked ticks. */
-const TAURI_HUB_HEALTH_PROBE_MS = 2500;
-
-async function fetchFirstHealthyHubPort(): Promise<number | null> {
-  const outcomes = await Promise.all(
-    TAURI_HUB_HEALTH_PROBE_PORTS.map(async (port) => {
-      try {
-        const res = await fetch(`http://localhost:${port}/api/health`, {
-          signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
-        });
-        return res.ok ? port : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  // Promise.all preserves TAURI_HUB_HEALTH_PROBE_PORTS order — first ok wins.
-  return outcomes.find((p) => p !== null) ?? null;
-}
-
-// Tauri IPC helper
-function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } })
-      .__TAURI_INTERNALS__.invoke;
-  }
-  return null;
-}
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -654,7 +618,6 @@ export function HubStatus({ children }: HubStatusProps) {
   const [showLogs, setShowLogs] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-  const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
   const shouldAutoStartWindowsHubRef = useRef(true);
   const checkStatusInFlightRef = useRef(false);
@@ -668,9 +631,8 @@ export function HubStatus({ children }: HubStatusProps) {
   const hubSteadyRunningRef = useRef(false);
 
   const checkHealthFallback = useCallback(async () => {
-    const port = await fetchFirstHealthyHubPort();
+    const port = await probeHealthyHubApiPort(true);
     if (port !== null) {
-      client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
       setStatus('Running');
       return;
     }
@@ -726,12 +688,10 @@ export function HubStatus({ children }: HubStatusProps) {
             sawNonRunningRef.current = true;
           }
 
-          if (result === 'Running' && isTauriRelease) {
-            const alivePort = await fetchFirstHealthyHubPort();
-            if (alivePort !== null) {
-              client.setConfig({ baseUrl: `http://localhost:${alivePort}`, credentials: 'omit' });
-            }
-            setStatus(alivePort === null ? 'Starting' : 'Running');
+          if (result === 'Running') {
+            const alivePort = await probeHealthyHubApiPort();
+            configureHubApiPort(alivePort ?? 5002);
+            setStatus('Running');
           } else {
             setStatus(result);
           }
@@ -744,7 +704,7 @@ export function HubStatus({ children }: HubStatusProps) {
     } finally {
       checkStatusInFlightRef.current = false;
     }
-  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub, t]);
+  }, [isTauri, isWindows, checkHealthFallback, startHub, t]);
 
   // Track elapsed seconds while in Starting state
   useEffect(() => {
