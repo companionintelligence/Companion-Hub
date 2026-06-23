@@ -4,7 +4,7 @@ use tauri::command;
 /// This is a best-effort operation that may require elevated permissions on some systems.
 /// Failures are silently ignored to avoid blocking the user experience.
 #[command]
-pub async fn flush_dns_cache() -> Result<(), String> {
+pub async fn flush_dns_cache() {
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("ipconfig")
@@ -44,6 +44,4 @@ pub async fn flush_dns_cache() -> Result<(), String> {
             .arg("hosts")
             .output();
     }
-
-    Ok(())
 }

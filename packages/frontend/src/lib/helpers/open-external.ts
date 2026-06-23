@@ -75,20 +75,32 @@ export const openExternal = async (url: string): Promise<void> => {
 
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     try {
-      // Extract hostname for DNS operations
-      const hostname = new URL(normalizedUrl).hostname;
+      // Only perform DNS operations for http/https URLs with a hostname
+      let shouldWarmDns = false;
+      let hostname = '';
 
-      // Step 1: Attempt to flush system DNS cache (best-effort, may fail silently)
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('flush_dns_cache');
+        const parsedUrl = new URL(normalizedUrl);
+        shouldWarmDns = (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && Boolean(parsedUrl.hostname);
+        hostname = parsedUrl.hostname;
       } catch {
-        // Ignore flush failures - not all systems support this
+        // Invalid URL or non-HTTP scheme (mailto:, etc.) - skip DNS operations
+        shouldWarmDns = false;
       }
 
-      // Step 2: Pre-warm DNS by verifying resolution
-      // This ensures both system and browser DNS caches are populated
-      await verifyDnsResolution(hostname);
+      if (shouldWarmDns) {
+        // Step 1: Attempt to flush system DNS cache (best-effort, may fail silently)
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('flush_dns_cache');
+        } catch {
+          // Ignore flush failures - not all systems support this
+        }
+
+        // Step 2: Pre-warm DNS by verifying resolution
+        // This ensures both system and browser DNS caches are populated
+        await verifyDnsResolution(hostname);
+      }
 
       // Step 3: Open URL via system shell
       const { openUrl } = await import('@tauri-apps/plugin-opener');

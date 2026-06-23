@@ -17,12 +17,21 @@ The issue is **NOT a propagation problem** but rather a **system-level DNS cache
    - Browser → Browser's internal DNS cache/DoH/resolver
    - Modern browsers (Chrome/Firefox) often use their own DNS resolution (DoH, browser cache)
 
-3. **The timing issue**:
+3. **The timing issue (pre-fix)**:
    ```
    Time 0: App creates new DNS record via Cloudflare API
    Time 1: App immediately calls openUrl(newDomain) 
    Time 2: System DNS resolver queries (cache miss) → upstream DNS
    Time 3: Browser launches with stale system DNS resolution
+   ```
+
+4. **The fix (post-fix)**:
+   ```
+   Time 0: App creates new DNS record via Cloudflare API
+   Time 1: App flushes system DNS cache
+   Time 2: App pre-warms DNS via fetch() HEAD request
+   Time 3: System + browser DNS caches now populated
+   Time 4: openUrl(newDomain) → Browser launches successfully
    ```
 
 ### Key Differences
@@ -34,7 +43,7 @@ The issue is **NOT a propagation problem** but rather a **system-level DNS cache
 | Resolution Path | OS → ISP/configured DNS | Browser → DoH provider (1.1.1.1, 8.8.8.8) |
 | Refresh Trigger | System TTL expiry | Browser refresh, new tab |
 
-## Evidence in Code
+## Evidence in Code (Pre-Fix Behavior)
 
 ### 1. URL Construction (`app-access-points.tsx:68-108`)
 ```typescript
@@ -51,18 +60,20 @@ const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || 
 const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 ```
 - ✅ URL is constructed correctly
-- ❌ No DNS warmup or verification before opening
+- ❌ **[Pre-fix]** No DNS warmup or verification before opening
 
-### 2. Launch Mechanism (`open-external.ts:19-29`)
+### 2. Launch Mechanism (`open-external.ts:19-29` - original)
 ```typescript
 if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
   const { openUrl } = await import('@tauri-apps/plugin-opener');
   await openUrl(normalizedUrl);  // ← Delegates to system shell
 }
 ```
-- ❌ No DNS pre-check
-- ❌ No retry logic
-- ❌ Relies entirely on system DNS resolution
+- ❌ **[Pre-fix]** No DNS pre-check
+- ❌ **[Pre-fix]** No retry logic
+- ❌ **[Pre-fix]** Relies entirely on system DNS resolution
+
+**[Post-fix]** This PR now implements DNS cache flush + warmup before calling `openUrl()`.
 
 ### 3. Tauri Opener Plugin (`Cargo.toml:27`)
 ```toml
