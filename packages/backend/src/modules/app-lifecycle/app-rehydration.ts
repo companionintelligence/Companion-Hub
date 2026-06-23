@@ -125,19 +125,16 @@ export function resolvePortalAppToUrn(portalApp: PortalDeviceApplication, storeS
   }
 
   if (candidates.length === 0) {
-    for (const storeSlug of storeSlugs) {
-      if (localEntries.some((entry) => entry.storeId === storeSlug && entry.appName === portalApp.name && entry.hasDataDir)) {
-        candidates.push({ urn: createAppUrn(portalApp.name, storeSlug), score: 3 });
-      }
-    }
-  }
-
-  if (candidates.length === 0) {
     return null;
   }
 
   candidates.sort((a, b) => b.score - a.score);
   return candidates[0]?.urn ?? null;
+}
+
+/** Keep only app-data folders that correspond to a Portal-listed app URN. */
+export function filterLocalEntriesForPortalUrns(localEntries: LocalAppDataEntry[], portalUrns: Set<string>): LocalAppDataEntry[] {
+  return localEntries.filter((entry) => portalUrns.has(createAppUrn(entry.appName, entry.storeId)));
 }
 
 export function buildRehydrationPlan(input: {
@@ -153,11 +150,21 @@ export function buildRehydrationPlan(input: {
   >;
 }): RehydrationPlan {
   const items: RehydrationPlanItem[] = [];
+  const portalUrns = new Set<string>();
 
   for (const portalApp of input.portalApps) {
-    const appUrn = resolvePortalAppToUrn(portalApp, input.storeSlugs, input.localEntries);
+    const resolved = resolvePortalAppToUrn(portalApp, input.storeSlugs, input.localEntries);
+    if (resolved) {
+      portalUrns.add(resolved);
+    }
+  }
+
+  const scopedLocalEntries = filterLocalEntriesForPortalUrns(input.localEntries, portalUrns);
+
+  for (const portalApp of input.portalApps) {
+    const appUrn = resolvePortalAppToUrn(portalApp, input.storeSlugs, scopedLocalEntries);
     const hasExistingData = appUrn
-      ? input.localEntries.some((entry) => {
+      ? scopedLocalEntries.some((entry) => {
           const [appName, storeId] = appUrn.split(':');
           return entry.storeId === storeId && entry.appName === appName && entry.hasDataDir;
         })
@@ -216,6 +223,6 @@ export function buildRehydrationPlan(input: {
   return {
     items,
     portalAppCount: input.portalApps.length,
-    localAppDataCount: input.localEntries.filter((entry) => entry.hasDataDir || entry.hasAppEnv).length,
+    localAppDataCount: scopedLocalEntries.filter((entry) => entry.hasDataDir || entry.hasAppEnv).length,
   };
 }

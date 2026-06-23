@@ -15,7 +15,15 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { isOperational } from '@/modules/registration/registration-state';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from './app-lifecycle.service';
-import { buildRehydrationPlan, scanLocalAppData, type RehydrationPlan, type RehydrationPlanItem, type RehydrationStateFile } from './app-rehydration';
+import {
+  buildRehydrationPlan,
+  filterLocalEntriesForPortalUrns,
+  resolvePortalAppToUrn,
+  scanLocalAppData,
+  type RehydrationPlan,
+  type RehydrationPlanItem,
+  type RehydrationStateFile,
+} from './app-rehydration';
 import {
   clearRestoreIntent,
   hasRestoreIntent,
@@ -158,28 +166,39 @@ export class AppRehydrationService {
   private async buildPlanFromPortalApps(portalApps: PortalDeviceApplication[]): Promise<RehydrationPlan> {
     const localEntries = scanLocalAppData(APP_DATA_DIR);
     const storeSlugs = await this.getStoreSlugsWithApps();
+
+    const portalUrns = new Set<AppUrn>();
+    for (const portalApp of portalApps) {
+      const urn = resolvePortalAppToUrn(portalApp, storeSlugs, localEntries);
+      if (urn) {
+        portalUrns.add(urn);
+      }
+    }
+
+    const scopedLocalEntries = filterLocalEntriesForPortalUrns(localEntries, portalUrns);
+
     const dbApps = await this.appsRepository.getApps();
-    const dbAppsByUrn = new Map(dbApps.map((app) => [`${app.appName}:${app.appStoreSlug}` as AppUrn, { status: app.status }]));
+    const dbAppsByUrn = new Map(
+      dbApps
+        .filter((app) => portalUrns.has(createAppUrn(app.appName, app.appStoreSlug)))
+        .map((app) => [`${app.appName}:${app.appStoreSlug}` as AppUrn, { status: app.status }]),
+    );
 
     const installedComposeUrns = new Set<string>();
-    for (const dbApp of dbApps) {
-      const urn = createAppUrn(dbApp.appName, dbApp.appStoreSlug);
+    for (const urn of portalUrns) {
       if (await this.hasInstalledCompose(urn)) {
         installedComposeUrns.add(urn);
       }
     }
 
-    for (const entry of localEntries) {
-      const urn = createAppUrn(entry.appName, entry.storeId);
-      if (!installedComposeUrns.has(urn) && (await this.hasInstalledCompose(urn))) {
-        installedComposeUrns.add(urn);
-      }
-    }
+    this.logger.info(
+      `Rehydration plan: ${portalApps.length} Portal app(s), ${portalUrns.size} resolvable, ${localEntries.length} local app-data folder(s) on disk (${scopedLocalEntries.length} match Portal)`,
+    );
 
     return buildRehydrationPlan({
       portalApps,
       storeSlugs,
-      localEntries,
+      localEntries: scopedLocalEntries,
       installedComposeUrns,
       dbAppsByUrn,
     });
