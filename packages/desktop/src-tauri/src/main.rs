@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
 mod discovery;
 mod error_reporting;
 pub mod hub_env;
@@ -317,6 +318,7 @@ pub fn run() {
             perform_desktop_update_command,
             get_update_progress_command,
             trigger_host_update_command,
+            commands::dns::flush_dns_cache,
         ])
         .setup(|app| {
             // Restore saved window geometry
