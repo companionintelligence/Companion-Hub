@@ -41,4 +41,20 @@ describe('LoginForm', () => {
     expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
     expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).toBeInTheDocument();
   });
+
+  it('shows a personalized portal sign-in label when an account email is known', () => {
+    render(
+      <MemoryRouter>
+        <LoginForm
+          loading={false}
+          loginType="your local admin account"
+          onSubmit={vi.fn()}
+          portalSsoHref="https://portal.example.com"
+          portalAccountEmail="operator@example.com"
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' })).toBeInTheDocument();
+  });
 });

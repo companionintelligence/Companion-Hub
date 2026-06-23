@@ -1,9 +1,15 @@
 export interface DesktopPortalAuthPayload {
-  token: string;
+  token?: string;
+  error?: string;
 }
 
 function normalizeDesktopPortalAuthPayload(payload: DesktopPortalAuthPayload | null | undefined): DesktopPortalAuthPayload | null {
   const token = payload?.token?.trim();
+  const error = payload?.error?.trim();
+
+  if (error) {
+    return { error };
+  }
 
   if (!token) {
     return null;
