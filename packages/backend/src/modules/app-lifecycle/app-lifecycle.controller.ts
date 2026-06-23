@@ -1,14 +1,47 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Body, Controller, Delete, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
+import { AppRehydrationService } from './app-rehydration.service';
 import { AppFormBody, LifecycleRequestDto, UninstallAppBody, UpdateAppBody } from './dto/app-lifecycle.dto';
 import { ApiResponse } from '@nestjs/swagger';
+
+interface RehydrateBody {
+  force?: boolean;
+  source?: 'restore';
+}
 
 @UseGuards(AuthGuard)
 @Controller('app-lifecycle')
 export class AppLifecycleController {
-  constructor(private readonly appLifecycleService: AppLifecycleService) {}
+  constructor(
+    private readonly appLifecycleService: AppLifecycleService,
+    private readonly appRehydrationService: AppRehydrationService,
+  ) {}
+
+  @Get('rehydrate/plan')
+  async getRehydratePlan() {
+    return this.appRehydrationService.buildPlan();
+  }
+
+  @Get('rehydrate/status')
+  async getRehydrateStatus() {
+    const [status, restoreIntent] = await Promise.all([
+      this.appRehydrationService.getRehydrationStatus(),
+      this.appRehydrationService.hasRestoreIntent(),
+    ]);
+    return { ...status, restoreIntent };
+  }
+
+  @Post('rehydrate')
+  async executeRehydrate(@Body() body: RehydrateBody, @Req() req: Request) {
+    return this.appRehydrationService.executeRehydrate({
+      force: body.force,
+      source: body.source,
+      operatorUserId: req.user?.id,
+    });
+  }
 
   @Post(':urn/install')
   @ApiResponse({ type: LifecycleRequestDto })

@@ -52,6 +52,14 @@ export interface CloudflareSyncResult {
   synced: number;
 }
 
+export interface PortalDeviceApplication {
+  id: string;
+  name: string;
+  slug: string;
+  port: number;
+  publicDomain: string | null;
+}
+
 @Injectable()
 export class CloudflareClientService {
   private readonly logger = new Logger(CloudflareClientService.name);
@@ -225,6 +233,21 @@ export class CloudflareClientService {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
       return { ok: false, failed: [], synced: 0 };
+    }
+  }
+
+  /** Fetch user-installed applications recorded in CI Portal for this device. */
+  async getDeviceApplications(): Promise<PortalDeviceApplication[]> {
+    try {
+      const response = await this.client.get<{ applications?: PortalDeviceApplication[] }>('devices/applications', this.getRequestConfig());
+      return Array.isArray(response.data?.applications) ? response.data.applications : [];
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to fetch Portal device applications: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to fetch Portal device applications: ${String(error)}`);
+      }
+      return [];
     }
   }
 

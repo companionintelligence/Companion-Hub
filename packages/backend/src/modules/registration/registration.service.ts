@@ -27,6 +27,7 @@ import {
   collectStaleHubDeviceIds,
   type RegistrationStateDrift,
 } from './registration-state-drift';
+import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
 import si from 'systeminformation';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -537,6 +538,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // File may not exist
     }
 
+    await clearRehydrationState();
+
     this.logger.info('Device registration reset complete');
 
     // Start polling for new registration
@@ -575,6 +578,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     });
   }
 
+  /** Persist server-side restore intent before re-pairing (survives beyond sessionStorage). */
+  public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
+    await this.refreshPhaseFromSources();
+    if (isOperational(this._currentPhase)) {
+      return {
+        success: false,
+        message: 'Restore intent is only applicable while the Hub is unregistered',
+      };
+    }
+
+    await writeRestoreIntent();
+    return { success: true, message: 'Restore intent recorded' };
+  }
+
   /**
    * Wipe local registration artifacts so the user can pair as a fresh device.
    * Allowed only while the Hub is unregistered (no operational registration).
@@ -591,6 +608,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     await this.resetRegistration();
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
+    await clearRegistrationRecoveryArtifacts();
 
     this.logger.info(`Prepared fresh device setup (cleared registration keys from ${clearedAppEnvFiles} app.env file(s))`);
 
@@ -1370,6 +1388,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
+
+      await clearRehydrationState();
 
       return {
         success: true,

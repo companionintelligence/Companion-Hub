@@ -72,6 +72,13 @@ export class RegistrationController {
     return this.registrationService.prepareFreshSetup();
   }
 
+  @Post('mark-restore-intent')
+  @ApiOperation({ summary: 'Record restore intent before re-pairing an existing Portal device' })
+  @ApiResponse({ status: 200, description: 'Restore intent recorded' })
+  async markRestoreIntent() {
+    return this.registrationService.markRestoreIntent();
+  }
+
   @Get('device-id')
   @ApiOperation({ summary: 'Get device ID for registration redirect' })
   @ApiResponse({ status: 200, description: 'Returns the device ID and registration URL' })

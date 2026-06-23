@@ -87,6 +87,16 @@ describe('RegistrationController', () => {
     });
   });
 
+  describe('markRestoreIntent', () => {
+    it('should record restore intent', async () => {
+      registrationService.markRestoreIntent.mockResolvedValue({ success: true, message: 'Restore intent recorded' });
+
+      const result = await controller.markRestoreIntent();
+      expect(result.success).toBe(true);
+      expect(registrationService.markRestoreIntent).toHaveBeenCalled();
+    });
+  });
+
   describe('getStateDrift', () => {
     it('should return drift detection result', async () => {
       registrationService.getStateDrift.mockResolvedValue({
