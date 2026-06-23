@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
+import { meetsPasswordComplexity } from '@/common/helpers/password-policy';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -268,9 +269,8 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const passwordStrengthRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
-    if (!passwordStrengthRegex.test(password)) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
+    if (!meetsPasswordComplexity(password)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
     }
 
     const signedInImmediately = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');

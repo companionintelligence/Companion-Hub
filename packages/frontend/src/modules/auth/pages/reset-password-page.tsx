@@ -85,12 +85,12 @@ export default () => {
 
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as { message?: string };
-        throw new Error(body.message ?? 'Unable to process your request right now. Please try again.');
+        throw new Error(body.message ?? t('AUTH_RESET_PASSWORD_REQUEST_FAILED'));
       }
 
       setRequestSubmitted(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to process your request right now. Please try again.';
+      const message = error instanceof Error ? error.message : t('AUTH_RESET_PASSWORD_REQUEST_FAILED');
       toast.error(message);
     } finally {
       setIsRequestPending(false);
@@ -108,12 +108,12 @@ export default () => {
 
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as { message?: string };
-        throw new Error(body.message ?? 'Unable to reset password. The reset link may be invalid or expired.');
+        throw new Error(body.message ?? t('AUTH_RESET_PASSWORD_COMPLETE_FAILED'));
       }
 
       setIsCompleteSuccess(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to reset password. The reset link may be invalid or expired.';
+      const message = error instanceof Error ? error.message : t('AUTH_RESET_PASSWORD_COMPLETE_FAILED');
       toast.error(message);
     } finally {
       setIsCompletionPending(false);
@@ -133,7 +133,7 @@ export default () => {
       return (
         <div className="text-center">
           <h2 className="text-xl font-semibold text-center mb-3">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
-          <p className="text-sm text-muted-foreground mb-4">This reset link is invalid or expired.</p>
+          <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_INVALID_LINK')}</p>
           <Button asChild intent="primary" className="w-full">
             <Link to="/login">{t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}</Link>
           </Button>
@@ -145,7 +145,7 @@ export default () => {
       return (
         <>
           <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
-          <p className="text-sm text-muted-foreground mb-4">Password updated. You can now log in with your new password.</p>
+          <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_COMPLETE_SUCCESS')}</p>
           <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
             {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
           </Button>
@@ -160,7 +160,7 @@ export default () => {
     return (
       <>
         <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
-        <p className="text-sm text-muted-foreground mb-4">If this email is registered, you'll receive reset instructions shortly.</p>
+        <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')}</p>
         <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
           {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
         </Button>
@@ -171,7 +171,7 @@ export default () => {
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
-      <p className="text-sm text-muted-foreground mb-4">Enter your account email and we will send you password reset instructions.</p>
+      <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_REQUEST_DESCRIPTION')}</p>
       <form onSubmit={submitRequest}>
         <Input
           {...register('email')}
@@ -184,7 +184,7 @@ export default () => {
           disabled={isRequestPending}
         />
         <Button loading={isRequestPending} type="submit" intent="primary" className="w-full mb-3">
-          Send reset instructions
+          {t('AUTH_RESET_PASSWORD_REQUEST_SUBMIT')}
         </Button>
         <Button asChild variant="outline" className="w-full">
           <Link to="/login">{t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}</Link>

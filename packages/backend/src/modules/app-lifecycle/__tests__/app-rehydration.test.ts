@@ -54,6 +54,10 @@ describe('app-rehydration', () => {
     expect(resolvePortalAppToUrn(portalApp, ['community', 'official'], localEntries)).toBe('nextcloud:official');
   });
 
+  it('returns null when slug and local data provide no store match', () => {
+    expect(resolvePortalAppToUrn({ id: '1', name: 'foo', slug: 'foo-unknown', port: 8080, publicDomain: null }, ['official'], [])).toBeNull();
+  });
+
   it('buildRestoreInstallForm maps cloudflare vs local exposure', () => {
     const localForm = buildRestoreInstallForm({
       id: '1',
@@ -89,7 +93,7 @@ describe('app-rehydration', () => {
       { id: '1', name: 'fresh', slug: 'fresh-official', port: 8080, publicDomain: null },
       { id: '2', name: 'stopped', slug: 'stopped-official', port: 8081, publicDomain: null },
       { id: '3', name: 'running', slug: 'running-official', port: 8082, publicDomain: null },
-      { id: '4', name: 'unknown', slug: 'unknown-official', port: 8083, publicDomain: null },
+      { id: '4', name: 'missing', slug: 'missing-wrong-store', port: 8083, publicDomain: null },
     ];
 
     const plan = buildRehydrationPlan({
@@ -107,7 +111,7 @@ describe('app-rehydration', () => {
     expect(byName.fresh).toBe('install');
     expect(byName.stopped).toBe('start');
     expect(byName.running).toBe('skip_running');
-    expect(byName.unknown).toBe('install');
+    expect(byName.missing).toBe('skip_unresolved');
     expect(plan.items.find((item) => item.portalApp.name === 'fresh')?.hasExistingData).toBe(true);
   });
 });

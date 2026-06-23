@@ -689,8 +689,13 @@ export function HubStatus({ children }: HubStatusProps) {
 
           if (result === 'Running') {
             const alivePort = await probeHealthyHubApiPort();
-            configureHubApiPort(alivePort ?? 5002);
-            setStatus('Running');
+            if (alivePort === null) {
+              sawNonRunningRef.current = true;
+              setStatus('Starting');
+            } else {
+              configureHubApiPort(alivePort);
+              setStatus('Running');
+            }
           } else {
             setStatus(result);
           }

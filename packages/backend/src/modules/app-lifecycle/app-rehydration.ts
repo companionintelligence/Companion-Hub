@@ -133,12 +133,6 @@ export function resolvePortalAppToUrn(portalApp: PortalDeviceApplication, storeS
   }
 
   if (candidates.length === 0) {
-    for (const storeSlug of storeSlugs) {
-      candidates.push({ urn: createAppUrn(portalApp.name, storeSlug), score: 0 });
-    }
-  }
-
-  if (candidates.length === 0) {
     return null;
   }
 

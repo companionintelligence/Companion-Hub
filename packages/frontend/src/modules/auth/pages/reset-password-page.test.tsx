@@ -52,7 +52,7 @@ describe('ResetPasswordPage', () => {
 
     expect(screen.queryByText('Demo Account Credentials')).not.toBeInTheDocument();
     expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Send reset instructions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' })).toBeInTheDocument();
   });
 
   it('shows generic success message after requesting a reset', async () => {
@@ -61,13 +61,13 @@ describe('ResetPasswordPage', () => {
     render(<ResetPasswordPage />);
 
     await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'me@example.com');
-    await userEvent.click(screen.getByRole('button', { name: 'Send reset instructions' }));
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' }));
 
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/auth/password-reset/request', expect.objectContaining({ method: 'POST' }));
     });
 
-    expect(screen.getByText("If this email is registered, you'll receive reset instructions shortly.")).toBeInTheDocument();
+    expect(screen.getByText('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')).toBeInTheDocument();
   });
 
   it('shows an error when the reset request is rejected', async () => {
@@ -76,13 +76,13 @@ describe('ResetPasswordPage', () => {
     render(<ResetPasswordPage />);
 
     await userEvent.type(screen.getByLabelText('AUTH_FORM_EMAIL'), 'me@example.com');
-    await userEvent.click(screen.getByRole('button', { name: 'Send reset instructions' }));
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' }));
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith('Rate limited');
     });
 
-    expect(screen.queryByText("If this email is registered, you'll receive reset instructions shortly.")).not.toBeInTheDocument();
+    expect(screen.queryByText('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')).not.toBeInTheDocument();
   });
 
   it('shows invalid-link state when verify returns valid:false', async () => {
@@ -94,7 +94,7 @@ describe('ResetPasswordPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('This reset link is invalid or expired.')).toBeInTheDocument();
+      expect(screen.getByText('AUTH_RESET_PASSWORD_INVALID_LINK')).toBeInTheDocument();
     });
   });
 });
