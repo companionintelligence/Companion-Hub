@@ -1,7 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -22,6 +22,19 @@ import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
+
+function DesktopStartupFallback() {
+  return (
+    <main
+      id="root"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      role="status"
+      aria-busy="true"
+    >
+      {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+    </main>
+  );
+}
 
 /** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
 function describeUnknownError(error: unknown): string {
@@ -295,26 +308,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        {apiReady ? (
-          <ThemeProvider defaultTheme="dark">
+        <ThemeProvider defaultTheme="dark">
+          {apiReady ? (
             <I18nProvider>
-              <Titlebar />
-              <HubStatus>
-                <main id="root">
-                  {children}
-                  <ScrollRestoration />
-                </main>
-              </HubStatus>
+              <Suspense fallback={<DesktopStartupFallback />}>
+                <Titlebar />
+                <HubStatus>
+                  <main id="root">
+                    {children}
+                    <ScrollRestoration />
+                  </main>
+                </HubStatus>
+              </Suspense>
             </I18nProvider>
-          </ThemeProvider>
-        ) : (
-          <ThemeProvider defaultTheme="dark">
-            <Titlebar />
-            <main id="root" className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground">
-              {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
-            </main>
-          </ThemeProvider>
-        )}
+          ) : (
+            <DesktopStartupFallback />
+          )}
+        </ThemeProvider>
         <Scripts />
       </body>
     </html>

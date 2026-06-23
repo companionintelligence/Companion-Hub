@@ -164,7 +164,9 @@ async fn install_docker_engine_alternative_command(
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
-    hub_manager::get_hub_status()
+    tokio::task::spawn_blocking(hub_manager::get_hub_status)
+        .await
+        .unwrap_or_else(|err| panic!("hub status task failed: {err}"))
 }
 
 /// Get per-service startup progress for the frontend loading screen.
