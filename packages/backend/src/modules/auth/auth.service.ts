@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -12,6 +13,7 @@ import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/com
 import psl from 'psl';
 import validator from 'validator';
 import type { LoginBody, RegisterBody } from './dto/auth.dto';
+import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 
@@ -471,14 +473,14 @@ export class AuthService {
     const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
 
     this.logger.info('Password reset requested', {
-      email,
+      emailHash: hashEmailForLog(email),
       deviceId: params.deviceId,
       ipAddress: params.ipAddress,
       rateLimitAllowed,
     });
 
     if (!rateLimitAllowed) {
-      this.logger.warn('Password reset rate limited', { email, ipAddress: params.ipAddress });
+      this.logger.warn('Password reset rate limited', { emailHash: hashEmailForLog(email), ipAddress: params.ipAddress });
       return { success: true };
     }
 
@@ -497,7 +499,11 @@ export class AuthService {
       });
 
       if (!response.ok) {
-        this.logger.warn('Portal password reset request failed', { status: response.status, email, ipAddress: params.ipAddress });
+        this.logger.warn('Portal password reset request failed', {
+          status: response.status,
+          emailHash: hashEmailForLog(email),
+          ipAddress: params.ipAddress,
+        });
       }
     } catch (error) {
       this.logger.error('Portal password reset request failed', error);
@@ -519,12 +525,15 @@ export class AuthService {
         return { valid: false };
       }
 
-      const data = (await response.json().catch(() => ({}))) as { valid?: boolean; email?: string };
-      const valid = data.valid ?? true;
+      const data = await response.json().catch(() => null);
+      const parsed = passwordResetVerifyResponseSchema.safeParse(data);
+      if (!parsed.success || parsed.data.valid !== true) {
+        return { valid: false };
+      }
 
       return {
-        valid,
-        email: typeof data.email === 'string' ? data.email : undefined,
+        valid: true,
+        email: parsed.data.email,
       };
     } catch {
       return { valid: false };
@@ -532,8 +541,7 @@ export class AuthService {
   };
 
   public completePasswordReset = async (params: { token: string; newPassword: string; ipAddress?: string }) => {
-    const passwordStrengthRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
-    if (!passwordStrengthRegex.test(params.newPassword)) {
+    if (params.newPassword.length < 8) {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
     }
 

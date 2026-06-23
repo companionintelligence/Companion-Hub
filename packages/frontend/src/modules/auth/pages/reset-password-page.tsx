@@ -58,7 +58,7 @@ export default () => {
           return;
         }
         const body = (await response.json().catch(() => ({}))) as { valid?: boolean };
-        setTokenStatus(response.ok && body.valid !== false ? 'valid' : 'invalid');
+        setTokenStatus(response.ok && body.valid === true ? 'valid' : 'invalid');
       } catch {
         if (!active) {
           return;
@@ -77,14 +77,21 @@ export default () => {
   const submitRequest = handleSubmit(async ({ email }) => {
     setIsRequestPending(true);
     try {
-      await apiFetch('/api/auth/password-reset/request', {
+      const response = await apiFetch('/api/auth/password-reset/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { message?: string };
+        throw new Error(body.message ?? 'Unable to process your request right now. Please try again.');
+      }
+
       setRequestSubmitted(true);
-    } catch {
-      toast.error('Unable to process your request right now. Please try again.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to process your request right now. Please try again.';
+      toast.error(message);
     } finally {
       setIsRequestPending(false);
     }

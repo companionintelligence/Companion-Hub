@@ -151,4 +151,61 @@ describe('AuthService', () => {
       vi.unstubAllGlobals();
     });
   });
+
+  describe('verifyPasswordResetToken', () => {
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.example.com' } as never);
+    });
+
+    it('returns valid=false when portal responds with valid:false', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ valid: false }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+
+      await expect(authService.verifyPasswordResetToken('expired-token')).resolves.toEqual({ valid: false });
+
+      vi.unstubAllGlobals();
+    });
+
+    it('returns valid=false when portal omits valid on a 200 response', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ email: 'user@example.com' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+
+      await expect(authService.verifyPasswordResetToken('bad-token')).resolves.toEqual({ valid: false });
+
+      vi.unstubAllGlobals();
+    });
+
+    it('returns valid=true only when portal explicitly validates the token', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ valid: true, email: 'user@example.com' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+
+      await expect(authService.verifyPasswordResetToken('good-token')).resolves.toEqual({
+        valid: true,
+        email: 'user@example.com',
+      });
+
+      vi.unstubAllGlobals();
+    });
+  });
 });

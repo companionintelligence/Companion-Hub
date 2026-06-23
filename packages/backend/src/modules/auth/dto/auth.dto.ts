@@ -129,3 +129,5 @@ export class PasswordResetCompleteBody extends createZodDto(passwordResetComplet
 export class PasswordResetRequestDto extends createZodDto(passwordResetRequestResponseSchema) {}
 export class PasswordResetVerifyResponseDto extends createZodDto(passwordResetVerifyResponseSchema) {}
 export class PasswordResetCompleteDto extends createZodDto(passwordResetCompleteResponseSchema) {}
+
+export { passwordResetVerifyResponseSchema };
