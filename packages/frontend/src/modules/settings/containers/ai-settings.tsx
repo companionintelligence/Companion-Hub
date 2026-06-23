@@ -406,7 +406,10 @@ export const AiSettingsContainer = () => {
                     if (tracked.state === 'pinned')
                       return { text: t('AI_SETTINGS_PINNED_BADGE'), cls: 'border-primary/30 bg-primary/10 text-primary' };
                     if (tracked.state === 'pulled' || tracked.state === 'loaded')
-                      return { text: t('AI_SETTINGS_DOWNLOADED_BADGE'), cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' };
+                      return {
+                        text: t('AI_SETTINGS_DOWNLOADED_BADGE'),
+                        cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+                      };
                     return {
                       text: tracked.state.charAt(0).toUpperCase() + tracked.state.slice(1),
                       cls: 'border-border bg-foreground/5 text-muted-foreground',
@@ -480,7 +483,7 @@ export const AiSettingsContainer = () => {
                       <div className="text-sm font-medium truncate">{model.name}</div>
                       <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                     </div>
-                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-medium">
+                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium">
                       {t('AI_SETTINGS_DOWNLOADED_BADGE')}
                     </span>
                   </div>

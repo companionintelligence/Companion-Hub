@@ -133,7 +133,7 @@ export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType; runtim
       <div
         className={cn(
           'inline-flex min-h-12 items-center gap-3 rounded-md border px-4 py-2 shadow-sm',
-          presentation.tone === 'success' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500',
+          presentation.tone === 'success' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-500',
           presentation.tone === 'warning' && 'border-amber-500/30 bg-amber-500/10 text-amber-500',
           presentation.tone === 'danger' && 'border-red-500/30 bg-red-500/10 text-red-500',
           presentation.tone === 'neutral' && 'border-border/70 bg-muted/30 text-muted-foreground',

@@ -74,7 +74,9 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
+          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold">
+            {t('APP_PRICE_FREE')}
+          </span>
         </div>
 
         <h3 className="font-bold text-base sm:text-lg mb-1 truncate text-foreground group-hover:text-primary transition-colors">{app.name}</h3>
@@ -83,7 +85,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
         <div className="flex items-center justify-end mt-auto">
           {isInstalled ? (
             <div className="h-8 w-8 rounded-full flex items-center justify-center bg-emerald-500/20">
-              <Check className="w-4 h-4 text-emerald-500" />
+              <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-500" />
             </div>
           ) : (
             <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">

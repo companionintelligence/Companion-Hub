@@ -9,7 +9,7 @@ export const LEVEL_TEXT: Record<LevelColor, string> = {
   red: 'text-red-400',
   orange: 'text-orange-400',
   gold: 'text-amber-400',
-  green: 'text-emerald-400',
+  green: 'text-emerald-700 dark:text-emerald-400',
   blue: 'text-sky-400',
 };
 
@@ -27,7 +27,7 @@ export const LEVEL_TAG: Record<LevelColor, string> = {
   red: 'border-red-500/30 bg-red-500/15 text-red-300',
   orange: 'border-orange-500/30 bg-orange-500/15 text-orange-300',
   gold: 'border-amber-500/30 bg-amber-500/15 text-amber-300',
-  green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300',
+  green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-800 dark:text-emerald-300',
   blue: 'border-sky-500/30 bg-sky-500/15 text-sky-300',
 };
 
