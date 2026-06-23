@@ -66,6 +66,12 @@ const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@example.com";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
+/// Compile-time copy of the bundled compose file. Used as a last-resort fallback
+/// when no `docker-compose.prod.yml` resource is found on disk at runtime (e.g.
+/// `cargo tauri dev`, or a packaging layout where the resource path doesn't match
+/// any candidate). Guarantees the data-dir compose file always exists so startup
+/// never fails with a missing-compose error.
+const HUB_COMPOSE_SEED: &str = include_str!("../resources/docker-compose.prod.yml");
 const TRAEFIK_DYNAMIC_CONFIG_SEED: &str =
     include_str!("../../../backend/assets/traefik/dynamic/dynamic.yml");
 const TRAEFIK_RECREATE_MARKER_FILENAME: &str = ".traefik-recreate-required";
@@ -5572,12 +5578,20 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         })?;
         log_lines.push("  -> updated in data_dir".to_string());
     } else {
-        log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
+        // No bundled resource was located — fall back to the compile-time embedded
+        // copy so the data-dir compose file always exists and startup can proceed.
+        log_lines.push("  -> WARNING: no compose file found in any candidate path; writing embedded fallback".to_string());
+        std::fs::write(&compose_dst, HUB_COMPOSE_SEED).map_err(|e| {
+            let message = format!("Failed to write embedded compose fallback to {:?}: {}", compose_dst, e);
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            with_view_logs_hint(message)
+        })?;
         let _ = append_desktop_log_for(
             &data_dir,
             "initialize",
-            "No docker-compose.prod.yml resource was found in any candidate path.",
+            "No docker-compose.prod.yml resource was found in any candidate path; wrote the embedded fallback compose instead.",
         );
+        log_lines.push("  -> wrote embedded fallback compose to data_dir".to_string());
     }
 
     // --- Regenerate the runtime env file with preserve-and-derive approach ---
