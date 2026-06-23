@@ -31,7 +31,10 @@ struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct DesktopPortalAuthPayload {
-    token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn stack_dev_mode_enabled() -> bool {
@@ -876,18 +879,28 @@ fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     }
 
     let query = trimmed.split('?').nth(1)?;
+    let mut token = None;
+    let mut error = None;
+
     for param in query.split('&') {
-        if let Some(token) = param.strip_prefix("token=") {
-            let token = token.trim();
-            if !token.is_empty() {
-                return Some(DesktopPortalAuthPayload {
-                    token: token.to_string(),
-                });
+        if let Some(value) = param.strip_prefix("token=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                token = Some(value.to_string());
+            }
+        } else if let Some(value) = param.strip_prefix("error=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                error = Some(value.to_string());
             }
         }
     }
 
-    None
+    if token.is_some() || error.is_some() {
+        Some(DesktopPortalAuthPayload { token, error })
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -921,7 +934,19 @@ mod tests {
         assert_eq!(
             extract_portal_auth("cihub://auth?token=desktop-token"),
             Some(super::DesktopPortalAuthPayload {
-                token: "desktop-token".to_string()
+                token: Some("desktop-token".to_string()),
+                error: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_portal_auth_error_from_query_param() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?error=callback_error"),
+            Some(super::DesktopPortalAuthPayload {
+                token: None,
+                error: Some("callback_error".to_string()),
             })
         );
     }
