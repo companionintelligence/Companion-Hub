@@ -72,6 +72,9 @@ describe('DeviceRegistrationPage', () => {
       if (url === '/api/registration/device-id') {
         return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
       }
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({ detected: false, signals: [] });
+      }
       return jsonResponse({});
     });
   });
@@ -118,6 +121,10 @@ describe('DeviceRegistrationPage', () => {
         return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com' });
       }
 
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({ detected: false, signals: [] });
+      }
+
       if (url === '/api/registration/pair' && init?.method === 'POST') {
         return jsonResponse({ success: true });
       }
@@ -142,5 +149,34 @@ describe('DeviceRegistrationPage', () => {
 
     // Pairing submission should not trigger an immediate route transition in this branch.
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('shows the state drift dialog when local and portal registration disagree', async () => {
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/registration/status') {
+        return jsonResponse(makeStatus('unregistered'));
+      }
+      if (url === '/api/registration/device-id') {
+        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
+      }
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({
+          detected: true,
+          hardwareDeviceId: 'device-123',
+          localRegistered: false,
+          portalDeviceActive: true,
+          staleAppEnvDeviceIds: ['old-device-id'],
+          hasStaleTunnelToken: false,
+          signals: [{ reason: 'local_unregistered_portal_active' }],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByRole('heading', { name: "This Hub's local data doesn't match your Companion Account" })).toBeInTheDocument();
+    expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
+    expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
 });
