@@ -33,7 +33,7 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 import { resolveRootFolderHostForRuntime } from './lib/paths';
 
 const HOST_CONFIG_PATH = path.join(os.homedir(), '.docker', 'config.json');
@@ -135,7 +135,7 @@ export async function initDockerConfig(): Promise<void> {
   console.log(`init-docker-config: ready ${outputPath}${summary.length > 0 ? ` (${summary.join(', ')})` : ''}`);
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   initDockerConfig().catch((err) => {

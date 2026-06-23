@@ -8,7 +8,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 
 /**
  * Mirrors the device ID logic from packages/backend/src/modules/registration/registration.service.ts
@@ -113,7 +113,7 @@ export function getDeviceId(): string {
   }
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   console.log(getDeviceId());

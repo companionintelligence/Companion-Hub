@@ -10,9 +10,8 @@
  * When TCP auth fails but ci-hub-db is running, we ALTER USER via local socket
  * inside the container (no old password required).
  */
-import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
 const DB_CONTAINER = 'ci-hub-db';
@@ -124,7 +123,17 @@ export async function syncPostgresPasswordFromEnv(envFile = process.env.ENV_FILE
   }
 
   console.log('sync-postgres-password: TCP auth failed — syncing Postgres role password to match env');
+
+  if (!containerIsRunning(DB_CONTAINER)) {
+    console.log(`sync-postgres-password: ${DB_CONTAINER} stopped before password sync; skipping`);
+    return;
+  }
+
   if (!syncPostgresPassword(password)) {
+    if (!containerIsRunning(DB_CONTAINER)) {
+      console.log(`sync-postgres-password: ${DB_CONTAINER} stopped during password sync; skipping`);
+      return;
+    }
     throw new Error('failed to ALTER USER companion');
   }
 
@@ -135,7 +144,7 @@ export async function syncPostgresPasswordFromEnv(envFile = process.env.ENV_FILE
   console.log('sync-postgres-password: Postgres password synced successfully');
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   void syncPostgresPasswordFromEnv(process.argv[2] || process.env.ENV_FILE || '.env.local').catch((error) => {
