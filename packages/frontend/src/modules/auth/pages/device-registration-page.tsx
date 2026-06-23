@@ -95,6 +95,7 @@ export default function DeviceRegistrationPage() {
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
+  const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
@@ -177,12 +178,23 @@ export default function DeviceRegistrationPage() {
       if (requiresDeviceRegistration(status)) {
         completionStartedRef.current = false;
         clearRegistrationCache();
+
+        if (isRegistrationPending(status)) {
+          setDriftDialogOpen(false);
+          return status;
+        }
+
         if (status.phase === 'unregistered') {
           await loadDeviceInfo();
-          const drift = await loadStateDrift();
-          const storedChoice = getStoredDriftChoice();
-          if (drift?.detected && !storedChoice) {
-            setDriftDialogOpen(true);
+          const pairingInProgress = pairingInProgressRef.current || pendingPairTargetRef.current !== null;
+          if (pairingInProgress) {
+            setDriftDialogOpen(false);
+          } else {
+            const drift = await loadStateDrift();
+            const storedChoice = getStoredDriftChoice();
+            if (drift?.detected && !storedChoice) {
+              setDriftDialogOpen(true);
+            }
           }
         }
         return status;
@@ -338,6 +350,7 @@ export default function DeviceRegistrationPage() {
 
   const doPair = useCallback(
     async (code: string) => {
+      pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
       setStatusError(null);
@@ -369,6 +382,7 @@ export default function DeviceRegistrationPage() {
         console.error(error);
         setPairingError(t('DEVICE_REGISTRATION_FAILED_RETRY'));
       } finally {
+        pairingInProgressRef.current = false;
         setIsPairing(false);
       }
     },

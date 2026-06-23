@@ -19,6 +19,7 @@ import {
   PROVISIONING_PHASES,
   isOperational,
   isLegalTransition,
+  isActiveRegistrationPhase,
   buildRegistrationStatus,
   parseDegradedReasons,
 } from './registration-state';
@@ -560,6 +561,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.refreshPhaseFromSources();
     const status = this.getRegistrationStatus();
     const hardwareDeviceId = await this.getDeviceId();
+
+    // Portal may reflect the device immediately after pairing while local provisioning
+    // is still in progress — that is expected registration flow, not drift.
+    if (isActiveRegistrationPhase(status.phase)) {
+      return buildStateDriftResult({
+        hardwareDeviceId,
+        localRegistered: status.registered,
+        portalDeviceActive: null,
+        staleAppEnvDeviceIds: [],
+        hasStaleTunnelToken: false,
+        hasOrphanedDbRegistration: false,
+      });
+    }
+
     const localRegistered = status.registered;
 
     const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
