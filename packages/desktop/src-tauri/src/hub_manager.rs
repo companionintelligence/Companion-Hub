@@ -116,6 +116,10 @@ const OLLAMA_WINDOWS_INSTALLER_URL: &str = "https://ollama.com/download/OllamaSe
 // Universal binary (arm64 + x86_64) — one zip for all Macs.
 #[cfg(target_os = "macos")]
 const OLLAMA_MACOS_ZIP_URL: &str = "https://ollama.com/download/Ollama-darwin.zip";
+/// Synthetic startup row id — Ollama runs on the host (127.0.0.1:11434), not in compose.
+const HOST_OLLAMA_SERVICE_ID: &str = "host-ollama";
+const HOST_OLLAMA_API_URL: &str = "http://127.0.0.1:11434/api/tags";
+const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
@@ -1844,9 +1848,25 @@ fn startup_service_definitions(
         optional.push(("hub-tailscale", "Private VPN", false));
     }
     optional.push(("cloudflared", "Tunnel", false));
-    optional.push(("ci-hub-ollama", "Ollama", false));
 
     (core, optional)
+}
+
+/// True when the host Ollama API responds on localhost (same target the Hub backend uses).
+fn probe_host_ollama() -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(HOST_OLLAMA_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    client
+        .get(HOST_OLLAMA_API_URL)
+        .send()
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
 }
 
 /// Return per-service startup progress for the frontend loading screen.
@@ -1885,6 +1905,17 @@ pub fn get_startup_progress() -> StartupProgress {
             state: svc_state,
         });
     }
+
+    // Host Ollama is optional and non-blocking; probe the local API, not a compose service.
+    services.push(ServiceStatus {
+        label: "Ollama".to_string(),
+        container: HOST_OLLAMA_SERVICE_ID.to_string(),
+        state: if probe_host_ollama() {
+            ServiceState::Ready
+        } else {
+            ServiceState::Pending
+        },
+    });
 
     // Count ready core services and compute average core score for progress %.
     for (i, (_, _, required)) in core.iter().chain(optional.iter()).enumerate() {
@@ -1969,46 +2000,8 @@ pub fn get_hub_status() -> HubStatus {
 
     match (state, health) {
         ("running", "healthy") => {
-            let vpn_on = is_private_vpn_enabled();
-            if !vpn_on {
-                reset_vpn_sidecar_status_poll_phase();
-                HubStatus::Running
-            } else {
-                let skip_sidecar_inspect = {
-                    let phase = lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE);
-                    matches!(
-                        *phase,
-                        VpnSidecarPollPhase::VerifiedSince(since)
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
-                    )
-                };
-                if skip_sidecar_inspect {
-                    HubStatus::Running
-                } else {
-                    let ready = vpn_sidecars_ready();
-                    let mut phase = lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE);
-                    match *phase {
-                        VpnSidecarPollPhase::PendingReady => {
-                            if ready {
-                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
-                                HubStatus::Running
-                            } else {
-                                HubStatus::Starting
-                            }
-                        }
-                        VpnSidecarPollPhase::VerifiedSince(since) => {
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
-                                HubStatus::Running
-                            } else if ready {
-                                HubStatus::Running
-                            } else {
-                                *phase = VpnSidecarPollPhase::PendingReady;
-                                HubStatus::Starting
-                            }
-                        }
-                    }
-                }
-            }
+            reset_vpn_sidecar_status_poll_phase();
+            HubStatus::Running
         }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
@@ -7744,14 +7737,12 @@ mod tests {
     }
 
     #[test]
-    fn startup_progress_includes_ollama_as_optional_non_blocking() {
+    fn startup_progress_does_not_treat_ollama_as_compose_container() {
         let (_, optional) = startup_service_definitions(false);
 
-        assert!(optional
+        assert!(!optional
             .iter()
-            .any(|(container, label, required)| *container == "ci-hub-ollama"
-                && *label == "Ollama"
-                && !required));
+            .any(|(container, _, _)| *container == "ci-hub-ollama"));
     }
 
     #[test]

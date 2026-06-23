@@ -6,7 +6,7 @@ export const STARTUP_SERVICE_HINTS: Record<string, string> = {
   traefik: 'STARTUP_SERVICE_HINT_TRAEFIK',
   'hub-tailscale': 'STARTUP_SERVICE_HINT_TAILSCALE',
   cloudflared: 'STARTUP_SERVICE_HINT_CLOUDFLARED',
-  'ci-hub-ollama': 'STARTUP_SERVICE_HINT_OLLAMA',
+  'host-ollama': 'STARTUP_SERVICE_HINT_OLLAMA',
 };
 
 export const STARTUP_PROGRESS_HINT = 'STARTUP_PROGRESS_HINT';
