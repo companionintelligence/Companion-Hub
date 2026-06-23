@@ -140,18 +140,15 @@ export class AppRehydrationService {
 
   private async fetchPortalApplications(): Promise<PortalDeviceApplication[]> {
     const apps = await this.cloudflareClientService.getDeviceApplications();
+    // Precompute the set of available marketplace URNs once (one directory listing per
+    // enabled store) and match in-memory, instead of an N×M per-app/per-store loop of
+    // getAppInfoFromAppStore() disk reads.
+    const availableUrns = new Set<string>(await this.marketplaceService.getAvailableAppUrns());
     const storeSlugs = await this.getStoreSlugsWithApps();
     const resolved: PortalDeviceApplication[] = [];
 
     for (const portalApp of apps) {
-      let listed = false;
-      for (const storeSlug of storeSlugs) {
-        const info = await this.marketplaceService.getAppInfoFromAppStore(createAppUrn(portalApp.name, storeSlug));
-        if (info) {
-          listed = true;
-          break;
-        }
-      }
+      const listed = storeSlugs.some((storeSlug) => availableUrns.has(createAppUrn(portalApp.name, storeSlug)));
 
       if (listed) {
         resolved.push(portalApp);

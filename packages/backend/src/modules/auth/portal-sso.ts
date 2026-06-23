@@ -96,6 +96,53 @@ export function resolveHubRequestOrigin(req: Request): string {
   return `${proto}://${host}`;
 }
 
+function isTrustedReturnHostname(hostname: string, trustedDomains: { domain?: string | null; localDomain?: string | null }): boolean {
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return true;
+  }
+
+  for (const candidate of [trustedDomains.domain, trustedDomains.localDomain]) {
+    const domain = candidate?.trim().toLowerCase();
+    if (domain && (hostname === domain || hostname.endsWith(`.${domain}`))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Resolve a return origin to forward to Portal (e.g. for password-reset email links)
+ * ONLY when the request host matches a trusted domain (configured DOMAIN / LOCAL_DOMAIN
+ * or localhost). This prevents host-header injection where a forged Host /
+ * X-Forwarded-Host could poison the reset link target (phishing / token theft).
+ * Returns `undefined` for untrusted hosts so Portal falls back to its own default origin.
+ */
+export function resolveTrustedReturnOrigin(
+  req: Request,
+  trustedDomains: { domain?: string | null; localDomain?: string | null },
+): string | undefined {
+  const proto = ((req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http').split(',')[0]?.trim() || 'http';
+  const rawHost = ((req.headers['x-forwarded-host'] as string | undefined) || req.get('host') || '').split(',')[0]?.trim();
+
+  if (!rawHost) {
+    return undefined;
+  }
+
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+
+  if (!isTrustedReturnHostname(hostname, trustedDomains)) {
+    return undefined;
+  }
+
+  return `${proto}://${rawHost}`;
+}
+
 export function resolvePortalCallbackUrl(hubOrigin: string): string {
   return new URL('/api/auth/portal/callback', hubOrigin).toString();
 }

@@ -8,8 +8,18 @@ import {
   fetchPortalSessionEmail,
   resolvePortalCallbackUrl,
   resolveSameOriginRedirectUrl,
+  resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
 } from '../portal-sso';
+import type { Request } from 'express';
+
+function fakeRequest(headers: Record<string, string>, host?: string, protocol = 'http'): Request {
+  return {
+    headers,
+    protocol,
+    get: (name: string) => (name.toLowerCase() === 'host' ? host : undefined),
+  } as unknown as Request;
+}
 
 vi.mock('axios', () => ({
   default: {
@@ -111,6 +121,42 @@ describe('portal-sso helpers', () => {
       ok: false,
       reason: 'token_exchange_failed',
       status: 400,
+    });
+  });
+
+  describe('resolveTrustedReturnOrigin', () => {
+    const trusted = { domain: 'companionintelligence.com', localDomain: 'companionintelligence.com' };
+
+    it('returns the origin for localhost', () => {
+      expect(resolveTrustedReturnOrigin(fakeRequest({}, 'localhost:5002'), trusted)).toBe('http://localhost:5002');
+    });
+
+    it('returns the origin for the configured domain and its subdomains', () => {
+      expect(
+        resolveTrustedReturnOrigin(fakeRequest({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-abc.companionintelligence.com' }), trusted),
+      ).toBe('https://hub-abc.companionintelligence.com');
+      expect(
+        resolveTrustedReturnOrigin(fakeRequest({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'companionintelligence.com' }), trusted),
+      ).toBe('https://companionintelligence.com');
+    });
+
+    it('omits the origin for untrusted hosts (host header injection)', () => {
+      expect(resolveTrustedReturnOrigin(fakeRequest({ 'x-forwarded-host': 'attacker.example.com' }, 'localhost:5002'), trusted)).toBeUndefined();
+      // A lookalike suffix must not match the trusted domain.
+      expect(resolveTrustedReturnOrigin(fakeRequest({ 'x-forwarded-host': 'evilcompanionintelligence.com' }), trusted)).toBeUndefined();
+    });
+
+    it('uses only the first value of a comma-separated forwarded host', () => {
+      expect(
+        resolveTrustedReturnOrigin(
+          fakeRequest({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.companionintelligence.com, attacker.example.com' }),
+          trusted,
+        ),
+      ).toBe('https://hub.companionintelligence.com');
+    });
+
+    it('returns undefined when no host is present', () => {
+      expect(resolveTrustedReturnOrigin(fakeRequest({}), trusted)).toBeUndefined();
     });
   });
 
