@@ -42,6 +42,20 @@ const options = {
   shell: true,
 };
 
+function resolveTauriBuildCommand() {
+  const explicitTargets = process.env.TAURI_BUNDLE_TARGETS?.trim();
+  if (explicitTargets) {
+    return `cargo tauri build -b ${explicitTargets}`;
+  }
+
+  // Local Linux builds often lack linuxdeploy; skip AppImage unless explicitly requested.
+  if (process.platform === 'linux') {
+    return 'cargo tauri build -b deb,rpm';
+  }
+
+  return 'cargo tauri build';
+}
+
 const frontendDist = path.resolve(process.cwd(), '../frontend/dist/client');
 const standaloneCliOut = path.resolve(process.cwd(), 'src-tauri/resources', process.platform === 'win32' ? 'cihub.exe' : 'cihub');
 
@@ -52,7 +66,9 @@ if (!existsSync(frontendDist)) {
 
 execSync(`node ../../scripts/build-standalone-cli.cjs --outfile "${standaloneCliOut}" --bundle-resource`, options);
 
-execSync('cargo tauri build', options);
+const tauriBuildCommand = resolveTauriBuildCommand();
+console.log(`Running desktop bundle command: ${tauriBuildCommand}`);
+execSync(tauriBuildCommand, options);
 
 if (process.platform !== 'win32') {
   execSync('sh scripts/patch-deb-maintainer-scripts.sh', options);

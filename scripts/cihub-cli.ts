@@ -664,6 +664,11 @@ async function ensurePostgresInfraAndSyncPassword(envFileName: string, composeFi
 }
 
 async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
+  const isApkMirrorFetchFailure = (output: string): boolean => {
+    const lower = output.toLowerCase();
+    return lower.includes('apkindex.tar.gz') && lower.includes('temporary error (try again later)');
+  };
+
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of files) upArgs.push('-f', f);
   upArgs.push('up');
@@ -671,11 +676,22 @@ async function runDockerComposeUp(envFileName: string, files: string[], detached
   upArgs.push('--build');
 
   const maxAttempts = 3;
+  let currentEnvOverrides: Record<string, string | undefined> = { ...envOverrides };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides });
+    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides: currentEnvOverrides });
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+    if (attempt < maxAttempts && isApkMirrorFetchFailure(combined) && currentEnvOverrides.DOCKER_BUILD_NETWORK !== 'host') {
+      printMessageBox(
+        'Docker build network retry',
+        ['Detected Alpine mirror fetch failure during image build.', 'Retrying with DOCKER_BUILD_NETWORK=host...'],
+        'yellow',
+      );
+      currentEnvOverrides = { ...currentEnvOverrides, DOCKER_BUILD_NETWORK: 'host' };
+      continue;
+    }
+
     if (attempt < maxAttempts && isHostPortBindConflict(combined)) {
       const healed = healHubPortBindConflict(envFileName, combined, (message) => {
         printMessageBox('Port self-heal', [message], 'yellow');
