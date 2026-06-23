@@ -6,6 +6,7 @@ import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -53,6 +54,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     readonly _repoQueue: RepoEventsQueue,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
+
+  private portalAxiosConfig() {
+    const { ciCloudUrl } = this.config.getConfig();
+    return buildPortalAxiosConfig(ciCloudUrl, readPortalInternalUrlOverride());
+  }
 
   onApplicationShutdown() {
     if (this.checkInterval) {
@@ -429,12 +435,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // device is still active in CI Portal. A 400 means the device is no
       // longer active; network errors are counted toward the failure threshold.
       const response = await axios.post(
-        `${ciCloudUrl}/api/devices/check-in`,
+        `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 10_000,
           validateStatus: () => true,
           headers: { 'Content-Type': 'application/json' },
+          ...this.portalAxiosConfig(),
         },
       );
 
@@ -562,7 +569,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     let portalDeviceActive: boolean | null = null;
     const { ciCloudUrl } = this.config.getConfig();
     if (ciCloudUrl && !localRegistered) {
-      portalDeviceActive = await this.probePortalDeviceActive(hardwareDeviceId, ciCloudUrl);
+      portalDeviceActive = await this.probePortalDeviceActive(hardwareDeviceId, this.config.getOutboundCiCloudUrl());
     }
 
     const dbRow = localRegistered ? null : await this.deviceRegistrationRepository.getFirstDeviceRegistration();
@@ -629,6 +636,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           timeout: 10_000,
           validateStatus: () => true,
           headers: { 'Content-Type': 'application/json' },
+          ...this.portalAxiosConfig(),
         },
       );
 
@@ -1109,22 +1117,27 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     try {
-      const pairUrl = `${ciCloudUrl}/api/devices/pair`;
-      const response = await fetch(pairUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
-      });
+      const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
+      const response = await axios.post(
+        pairUrl,
+        { pairing_code: pairingCode, device_id: deviceId },
+        {
+          ...this.portalAxiosConfig(),
+          headers: { 'Content-Type': 'application/json' },
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      if (response.status < 200 || response.status >= 300) {
+        const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string };
         return {
           success: false,
-          message: (errorData as { error?: string }).error || `Pairing failed: ${response.statusText}`,
+          message: errorData.error || `Pairing failed: HTTP ${response.status}`,
         };
       }
 
-      const data = (await response.json()) as {
+      const data = response.data as {
         device_id: string;
         organization_id: string;
         organization_name: string;
@@ -1224,7 +1237,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Step 1: Register device with CI Cloud
       // POST http://localhost:8001/api/devices/register
-      const registerUrl = `${ciCloudUrl}/api/devices/register`;
+      const registerUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -1234,19 +1247,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       this.logger.debug(`Registering device at ${registerUrl}`);
-      const registerResponse = await fetch(registerUrl, {
-        method: 'POST',
-        headers: registerHeaders,
-        body: JSON.stringify({
+      const registerResponse = await axios.post(
+        registerUrl,
+        {
           device_id: deviceId,
           organization_id: organizationId,
           description: description,
-        }),
-      });
+        },
+        {
+          ...this.portalAxiosConfig(),
+          headers: registerHeaders,
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
 
-      if (!registerResponse.ok) {
+      if (registerResponse.status < 200 || registerResponse.status >= 300) {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
+        const errorData = (registerResponse.data ?? { error: 'Unknown error' }) as any;
         this.logger.error(`Device registration failed: ${registerResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
@@ -1254,7 +1272,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      const registerResult = await registerResponse.json().catch(() => ({}));
+      const registerResult = registerResponse.data ?? {};
       this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
 
       // Step 2: Activate device - REMOVED (Merged into Step 1)

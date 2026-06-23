@@ -8,7 +8,9 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { PasswordService } from '@/core/password/password.service';
+import axios from 'axios';
 import { UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
@@ -51,34 +53,54 @@ export class AuthService {
 
   private getPasswordResetPortalBaseUrl() {
     const { ciCloudUrl } = this.config.getConfig();
-    const base = ciCloudUrl?.trim().replace(/\/$/, '');
+    const publicBase = ciCloudUrl?.trim().replace(/\/$/, '');
 
-    if (!base) {
+    if (!publicBase) {
       throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
     }
 
-    return base;
+    return resolveOutboundPortalBaseUrl(publicBase, readPortalInternalUrlOverride());
+  }
+
+  private getPublicPortalBaseUrl() {
+    const { ciCloudUrl } = this.config.getConfig();
+    const publicBase = ciCloudUrl?.trim().replace(/\/$/, '');
+
+    if (!publicBase) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    return publicBase;
   }
 
   private getPortalBaseUrl() {
     return this.getPasswordResetPortalBaseUrl();
   }
 
+  private portalAxiosConfig() {
+    return buildPortalAxiosConfig(this.getPublicPortalBaseUrl(), readPortalInternalUrlOverride());
+  }
+
   private async signInWithPortal(email: string, password: string) {
     const base = this.getPortalBaseUrl();
-    const response = await fetch(`${base}/api/auth/sign-in/email`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Origin: base,
+    const publicBase = this.getPublicPortalBaseUrl();
+    const response = await axios.post(
+      `${base}/api/auth/sign-in/email`,
+      { email, password },
+      {
+        ...this.portalAxiosConfig(),
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        },
+        validateStatus: () => true,
+        timeout: 15_000,
       },
-      body: JSON.stringify({ email, password }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    );
 
-    const body = (await response.json().catch(() => ({}))) as { code?: string };
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string };
 
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       if (body.code === 'EMAIL_NOT_VERIFIED') {
         throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
       }
@@ -89,19 +111,24 @@ export class AuthService {
 
   private async signUpWithPortal(email: string, password: string, name: string) {
     const base = this.getPortalBaseUrl();
-    const response = await fetch(`${base}/api/auth/sign-up/email`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Origin: base,
+    const publicBase = this.getPublicPortalBaseUrl();
+    const response = await axios.post(
+      `${base}/api/auth/sign-up/email`,
+      { email, password, name },
+      {
+        ...this.portalAxiosConfig(),
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        },
+        validateStatus: () => true,
+        timeout: 15_000,
       },
-      body: JSON.stringify({ email, password, name }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    );
 
-    const body = (await response.json().catch(() => ({}))) as { code?: string; token?: string | null };
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string; token?: string | null };
 
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       if (body.code === 'USER_ALREADY_EXISTS') {
         throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
       }
@@ -487,18 +514,22 @@ export class AuthService {
     const base = this.getPasswordResetPortalBaseUrl();
 
     try {
-      const response = await fetch(`${base}/api/auth/password-reset/request`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const response = await axios.post(
+        `${base}/api/auth/password-reset/request`,
+        {
           email,
           returnOrigin: params.returnOrigin,
           deviceId: params.deviceId,
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
+        },
+        {
+          ...this.portalAxiosConfig(),
+          headers: { 'Content-Type': 'application/json' },
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
 
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         this.logger.warn('Portal password reset request failed', {
           status: response.status,
           emailHash: hashEmailForLog(email),
@@ -516,16 +547,17 @@ export class AuthService {
     const base = this.getPasswordResetPortalBaseUrl();
 
     try {
-      const response = await fetch(`${base}/api/auth/password-reset/verify/${encodeURIComponent(token)}`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(15_000),
+      const response = await axios.get(`${base}/api/auth/password-reset/verify/${encodeURIComponent(token)}`, {
+        ...this.portalAxiosConfig(),
+        validateStatus: () => true,
+        timeout: 15_000,
       });
 
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         return { valid: false };
       }
 
-      const data = await response.json().catch(() => null);
+      const data = response.data;
       const parsed = passwordResetVerifyResponseSchema.safeParse(data);
       if (!parsed.success || parsed.data.valid !== true) {
         return { valid: false };
@@ -546,14 +578,18 @@ export class AuthService {
     }
 
     const base = this.getPasswordResetPortalBaseUrl();
-    const response = await fetch(`${base}/api/auth/password-reset/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: params.token, newPassword: params.newPassword }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    const response = await axios.post(
+      `${base}/api/auth/password-reset/complete`,
+      { token: params.token, newPassword: params.newPassword },
+      {
+        ...this.portalAxiosConfig(),
+        headers: { 'Content-Type': 'application/json' },
+        validateStatus: () => true,
+        timeout: 15_000,
+      },
+    );
 
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       throw new TranslatableError('AUTH_ERROR_NO_CHANGE_PASSWORD_REQUEST', {}, HttpStatus.BAD_REQUEST);
     }
 

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
@@ -220,6 +221,12 @@ export class ConfigurationService {
 
   public get<T extends keyof ReturnType<typeof this.configure>>(key: T) {
     return this.config[key];
+  }
+
+  /** Portal URL for server-side outbound API calls (Docker host bridge when needed). */
+  public getOutboundCiCloudUrl(): string {
+    const publicUrl = this.config.ciCloudUrl.trim().replace(/\/+$/, '');
+    return resolveOutboundPortalBaseUrl(publicUrl, readPortalInternalUrlOverride());
   }
 
   public async setUserSettings(settings: UserSettingsBody) {

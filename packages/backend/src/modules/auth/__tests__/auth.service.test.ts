@@ -11,6 +11,14 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
 import type { LoginBody } from '../dto/auth.dto';
+import axios from 'axios';
+
+vi.mock('axios', () => ({
+  default: {
+    post: vi.fn(),
+    get: vi.fn(),
+  },
+}));
 
 describe('AuthService', () => {
   let authService: AuthService;
@@ -20,6 +28,9 @@ describe('AuthService', () => {
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
+    vi.mocked(axios.post).mockReset();
+    vi.mocked(axios.get).mockReset();
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -51,13 +62,10 @@ describe('AuthService', () => {
       const mockUser = { id: 1, password: 'hashedPassword', totpEnabled: false };
 
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: async () => ({}),
-        }),
-      );
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 200,
+        data: {},
+      });
       userRepository.getUserByUsername.mockResolvedValue(mockUser as never);
       sessionManager.createSession.mockResolvedValue('session-id' as never);
 
@@ -65,7 +73,6 @@ describe('AuthService', () => {
 
       expect(result).toEqual({ sessionId: 'session-id' });
       expect(sessionManager.createSession).toHaveBeenCalledWith(1);
-      vi.unstubAllGlobals();
     });
 
     it('should return totpSessionId if totp is enabled', async () => {
@@ -73,13 +80,10 @@ describe('AuthService', () => {
       const mockUser = { id: 2, password: 'hashedPassword', totpEnabled: 1 };
 
       configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: async () => ({}),
-        }),
-      );
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 200,
+        data: {},
+      });
       userRepository.getUserByUsername.mockResolvedValue(mockUser as never);
 
       const result = await authService.login(loginBody);
@@ -87,7 +91,6 @@ describe('AuthService', () => {
       expect(result).toHaveProperty('totpSessionId');
       expect(cacheService.set).toHaveBeenCalled();
       expect(sessionManager.createSession).not.toHaveBeenCalled();
-      vi.unstubAllGlobals();
     });
   });
 
@@ -136,17 +139,15 @@ describe('AuthService', () => {
         cacheEntries.set(key, value);
       });
 
-      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-      vi.stubGlobal('fetch', fetchMock);
+      const axiosPost = vi.mocked(axios.post);
+      axiosPost.mockResolvedValue({ status: 200, data: {} });
 
       await authService.requestPasswordReset({ email: 'user@example.com' });
       await authService.requestPasswordReset({ email: 'user@example.com' });
       await authService.requestPasswordReset({ email: 'user@example.com' });
       await authService.requestPasswordReset({ email: 'user@example.com' });
 
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-
-      vi.unstubAllGlobals();
+      expect(axiosPost).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -156,54 +157,33 @@ describe('AuthService', () => {
     });
 
     it('returns valid=false when portal responds with valid:false', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(
-          new Response(JSON.stringify({ valid: false }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        ),
-      );
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 200,
+        data: { valid: false },
+      });
 
       await expect(authService.verifyPasswordResetToken('expired-token')).resolves.toEqual({ valid: false });
-
-      vi.unstubAllGlobals();
     });
 
     it('returns valid=false when portal omits valid on a 200 response', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(
-          new Response(JSON.stringify({ email: 'user@example.com' }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        ),
-      );
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 200,
+        data: { email: 'user@example.com' },
+      });
 
       await expect(authService.verifyPasswordResetToken('bad-token')).resolves.toEqual({ valid: false });
-
-      vi.unstubAllGlobals();
     });
 
     it('returns valid=true only when portal explicitly validates the token', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(
-          new Response(JSON.stringify({ valid: true, email: 'user@example.com' }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        ),
-      );
+      vi.mocked(axios.get).mockResolvedValue({
+        status: 200,
+        data: { valid: true, email: 'user@example.com' },
+      });
 
       await expect(authService.verifyPasswordResetToken('good-token')).resolves.toEqual({
         valid: true,
         email: 'user@example.com',
       });
-
-      vi.unstubAllGlobals();
     });
   });
 });

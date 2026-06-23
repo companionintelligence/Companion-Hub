@@ -9,6 +9,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride } from '@/common/helpers/portal-url';
 
 export interface AppInfo {
   name: string;
@@ -72,7 +73,8 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    const ciCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
+    const publicCiCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
+    const ciCloudUrl = this.configService.getOutboundCiCloudUrl() || DEFAULT_CI_CLOUD_URL;
     this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
@@ -80,6 +82,7 @@ export class CloudflareClientService {
       headers: {
         'Content-Type': 'application/json',
       },
+      ...buildPortalAxiosConfig(publicCiCloudUrl, readPortalInternalUrlOverride()),
     });
   }
 
