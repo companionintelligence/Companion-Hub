@@ -8,7 +8,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { buildPortalAxiosConfig, readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
+import {
+  buildPortalAxiosConfig,
+  readPortalInternalUrlOverride,
+  resolveOutboundPortalBaseUrl,
+  withPortalAxiosHeaders,
+} from '@/common/helpers/portal-url';
 import { PasswordService } from '@/core/password/password.service';
 import axios from 'axios';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -84,15 +89,15 @@ export class AuthService {
   private async signInWithPortal(email: string, password: string) {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
     const response = await axios.post(
       `${base}/api/auth/sign-in/email`,
       { email, password },
       {
-        ...this.portalAxiosConfig(),
-        headers: {
+        ...withPortalAxiosHeaders(portalConfig, {
           'Content-Type': 'application/json',
           Origin: publicBase,
-        },
+        }),
         validateStatus: () => true,
         timeout: 15_000,
       },
@@ -112,15 +117,15 @@ export class AuthService {
   private async signUpWithPortal(email: string, password: string, name: string) {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
     const response = await axios.post(
       `${base}/api/auth/sign-up/email`,
       { email, password, name },
       {
-        ...this.portalAxiosConfig(),
-        headers: {
+        ...withPortalAxiosHeaders(portalConfig, {
           'Content-Type': 'application/json',
           Origin: publicBase,
-        },
+        }),
         validateStatus: () => true,
         timeout: 15_000,
       },
@@ -512,6 +517,7 @@ export class AuthService {
     }
 
     const base = this.getPasswordResetPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
 
     try {
       const response = await axios.post(
@@ -522,8 +528,7 @@ export class AuthService {
           deviceId: params.deviceId,
         },
         {
-          ...this.portalAxiosConfig(),
-          headers: { 'Content-Type': 'application/json' },
+          ...withPortalAxiosHeaders(portalConfig, { 'Content-Type': 'application/json' }),
           validateStatus: () => true,
           timeout: 15_000,
         },
@@ -582,12 +587,12 @@ export class AuthService {
     }
 
     const base = this.getPasswordResetPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
     const response = await axios.post(
       `${base}/api/auth/password-reset/complete`,
       { token: params.token, newPassword: params.newPassword },
       {
-        ...this.portalAxiosConfig(),
-        headers: { 'Content-Type': 'application/json' },
+        ...withPortalAxiosHeaders(portalConfig, { 'Content-Type': 'application/json' }),
         validateStatus: () => true,
         timeout: 15_000,
       },

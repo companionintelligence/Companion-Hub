@@ -560,7 +560,11 @@ AdapterRAM = [int64]$amd.AdapterRAM; DriverVersion = $amd.DriverVersion } | Conv
     // (which tops out at ~4 GiB) when the QWORD could not be read.
     let qw_bytes = as_bytes("QwMemorySizeBytes");
     let adapter_ram_bytes = as_bytes("AdapterRAM");
-    let vram_bytes = if qw_bytes > 0 { qw_bytes } else { adapter_ram_bytes };
+    let vram_bytes = if qw_bytes > 0 {
+        qw_bytes
+    } else {
+        adapter_ram_bytes
+    };
     let vram_mb = vram_bytes / (1024 * 1024);
 
     let driver_version = parsed
@@ -5973,8 +5977,7 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(
-            docker_desktop_windows_install_script(docker_desktop_windows_download_url())
-                .as_bytes(),
+            docker_desktop_windows_install_script(docker_desktop_windows_download_url()).as_bytes(),
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
     // Close our writable handle before executing: on Windows, PowerShell cannot
@@ -7235,7 +7238,10 @@ fn program_files_docker_present() -> bool {
 /// Run a PowerShell script, optionally elevated. Returns the captured output so
 /// the caller can map exit codes to the install-result contract.
 #[cfg(target_os = "windows")]
-fn run_powershell_script(script_body: &str, elevated: bool) -> Result<std::process::Output, String> {
+fn run_powershell_script(
+    script_body: &str,
+    elevated: bool,
+) -> Result<std::process::Output, String> {
     use std::io::Write as IoWrite;
 
     // PowerShell -File refuses scripts without a .ps1 extension.
@@ -7349,7 +7355,10 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
             "WSL2 Docker Engine installation failed with exit code {:?}.",
             output.status.code()
         )),
-        _ => Err(format!("WSL2 Docker Engine installation failed: {}", combined)),
+        _ => Err(format!(
+            "WSL2 Docker Engine installation failed: {}",
+            combined
+        )),
     }
 }
 
@@ -7400,28 +7409,28 @@ mod tests {
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
-    #[cfg(any(test, target_os = "windows"))]
-    use super::wsl2_engine_elevated_script;
-    #[cfg(any(test, target_os = "windows"))]
-    use super::wsl2_engine_user_script;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::preferred_unix_cli_install_dir;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::unix_profile_for_shell;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::wsl2_engine_elevated_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::wsl2_engine_user_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
-        files_match, format_command_output, generate_container_docker_config,
-        host_container_uid_gid, host_docker_socket_path, is_container_name_conflict,
-        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        merge_compose_profiles, parse_container_ids, parse_docker_socket_uid_gid,
-        paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
-        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
-        startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, derive_optional_service_state, DockerAccessState,
-        ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        clear_tunnel_token, derive_optional_service_state, desktop_log_path_for,
+        docker_context_host_from_inspect_output, files_match, format_command_output,
+        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
+        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
+        parse_docker_socket_uid_gid, paths_match_by_components, prepare_traefik_runtime_state,
+        private_vpn_enabled_from_map, seeded_traefik_config_contents,
+        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
+        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, ServiceState,
+        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(test, target_os = "macos"))]
     use super::{colima_macos_binary_install_script, colima_macos_start_script};

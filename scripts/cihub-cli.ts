@@ -575,11 +575,26 @@ function renderConfigLines(env: HubEnv) {
   ];
 }
 
-export function normalizeDetachedFlag(args: string[]): { detached: boolean; remaining: string[] } {
+export function normalizeDetachedFlag(args: string[]): { detached: boolean; attached: boolean; remaining: string[] } {
   return {
     detached: args.includes('--detached'),
-    remaining: args.filter((arg) => arg !== '--detached'),
+    attached: args.includes('--attached'),
+    remaining: args.filter((arg) => arg !== '--detached' && arg !== '--attached'),
   };
+}
+
+/** Non-local appliance stacks default to detached so `cihub up dev` returns after boot. */
+export function resolveUpStartMode(env: HubEnv, options: { detached: boolean; attached: boolean }): StartMode {
+  if (env === 'local') {
+    return 'local-dev';
+  }
+  if (options.attached) {
+    return 'attached';
+  }
+  if (options.detached || env === 'dev') {
+    return 'detached';
+  }
+  return 'attached';
 }
 
 // --- docker availability ---
@@ -665,17 +680,22 @@ async function ensurePostgresInfraAndSyncPassword(envFileName: string, composeFi
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
 }
 
+export function shouldRetryApkMirrorWithHostNetwork(
+  output: string,
+  envOverrides: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const lower = output.toLowerCase();
+  const isApkMirrorFetchFailure = lower.includes('apkindex.tar.gz') && lower.includes('temporary error (try again later)');
+  return platform === 'linux' && isApkMirrorFetchFailure && envOverrides.DOCKER_BUILD_NETWORK !== 'host';
+}
+
 async function runDockerComposeUp(
   envFileName: string,
   files: string[],
   detached: boolean,
   envOverrides: Record<string, string | undefined>,
 ): Promise<void> {
-  const isApkMirrorFetchFailure = (output: string): boolean => {
-    const lower = output.toLowerCase();
-    return lower.includes('apkindex.tar.gz') && lower.includes('temporary error (try again later)');
-  };
-
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of files) upArgs.push('-f', f);
   upArgs.push('up');
@@ -689,7 +709,7 @@ async function runDockerComposeUp(
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
-    if (attempt < maxAttempts && isApkMirrorFetchFailure(combined) && currentEnvOverrides.DOCKER_BUILD_NETWORK !== 'host') {
+    if (attempt < maxAttempts && shouldRetryApkMirrorWithHostNetwork(combined, currentEnvOverrides)) {
       printMessageBox(
         'Docker build network retry',
         ['Detected Alpine mirror fetch failure during image build.', 'Retrying with DOCKER_BUILD_NETWORK=host...'],

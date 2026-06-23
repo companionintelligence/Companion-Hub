@@ -110,7 +110,47 @@ export function createPortalHttpsAgent(publicCiCloudUrl: string, internalOverrid
   });
 }
 
+function resolvePortalHostHeader(publicCiCloudUrl: string, internalOverride?: string): string | undefined {
+  if (!needsDockerHostBridge(publicCiCloudUrl, internalOverride)) {
+    return undefined;
+  }
+
+  try {
+    return new URL(publicCiCloudUrl.trim()).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildPortalAxiosConfig(publicCiCloudUrl: string, internalOverride?: string): AxiosRequestConfig {
   const httpsAgent = createPortalHttpsAgent(publicCiCloudUrl, internalOverride);
-  return httpsAgent ? { httpsAgent } : {};
+  const host = resolvePortalHostHeader(publicCiCloudUrl, internalOverride);
+  return {
+    ...(httpsAgent ? { httpsAgent } : {}),
+    ...(host ? { headers: { Host: host } } : {}),
+  };
+}
+
+function normalizeAxiosHeaders(headers: AxiosRequestConfig['headers']): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+
+  const maybeJson = headers as { toJSON?: () => unknown };
+  if (typeof maybeJson.toJSON === 'function') {
+    const json = maybeJson.toJSON();
+    return json && typeof json === 'object' ? (json as Record<string, string>) : {};
+  }
+
+  return headers as Record<string, string>;
+}
+
+export function withPortalAxiosHeaders(config: AxiosRequestConfig, headers: Record<string, string>): AxiosRequestConfig {
+  return {
+    ...config,
+    headers: {
+      ...normalizeAxiosHeaders(config.headers),
+      ...headers,
+    },
+  };
 }

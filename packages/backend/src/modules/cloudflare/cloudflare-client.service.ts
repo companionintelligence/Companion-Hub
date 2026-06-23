@@ -9,7 +9,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
-import { buildPortalAxiosConfig, readPortalInternalUrlOverride } from '@/common/helpers/portal-url';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 
 export interface AppInfo {
   name: string;
@@ -79,10 +79,9 @@ export class CloudflareClientService {
 
     this.client = axios.create({
       baseURL: this.cloudApiUrl,
-      headers: {
+      ...withPortalAxiosHeaders(buildPortalAxiosConfig(publicCiCloudUrl, readPortalInternalUrlOverride()), {
         'Content-Type': 'application/json',
-      },
-      ...buildPortalAxiosConfig(publicCiCloudUrl, readPortalInternalUrlOverride()),
+      }),
     });
   }
 

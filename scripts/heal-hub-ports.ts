@@ -97,6 +97,10 @@ function shouldRemovePublisher(names: string, status: string, options: { forceTr
   return false;
 }
 
+function hasExactHubStackName(names: string): boolean {
+  return names.split(',').some((name) => HUB_STACK_CONTAINERS.has(name.trim()));
+}
+
 export function releaseStalePortPublishers(
   port: number,
   options: { forceTraefik?: boolean; forceHubStack?: boolean; log?: (message: string) => void } = {},
@@ -141,6 +145,7 @@ export function stopRunningHubStack(log: (message: string) => void = noopLog): v
   for (const line of result.out.split('\n')) {
     const [id, names] = line.split('\t');
     if (!id?.trim()) continue;
+    if (!hasExactHubStackName(names ?? '')) continue;
     log(`Stopping previous Hub container ${id.trim()} (${names?.trim() || 'unknown'}).`);
     docker(['rm', '-f', id.trim()]);
   }

@@ -12,6 +12,7 @@ mod updater;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
@@ -22,6 +23,7 @@ const DETACHED_FLAG: &str = "--detached";
 const STACK_DEV_ENV: &str = "CI_HUB_STACK_DEV";
 const STACK_DEV_COMPOSE_PATH_ENV: &str = "CI_HUB_STACK_DEV_COMPOSE_PATH";
 const STACK_DEV_ENV_PATH_ENV: &str = "CI_HUB_STACK_DEV_ENV_PATH";
+const HUB_STATUS_CHECK_TIMEOUT: Duration = Duration::from_millis(2500);
 
 struct PendingPairingCode(Mutex<Option<String>>);
 struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
@@ -81,7 +83,12 @@ fn stack_dev_override_paths() -> Result<Option<(PathBuf, PathBuf)>, String> {
 /// Check if the Hub backend is reachable at the given URL.
 #[tauri::command]
 async fn check_hub_status(url: String) -> Result<bool, String> {
-    match reqwest::get(format!("{}/api/health", url)).await {
+    let client = reqwest::Client::builder()
+        .timeout(HUB_STATUS_CHECK_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    match client.get(format!("{}/api/health", url)).send().await {
         Ok(resp) => Ok(resp.status().is_success()),
         Err(_) => Ok(false),
     }

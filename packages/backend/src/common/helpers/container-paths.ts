@@ -15,18 +15,19 @@ export function remapContainerDataPath(
 ): string {
   const resolved = path.resolve(filePath);
   const resolvedDataDir = path.resolve(dataDir);
-  const resolvedContainerRoot = path.resolve(containerRoot);
+  const normalizedContainerRoot = path.posix.resolve('/', containerRoot);
+  const normalizedContainerPath = path.posix.normalize(filePath.replaceAll('\\', '/'));
 
-  if (resolvedDataDir === resolvedContainerRoot) {
+  if (!normalizedContainerPath.startsWith('/')) {
     return resolved;
   }
 
-  const relativePath = path.relative(resolvedContainerRoot, resolved);
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+  const relativePath = path.posix.relative(normalizedContainerRoot, normalizedContainerPath);
+  if (relativePath.startsWith('..') || path.posix.isAbsolute(relativePath)) {
     return resolved;
   }
 
-  return path.join(resolvedDataDir, relativePath);
+  return relativePath ? path.join(resolvedDataDir, relativePath) : resolvedDataDir;
 }
 
 export function resolveContainerDataPath(filePath: string): string {

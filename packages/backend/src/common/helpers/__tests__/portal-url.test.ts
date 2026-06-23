@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isLoopbackPortalHost, needsDockerHostBridge, resolveOutboundPortalBaseUrl, resolvePortalTlsServername } from '../portal-url';
+import {
+  buildPortalAxiosConfig,
+  isLoopbackPortalHost,
+  needsDockerHostBridge,
+  resolveOutboundPortalBaseUrl,
+  resolvePortalTlsServername,
+  withPortalAxiosHeaders,
+} from '../portal-url';
 
 describe('portal-url', () => {
   afterEach(() => {
@@ -53,6 +60,37 @@ describe('portal-url', () => {
     it('returns the public hostname for loopback portal URLs', () => {
       expect(resolvePortalTlsServername('https://ci-portal.localhost')).toBe('ci-portal.localhost');
       expect(resolvePortalTlsServername('https://hub.ci.computer')).toBeUndefined();
+    });
+  });
+
+  describe('buildPortalAxiosConfig', () => {
+    it('preserves the public Host header when bridging through host.docker.internal', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+      const config = buildPortalAxiosConfig('https://ci-portal.localhost');
+
+      expect(config.headers).toMatchObject({ Host: 'ci-portal.localhost' });
+    });
+
+    it('does not set Host when an explicit internal override is used', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+      const config = buildPortalAxiosConfig('https://ci-portal.localhost', 'http://host.docker.internal:8415');
+
+      expect(config.headers).toBeUndefined();
+    });
+
+    it('merges per-request headers without dropping the bridged Host header', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+
+      const config = withPortalAxiosHeaders(buildPortalAxiosConfig('https://ci-portal.localhost'), {
+        'Content-Type': 'application/json',
+      });
+
+      expect(config.headers).toMatchObject({
+        Host: 'ci-portal.localhost',
+        'Content-Type': 'application/json',
+      });
     });
   });
 });

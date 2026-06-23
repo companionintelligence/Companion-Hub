@@ -34,11 +34,11 @@ describe('port-availability', () => {
     expect(isPortAvailable(59999)).toBe(true);
   });
 
-  it('uses lsof listen probe when execPath cannot run -e (compiled cihub)', async () => {
+  it('uses lsof listen probe for compiled cihub without self-spawning execPath', async () => {
     vi.doMock('node:child_process', () => ({
       spawnSync: vi.fn((command: string, args?: readonly string[]) => {
-        if (command === process.execPath && args?.[0] === '-e') {
-          return { status: 2, stdout: '', stderr: 'Unknown command: -e' };
+        if (command.includes('cihub')) {
+          throw new Error('compiled cihub must not spawn itself');
         }
         if (command === 'lsof') {
           expect(args).toEqual(['-nP', '-iTCP:8880', '-sTCP:LISTEN', '-t']);
@@ -48,16 +48,26 @@ describe('port-availability', () => {
       }),
     }));
 
-    const { isPortAvailable } = await import('../port-availability');
-    expect(isPortAvailable(8880)).toBe(true);
+    const originalExecPath = process.execPath;
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      value: '/usr/local/bin/cihub',
+    });
+
+    try {
+      const { isPortAvailable } = await import('../port-availability');
+      expect(isPortAvailable(8880)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        value: originalExecPath,
+      });
+    }
   });
 
   it('does not treat outbound HTTPS as local port 443 listen', async () => {
     vi.doMock('node:child_process', () => ({
       spawnSync: vi.fn((command: string, args?: readonly string[]) => {
-        if (command === process.execPath && args?.[0] === '-e') {
-          return { status: 2, stdout: '', stderr: '' };
-        }
         if (command === 'lsof') {
           expect(args).toEqual(['-nP', '-iTCP:443', '-sTCP:LISTEN', '-t']);
           return { status: 1, stdout: '', stderr: '' };
@@ -66,7 +76,20 @@ describe('port-availability', () => {
       }),
     }));
 
-    const { isPortAvailable } = await import('../port-availability');
-    expect(isPortAvailable(443)).toBe(true);
+    const originalExecPath = process.execPath;
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      value: '/Users/me/.local/bin/cihub',
+    });
+
+    try {
+      const { isPortAvailable } = await import('../port-availability');
+      expect(isPortAvailable(443)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        value: originalExecPath,
+      });
+    }
   });
 });

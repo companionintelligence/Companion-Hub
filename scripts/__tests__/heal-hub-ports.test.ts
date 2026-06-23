@@ -107,4 +107,38 @@ describe('heal-hub-ports', () => {
 
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('does not stop unrelated containers matched by Docker name substring filters', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'ci-hub-ports-'));
+    const envFile = path.join(tempDir, '.env.dev');
+    writeFileSync(envFile, ['HTTP_PORT=8880', 'HTTPS_PORT=8443', 'API_PORT=5002'].join('\n'));
+
+    mockedSpawnSync.mockImplementation((command: string, args?: readonly string[]) => {
+      const argv = args ?? [];
+      if (command === 'docker' && argv[0] === 'ps' && argv.includes('status=running')) {
+        return {
+          status: 0,
+          stdout: 'abc123\tmy-traefik-debug\n',
+          stderr: '',
+          output: ['abc123\tmy-traefik-debug\n', ''],
+          pid: 0,
+          signal: null,
+        } as ReturnType<typeof spawnSync>;
+      }
+      return {
+        status: 0,
+        stdout: '',
+        stderr: '',
+        output: ['', ''],
+        pid: 0,
+        signal: null,
+      } as ReturnType<typeof spawnSync>;
+    });
+
+    healHubPortsBeforeStartup(envFile, () => undefined);
+
+    expect(mockedSpawnSync).not.toHaveBeenCalledWith('docker', ['rm', '-f', 'abc123'], expect.any(Object));
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
 });

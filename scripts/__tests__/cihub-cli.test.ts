@@ -21,6 +21,7 @@ import {
   STEP_ICONS,
   renderVersion,
   renderWizardWelcome,
+  shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
   resolveEnvFromArgs,
   resolveWizardActionInput,
@@ -208,6 +209,20 @@ describe('renderVersion', () => {
       process.chdir(previousCwd);
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('shouldRetryApkMirrorWithHostNetwork', () => {
+  const apkFailure = 'fetch https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/APKINDEX.tar.gz\nERROR: temporary error (try again later)';
+
+  it('only enables automatic Docker host-network retry on Linux', () => {
+    expect(shouldRetryApkMirrorWithHostNetwork(apkFailure, {}, 'linux')).toBe(true);
+    expect(shouldRetryApkMirrorWithHostNetwork(apkFailure, {}, 'darwin')).toBe(false);
+    expect(shouldRetryApkMirrorWithHostNetwork(apkFailure, {}, 'win32')).toBe(false);
+  });
+
+  it('does not retry when host networking is already selected', () => {
+    expect(shouldRetryApkMirrorWithHostNetwork(apkFailure, { DOCKER_BUILD_NETWORK: 'host' }, 'linux')).toBe(false);
   });
 });
 

@@ -1,19 +1,19 @@
 import { spawnSync } from 'node:child_process';
 
-/** Cached: Bun-compiled `cihub` binaries cannot run `execPath -e` subprocess probes. */
-let execPathEvalProbeWorks: boolean | undefined;
+/** Bun-compiled `cihub` cannot run `execPath -e` probes — spawning itself deadlocks on macOS. */
+function isCompiledCihubBinary(): boolean {
+  if (process.execPath.includes('bunfs')) {
+    return true;
+  }
+  const base = process.execPath.split(/[/\\]/).pop() ?? '';
+  return /^cihub(\.exe)?$/i.test(base);
+}
 
 function execPathSupportsEvalProbe(): boolean {
-  if (execPathEvalProbeWorks !== undefined) {
-    return execPathEvalProbeWorks;
-  }
   if (process.platform === 'win32') {
-    execPathEvalProbeWorks = false;
     return false;
   }
-  const result = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
-  execPathEvalProbeWorks = result.status === 0;
-  return execPathEvalProbeWorks;
+  return !isCompiledCihubBinary();
 }
 
 function isPortListeningViaExternalTools(port: number): boolean {
@@ -59,7 +59,7 @@ export function isPortAvailable(port: number): boolean {
   }
 
   if (!isPortAvailableViaTcpBind(port)) {
-    return !isPortListeningViaExternalTools(port);
+    return false;
   }
 
   try {
@@ -67,9 +67,4 @@ export function isPortAvailable(port: number): boolean {
   } catch {
     return true;
   }
-}
-
-/** @internal Test hook to reset cached execPath probe detection. */
-export function resetExecPathProbeCacheForTests(): void {
-  execPathEvalProbeWorks = undefined;
 }

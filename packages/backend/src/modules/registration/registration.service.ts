@@ -6,7 +6,7 @@ import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
-import { buildPortalAxiosConfig, readPortalInternalUrlOverride } from '@/common/helpers/portal-url';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -440,8 +440,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         {
           timeout: 10_000,
           validateStatus: () => true,
-          headers: { 'Content-Type': 'application/json' },
-          ...this.portalAxiosConfig(),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
         },
       );
 
@@ -635,8 +634,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         {
           timeout: 10_000,
           validateStatus: () => true,
-          headers: { 'Content-Type': 'application/json' },
-          ...this.portalAxiosConfig(),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
         },
       );
 
@@ -1122,8 +1120,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         pairUrl,
         { pairing_code: pairingCode, device_id: deviceId },
         {
-          ...this.portalAxiosConfig(),
-          headers: { 'Content-Type': 'application/json' },
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,
           timeout: 15_000,
         },
@@ -1255,8 +1252,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           description: description,
         },
         {
-          ...this.portalAxiosConfig(),
-          headers: registerHeaders,
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), registerHeaders),
           validateStatus: () => true,
           timeout: 15_000,
         },

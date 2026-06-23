@@ -55,8 +55,22 @@ function runDockerComposeAttached(args: string[], envOverrides: Record<string, s
       });
     };
 
-    child.on('close', (code) => finish(code ?? 1));
-    child.on('error', () => finish(1));
+    const onSignal = (signal: NodeJS.Signals) => {
+      child.kill(signal);
+    };
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+
+    child.on('close', (code) => {
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+      finish(code ?? 1);
+    });
+    child.on('error', () => {
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+      finish(1);
+    });
   });
 }
 

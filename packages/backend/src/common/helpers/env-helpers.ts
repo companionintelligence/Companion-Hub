@@ -483,8 +483,10 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
-  // CI Cloud integration — REQUIRED, no fallback
-  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
+  // CI Cloud integration — REQUIRED, no fallback.
+  // Prefer mounted /data/.env over process.env: Docker Compose `environment:` can bake
+  // stale host-shell CI_CLOUD_URL values that override env_file at container create time.
+  const ciCloudUrl = envMap.get('CI_CLOUD_URL')?.trim() || resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
     throw new Error(`CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=${DEFAULT_CI_CLOUD_URL})`);
   }

@@ -1,6 +1,11 @@
 import type { Request } from 'express';
 import axios from 'axios';
-import { buildPortalAxiosConfig, readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
+import {
+  buildPortalAxiosConfig,
+  readPortalInternalUrlOverride,
+  resolveOutboundPortalBaseUrl,
+  withPortalAxiosHeaders,
+} from '@/common/helpers/portal-url';
 
 export interface PortalSsoState {
   codeVerifier: string;
@@ -99,8 +104,7 @@ export async function exchangePortalAuthorizationCode(input: {
 
   try {
     tokenRes = await axios.post(tokenUrl, body.toString(), {
-      ...axiosConfig,
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      ...withPortalAxiosHeaders(axiosConfig, { 'content-type': 'application/x-www-form-urlencoded' }),
       validateStatus: () => true,
       timeout: 15_000,
     });
@@ -122,8 +126,7 @@ export async function exchangePortalAuthorizationCode(input: {
 
   try {
     userinfoRes = await axios.get(userinfoUrl, {
-      ...axiosConfig,
-      headers: { authorization: `Bearer ${accessToken}` },
+      ...withPortalAxiosHeaders(axiosConfig, { authorization: `Bearer ${accessToken}` }),
       validateStatus: () => true,
       timeout: 15_000,
     });
