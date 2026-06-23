@@ -12,49 +12,56 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 import { LOG_LEVEL_ENUM, type LogLevel, LoggerService } from '../logger/logger.service';
 
-const envSchema = z.object({
-  POSTGRES_HOST: z.string(),
-  POSTGRES_DBNAME: z.string(),
-  POSTGRES_USERNAME: z.string(),
-  POSTGRES_PASSWORD: z.string(),
-  POSTGRES_PORT: z.coerce.number().default(6543),
-  RABBITMQ_HOST: z.string(),
-  RABBITMQ_USERNAME: z.string(),
-  RABBITMQ_PASSWORD: z.string(),
-  RABBITMQ_PORT: z.coerce.number().default(5672),
-  ARCHITECTURE: z.enum(ARCHITECTURES).default('amd64'),
-  INTERNAL_IP: z.string(),
-  CI_HUB_VERSION: z.string(),
-  JWT_SECRET: z.string(),
-  APPS_REPO_URL: z.string().optional(),
-  CI_CLOUD_URL: z.string(),
-  DOMAIN: z.string(),
-  LOCAL_DOMAIN: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? undefined : val), z.string().default(DEFAULT_LOCAL_DOMAIN)),
-  DNS_IP: z.string().default('9.9.9.9'),
-  CI_HUB_APP_DATA_PATH: z.string(),
-  CI_HUB_FORWARD_AUTH_URL: z.string(),
-  DEMO_MODE: z.string().transform((val) => val.toLowerCase() === 'true'),
-  DISABLE_PASSWORD_RESET: z
-    .string()
-    .transform((val) => val.toLowerCase() === 'true')
-    .default(true),
-  GUEST_DASHBOARD: z.string().transform((val) => val.toLowerCase() === 'true'),
-  ALLOW_ERROR_MONITORING: z.string().transform((val) => val.toLowerCase() === 'true'),
-  ALLOW_AUTO_THEMES: z.string().transform((val) => val.toLowerCase() === 'true'),
-  PERSIST_TRAEFIK_CONFIG: z.string().transform((val) => val.toLowerCase() === 'true'),
-  QUEUE_TIMEOUT_IN_MINUTES: z.coerce.number().default(5),
-  LOG_LEVEL: z.enum(LOG_LEVEL_ENUM).default('info').catch('info'),
-  TZ: z.string(),
-  ROOT_FOLDER_HOST: z.string(),
-  NGINX_PORT: z.coerce.number().default(80),
-  NGINX_PORT_SSL: z.coerce.number().default(443),
-  ADVANCED_SETTINGS: z.string().transform((val) => val.toLowerCase() === 'true'),
-  THEME_BASE: z.string(),
-  THEME_COLOR: z.string(),
-  MAX_BACKUPS: z.coerce.number().default(0),
-  // Experimental flags
-  EXPERIMENTAL_INSECURE_COOKIE: z.string().transform((val) => val.toLowerCase() === 'true'),
-});
+const envSchema = z
+  .object({
+    POSTGRES_HOST: z.string(),
+    POSTGRES_DBNAME: z.string(),
+    POSTGRES_USERNAME: z.string(),
+    POSTGRES_PASSWORD: z.string(),
+    POSTGRES_PORT: z.coerce.number().default(6543),
+    RABBITMQ_HOST: z.string(),
+    RABBITMQ_USERNAME: z.string(),
+    RABBITMQ_PASSWORD: z.string(),
+    RABBITMQ_PORT: z.coerce.number().default(5672),
+    ARCHITECTURE: z.enum(ARCHITECTURES).default('amd64'),
+    INTERNAL_IP: z.string(),
+    CI_HUB_VERSION: z.string(),
+    JWT_SECRET: z.string(),
+    APPS_REPO_URL: z.string().optional(),
+    CI_CLOUD_URL: z.string(),
+    DOMAIN: z.string(),
+    LOCAL_DOMAIN: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? undefined : val), z.string().optional()),
+    DNS_IP: z.string().default('9.9.9.9'),
+    CI_HUB_APP_DATA_PATH: z.string(),
+    CI_HUB_FORWARD_AUTH_URL: z.string(),
+    DEMO_MODE: z.string().transform((val) => val.toLowerCase() === 'true'),
+    DISABLE_PASSWORD_RESET: z
+      .string()
+      .transform((val) => val.toLowerCase() === 'true')
+      .default(true),
+    GUEST_DASHBOARD: z.string().transform((val) => val.toLowerCase() === 'true'),
+    ALLOW_ERROR_MONITORING: z.string().transform((val) => val.toLowerCase() === 'true'),
+    ALLOW_AUTO_THEMES: z.string().transform((val) => val.toLowerCase() === 'true'),
+    PERSIST_TRAEFIK_CONFIG: z.string().transform((val) => val.toLowerCase() === 'true'),
+    QUEUE_TIMEOUT_IN_MINUTES: z.coerce.number().default(5),
+    LOG_LEVEL: z.enum(LOG_LEVEL_ENUM).default('info').catch('info'),
+    TZ: z.string(),
+    ROOT_FOLDER_HOST: z.string(),
+    NGINX_PORT: z.coerce.number().default(80),
+    NGINX_PORT_SSL: z.coerce.number().default(443),
+    ADVANCED_SETTINGS: z.string().transform((val) => val.toLowerCase() === 'true'),
+    THEME_BASE: z.string(),
+    THEME_COLOR: z.string(),
+    MAX_BACKUPS: z.coerce.number().default(0),
+    // Experimental flags
+    EXPERIMENTAL_INSECURE_COOKIE: z.string().transform((val) => val.toLowerCase() === 'true'),
+  })
+  .transform((data) => ({
+    ...data,
+    // When LOCAL_DOMAIN is unset, default to the configured public DOMAIN rather than a
+    // hardcoded LAN domain (ci.lan). DEFAULT_LOCAL_DOMAIN remains a last-resort fallback.
+    LOCAL_DOMAIN: data.LOCAL_DOMAIN?.trim() || data.DOMAIN?.trim() || DEFAULT_LOCAL_DOMAIN,
+  }));
 
 @Injectable()
 export class ConfigurationService {
