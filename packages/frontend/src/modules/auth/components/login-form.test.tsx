@@ -38,7 +38,7 @@ describe('LoginForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: 'Sign in using your Companion Account' })).toHaveClass('h-10', 'w-full', 'font-semibold');
-    expect(screen.getByText('Uses your Companion Account.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
+    expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).toBeInTheDocument();
   });
 });
