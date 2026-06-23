@@ -267,7 +267,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             })}
           >
             <a
-              href="https://docs.companionintelligence.com/reference/dynamic-compose"
+              href="https://docs.ci.computer"
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted small underline-offset-2 hover:underline"
