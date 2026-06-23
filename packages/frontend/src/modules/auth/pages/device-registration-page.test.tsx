@@ -72,6 +72,9 @@ describe('DeviceRegistrationPage', () => {
       if (url === '/api/registration/device-id') {
         return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
       }
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({ detected: false, signals: [] });
+      }
       return jsonResponse({});
     });
   });
@@ -118,8 +121,12 @@ describe('DeviceRegistrationPage', () => {
         return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com' });
       }
 
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({ detected: false, signals: [] });
+      }
+
       if (url === '/api/registration/pair' && init?.method === 'POST') {
-        return jsonResponse({ success: true });
+        return jsonResponse({ success: true, domain: 'example.com', subdomain: 'hub' });
       }
 
       throw new Error(`Unexpected apiFetch call: ${url}`);
@@ -140,7 +147,83 @@ describe('DeviceRegistrationPage', () => {
       );
     });
 
-    // Pairing submission should not trigger an immediate route transition in this branch.
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('does not show the state drift dialog while pairing is in progress', async () => {
+    let paired = false;
+
+    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/registration/status') {
+        return jsonResponse(makeStatus('unregistered'));
+      }
+
+      if (url === '/api/registration/device-id') {
+        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com' });
+      }
+
+      if (url === '/api/registration/state-drift') {
+        if (!paired) {
+          return jsonResponse({ detected: false, signals: [] });
+        }
+        return jsonResponse({
+          detected: true,
+          hardwareDeviceId: 'device-123',
+          localRegistered: false,
+          portalDeviceActive: true,
+          staleAppEnvDeviceIds: [],
+          hasStaleTunnelToken: false,
+          signals: [{ reason: 'local_unregistered_portal_active' }],
+        });
+      }
+
+      if (url === '/api/registration/pair' && init?.method === 'POST') {
+        paired = true;
+        return jsonResponse({ success: true, domain: 'example.com', subdomain: 'hub' });
+      }
+
+      throw new Error(`Unexpected apiFetch call: ${url}`);
+    });
+
+    render(<DeviceRegistrationPage />);
+    await flushAsyncWork();
+
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/registration/pair', expect.objectContaining({ method: 'POST' }));
+    });
+
+    expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+  });
+
+  it('shows the state drift dialog when local and portal registration disagree', async () => {
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url === '/api/registration/status') {
+        return jsonResponse(makeStatus('unregistered'));
+      }
+      if (url === '/api/registration/device-id') {
+        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
+      }
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({
+          detected: true,
+          hardwareDeviceId: 'device-123',
+          localRegistered: false,
+          portalDeviceActive: true,
+          staleAppEnvDeviceIds: ['old-device-id'],
+          hasStaleTunnelToken: false,
+          signals: [{ reason: 'local_unregistered_portal_active' }],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
+    expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
 });

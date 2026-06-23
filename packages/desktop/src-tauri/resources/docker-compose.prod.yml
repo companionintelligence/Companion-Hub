@@ -124,8 +124,7 @@ services:
       RABBITMQ_HOST: ci-os-hub-queue
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-0.0.0.0}
-      CI_HUB_VERSION: ${CI_HUB_VERSION:-4.7.0}
-      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
+      CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
       DOMAIN: ${DOMAIN:-companionintelligence.com}
       JWT_SECRET: ${JWT_SECRET}
       # Inference backend URLs — default to host machine via host.docker.internal.

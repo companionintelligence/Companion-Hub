@@ -1,6 +1,5 @@
 import { createServer } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
-import { isPortAvailable, isPortAvailableViaTcpBind } from '../port-availability';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('port-availability', () => {
   let server: ReturnType<typeof createServer> | undefined;
@@ -10,9 +9,12 @@ describe('port-availability', () => {
       await new Promise<void>((resolve) => server?.close(() => resolve()));
       server = undefined;
     }
+    vi.resetModules();
+    vi.doUnmock('node:child_process');
   });
 
   it('reports occupied ports via TCP bind probe', async () => {
+    const { isPortAvailable, isPortAvailableViaTcpBind } = await import('../port-availability');
     server = createServer();
     await new Promise<void>((resolve) => {
       server?.listen(0, '127.0.0.1', () => resolve());
@@ -26,8 +28,68 @@ describe('port-availability', () => {
     expect(isPortAvailable(address.port)).toBe(false);
   });
 
-  it('reports free ports via TCP bind probe', () => {
+  it('reports free ports via TCP bind probe', async () => {
+    const { isPortAvailable, isPortAvailableViaTcpBind } = await import('../port-availability');
     expect(isPortAvailableViaTcpBind(59999)).toBe(true);
     expect(isPortAvailable(59999)).toBe(true);
+  });
+
+  it('uses lsof listen probe for compiled cihub without self-spawning execPath', async () => {
+    vi.doMock('node:child_process', () => ({
+      spawnSync: vi.fn((command: string, args?: readonly string[]) => {
+        if (command.includes('cihub')) {
+          throw new Error('compiled cihub must not spawn itself');
+        }
+        if (command === 'lsof') {
+          expect(args).toEqual(['-nP', '-iTCP:8880', '-sTCP:LISTEN', '-t']);
+          return { status: 1, stdout: '', stderr: '' };
+        }
+        return { status: 1, stdout: '', stderr: '' };
+      }),
+    }));
+
+    const originalExecPath = process.execPath;
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      value: '/usr/local/bin/cihub',
+    });
+
+    try {
+      const { isPortAvailable } = await import('../port-availability');
+      expect(isPortAvailable(8880)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        value: originalExecPath,
+      });
+    }
+  });
+
+  it('does not treat outbound HTTPS as local port 443 listen', async () => {
+    vi.doMock('node:child_process', () => ({
+      spawnSync: vi.fn((command: string, args?: readonly string[]) => {
+        if (command === 'lsof') {
+          expect(args).toEqual(['-nP', '-iTCP:443', '-sTCP:LISTEN', '-t']);
+          return { status: 1, stdout: '', stderr: '' };
+        }
+        return { status: 1, stdout: '', stderr: '' };
+      }),
+    }));
+
+    const originalExecPath = process.execPath;
+    Object.defineProperty(process, 'execPath', {
+      configurable: true,
+      value: '/Users/me/.local/bin/cihub',
+    });
+
+    try {
+      const { isPortAvailable } = await import('../port-availability');
+      expect(isPortAvailable(443)).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'execPath', {
+        configurable: true,
+        value: originalExecPath,
+      });
+    }
   });
 });

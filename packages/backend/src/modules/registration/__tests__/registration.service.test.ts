@@ -409,6 +409,7 @@ describe('RegistrationService', () => {
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
       // Device is not yet registered
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
       deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
@@ -428,11 +429,10 @@ describe('RegistrationService', () => {
         domain: 'companionintelligence.com',
       };
 
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => portalResponse,
-      });
-      global.fetch = mockFetch as any;
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: portalResponse,
+      } as any);
 
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
       configService.setDomain.mockResolvedValue(undefined);
@@ -441,11 +441,13 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
-      expect(mockFetch).toHaveBeenCalledWith('http://cloud.api/api/devices/pair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: 'ABC123', device_id: 'test-device' }),
-      });
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device' },
+        expect.objectContaining({
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
       expect(setupSpy).toHaveBeenCalledWith(
@@ -463,12 +465,11 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: false,
+      mockedAxios.post.mockResolvedValue({
+        status: 400,
         statusText: 'Bad Request',
-        json: async () => ({ error: 'Invalid pairing code' }),
-      });
-      global.fetch = mockFetch as any;
+        data: { error: 'Invalid pairing code' },
+      } as any);
 
       const result = await service.pairDevice('XXXXXX');
 
@@ -492,8 +493,7 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when Portal is unreachable', async () => {
-      const mockFetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
-      global.fetch = mockFetch as any;
+      mockedAxios.post.mockRejectedValue(new TypeError('fetch failed'));
 
       const result = await service.pairDevice('ABC123');
 
@@ -515,15 +515,14 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when Portal returns incomplete data', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
           device_id: 'test-device',
           organization_id: 'org-pair',
           // missing tunnel_id, tunnel_token, subdomain, slug
-        }),
-      });
-      global.fetch = mockFetch as any;
+        },
+      } as any);
 
       const result = await service.pairDevice('ABC123');
 

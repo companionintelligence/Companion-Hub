@@ -1,4 +1,4 @@
-ARG NODE_VERSION="jod"
+ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
@@ -16,7 +16,12 @@ ARG TARGETARCH
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
-RUN apk add --no-cache curl python3 make g++ git
+RUN set -eux; \
+    apk add --no-cache curl python3 make g++ git || { \
+      echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
+      sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
+      apk add --no-cache curl python3 make g++ git; \
+    }
 
 RUN echo "Building for ${TARGETARCH:-amd64}"
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
@@ -35,7 +40,12 @@ RUN chmod +x docker-binary && \
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
-RUN apk add --no-cache curl openssl git docker-cli dmidecode pciutils
+RUN set -eux; \
+    apk add --no-cache curl openssl git docker-cli dmidecode pciutils || { \
+      echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
+      sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
+      apk add --no-cache curl openssl git docker-cli dmidecode pciutils; \
+    }
 
 # ---- BUILDER ----
 FROM builder_base AS builder

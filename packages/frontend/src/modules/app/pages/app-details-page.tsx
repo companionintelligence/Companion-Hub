@@ -121,7 +121,7 @@ export default () => {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 space-y-2">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
-                    {info?.author ? <p className="text-base font-medium text-emerald-400 sm:text-lg">{info.author}</p> : null}
+                    {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
                     {t('APP_PRICE_FREE')}

@@ -615,10 +615,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           await this.appRepository.deleteAppById(app.id);
           this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
 
-          // Trigger sync to remove route if it was exposedLocal
-          if (app.exposedLocal) {
-            await this.syncExposure();
-          }
+          // Keep Portal's application list aligned with Hub (prunes uninstalled apps).
+          await this.syncExposure().catch((err) => {
+            this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+          });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.appRepository.updateAppById(app.id, { status: 'stopped' });

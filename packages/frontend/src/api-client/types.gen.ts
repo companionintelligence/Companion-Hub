@@ -169,6 +169,7 @@ export type RegisterBody = {
 
 export type RegisterDto = {
     success: boolean;
+    requiresEmailVerification?: boolean;
 };
 
 export type ChangeUsernameBody = {

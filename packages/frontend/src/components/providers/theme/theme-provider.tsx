@@ -1,3 +1,4 @@
+import { syncTauriWindowBackground } from '@/lib/tauri-window-theme';
 import { createContext, useContext, useEffect, useState } from 'react';
 
 export type Theme = 'dark' | 'light' | 'system';
@@ -43,10 +44,12 @@ export function ThemeProvider({ children, defaultTheme = 'system', storageKey = 
       const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
       root.classList.add(systemTheme);
+      void syncTauriWindowBackground();
       return;
     }
 
     root.classList.add(theme);
+    void syncTauriWindowBackground();
   }, [theme]);
 
   const value = {

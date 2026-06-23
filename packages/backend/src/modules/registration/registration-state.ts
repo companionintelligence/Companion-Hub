@@ -42,6 +42,11 @@ export function isOperational(phase: ProvisioningPhase): boolean {
   return phase === 'locally_ready' || phase === 'publicly_ready' || phase === 'degraded';
 }
 
+/** Transient phases while a pairing request is being provisioned — not state drift. */
+export function isActiveRegistrationPhase(phase: ProvisioningPhase): boolean {
+  return phase === 'paired' || phase === 'provisioning';
+}
+
 /**
  * Build a {@link RegistrationStatus} snapshot from phase + reasons.
  */

@@ -12,6 +12,7 @@ import {
   logsHub,
   normalizeCliArgs,
   normalizeDetachedFlag,
+  resolveUpStartMode,
   printConfig,
   printMessageBox,
   printRemovedCommand,
@@ -76,9 +77,9 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'up') {
-    const { detached, remaining } = normalizeDetachedFlag(args.slice(1));
+    const { detached, attached, remaining } = normalizeDetachedFlag(args.slice(1));
     const env = resolveEnvFromArgs(remaining);
-    await startHub(env === 'local' ? 'local-dev' : detached ? 'detached' : 'attached', env);
+    await startHub(resolveUpStartMode(env, { detached, attached }), env);
     return;
   }
 

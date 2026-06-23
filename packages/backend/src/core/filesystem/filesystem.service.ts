@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os, { EOL } from 'node:os';
 import path from 'node:path';
 import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
+import { resolveContainerDataPath } from '@/common/helpers/container-paths';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { z } from 'zod';
@@ -20,8 +21,8 @@ export class FilesystemService {
       allowedDirs.push(path.resolve('/dev/dri'));
     }
 
-    // Resolve and normalize the file path to an absolute path
-    const resolvedPath = path.resolve(filePath);
+    // Resolve container `/data/...` paths to DATA_DIR when running outside Docker.
+    const resolvedPath = resolveContainerDataPath(filePath);
 
     for (const dir of allowedDirs) {
       const rel = path.relative(dir, resolvedPath);

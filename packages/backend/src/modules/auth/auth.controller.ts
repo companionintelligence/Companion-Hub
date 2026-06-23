@@ -4,27 +4,12 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import axios from 'axios';
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Delete,
-  ForbiddenException,
-  Get,
-  Patch,
-  Post,
-  Query,
-  Req,
-  Res,
-  ServiceUnavailableException,
-  UnauthorizedException,
-  UseGuards,
-} from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { UserRepository } from '@/modules/user/user.repository';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { SessionManager } from './session.manager';
 import {
   ChangePasswordBody,
@@ -35,7 +20,13 @@ import {
   GetTotpUriDto,
   LoginBody,
   LoginDto,
+  PasswordResetCompleteBody,
+  PasswordResetCompleteDto,
+  PasswordResetRequestBody,
+  PasswordResetRequestDto,
+  PasswordResetVerifyResponseDto,
   PortalDesktopExchangeDto,
+  PortalSessionHintDto,
   RegisterBody,
   RegisterDto,
   ResetPasswordBody,
@@ -46,8 +37,15 @@ import {
 import { ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
+  buildPortalSsoErrorRedirectUrl,
+  exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
   type PortalDesktopExchange,
+  type PortalSsoErrorCode,
   type PortalSsoState,
+  resolveHubRequestOrigin,
+  resolvePortalCallbackUrl,
+  resolveRequestOriginFallback,
   resolveSameOriginRedirectUrl,
   toDesktopRedirectPath,
 } from './portal-sso';
@@ -61,6 +59,7 @@ export class AuthController {
     private readonly cache: CacheService,
     private readonly userRepository: UserRepository,
     private readonly sessionManager: SessionManager,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   private async setSessionCookie(res: Response, sessionId: string, req: Request) {
@@ -115,9 +114,15 @@ export class AuthController {
   @Post('/register')
   @ApiResponse({ type: RegisterDto })
   async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
-    const { sessionId } = await this.authService.register(body);
+    const result = await this.authService.register(body);
 
-    await this.setSessionCookie(res, sessionId, req);
+    if (result.requiresEmailVerification) {
+      return RegisterDto.parse({ success: true, requiresEmailVerification: true }, { reportOnly: true });
+    }
+
+    if (result.sessionId) {
+      await this.setSessionCookie(res, result.sessionId, req);
+    }
 
     return RegisterDto.parse({ success: true }, { reportOnly: true });
   }
@@ -144,26 +149,35 @@ export class AuthController {
    */
   @Get('/portal/start')
   async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
-    const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
+    const isDesktop = desktop === '1' || desktop === 'true';
+    const fallbackOrigin = resolveRequestOriginFallback(req);
+    const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin: hubOrigin ?? null,
+          desktop: isDesktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
 
-    if (!host) {
-      throw new BadRequestException('Missing host header');
+    let hubOrigin: string;
+    try {
+      hubOrigin = resolveHubRequestOrigin(req);
+    } catch {
+      return redirectStartError('callback_error');
     }
 
-    const hubOrigin = `${proto}://${host}`;
-    const callbackUrl = new URL('/api/auth/portal/callback', hubOrigin).toString();
+    const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
 
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
     if (!portalBaseUrl) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+      return redirectStartError('not_configured', hubOrigin);
     }
 
     const state = crypto.randomUUID();
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-    const isDesktop = desktop === '1' || desktop === 'true';
-
     // Persist PKCE verifier + redirect target for the callback.
     // 10 min is plenty and avoids stale entries.
     const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
@@ -183,114 +197,154 @@ export class AuthController {
 
   @Get('/portal/callback')
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
-    if (!code || !state) {
-      throw new BadRequestException('Missing code or state');
-    }
-
-    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
-    if (!portalBaseUrl) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
-    }
-
-    const cached = this.cache.get(`portal_sso:${state}`);
-    this.cache.del(`portal_sso:${state}`);
-
-    if (!cached) {
-      throw new BadRequestException('Invalid or expired Portal SSO state');
-    }
-
-    let codeVerifier: string;
-    let redirectUrl: string | null;
-    let hubOrigin: string;
+    const fallbackOrigin = resolveRequestOriginFallback(req);
     let desktop = false;
+    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) =>
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin,
+          desktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
 
     try {
-      const parsed = JSON.parse(cached) as PortalSsoState;
-      codeVerifier = parsed.codeVerifier;
-      redirectUrl = parsed.redirectUrl;
-      hubOrigin = parsed.hubOrigin;
-      desktop = parsed.desktop;
-    } catch {
-      throw new BadRequestException('Malformed Portal SSO state');
+      if (!code || !state) {
+        return redirectError(null, 'callback_error');
+      }
+
+      const publicPortalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+      if (!publicPortalBaseUrl) {
+        return redirectError(null, 'callback_error');
+      }
+
+      const cached = this.cache.get(`portal_sso:${state}`);
+      this.cache.del(`portal_sso:${state}`);
+
+      if (!cached) {
+        return redirectError(null, 'state_expired');
+      }
+
+      let codeVerifier: string;
+      let redirectUrl: string | null;
+      let hubOrigin: string;
+
+      try {
+        const parsed = JSON.parse(cached) as PortalSsoState;
+        codeVerifier = parsed.codeVerifier;
+        redirectUrl = parsed.redirectUrl;
+        hubOrigin = parsed.hubOrigin;
+        desktop = parsed.desktop;
+      } catch {
+        return redirectError(null, 'callback_error');
+      }
+
+      const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
+      const exchange = await exchangePortalAuthorizationCode({
+        publicPortalBaseUrl,
+        callbackUrl,
+        code,
+        codeVerifier,
+      });
+
+      if (!exchange.ok) {
+        this.logger.warn('Portal OAuth callback failed', {
+          reason: exchange.reason,
+          status: exchange.status,
+          hubOrigin,
+          portalBaseUrl: publicPortalBaseUrl,
+        });
+        return redirectError(hubOrigin, 'callback_error');
+      }
+
+      const email = exchange.email;
+      let operator = await this.userRepository.getFirstOperator();
+
+      if (!operator) {
+        try {
+          operator = await this.authService.bootstrapOperatorFromPortalEmail(email);
+        } catch (error) {
+          this.logger.warn('Portal OAuth callback failed to bootstrap local operator', { error });
+          return redirectError(hubOrigin, 'callback_error');
+        }
+      } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
+        // Only allow Portal login for the operator email already configured on this Hub.
+        // This avoids silently elevating a Portal user to local admin.
+        this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
+        return redirectError(hubOrigin, 'account_mismatch');
+      }
+
+      const sessionId = await this.sessionManager.createSession(operator.id);
+      await this.setSessionCookie(res, sessionId, req);
+
+      if (desktop) {
+        const desktopToken = crypto.randomUUID();
+        const exchangePayload: PortalDesktopExchange = {
+          sessionId,
+          redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+        };
+        this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
+        return res.redirect(buildPortalDesktopDeepLink(desktopToken));
+      }
+
+      // Redirect back to the requested URL if it's same-origin; otherwise go home.
+      const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
+      if (safeRedirect) {
+        return res.redirect(safeRedirect);
+      }
+
+      return res.redirect(new URL('/home', hubOrigin).toString());
+    } catch (error) {
+      this.logger.error('Portal OAuth callback crashed', error);
+      return redirectError(null, 'callback_error');
     }
+  }
 
-    const callbackUrl = new URL('/api/auth/portal/callback', hubOrigin).toString();
+  /**
+   * Returns a Portal account email hint for the login button when available.
+   * Prefers the configured Hub operator, then probes the Portal session using
+   * cookies forwarded from the browser (when present).
+   */
+  @Get('/portal/session-hint')
+  @ApiResponse({ type: PortalSessionHintDto })
+  async portalSessionHint(@Req() req: Request) {
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
-    // Exchange code -> tokens
-    const tokenUrl = new URL('/api/auth/oauth2/token', portalBaseUrl).toString();
-    const body = new URLSearchParams();
-    body.set('grant_type', 'authorization_code');
-    body.set('client_id', 'ci-hub');
-    body.set('redirect_uri', callbackUrl);
-    body.set('code', code);
-    body.set('code_verifier', codeVerifier);
-
-    const tokenRes = await axios.post(tokenUrl, body.toString(), {
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      // better-auth sometimes uses cookies; but token exchange should be pure.
-      validateStatus: () => true,
-    });
-
-    if (tokenRes.status < 200 || tokenRes.status >= 300) {
-      this.logger.warn('Portal token exchange failed', { status: tokenRes.status, data: tokenRes.data });
-      throw new UnauthorizedException('Portal token exchange failed');
-    }
-
-    const accessToken = (tokenRes.data as { access_token?: string } | undefined)?.access_token;
-    if (!accessToken) {
-      this.logger.warn('Portal token exchange missing access_token', { data: tokenRes.data });
-      throw new UnauthorizedException('Portal token exchange missing access token');
-    }
-
-    // Fetch userinfo
-    const userinfoUrl = new URL('/api/auth/oauth2/userinfo', portalBaseUrl).toString();
-    const userinfoRes = await axios.get(userinfoUrl, {
-      headers: { authorization: `Bearer ${accessToken}` },
-      validateStatus: () => true,
-    });
-
-    if (userinfoRes.status < 200 || userinfoRes.status >= 300) {
-      this.logger.warn('Portal userinfo fetch failed', { status: userinfoRes.status, data: userinfoRes.data });
-      throw new UnauthorizedException('Portal userinfo request failed');
-    }
-
-    const email = (userinfoRes.data as { email?: string } | undefined)?.email;
-    if (!email) {
-      this.logger.warn('Portal userinfo missing email', { data: userinfoRes.data });
-      throw new UnauthorizedException('Portal userinfo missing email');
+    if (!portalBaseUrl) {
+      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
     }
 
     const operator = await this.userRepository.getFirstOperator();
-    if (!operator) {
-      throw new ForbiddenException('No operator user is configured on this Hub');
+    if (operator?.username?.trim()) {
+      return PortalSessionHintDto.parse(
+        {
+          email: operator.username.trim(),
+          portalBaseUrl,
+          source: 'hub_operator',
+        },
+        { reportOnly: true },
+      );
     }
 
-    if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-      // For now, only allow Portal login for the operator email already configured on this Hub.
-      // This avoids silently elevating a Portal user to local admin.
-      throw new UnauthorizedException('Portal account does not match this Hub operator');
+    const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
+    const portalEmail = await fetchPortalSessionEmail({
+      publicPortalBaseUrl: portalBaseUrl,
+      cookieHeader,
+    });
+
+    if (portalEmail) {
+      return PortalSessionHintDto.parse(
+        {
+          email: portalEmail,
+          portalBaseUrl,
+          source: 'portal_session',
+        },
+        { reportOnly: true },
+      );
     }
 
-    const sessionId = await this.sessionManager.createSession(operator.id);
-    await this.setSessionCookie(res, sessionId, req);
-
-    if (desktop) {
-      const desktopToken = crypto.randomUUID();
-      const exchangePayload: PortalDesktopExchange = {
-        sessionId,
-        redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
-      };
-      this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
-      return res.redirect(buildPortalDesktopDeepLink(desktopToken));
-    }
-
-    // Redirect back to the requested URL if it's same-origin; otherwise go home.
-    const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
-    if (safeRedirect) {
-      return res.redirect(safeRedirect);
-    }
-
-    return res.redirect('/home');
+    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null }, { reportOnly: true });
   }
 
   @Get('/portal/desktop-exchange')
@@ -403,6 +457,54 @@ export class AuthController {
     const isPending = await this.authService.checkPasswordChangeRequest();
 
     return CheckResetPasswordRequestDto.parse({ isRequestPending: isPending }, { reportOnly: true });
+  }
+
+  @Post('/password-reset/request')
+  @ApiResponse({ type: PasswordResetRequestDto })
+  async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
+    const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
+    const hubOrigin = host ? `${proto}://${host}` : undefined;
+
+    let deviceId = body.deviceId;
+    if (!deviceId) {
+      try {
+        deviceId = (await this.registrationService.getDeviceId()) || undefined;
+      } catch {
+        deviceId = undefined;
+      }
+    }
+
+    await this.authService.requestPasswordReset({
+      email: body.email,
+      returnOrigin: hubOrigin,
+      deviceId,
+      ipAddress: req.ip,
+    });
+
+    return PasswordResetRequestDto.parse(
+      { success: true, message: 'If this email is registered, you will receive reset instructions shortly.' },
+      { reportOnly: true },
+    );
+  }
+
+  @Get('/password-reset/verify/:token')
+  @ApiResponse({ type: PasswordResetVerifyResponseDto })
+  async verifyPasswordResetToken(@Req() req: Request) {
+    const token = String(req.params.token ?? '');
+    const result = await this.authService.verifyPasswordResetToken(token);
+    return PasswordResetVerifyResponseDto.parse(result, { reportOnly: true });
+  }
+
+  @Post('/password-reset/complete')
+  @ApiResponse({ type: PasswordResetCompleteDto })
+  async completePasswordReset(@Body() body: PasswordResetCompleteBody, @Req() req: Request) {
+    await this.authService.completePasswordReset({ token: body.token, newPassword: body.newPassword, ipAddress: req.ip });
+
+    return PasswordResetCompleteDto.parse(
+      { success: true, message: 'Password updated. You can now log in with your new password.' },
+      { reportOnly: true },
+    );
   }
 
   @Get('/traefik')

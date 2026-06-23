@@ -8,7 +8,7 @@
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 import { upsertEnvVar } from './env-file';
 import { resolveRootFolderHostForRuntime } from './lib/paths';
 import {
@@ -116,7 +116,7 @@ export function initHubDataDirs(): void {
   console.log(`init-hub-data-dirs: ensured bind-mount tree under ${root}`);
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   initHubDataDirs();

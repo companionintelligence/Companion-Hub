@@ -1,9 +1,14 @@
-ARG NODE_VERSION="jod"
+ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
 
-RUN apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode
+RUN set -eux; \
+    apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode || { \
+      echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
+      sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
+      apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode; \
+    }
 
 ARG TARGETARCH
 ARG DOCKER_COMPOSE_VERSION="v2.39.2"

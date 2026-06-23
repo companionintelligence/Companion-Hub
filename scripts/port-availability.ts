@@ -1,5 +1,21 @@
 import { spawnSync } from 'node:child_process';
 
+/** Bun-compiled `cihub` cannot run `execPath -e` probes — spawning itself deadlocks on macOS. */
+function isCompiledCihubBinary(): boolean {
+  if (process.execPath.includes('bunfs')) {
+    return true;
+  }
+  const base = process.execPath.split(/[/\\]/).pop() ?? '';
+  return /^cihub(\.exe)?$/i.test(base);
+}
+
+function execPathSupportsEvalProbe(): boolean {
+  if (process.platform === 'win32') {
+    return false;
+  }
+  return !isCompiledCihubBinary();
+}
+
 function isPortListeningViaExternalTools(port: number): boolean {
   // Windows: netstat -ano (ss/lsof are not available)
   if (process.platform === 'win32') {
@@ -19,13 +35,13 @@ function isPortListeningViaExternalTools(port: number): boolean {
     }
   }
 
-  const lsof = spawnSync('lsof', ['-i', `:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf-8' });
+  // macOS: `-i :443` matches outbound HTTPS (remote port 443). Use local TCP listen filter.
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf-8' });
   return lsof.status === 0 && Boolean((lsof.stdout || '').trim());
 }
 
 /** Attempt a TCP bind on 127.0.0.1 — mirrors desktop port_manager.rs behavior.
- *  Not used on Windows because in a compiled Bun binary process.execPath is the
- *  bundle itself, not a JS interpreter, so the subprocess approach fails. */
+ *  Not used when execPath cannot run `-e` (compiled Bun binaries). */
 export function isPortAvailableViaTcpBind(port: number): boolean {
   const script = [
     "require('net').createServer()",
@@ -36,11 +52,9 @@ export function isPortAvailableViaTcpBind(port: number): boolean {
   return result.status === 0;
 }
 
-/** Prefer TCP bind probe; optionally confirm with ss/lsof when available. */
+/** Prefer TCP bind probe when the runtime supports it; otherwise use ss/lsof/netstat. */
 export function isPortAvailable(port: number): boolean {
-  // On Windows the TCP bind probe is unreliable inside a compiled Bun binary
-  // (process.execPath is the bundle, not a JS runtime). Use netstat exclusively.
-  if (process.platform === 'win32') {
+  if (!execPathSupportsEvalProbe()) {
     return !isPortListeningViaExternalTools(port);
   }
 

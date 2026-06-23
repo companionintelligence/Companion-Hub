@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
 type OsFamily = 'debian' | 'rpm' | 'arch' | 'unknown';
@@ -465,7 +465,7 @@ export function initGpuRuntime() {
   console.log(`init-gpu-runtime: Platform ${platform} is not supported for automatic NVIDIA toolkit setup.`);
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   try {

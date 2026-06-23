@@ -4,12 +4,14 @@ import { client } from '@/api-client/client.gen';
 import { setTauriSessionId } from '@/lib/api-fetch';
 import { apiFetch } from '@/lib/api-fetch';
 import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
+import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
+import { rememberPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
 import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { Navigate, redirect, useNavigate, useSearchParams } from 'react-router';
@@ -20,40 +22,93 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
 export async function clientLoader() {
-  const registrationStatus = await resolveRegistrationStatus();
-  if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
-    return redirect('/device-registration');
-  }
+  try {
+    const registrationStatus = await resolveRegistrationStatus();
+    if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
+      return redirect('/device-registration');
+    }
 
-  const user = await userContext();
+    const user = await userContext();
 
-  if (!user.data?.isConfigured) {
-    return redirect('/register');
-  }
-
-  if (user.data?.isLoggedIn) {
-    return redirect('/home');
+    if (user.data?.isLoggedIn) {
+      return redirect('/home');
+    }
+  } catch {
+    // Backend may still be booting in the desktop app — render the login UI anyway.
+    return null;
   }
 }
 
 export default () => {
-  const { isLoggedIn, isConfigured, refreshUserContext, setUserContext } = useUserContext();
+  const { isLoggedIn, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
+  const [portalAccountEmail, setPortalAccountEmail] = useState<string | null>(null);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
+  const portalError = searchParams.get('portal_error');
 
   const { t } = useTranslation();
   const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
+
+  useEffect(() => {
+    if (!portalError) return;
+    toast.error(t(portalErrorTranslationKey(portalError)));
+    // Remove the error param from the URL so it doesn't persist on refresh.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('portal_error');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [portalError, setSearchParams, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const hint = await resolvePortalSessionHint();
+      if (!cancelled && hint.email) {
+        setPortalAccountEmail(hint.email);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const navigate = useNavigate();
   const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const processedDesktopPortalTokens = useRef(new Set<string>());
+  const processedDesktopPortalErrors = useRef(new Set<string>());
 
   const completeDesktopPortalLogin = useCallback(
     async (payload: DesktopPortalAuthPayload | null) => {
       if (!payload) {
         return;
       }
+
+      if (payload.error) {
+        if (processedDesktopPortalErrors.current.has(payload.error)) {
+          return;
+        }
+        processedDesktopPortalErrors.current.add(payload.error);
+        toast.error(t(portalErrorTranslationKey(payload.error)));
+        return;
+      }
+
+      if (!payload.token) {
+        return;
+      }
+
+      if (processedDesktopPortalTokens.current.has(payload.token)) {
+        return;
+      }
+      processedDesktopPortalTokens.current.add(payload.token);
 
       try {
         const res = await apiFetch(`/api/auth/portal/desktop-exchange?token=${encodeURIComponent(payload.token)}`);
@@ -65,8 +120,13 @@ export default () => {
         setTauriSessionId(data.sessionId);
         setUserContext({ isLoggedIn: true });
         await refreshUserContext();
+        const hint = await resolvePortalSessionHint();
+        if (hint.email) {
+          rememberPortalAccountEmail(hint.email);
+        }
         navigate(data.redirectPath || '/home');
       } catch {
+        processedDesktopPortalTokens.current.delete(payload.token);
         toast.error(t('COMMON_AN_ERROR_OCCURRED'));
       }
     },
@@ -149,10 +209,6 @@ export default () => {
     return <Navigate to="/home" />;
   }
 
-  if (!isConfigured) {
-    return <Navigate to="/register" />;
-  }
-
   if (totpSessionId) {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
@@ -175,6 +231,7 @@ export default () => {
       loading={login.isPending}
       loginType={loginType}
       portalSsoHref={portalSsoHref}
+      portalAccountEmail={portalAccountEmail}
     />
   );
 };

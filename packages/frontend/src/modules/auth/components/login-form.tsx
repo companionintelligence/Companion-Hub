@@ -20,9 +20,10 @@ interface IProps {
   loading: boolean;
   loginType: string;
   portalSsoHref?: string;
+  portalAccountEmail?: string | null;
 }
 
-export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref }) => {
+export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref, portalAccountEmail }) => {
   const { t } = useTranslation();
   const {
     register,
@@ -45,14 +46,18 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
       {portalSsoHref ? (
         <div className="mb-4">
           <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
-            <a href={portalSsoHref}>{t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON', 'Sign in using your Companion Account')}</a>
+            <a href={portalSsoHref}>
+              {portalAccountEmail
+                ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
+                : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
+            </a>
           </Button>
-          <div className="text-xs text-muted-foreground text-center mt-2">
-            {t('AUTH_LOGIN_COMPANION_ACCOUNT_HINT', 'Uses your Companion Account.')}
-          </div>
+          <div className="text-xs text-muted-foreground text-center mt-2">{t('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')}</div>
           <div className="my-4 h-px bg-border" />
         </div>
       ) : null}
+
+      <p className="text-sm text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT')}</p>
 
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input

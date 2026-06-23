@@ -29,7 +29,7 @@ describe('backend sentry instrumentation', () => {
     vi.clearAllMocks();
     process.env.SENTRY_DSN = 'https://backend@example.ingest.sentry.io/123456';
     process.env.CI_CLOUD_URL = 'https://hub.ci.computer/';
-    process.env.CI_HUB_VERSION = 'v0.2.22';
+    process.env.CI_HUB_VERSION = 'v0.2.27';
   });
 
   afterEach(() => {
@@ -68,7 +68,7 @@ describe('backend sentry instrumentation', () => {
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
-    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.22');
+    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
   });
 
   it('does not tag the backend scope when no device id is configured', async () => {
@@ -79,7 +79,7 @@ describe('backend sentry instrumentation', () => {
     expect(init).toHaveBeenCalledTimes(1);
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
-    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.22');
+    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
     expect(setTag).not.toHaveBeenCalledWith('device_id', expect.anything());
     expect(setUser).not.toHaveBeenCalled();
   });

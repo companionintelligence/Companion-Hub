@@ -1885,7 +1885,7 @@ mod tests {
         let source = UpdateSource::from_base(&base).expect("test source");
 
         // Check: newer version discovered, artifact resolved with expectations.
-        let info = check_desktop_update_with_source("0.1.0", &source).expect("check");
+        let info = check_desktop_update_with_source("0.2.27", &source).expect("check");
         assert!(info.update_available);
         assert_eq!(info.latest_version, "9.9.9");
         assert!(info.download_url.starts_with(&base));

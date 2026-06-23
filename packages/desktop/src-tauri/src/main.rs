@@ -12,6 +12,7 @@ mod updater;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
@@ -22,6 +23,7 @@ const DETACHED_FLAG: &str = "--detached";
 const STACK_DEV_ENV: &str = "CI_HUB_STACK_DEV";
 const STACK_DEV_COMPOSE_PATH_ENV: &str = "CI_HUB_STACK_DEV_COMPOSE_PATH";
 const STACK_DEV_ENV_PATH_ENV: &str = "CI_HUB_STACK_DEV_ENV_PATH";
+const HUB_STATUS_CHECK_TIMEOUT: Duration = Duration::from_millis(2500);
 
 struct PendingPairingCode(Mutex<Option<String>>);
 struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
@@ -29,7 +31,10 @@ struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct DesktopPortalAuthPayload {
-    token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn stack_dev_mode_enabled() -> bool {
@@ -81,7 +86,12 @@ fn stack_dev_override_paths() -> Result<Option<(PathBuf, PathBuf)>, String> {
 /// Check if the Hub backend is reachable at the given URL.
 #[tauri::command]
 async fn check_hub_status(url: String) -> Result<bool, String> {
-    match reqwest::get(format!("{}/api/health", url)).await {
+    let client = reqwest::Client::builder()
+        .timeout(HUB_STATUS_CHECK_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    match client.get(format!("{}/api/health", url)).send().await {
         Ok(resp) => Ok(resp.status().is_success()),
         Err(_) => Ok(false),
     }
@@ -157,13 +167,17 @@ async fn install_docker_engine_alternative_command(
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
-    hub_manager::get_hub_status()
+    tokio::task::spawn_blocking(hub_manager::get_hub_status)
+        .await
+        .unwrap_or_else(|err| panic!("hub status task failed: {err}"))
 }
 
 /// Get per-service startup progress for the frontend loading screen.
 #[tauri::command]
 async fn get_startup_progress_command() -> hub_manager::StartupProgress {
-    hub_manager::get_startup_progress()
+    tokio::task::spawn_blocking(hub_manager::get_startup_progress)
+        .await
+        .unwrap_or_else(|err| panic!("startup progress task failed: {err}"))
 }
 
 /// Read recent desktop log lines for in-app diagnostics (last 200 lines).
@@ -865,18 +879,28 @@ fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     }
 
     let query = trimmed.split('?').nth(1)?;
+    let mut token = None;
+    let mut error = None;
+
     for param in query.split('&') {
-        if let Some(token) = param.strip_prefix("token=") {
-            let token = token.trim();
-            if !token.is_empty() {
-                return Some(DesktopPortalAuthPayload {
-                    token: token.to_string(),
-                });
+        if let Some(value) = param.strip_prefix("token=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                token = Some(value.to_string());
+            }
+        } else if let Some(value) = param.strip_prefix("error=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                error = Some(value.to_string());
             }
         }
     }
 
-    None
+    if token.is_some() || error.is_some() {
+        Some(DesktopPortalAuthPayload { token, error })
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -910,7 +934,19 @@ mod tests {
         assert_eq!(
             extract_portal_auth("cihub://auth?token=desktop-token"),
             Some(super::DesktopPortalAuthPayload {
-                token: "desktop-token".to_string()
+                token: Some("desktop-token".to_string()),
+                error: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_portal_auth_error_from_query_param() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?error=callback_error"),
+            Some(super::DesktopPortalAuthPayload {
+                token: None,
+                error: Some("callback_error".to_string()),
             })
         );
     }

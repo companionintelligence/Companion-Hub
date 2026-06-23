@@ -10,7 +10,7 @@
 import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isDirectScriptRun } from './lib/is-direct-run';
 
 const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
@@ -111,7 +111,7 @@ export async function initTraefik() {
   console.log('Traefik initialization complete.');
 }
 
-const isDirectRun = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 
 if (isDirectRun) {
   initTraefik().catch((err: NodeJS.ErrnoException) => {

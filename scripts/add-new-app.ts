@@ -45,6 +45,7 @@ interface AppBenchmark {
 const APP_STORE_DIR = '../CI-App-Store/apps';
 const CATALOG_PATH = 'e2e/generated/catalog.json';
 const BASELINES_DIR = 'e2e/screenshots/baselines';
+const HUB_VERSION = JSON.parse(readFileSync('package.json', 'utf-8')).version as string;
 
 async function addNewApp(config: AppConfig): Promise<void> {
   console.log('╔════════════════════════════════════════════════════════════╗');
@@ -65,7 +66,7 @@ async function addNewApp(config: AppConfig): Promise<void> {
     // Create config.json
     const appConfig = {
       $schema: 'https://schemas.companionintelligence.com/v2/app-info.json',
-      min_hub_version: 'v0.1.0',
+      min_hub_version: `v${HUB_VERSION}`,
       name: config.name,
       id: config.id,
       available: true,

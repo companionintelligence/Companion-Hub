@@ -87,6 +87,16 @@ describe('root clientLoader registration gating', () => {
     expect(provisioningResult).toBeNull();
   });
 
+  it('redirects root to login when user context is unavailable during startup', async () => {
+    apiFetch.mockRejectedValue(new Error('temporary outage'));
+    userContext.mockRejectedValue(new Error('backend unavailable'));
+
+    const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/login');
+  });
+
   it('does not force re-registration when registration status is temporarily unavailable', async () => {
     const userResult = {
       data: {

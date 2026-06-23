@@ -19,7 +19,7 @@ function initI18n() {
     // Override the request function for Tauri release mode to prefix baseUrl
     request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
       const fullUrl = isTauriRelease ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
-      fetch(fullUrl, { credentials: 'include' })
+      fetch(fullUrl, { credentials: isTauriRelease ? 'omit' : 'include' })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();
@@ -44,9 +44,12 @@ function initI18n() {
         },
       },
       react: {
-        useSuspense: true,
+        // Suspense without a boundary above HubStatus caused a blank Tauri window
+        // while non-English locales loaded (or failed) from the API.
+        useSuspense: false,
       },
       fallbackLng: 'en',
+      partialBundledLanguages: true,
       load: 'currentOnly',
       interpolation: {
         escapeValue: false,
@@ -66,7 +69,13 @@ export const I18nProvider = ({ children }: PropsWithChildren) => {
     }
   }, []);
 
-  if (!ready) return null;
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground" role="status" aria-busy="true">
+        Loading…
+      </div>
+    );
+  }
 
   return <I18nextProvider i18n={i18n}>{children}</I18nextProvider>;
 };

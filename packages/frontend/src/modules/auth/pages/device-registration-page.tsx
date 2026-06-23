@@ -18,6 +18,8 @@ import {
 } from '@/components/hub-status/hub-status-tooltips';
 import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
+import { getStoredDriftChoice, storeDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
+import { RegistrationRestoreBanner, RegistrationStateDriftDialog } from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
 
 const DEFAULT_PORTAL_URL = (
@@ -93,9 +95,14 @@ export default function DeviceRegistrationPage() {
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
+  const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
+  const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
+  const [driftDialogOpen, setDriftDialogOpen] = useState(false);
+  const [driftChoice, setDriftChoice] = useState<'fresh' | 'restore' | null>(() => getStoredDriftChoice());
+  const [isPreparingFresh, setIsPreparingFresh] = useState(false);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
@@ -135,6 +142,21 @@ export default function DeviceRegistrationPage() {
     }
   }, [t]);
 
+  const loadStateDrift = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/registration/state-drift');
+      if (!res.ok) {
+        return null;
+      }
+      const drift = (await res.json()) as RegistrationStateDrift;
+      setStateDrift(drift);
+      return drift;
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
+  }, []);
+
   const refreshRegistrationStatus = useCallback(async () => {
     try {
       const res = await apiFetch('/api/registration/status');
@@ -156,8 +178,24 @@ export default function DeviceRegistrationPage() {
       if (requiresDeviceRegistration(status)) {
         completionStartedRef.current = false;
         clearRegistrationCache();
+
+        if (isRegistrationPending(status)) {
+          setDriftDialogOpen(false);
+          return status;
+        }
+
         if (status.phase === 'unregistered') {
           await loadDeviceInfo();
+          const pairingInProgress = pairingInProgressRef.current || pendingPairTargetRef.current !== null;
+          if (pairingInProgress) {
+            setDriftDialogOpen(false);
+          } else {
+            const drift = await loadStateDrift();
+            const storedChoice = getStoredDriftChoice();
+            if (drift?.detected && !storedChoice) {
+              setDriftDialogOpen(true);
+            }
+          }
         }
         return status;
       }
@@ -184,7 +222,7 @@ export default function DeviceRegistrationPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [loadDeviceInfo, t]);
+  }, [loadDeviceInfo, loadStateDrift, t]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
@@ -312,6 +350,7 @@ export default function DeviceRegistrationPage() {
 
   const doPair = useCallback(
     async (code: string) => {
+      pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
       setStatusError(null);
@@ -343,6 +382,7 @@ export default function DeviceRegistrationPage() {
         console.error(error);
         setPairingError(t('DEVICE_REGISTRATION_FAILED_RETRY'));
       } finally {
+        pairingInProgressRef.current = false;
         setIsPairing(false);
       }
     },
@@ -401,6 +441,55 @@ export default function DeviceRegistrationPage() {
       cancelled = true;
     };
   }, [canAutoPairFromDeepLink, doPair, pendingDeepLinkCode]);
+
+  const handleSetupNewDevice = async () => {
+    setIsPreparingFresh(true);
+    try {
+      const res = await apiFetch('/api/registration/prepare-fresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = (await res.json()) as { success?: boolean; message?: string };
+      if (!res.ok || !data.success) {
+        toast.error(data.message ?? t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARE_FAILED'));
+        return;
+      }
+
+      storeDriftChoice('fresh');
+      setDriftChoice('fresh');
+      setDriftDialogOpen(false);
+      toast.success(t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARE_SUCCESS'));
+      await refreshRegistrationStatus();
+      await loadStateDrift();
+    } catch (error) {
+      console.error(error);
+      toast.error(t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARE_FAILED'));
+    } finally {
+      setIsPreparingFresh(false);
+    }
+  };
+
+  const handleRestoreExistingDevice = async () => {
+    try {
+      const res = await apiFetch('/api/registration/mark-restore-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = (await res.json()) as { success?: boolean; message?: string };
+      if (!res.ok || !data.success) {
+        toast.error(data.message ?? t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_INTENT_FAILED'));
+        return;
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error(t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_INTENT_FAILED'));
+      return;
+    }
+
+    storeDriftChoice('restore');
+    setDriftChoice('restore');
+    setDriftDialogOpen(false);
+  };
 
   const handleRetryStatus = async () => {
     setStatusError(null);
@@ -526,6 +615,16 @@ export default function DeviceRegistrationPage() {
 
   return (
     <div className="space-y-6">
+      <RegistrationStateDriftDialog
+        open={driftDialogOpen}
+        drift={stateDrift}
+        isPreparing={isPreparingFresh}
+        onSetupNew={() => void handleSetupNewDevice()}
+        onRestore={handleRestoreExistingDevice}
+      />
+
+      {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
+
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
           <div className="flex items-start gap-1 flex-wrap">

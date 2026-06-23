@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
 import { parseEnvFile } from './env-file';
+import { isDirectScriptRun } from './lib/is-direct-run';
 
 interface HostMetricsProbeFile {
   schemaVersion: 1;
@@ -184,7 +185,7 @@ async function main() {
   );
 }
 
-const isDirectRun = process.argv[1]?.endsWith('init-host-probe.ts') || process.argv[1]?.includes('init-host-probe');
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
 if (isDirectRun) {
   main().catch((error) => {
     console.error(`init-host-probe: failed: ${error instanceof Error ? error.message : String(error)}`);

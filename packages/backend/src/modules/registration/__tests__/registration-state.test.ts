@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isLegalTransition,
   isOperational,
+  isActiveRegistrationPhase,
   buildRegistrationStatus,
   parseDegradedReasons,
   type ProvisioningPhase,
@@ -74,6 +75,15 @@ describe('registration-state', () => {
       expect(isOperational('unregistered')).toBe(false);
       expect(isOperational('paired')).toBe(false);
       expect(isOperational('provisioning')).toBe(false);
+    });
+  });
+
+  describe('isActiveRegistrationPhase', () => {
+    it('returns true only for paired and provisioning', () => {
+      expect(isActiveRegistrationPhase('paired')).toBe(true);
+      expect(isActiveRegistrationPhase('provisioning')).toBe(true);
+      expect(isActiveRegistrationPhase('unregistered')).toBe(false);
+      expect(isActiveRegistrationPhase('locally_ready')).toBe(false);
     });
   });
 

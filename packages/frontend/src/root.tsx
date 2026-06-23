@@ -1,7 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -18,9 +18,23 @@ import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
+import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
+
+function DesktopStartupFallback() {
+  return (
+    <main
+      id="root"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      role="status"
+      aria-busy="true"
+    >
+      {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+    </main>
+  );
+}
 
 /** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
 function describeUnknownError(error: unknown): string {
@@ -72,30 +86,17 @@ client.interceptors.response.use(async (res) => {
 // but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
 // Cross-origin credentials ('include') are blocked by browsers when the server
 // responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
-const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+const isTauriRelease = isTauriReleaseBuild();
 const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-// Probe the backend port — try 5002 (prod) then 5004 (local source dev)
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
-  ? (async () => {
-      for (const port of [5002, 5004]) {
-        try {
-          const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
-          if (res.ok) {
-            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: credentialMode });
-            return;
-          }
-        } catch {
-          /* try next */
-        }
-      }
-      // Neither responded — default to 5002, HubStatus will show the "not running" overlay
-      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: credentialMode });
-    })()
+  ? probeHealthyHubApiPort().then((port) => {
+      configureHubApiPort(port ?? 5002);
+    })
   : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
@@ -149,6 +150,11 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   try {
     userResult = await userContext();
   } catch {
+    // Tauri opens at `/` with no matching child route. Never leave the user on a
+    // blank outlet — send them somewhere that renders UI while the backend wakes up.
+    if (url.pathname === '/') {
+      return redirect('/login');
+    }
     return null;
   }
 
@@ -159,7 +165,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   // Root path: determine where to send the user
   if (!userResult.data?.isConfigured) {
-    return redirect('/register');
+    return redirect('/login');
   }
 
   if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
@@ -307,26 +313,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        {apiReady ? (
-          <ThemeProvider defaultTheme="dark">
+        <ThemeProvider defaultTheme="dark">
+          {apiReady ? (
             <I18nProvider>
-              <Titlebar />
-              <HubStatus>
-                <main id="root">
-                  {children}
-                  <ScrollRestoration />
-                </main>
-              </HubStatus>
+              <Suspense fallback={<DesktopStartupFallback />}>
+                <Titlebar />
+                <HubStatus>
+                  <main id="root">
+                    {children}
+                    <ScrollRestoration />
+                  </main>
+                </HubStatus>
+              </Suspense>
             </I18nProvider>
-          </ThemeProvider>
-        ) : (
-          <ThemeProvider defaultTheme="dark">
-            <Titlebar />
-            <main id="root" className="flex min-h-screen items-center justify-center px-6 text-sm text-muted-foreground">
-              {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
-            </main>
-          </ThemeProvider>
-        )}
+          ) : (
+            <DesktopStartupFallback />
+          )}
+        </ThemeProvider>
         <Scripts />
       </body>
     </html>
@@ -336,19 +339,28 @@ export function Layout({ children }: { children: React.ReactNode }) {
 export default function App({ loaderData }: Route.ComponentProps) {
   const { revalidate } = useRevalidator();
   const location = useLocation();
-  const hasRevalidatedRef = useRef(false);
+  const onRootBootstrap = location.pathname === '/' && loaderData == null;
 
-  // When the root clientLoader runs during startup before the backend is
-  // ready, it returns null (no redirect). HubStatus hides children until
-  // the hub is Running, so by the time this component mounts the backend
-  // is available. Trigger a one-shot revalidation to re-run the loader
-  // and perform the correct redirect.
+  // Root has no index route. While the loader is still resolving (common during
+  // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
   useEffect(() => {
-    if (location.pathname === '/' && loaderData == null && !hasRevalidatedRef.current) {
-      hasRevalidatedRef.current = true;
-      revalidate();
-    }
-  }, [location.pathname, loaderData, revalidate]);
+    if (!onRootBootstrap) return;
+
+    void revalidate();
+    const id = window.setInterval(() => {
+      void revalidate();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [onRootBootstrap, revalidate]);
+
+  if (onRootBootstrap) {
+    return (
+      <>
+        <DesktopStartupFallback />
+        <Toaster position="bottom-center" />
+      </>
+    );
+  }
 
   return (
     <Providers>

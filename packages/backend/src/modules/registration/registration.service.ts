@@ -5,7 +5,8 @@ import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, In
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -18,9 +19,17 @@ import {
   PROVISIONING_PHASES,
   isOperational,
   isLegalTransition,
+  isActiveRegistrationPhase,
   buildRegistrationStatus,
   parseDegradedReasons,
 } from './registration-state';
+import {
+  buildStateDriftResult,
+  clearRegistrationKeysFromAppData,
+  collectStaleHubDeviceIds,
+  type RegistrationStateDrift,
+} from './registration-state-drift';
+import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
 import si from 'systeminformation';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -46,6 +55,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     readonly _repoQueue: RepoEventsQueue,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
+
+  private portalAxiosConfig() {
+    const { ciCloudUrl } = this.config.getConfig();
+    return buildPortalAxiosConfig(ciCloudUrl, readPortalInternalUrlOverride());
+  }
 
   onApplicationShutdown() {
     if (this.checkInterval) {
@@ -422,12 +436,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // device is still active in CI Portal. A 400 means the device is no
       // longer active; network errors are counted toward the failure threshold.
       const response = await axios.post(
-        `${ciCloudUrl}/api/devices/check-in`,
+        `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 10_000,
           validateStatus: () => true,
-          headers: { 'Content-Type': 'application/json' },
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
         },
       );
 
@@ -531,10 +545,127 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // File may not exist
     }
 
+    await clearRehydrationState();
+
     this.logger.info('Device registration reset complete');
 
     // Start polling for new registration
     this.pollRegistration();
+  }
+
+  /**
+   * Detect when local Hub registration artifacts disagree with CI Portal or
+   * persisted app-data. Only meaningful while the Hub is unregistered locally.
+   */
+  public async getStateDrift(): Promise<RegistrationStateDrift> {
+    await this.refreshPhaseFromSources();
+    const status = this.getRegistrationStatus();
+    const hardwareDeviceId = await this.getDeviceId();
+
+    // Portal may reflect the device immediately after pairing while local provisioning
+    // is still in progress — that is expected registration flow, not drift.
+    if (isActiveRegistrationPhase(status.phase)) {
+      return buildStateDriftResult({
+        hardwareDeviceId,
+        localRegistered: status.registered,
+        portalDeviceActive: null,
+        staleAppEnvDeviceIds: [],
+        hasStaleTunnelToken: false,
+        hasOrphanedDbRegistration: false,
+      });
+    }
+
+    const localRegistered = status.registered;
+
+    const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
+    const hasStaleTunnelToken = !localRegistered && this.hasTunnelToken();
+
+    let portalDeviceActive: boolean | null = null;
+    const { ciCloudUrl } = this.config.getConfig();
+    if (ciCloudUrl && !localRegistered) {
+      portalDeviceActive = await this.probePortalDeviceActive(hardwareDeviceId, this.config.getOutboundCiCloudUrl());
+    }
+
+    const dbRow = localRegistered ? null : await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    const hasOrphanedDbRegistration = !localRegistered && Boolean(dbRow);
+
+    return buildStateDriftResult({
+      hardwareDeviceId,
+      localRegistered,
+      portalDeviceActive,
+      staleAppEnvDeviceIds,
+      hasStaleTunnelToken,
+      hasOrphanedDbRegistration,
+    });
+  }
+
+  /** Persist server-side restore intent before re-pairing (survives beyond sessionStorage). */
+  public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
+    await this.refreshPhaseFromSources();
+    if (isOperational(this._currentPhase)) {
+      return {
+        success: false,
+        message: 'Restore intent is only applicable while the Hub is unregistered',
+      };
+    }
+
+    await writeRestoreIntent();
+    return { success: true, message: 'Restore intent recorded' };
+  }
+
+  /**
+   * Wipe local registration artifacts so the user can pair as a fresh device.
+   * Allowed only while the Hub is unregistered (no operational registration).
+   */
+  public async prepareFreshSetup(): Promise<{ success: boolean; message: string; clearedAppEnvFiles: number }> {
+    await this.refreshPhaseFromSources();
+    if (isOperational(this._currentPhase)) {
+      return {
+        success: false,
+        message: 'Cannot prepare fresh setup while the Hub is registered. Use reset from Settings instead.',
+        clearedAppEnvFiles: 0,
+      };
+    }
+
+    await this.resetRegistration();
+    const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
+    await clearRegistrationRecoveryArtifacts();
+
+    this.logger.info(`Prepared fresh device setup (cleared registration keys from ${clearedAppEnvFiles} app.env file(s))`);
+
+    return {
+      success: true,
+      message: 'Local registration artifacts cleared. Pair this device as new in your Companion Account.',
+      clearedAppEnvFiles,
+    };
+  }
+
+  /** Unauthenticated Portal probe — true when hardware device_id is active in CI Portal. */
+  private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
+    try {
+      const response = await axios.post(
+        `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
+        { device_id: deviceId },
+        {
+          timeout: 10_000,
+          validateStatus: () => true,
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+        },
+      );
+
+      if (response.status >= 200 && response.status < 300) {
+        return true;
+      }
+      if (response.status === 400) {
+        return false;
+      }
+
+      this.logger.debug(`Portal device probe returned ${response.status} for ${deviceId}`);
+      return null;
+    } catch (e) {
+      this.logger.debug('Portal device probe failed', e);
+      return null;
+    }
   }
 
   // Memoized device-id resolution. The detection chain (dmidecode →
@@ -999,22 +1130,26 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     try {
-      const pairUrl = `${ciCloudUrl}/api/devices/pair`;
-      const response = await fetch(pairUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
-      });
+      const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
+      const response = await axios.post(
+        pairUrl,
+        { pairing_code: pairingCode, device_id: deviceId },
+        {
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      if (response.status < 200 || response.status >= 300) {
+        const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string };
         return {
           success: false,
-          message: (errorData as { error?: string }).error || `Pairing failed: ${response.statusText}`,
+          message: errorData.error || `Pairing failed: HTTP ${response.status}`,
         };
       }
 
-      const data = (await response.json()) as {
+      const data = response.data as {
         device_id: string;
         organization_id: string;
         organization_name: string;
@@ -1114,7 +1249,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Step 1: Register device with CI Cloud
       // POST http://localhost:8001/api/devices/register
-      const registerUrl = `${ciCloudUrl}/api/devices/register`;
+      const registerUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -1124,19 +1259,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       this.logger.debug(`Registering device at ${registerUrl}`);
-      const registerResponse = await fetch(registerUrl, {
-        method: 'POST',
-        headers: registerHeaders,
-        body: JSON.stringify({
+      const registerResponse = await axios.post(
+        registerUrl,
+        {
           device_id: deviceId,
           organization_id: organizationId,
           description: description,
-        }),
-      });
+        },
+        {
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), registerHeaders),
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
 
-      if (!registerResponse.ok) {
+      if (registerResponse.status < 200 || registerResponse.status >= 300) {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
+        const errorData = (registerResponse.data ?? { error: 'Unknown error' }) as any;
         this.logger.error(`Device registration failed: ${registerResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
@@ -1144,7 +1283,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      const registerResult = await registerResponse.json().catch(() => ({}));
+      const registerResult = registerResponse.data ?? {};
       this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
 
       // Step 2: Activate device - REMOVED (Merged into Step 1)
@@ -1278,6 +1417,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
+
+      await clearRehydrationState();
 
       return {
         success: true,

@@ -35,7 +35,7 @@ describe('backend instrument', () => {
     process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
     process.env.CI_HUB_ENVIRONMENT = 'production';
     process.env.NODE_ENV = 'development';
-    process.env.CI_HUB_VERSION = 'v0.2.22';
+    process.env.CI_HUB_VERSION = 'v0.2.27';
     process.env.CI_CLOUD_URL = 'https://hub.ci.computer/';
 
     await import('../instrument');
@@ -44,13 +44,13 @@ describe('backend instrument', () => {
       expect.objectContaining({
         dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0',
         environment: 'production',
-        release: 'v0.2.22',
+        release: 'v0.2.27',
         sendDefaultPii: true,
       }),
     );
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
-    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.22');
+    expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
     expect(setUser).not.toHaveBeenCalled();
   });
 

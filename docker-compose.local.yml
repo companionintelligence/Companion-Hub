@@ -116,7 +116,7 @@ services:
       RABBITMQ_PASSWORD: admin
       RABBITMQ_HOST: ci-os-hub-queue
       INTERNAL_IP: 127.0.0.1
-      CI_HUB_VERSION: 4.5.0
+      CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
       LOG_LEVEL: debug
       OLLAMA_URL: http://host.docker.internal:11434
     extra_hosts:

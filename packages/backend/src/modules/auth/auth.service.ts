@@ -1,21 +1,35 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { hashEmailForLog } from '@/common/helpers/log-privacy';
+import { meetsPasswordComplexity } from '@/common/helpers/password-policy';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import {
+  buildPortalAxiosConfig,
+  readPortalInternalUrlOverride,
+  resolveOutboundPortalBaseUrl,
+  withPortalAxiosHeaders,
+} from '@/common/helpers/portal-url';
 import { PasswordService } from '@/core/password/password.service';
+import axios from 'axios';
 import { UserRepository } from '@/modules/user/user.repository';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
 import validator from 'validator';
 import type { LoginBody, RegisterBody } from './dto/auth.dto';
+import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 
 @Injectable()
 export class AuthService {
+  private static readonly PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS = 60 * 60;
+  private static readonly PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS = 3;
+
   constructor(
     private userRepository: UserRepository,
     private sessionManager: SessionManager,
@@ -24,6 +38,7 @@ export class AuthService {
     private cache: CacheService,
     private filesystem: FilesystemService,
     private passwordService: PasswordService,
+    private logger: LoggerService,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -41,6 +56,158 @@ export class AuthService {
     return `.${(parsed as any).input}`;
   }
 
+  private getPasswordResetPortalBaseUrl() {
+    const { ciCloudUrl } = this.config.getConfig();
+    const publicBase = ciCloudUrl?.trim().replace(/\/$/, '');
+
+    if (!publicBase) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    return resolveOutboundPortalBaseUrl(publicBase, readPortalInternalUrlOverride());
+  }
+
+  private getPublicPortalBaseUrl() {
+    const { ciCloudUrl } = this.config.getConfig();
+    const publicBase = ciCloudUrl?.trim().replace(/\/$/, '');
+
+    if (!publicBase) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    return publicBase;
+  }
+
+  private getPortalBaseUrl() {
+    return this.getPasswordResetPortalBaseUrl();
+  }
+
+  private portalAxiosConfig() {
+    return buildPortalAxiosConfig(this.getPublicPortalBaseUrl(), readPortalInternalUrlOverride());
+  }
+
+  private async signInWithPortal(email: string, password: string) {
+    const base = this.getPortalBaseUrl();
+    const publicBase = this.getPublicPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
+    const response = await axios.post(
+      `${base}/api/auth/sign-in/email`,
+      { email, password },
+      {
+        ...withPortalAxiosHeaders(portalConfig, {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        }),
+        validateStatus: () => true,
+        timeout: 15_000,
+      },
+    );
+
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string };
+
+    if (response.status < 200 || response.status >= 300) {
+      if (body.code === 'EMAIL_NOT_VERIFIED') {
+        throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  private async signUpWithPortal(email: string, password: string, name: string) {
+    const base = this.getPortalBaseUrl();
+    const publicBase = this.getPublicPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
+    const response = await axios.post(
+      `${base}/api/auth/sign-up/email`,
+      { email, password, name },
+      {
+        ...withPortalAxiosHeaders(portalConfig, {
+          'Content-Type': 'application/json',
+          Origin: publicBase,
+        }),
+        validateStatus: () => true,
+        timeout: 15_000,
+      },
+    );
+
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string; token?: string | null };
+
+    if (response.status < 200 || response.status >= 300) {
+      if (body.code === 'USER_ALREADY_EXISTS') {
+        throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    return body.token !== null && body.token !== undefined;
+  }
+
+  /** Create the first local operator from a Portal account when none exists yet. */
+  public bootstrapOperatorFromPortalEmail(email: string) {
+    return this.ensureLocalCompanionUser(email);
+  }
+
+  private async ensureLocalCompanionUser(email: string) {
+    const existing = await this.userRepository.getUserByUsername(email);
+
+    if (existing) {
+      return existing;
+    }
+
+    const operators = await this.userRepository.getOperators();
+
+    if (operators.length > 0) {
+      throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const hash = await this.passwordService.hash(crypto.randomUUID());
+    const created = await this.userRepository.createUser({ username: email, password: hash, operator: true });
+
+    if (!created) {
+      throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    return created;
+  }
+
+  private getPasswordResetRateLimitKey(email: string) {
+    return `auth:password-reset:rate:${email}`;
+  }
+
+  private consumePasswordResetRateLimit(email: string) {
+    const key = this.getPasswordResetRateLimitKey(email);
+    const now = Math.floor(Date.now() / 1000);
+    const rawValue = this.cache.get(key);
+
+    if (!rawValue) {
+      this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue) as { count?: number; startedAt?: number };
+      const count = Number(parsed.count ?? 0);
+      const startedAt = Number(parsed.startedAt ?? now);
+
+      if (startedAt + AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS <= now) {
+        this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+        return true;
+      }
+
+      if (count >= AuthService.PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS) {
+        return false;
+      }
+
+      this.cache.set(key, JSON.stringify({ count: count + 1, startedAt }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    } catch {
+      this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    }
+  }
+
   /**
    * Given a username and password, login the user and return the session ID.
    *
@@ -50,18 +217,11 @@ export class AuthService {
    */
   public login = async (input: LoginBody) => {
     const { username, password } = input;
+    const email = username.trim().toLowerCase();
 
-    const user = await this.userRepository.getUserByUsername(username);
+    await this.signInWithPortal(email, password);
 
-    if (!user) {
-      throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
-    }
-
-    const isPasswordValid = await this.passwordService.verify(password, user.password);
-
-    if (!isPasswordValid) {
-      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
-    }
+    const user = await this.ensureLocalCompanionUser(email);
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
@@ -146,7 +306,19 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_USER_ALREADY_EXISTS', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const hash = await this.passwordService.hash(password);
+    if (!meetsPasswordComplexity(password)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const signedInImmediately = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+
+    if (!signedInImmediately) {
+      return {
+        requiresEmailVerification: true,
+      };
+    }
+
+    const hash = await this.passwordService.hash(crypto.randomUUID());
     const newUser = await this.userRepository.createUser({ username: email, password: hash, operator: true });
 
     if (!newUser) {
@@ -331,6 +503,112 @@ export class AuthService {
     await this.userRepository.updateUser(userId, { totpEnabled: false, totpSecret: null });
 
     return true;
+  };
+
+  public requestPasswordReset = async (params: { email: string; ipAddress?: string; returnOrigin?: string; deviceId?: string }) => {
+    const email = params.email.trim().toLowerCase();
+    const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
+
+    this.logger.info('Password reset requested', {
+      emailHash: hashEmailForLog(email),
+      deviceId: params.deviceId,
+      ipAddress: params.ipAddress,
+      rateLimitAllowed,
+    });
+
+    if (!rateLimitAllowed) {
+      this.logger.warn('Password reset rate limited', { emailHash: hashEmailForLog(email), ipAddress: params.ipAddress });
+      return { success: true };
+    }
+
+    const base = this.getPasswordResetPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
+
+    try {
+      const response = await axios.post(
+        `${base}/api/auth/password-reset/request`,
+        {
+          email,
+          returnOrigin: params.returnOrigin,
+          deviceId: params.deviceId,
+        },
+        {
+          ...withPortalAxiosHeaders(portalConfig, { 'Content-Type': 'application/json' }),
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
+
+      if (response.status < 200 || response.status >= 300) {
+        this.logger.warn('Portal password reset request failed', {
+          status: response.status,
+          emailHash: hashEmailForLog(email),
+          ipAddress: params.ipAddress,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Portal password reset request failed', error);
+    }
+
+    return { success: true };
+  };
+
+  public verifyPasswordResetToken = async (token: string) => {
+    const base = this.getPasswordResetPortalBaseUrl();
+
+    try {
+      const response = await axios.get(`${base}/api/auth/password-reset/verify/${encodeURIComponent(token)}`, {
+        ...this.portalAxiosConfig(),
+        validateStatus: () => true,
+        timeout: 15_000,
+      });
+
+      if (response.status < 200 || response.status >= 300) {
+        return { valid: false };
+      }
+
+      const data = response.data;
+      const parsed = passwordResetVerifyResponseSchema.safeParse(data);
+      if (!parsed.success || parsed.data.valid !== true) {
+        return { valid: false };
+      }
+
+      return {
+        valid: true,
+        email: parsed.data.email,
+      };
+    } catch {
+      return { valid: false };
+    }
+  };
+
+  public completePasswordReset = async (params: { token: string; newPassword: string; ipAddress?: string }) => {
+    if (params.newPassword.length < 8) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    if (!meetsPasswordComplexity(params.newPassword)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const base = this.getPasswordResetPortalBaseUrl();
+    const portalConfig = this.portalAxiosConfig();
+    const response = await axios.post(
+      `${base}/api/auth/password-reset/complete`,
+      { token: params.token, newPassword: params.newPassword },
+      {
+        ...withPortalAxiosHeaders(portalConfig, { 'Content-Type': 'application/json' }),
+        validateStatus: () => true,
+        timeout: 15_000,
+      },
+    );
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new TranslatableError('AUTH_ERROR_NO_CHANGE_PASSWORD_REQUEST', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    this.logger.info('Password reset completed', { ipAddress: params.ipAddress });
+    return { success: true };
   };
 
   /**

@@ -347,10 +347,10 @@ mod tests {
     fn prefers_env_deployment_version_over_release_fallback() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let env_path = tempdir.path().join("hub.env");
-        std::fs::write(&env_path, "CI_HUB_VERSION=v0.2.22\n").expect("write env");
+        std::fs::write(&env_path, "CI_HUB_VERSION=v0.2.27\n").expect("write env");
 
         let value = read_deployment_version(&env_path, "v0.0.0");
-        assert_eq!(value.as_deref(), Some("v0.2.22"));
+        assert_eq!(value.as_deref(), Some("v0.2.27"));
     }
 
     #[test]

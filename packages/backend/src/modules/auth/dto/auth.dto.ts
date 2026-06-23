@@ -37,6 +37,20 @@ const resetPasswordSchema = z.object({
   newPassword: z.string(),
 });
 
+const passwordResetRequestSchema = z.object({
+  email: z.string().email(),
+  deviceId: z.string().min(1).optional(),
+});
+
+const passwordResetVerifySchema = z.object({
+  token: z.string(),
+});
+
+const passwordResetCompleteSchema = z.object({
+  token: z.string(),
+  newPassword: z.string(),
+});
+
 const loginResponseSchema = z.object({
   success: z.boolean(),
   totpSessionId: z.string().optional(),
@@ -45,6 +59,7 @@ const loginResponseSchema = z.object({
 
 const registerResponseSchema = z.object({
   success: z.boolean(),
+  requiresEmailVerification: z.boolean().optional(),
 });
 
 const getTotpUriResponseSchema = z.object({
@@ -61,9 +76,30 @@ const checkResetPasswordRequestSchema = z.object({
   isRequestPending: z.boolean(),
 });
 
+const passwordResetRequestResponseSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
+});
+
+const passwordResetVerifyResponseSchema = z.object({
+  valid: z.boolean(),
+  email: z.string().optional(),
+});
+
+const passwordResetCompleteResponseSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
+});
+
 const portalDesktopExchangeResponseSchema = z.object({
   sessionId: z.string(),
   redirectPath: z.string(),
+});
+
+const portalSessionHintResponseSchema = z.object({
+  email: z.string().nullable(),
+  portalBaseUrl: z.string().nullable(),
+  source: z.enum(['hub_operator', 'portal_session']).nullable(),
 });
 
 // Login
@@ -71,6 +107,7 @@ export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
+export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}
 
 // Register
 export class RegisterBody extends createZodDto(credentialsSchema) {}
@@ -92,3 +129,11 @@ export class DisableTotpBody extends createZodDto(disableTotpSchema) {}
 export class ResetPasswordBody extends createZodDto(resetPasswordSchema) {}
 export class ResetPasswordDto extends createZodDto(resetPasswordResponseSchema) {}
 export class CheckResetPasswordRequestDto extends createZodDto(checkResetPasswordRequestSchema) {}
+export class PasswordResetRequestBody extends createZodDto(passwordResetRequestSchema) {}
+export class PasswordResetVerifyDto extends createZodDto(passwordResetVerifySchema) {}
+export class PasswordResetCompleteBody extends createZodDto(passwordResetCompleteSchema) {}
+export class PasswordResetRequestDto extends createZodDto(passwordResetRequestResponseSchema) {}
+export class PasswordResetVerifyResponseDto extends createZodDto(passwordResetVerifyResponseSchema) {}
+export class PasswordResetCompleteDto extends createZodDto(passwordResetCompleteResponseSchema) {}
+
+export { passwordResetVerifyResponseSchema };

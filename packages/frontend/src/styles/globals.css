@@ -96,7 +96,7 @@
 
 /*
  * Companion Intelligence brand palette — dark theme
- * Shell #041620 → panels #1d293d → nested #0a222e
+ * Shell #041620 → card/popover/secondary/muted #0a222e → sidebar accent #1d293d
  * Teal accents #2c676d / #409b9b, mint #58ebbf; body copy neutral grey
  */
 .dark {
@@ -186,6 +186,10 @@
     display: none;
     width: 0;
     height: 0;
+  }
+
+  html {
+    @apply bg-background;
   }
 
   body {
