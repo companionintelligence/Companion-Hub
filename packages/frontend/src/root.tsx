@@ -1,7 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -150,6 +150,11 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   try {
     userResult = await userContext();
   } catch {
+    // Tauri opens at `/` with no matching child route. Never leave the user on a
+    // blank outlet — send them somewhere that renders UI while the backend wakes up.
+    if (url.pathname === '/') {
+      return redirect('/login');
+    }
     return null;
   }
 
@@ -334,19 +339,28 @@ export function Layout({ children }: { children: React.ReactNode }) {
 export default function App({ loaderData }: Route.ComponentProps) {
   const { revalidate } = useRevalidator();
   const location = useLocation();
-  const hasRevalidatedRef = useRef(false);
+  const onRootBootstrap = location.pathname === '/' && loaderData == null;
 
-  // When the root clientLoader runs during startup before the backend is
-  // ready, it returns null (no redirect). HubStatus hides children until
-  // the hub is Running, so by the time this component mounts the backend
-  // is available. Trigger a one-shot revalidation to re-run the loader
-  // and perform the correct redirect.
+  // Root has no index route. While the loader is still resolving (common during
+  // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
   useEffect(() => {
-    if (location.pathname === '/' && loaderData == null && !hasRevalidatedRef.current) {
-      hasRevalidatedRef.current = true;
-      revalidate();
-    }
-  }, [location.pathname, loaderData, revalidate]);
+    if (!onRootBootstrap) return;
+
+    void revalidate();
+    const id = window.setInterval(() => {
+      void revalidate();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [onRootBootstrap, revalidate]);
+
+  if (onRootBootstrap) {
+    return (
+      <>
+        <DesktopStartupFallback />
+        <Toaster position="bottom-center" />
+      </>
+    );
+  }
 
   return (
     <Providers>

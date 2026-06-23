@@ -20,15 +20,20 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
 export async function clientLoader() {
-  const registrationStatus = await resolveRegistrationStatus();
-  if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
-    return redirect('/device-registration');
-  }
+  try {
+    const registrationStatus = await resolveRegistrationStatus();
+    if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
+      return redirect('/device-registration');
+    }
 
-  const user = await userContext();
+    const user = await userContext();
 
-  if (user.data?.isLoggedIn) {
-    return redirect('/home');
+    if (user.data?.isLoggedIn) {
+      return redirect('/home');
+    }
+  } catch {
+    // Backend may still be booting in the desktop app — render the login UI anyway.
+    return null;
   }
 }
 

@@ -125,7 +125,13 @@ export default () => {
               captureHubException(error, { componentStack: info.componentStack ?? undefined });
             }}
           >
-            <Suspense fallback={null}>
+            <Suspense
+              fallback={
+                <div className="flex min-h-[40vh] items-center justify-center p-5">
+                  <output className="spinner-border text-secondary" />
+                </div>
+              }
+            >
               <AppContextProvider>
                 <AuthenticatedContent>{outlet}</AuthenticatedContent>
               </AppContextProvider>
