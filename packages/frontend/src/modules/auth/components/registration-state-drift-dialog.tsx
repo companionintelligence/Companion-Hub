@@ -34,7 +34,7 @@ type DriftOptionCardProps = {
   onClick: () => void;
   disabled?: boolean;
   loading?: boolean;
-  recommended?: boolean;
+  highlighted?: boolean;
   testId: string;
   variant?: 'primary' | 'outline';
 };
@@ -47,37 +47,28 @@ function DriftOptionCard({
   onClick,
   disabled,
   loading,
-  recommended,
+  highlighted,
   testId,
   variant = 'outline',
 }: DriftOptionCardProps) {
-  const { t } = useTranslation();
-
   return (
     <div
       className={cn(
-        'flex h-full flex-col rounded-xl border bg-card p-5 sm:p-6 transition-colors',
-        recommended ? 'border-primary/50 ring-1 ring-primary/20 shadow-sm' : 'border-border/60',
+        'flex flex-col rounded-xl border bg-card p-5 sm:p-6 transition-colors',
+        highlighted ? 'border-primary/50 ring-1 ring-primary/20 shadow-sm' : 'border-border/60',
       )}
     >
       <div className="flex items-start gap-3">
         <div
           className={cn(
             'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
-            recommended ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
+            highlighted ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
           )}
         >
           <Icon className="h-5 w-5" aria-hidden />
         </div>
         <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold leading-snug text-foreground">{title}</p>
-            {recommended ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-primary">
-                {t('DEVICE_REGISTRATION_STATE_DRIFT_RECOMMENDED')}
-              </span>
-            ) : null}
-          </div>
+          <p className="text-base font-semibold leading-snug text-foreground">{title}</p>
           <p className="text-sm leading-relaxed text-muted-foreground">{description}</p>
         </div>
       </div>
@@ -150,7 +141,7 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
           ) : null}
         </div>
 
-        <div className="grid gap-4 px-6 py-6 sm:px-8 md:grid-cols-2">
+        <div className="flex flex-col gap-4 px-6 py-6 sm:px-8">
           <DriftOptionCard
             icon={RefreshCw}
             title={t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE')}
@@ -158,7 +149,7 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
             actionLabel={t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_ACTION')}
             onClick={onRestore}
             disabled={isPreparing}
-            recommended={recommendRestore}
+            highlighted={recommendRestore}
             variant={recommendRestore ? 'primary' : 'outline'}
             testId="drift-restore"
           />
@@ -171,7 +162,7 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
             onClick={onSetupNew}
             disabled={isPreparing}
             loading={isPreparing}
-            recommended={!recommendRestore}
+            highlighted={!recommendRestore}
             variant={recommendRestore ? 'outline' : 'primary'}
             testId="drift-setup-new"
           />

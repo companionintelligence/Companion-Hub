@@ -144,6 +144,11 @@ export class AuthService {
     return body.token !== null && body.token !== undefined;
   }
 
+  /** Create the first local operator from a Portal account when none exists yet. */
+  public bootstrapOperatorFromPortalEmail(email: string) {
+    return this.ensureLocalCompanionUser(email);
+  }
+
   private async ensureLocalCompanionUser(email: string) {
     const existing = await this.userRepository.getUserByUsername(email);
 

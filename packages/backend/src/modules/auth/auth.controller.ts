@@ -262,13 +262,17 @@ export class AuthController {
       }
 
       const email = exchange.email;
-      const operator = await this.userRepository.getFirstOperator();
-      if (!operator) {
-        return redirectError(hubOrigin, 'callback_error');
-      }
+      let operator = await this.userRepository.getFirstOperator();
 
-      if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-        // For now, only allow Portal login for the operator email already configured on this Hub.
+      if (!operator) {
+        try {
+          operator = await this.authService.bootstrapOperatorFromPortalEmail(email);
+        } catch (error) {
+          this.logger.warn('Portal OAuth callback failed to bootstrap local operator', { error });
+          return redirectError(hubOrigin, 'callback_error');
+        }
+      } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
+        // Only allow Portal login for the operator email already configured on this Hub.
         // This avoids silently elevating a Portal user to local admin.
         this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
         return redirectError(hubOrigin, 'account_mismatch');

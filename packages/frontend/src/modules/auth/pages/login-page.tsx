@@ -27,17 +27,13 @@ export async function clientLoader() {
 
   const user = await userContext();
 
-  if (!user.data?.isConfigured) {
-    return redirect('/register');
-  }
-
   if (user.data?.isLoggedIn) {
     return redirect('/home');
   }
 }
 
 export default () => {
-  const { isLoggedIn, isConfigured, refreshUserContext, setUserContext } = useUserContext();
+  const { isLoggedIn, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -169,10 +165,6 @@ export default () => {
       return;
     }
     return <Navigate to="/home" />;
-  }
-
-  if (!isConfigured) {
-    return <Navigate to="/register" />;
   }
 
   if (totpSessionId) {

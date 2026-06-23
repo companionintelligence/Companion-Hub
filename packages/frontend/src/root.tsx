@@ -147,7 +147,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   // Root path: determine where to send the user
   if (!userResult.data?.isConfigured) {
-    return redirect('/register');
+    return redirect('/login');
   }
 
   if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
