@@ -1,6 +1,5 @@
 import type { UserContextDto } from '@/api-client';
 import { userContextOptions, userContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { captureHubWarning } from '@/lib/sentry';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext } from 'react';
 
@@ -18,7 +17,7 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   isGuestDashboardEnabled: false,
   isConfigured: false,
   domain: '',
-  localDomain: 'ci.lan',
+  localDomain: 'localhost',
   sslPort: 443,
   allowErrorMonitoring: false,
   allowAutoThemes: false,
@@ -39,19 +38,16 @@ export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ c
   } = useQuery({
     ...userContextOptions(),
     staleTime: 30_000,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 5_000),
   });
 
   if (error && !isFetching && !userContext) {
     // During desktop startup races, backend endpoints can briefly fail before
     // becoming ready. Keep defaults instead of crashing the entire UI.
-    console.warn('userContext unavailable during startup, using defaults:', error);
-    captureHubWarning(
-      'userContext unavailable during startup; using defaults',
-      {
-        error: error instanceof Error ? error.message : String(error),
-      },
-      { dedupeKey: 'user-context-startup-unavailable' },
-    );
+    if (import.meta.env.DEV) {
+      console.warn('userContext unavailable during startup, using defaults:', error);
+    }
   }
 
   const refreshUserContext = async () => {
