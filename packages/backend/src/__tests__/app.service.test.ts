@@ -86,21 +86,21 @@ describe('AppService', () => {
     it('should return current version when no newer tags exist', async () => {
       const version = faker.system.semver();
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ version }));
-      registryService.getTagsSince.mockResolvedValueOnce([]);
+      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce([]);
 
       const result = await appService.getVersion();
 
       expect(result.current).toBe(version);
       expect(result.latest).toBe(version);
       expect(result.releases).toEqual([]);
-      expect(registryService.getTagsSince).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, version);
+      expect(registryService.getTagsSinceWithHubFallback).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, version);
     });
 
     it('should return latest version when newer tags exist', async () => {
       const version = '1.0.0';
       const newerTags = ['1.2.0', '1.1.0'];
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ version }));
-      registryService.getTagsSince.mockResolvedValueOnce(newerTags);
+      registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce(newerTags);
 
       const result = await appService.getVersion();
 

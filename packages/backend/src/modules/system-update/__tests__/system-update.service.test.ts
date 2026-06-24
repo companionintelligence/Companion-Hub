@@ -36,23 +36,24 @@ describe('SystemUpdateService', () => {
     };
     mockRegistryService = {
       getTagsSince: vi.fn(),
+      getTagsSinceWithHubFallback: vi.fn(),
     };
     service = new SystemUpdateService(mockLogger as any, mockConfig as any, mockRegistryService as any);
   });
 
   describe('checkForUpdates', () => {
     it('should return update available when newer versions exist', async () => {
-      mockRegistryService.getTagsSince.mockResolvedValue(['1.1.0']);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['1.1.0']);
 
       const result = await service.checkForUpdates();
       expect(result.updateAvailable).toBe(true);
       expect(result.current).toBe('1.0.0');
       expect(result.latest).toBe('1.1.0');
-      expect(mockRegistryService.getTagsSince).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '1.0.0');
+      expect(mockRegistryService.getTagsSinceWithHubFallback).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '1.0.0');
     });
 
     it('should return no update when no newer versions', async () => {
-      mockRegistryService.getTagsSince.mockResolvedValue([]);
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue([]);
 
       const result = await service.checkForUpdates();
       expect(result.updateAvailable).toBe(false);

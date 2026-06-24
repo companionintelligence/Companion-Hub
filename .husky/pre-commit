@@ -1,8 +1,15 @@
 #!/bin/sh
 # Ensure bun is in PATH for git hook context (minimal PATH)
-export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.bun/bin:$HOME/.asdf/shims:$HOME/.asdf/bin:$HOME/.local/bin:$PATH"
 if command -v bun >/dev/null 2>&1; then
   bun run lint-staged
+elif command -v pnpm >/dev/null 2>&1; then
+  pnpm exec lint-staged
+elif command -v corepack >/dev/null 2>&1; then
+  corepack pnpm exec lint-staged
+elif [ -x "./node_modules/.bin/lint-staged" ]; then
+  ./node_modules/.bin/lint-staged
 else
-  npx lint-staged
+  echo "pre-commit: bun/pnpm/corepack not found in PATH and local lint-staged is unavailable." >&2
+  exit 127
 fi
