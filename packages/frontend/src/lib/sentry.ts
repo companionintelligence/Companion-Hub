@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react';
+import { isChunkLoadError } from './chunk-load-error';
 import { apiFetch } from './api-fetch';
 
 let sentryInitialized = false;
@@ -136,6 +137,26 @@ async function ensureHubSentryDeviceId(): Promise<void> {
   return deviceIdRequest;
 }
 
+function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
+  const haystack = [event.message, ...(event.exception?.values?.map((value) => value.value) ?? [])].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+
+  for (const text of haystack) {
+    if (isChunkLoadError(text) || isChunkLoadError(new TypeError(text))) {
+      return true;
+    }
+    if (text.includes('set_background_color not allowed')) {
+      return true;
+    }
+    if (text === 'userContext unavailable during startup; using defaults') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function initHubSentry(): void {
   if (sentryInitialized) {
     return;
@@ -156,6 +177,9 @@ export function initHubSentry(): void {
     enabled: true,
     tracesSampleRate: 0,
     sendDefaultPii: true,
+    beforeSend(event) {
+      return shouldDropSentryEvent(event) ? null : event;
+    },
   });
 
   sentryInitialized = true;
