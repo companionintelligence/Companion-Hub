@@ -18,6 +18,7 @@ import { ModeToggle } from '@/components/mode-toggle';
 import { useTheme } from '@/components/providers/theme/theme-provider';
 import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 
 type HeaderProps = {
@@ -37,6 +38,7 @@ export const Header = (props: HeaderProps) => {
   const logout = useMutation({
     ...logoutMutation(),
     onSuccess: () => {
+      clearClientHubState({ keepPortalEmail: true });
       window.location.reload();
     },
   });

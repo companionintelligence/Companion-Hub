@@ -11,6 +11,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -27,6 +28,7 @@ export class FactoryResetService {
     private readonly configuration: ConfigurationService,
     private readonly cache: CacheService,
     private readonly logger: LoggerService,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   public async execute(): Promise<{ success: true; message: string }> {
@@ -36,6 +38,7 @@ export class FactoryResetService {
     await this.wipeDataMounts();
     await this.wipeDatabase();
     await this.clearRegistrationArtifacts();
+    await this.registrationService.resetRegistration({ reason: 'manual' });
     await this.resetSettings();
     this.cache.clear();
 

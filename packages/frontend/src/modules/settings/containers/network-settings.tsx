@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import toast from 'react-hot-toast';
 import { openExternal } from '@/lib/helpers/open-external';
 
@@ -45,7 +46,7 @@ const TailscaleSidecarSection = () => {
   const { data, isLoading } = useQuery<TailscaleApiStatus>({
     queryKey: ['tailscale-status'],
     queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/status', { credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/status');
       return res.json();
     },
     refetchInterval: 10_000,
@@ -58,7 +59,7 @@ const TailscaleSidecarSection = () => {
 
   const browserAuthMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST' });
       return res.json() as Promise<AuthStartResponse>;
     },
     onSuccess: (payload) => {
@@ -82,7 +83,7 @@ const TailscaleSidecarSection = () => {
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST' });
       const json = (await res.json()) as { success: boolean; error?: string };
       if (!json.success) {
         throw new Error(json.error ?? t('SETTINGS_NETWORK_DISCONNECT_FAILED'));
@@ -199,7 +200,7 @@ const CloudflareSection = () => {
   const { data: status, isLoading } = useQuery<CloudflareStatus>({
     queryKey: ['cloudflare-status'],
     queryFn: async () => {
-      const res = await apiFetch('/api/cloudflare/status', { credentials: 'include' });
+      const res = await apiFetch('/api/cloudflare/status');
       return res.json();
     },
     refetchInterval: 30000,
@@ -212,8 +213,7 @@ const CloudflareSection = () => {
       const res = await apiFetch('/api/registration/reset', { method: 'POST' });
       if (res.ok) {
         toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
-        sessionStorage.removeItem('device-registered');
-        sessionStorage.removeItem('device-registered-at');
+        clearClientHubState({ keepPortalEmail: true });
         setTimeout(() => {
           window.location.href = '/device-registration';
         }, 1500);

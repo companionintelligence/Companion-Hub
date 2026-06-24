@@ -161,7 +161,7 @@ describe('AiSettingsContainer', () => {
     });
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/models/runtime?backend=vllm', expect.any(Object));
+      expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/models/runtime?backend=vllm');
     });
   });
 

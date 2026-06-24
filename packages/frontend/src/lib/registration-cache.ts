@@ -3,11 +3,6 @@ import { isRegistrationOperational, requiresDeviceRegistration } from './registr
 import { apiFetch } from './api-fetch';
 
 export async function resolveRegistrationStatus(): Promise<RegistrationStatus | null> {
-  const cachedStatus = getCachedRegistrationStatus();
-  if (cachedStatus) {
-    return cachedStatus;
-  }
-
   try {
     const res = await apiFetch('/api/registration/status');
     if (!res.ok) {

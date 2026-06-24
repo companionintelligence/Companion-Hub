@@ -92,7 +92,7 @@ export function buildAppAccessPoints(input: {
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record);
-  const directUrl = directPort && localEnabled ? `${info.https ? 'https' : 'http'}://${browserHost}:${directPort}${urlSuffix}` : null;
+  const directUrl = directPort && localEnabled ? `http://${browserHost}:${directPort}${urlSuffix}` : null;
   const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, app.port ?? null);
   const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, app.port ?? null, urlSuffix);
 

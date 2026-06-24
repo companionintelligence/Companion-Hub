@@ -7,11 +7,12 @@ import { HostMetricsService } from './host-metrics.service';
 import { ResourceAllocatorService } from './resource-allocator.service';
 import { FactoryResetController } from './factory-reset.controller';
 import { FactoryResetService } from './factory-reset.service';
+import { RegistrationModule } from '../registration/registration.module';
 import { NetworkModule } from '../network/network.module';
 import { DockerModule } from '../docker/docker.module';
 
 @Module({
-  imports: [forwardRef(() => NetworkModule), forwardRef(() => DockerModule)],
+  imports: [forwardRef(() => NetworkModule), forwardRef(() => DockerModule), forwardRef(() => RegistrationModule)],
   controllers: [SystemController, SystemInspectorController, FactoryResetController],
   providers: [SystemService, SystemInspectorService, HostMetricsService, ResourceAllocatorService, FactoryResetService],
   exports: [SystemService, HostMetricsService, ResourceAllocatorService, FactoryResetService],

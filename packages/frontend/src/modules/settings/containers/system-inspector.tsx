@@ -517,7 +517,7 @@ export const SystemInspectorContainer = () => {
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery<InspectionData>({
     queryKey: ['system-inspector'],
     queryFn: async () => {
-      const res = await apiFetch('/api/system-inspector', { credentials: 'include' });
+      const res = await apiFetch('/api/system-inspector');
       if (!res.ok) throw new Error(t('SYSTEM_INSPECTOR_FETCH_FAILED'));
       return res.json();
     },

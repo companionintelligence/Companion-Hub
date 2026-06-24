@@ -13,7 +13,7 @@ export type InstallQueueState = {
 };
 
 export async function fetchInstallQueue(): Promise<InstallQueueState> {
-  const res = await apiFetch('/api/apps/install-queue', { credentials: 'include' });
+  const res = await apiFetch('/api/apps/install-queue');
   if (!res.ok) {
     throw new Error(`Failed to load install queue (${res.status})`);
   }

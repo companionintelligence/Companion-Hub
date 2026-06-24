@@ -327,7 +327,7 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
 
   try {
     const { apiFetch } = await import('@/lib/api-fetch');
-    const tokenRes = await apiFetch('/api/system/update/host-listener-token', { credentials: 'include' });
+    const tokenRes = await apiFetch('/api/system/update/host-listener-token');
     if (!tokenRes.ok) {
       return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
     }
@@ -356,7 +356,6 @@ export async function performStackUpdate(targetVersion?: string): Promise<Update
     const res = await apiFetch('/api/system/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({ targetVersion }),
     });
     if (res.ok) {

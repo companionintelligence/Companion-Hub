@@ -174,9 +174,7 @@ export const InstallForm: React.FC<IProps> = ({
         query.set('appUrn', editingAppUrn);
       }
 
-      return apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
-        credentials: 'include',
-      });
+      return apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`);
     },
     [editingAppUrn],
   );

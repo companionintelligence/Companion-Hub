@@ -9,6 +9,7 @@ import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import toast from 'react-hot-toast';
 import {
   checkForUpdates,
@@ -52,7 +53,7 @@ export const GeneralActionsContainer = () => {
   const handleRestartWizard = useCallback(async () => {
     setRestartingWizard(true);
     try {
-      const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH', credentials: 'include' });
+      const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       window.location.href = '/onboarding';
     } catch {
@@ -75,6 +76,7 @@ export const GeneralActionsContainer = () => {
         body: JSON.stringify({ confirmation: FACTORY_RESET_CONFIRMATION }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearClientHubState();
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
       window.location.href = '/login';
     } catch {
@@ -108,7 +110,7 @@ export const GeneralActionsContainer = () => {
   }, [desktop, refreshUpdateState]);
 
   useEffect(() => {
-    apiFetch('/api/system/update/auto-updates', { credentials: 'include' })
+    apiFetch('/api/system/update/auto-updates')
       .then((res) => res.json())
       .then((data) => setAutoUpdates(data.enabled))
       .catch(() => {
@@ -132,7 +134,7 @@ export const GeneralActionsContainer = () => {
         return;
       }
 
-      const res = await apiFetch('/api/system/update/check', { credentials: 'include' });
+      const res = await apiFetch('/api/system/update/check');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
@@ -191,7 +193,6 @@ export const GeneralActionsContainer = () => {
       await apiFetch('/api/system/update/auto-updates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify({ enabled: newValue }),
       });
       setAutoUpdates(newValue);

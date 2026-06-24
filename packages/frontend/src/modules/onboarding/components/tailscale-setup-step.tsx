@@ -52,7 +52,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
   } = useQuery<TailscaleApiStatus>({
     queryKey: ['tailscale-status'],
     queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/status', { credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/status');
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
@@ -66,7 +66,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
 
   const browserAuthMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST' });
       return res.json() as Promise<AuthStartResponse>;
     },
     onSuccess: (payload) => {
