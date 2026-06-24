@@ -390,4 +390,17 @@ mod tests {
         );
         assert_eq!(classify_log_level("startup complete"), sentry::Level::Info);
     }
+
+    #[test]
+    fn suppresses_benign_traefik_absence_messages_from_sentry_capture() {
+        assert!(is_benign_hub_start_message(
+            "Removed existing Traefik container before recreate. Error response from daemon: No such container: traefik"
+        ));
+        assert!(is_benign_hub_start_message(
+            "Traefik recreate was requested, but no existing Traefik container was present."
+        ));
+        assert!(!is_benign_hub_start_message(
+            "Failed to remove the existing Traefik container before recreate. permission denied"
+        ));
+    }
 }

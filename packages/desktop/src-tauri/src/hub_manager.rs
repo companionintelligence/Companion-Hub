@@ -7871,6 +7871,19 @@ mod tests {
     }
 
     #[test]
+    fn detects_docker_missing_resource_messages() {
+        assert!(super::is_docker_missing_resource_message(
+            "Error response from daemon: No such container: traefik"
+        ));
+        assert!(super::is_docker_missing_resource_message(
+            "Error response from daemon: No such object: traefik"
+        ));
+        assert!(!super::is_docker_missing_resource_message(
+            "permission denied while trying to connect"
+        ));
+    }
+
+    #[test]
     fn traefik_recreate_marker_can_be_set_and_cleared() {
         let tempdir = tempfile::tempdir().expect("tempdir");
 
