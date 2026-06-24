@@ -28,6 +28,16 @@ export class QueueFactory implements OnApplicationShutdown {
   // biome-ignore lint/suspicious/noExplicitAny: heterogeneous queue schemas
   private createdQueues: { queue: Queue<any, any>; queueName: string; timeout?: number }[] = [];
 
+  private healthWatchdog?: ReturnType<typeof globalThis.setInterval>;
+  // How often the watchdog actively probes the connection. The per-attempt
+  // reconnect budget (doReconnect) gives up after 5 tries; the watchdog re-arms
+  // recovery indefinitely so a long broker outage can never permanently wedge
+  // the queue once RabbitMQ comes back.
+  private static readonly WATCHDOG_INTERVAL_MS = 30_000;
+  // Upper bound on a single channel-acquire probe so the health endpoint always
+  // answers well within Docker's 5s healthcheck timeout.
+  private static readonly PROBE_TIMEOUT_MS = 3_000;
+
   public constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
@@ -42,6 +52,8 @@ export class QueueFactory implements OnApplicationShutdown {
       this.logger.error('Initial queue connection failed', error);
       await this.reconnect(error instanceof Error ? error : new Error(String(error)));
     });
+
+    this.startHealthWatchdog();
   }
 
   public async initializeConnection() {
@@ -179,6 +191,99 @@ export class QueueFactory implements OnApplicationShutdown {
     };
   }
 
+  /**
+   * Actively verify the connection can still open a channel.
+   *
+   * The cached `connectionStatus` flag is necessary but not sufficient: after a
+   * RabbitMQ restart the factory can report 'ready' while the per-queue RPC
+   * clients are still bound to a connection that is closing — every publish then
+   * fails with "channel creation failed; connection is closing" even though
+   * `isReady()` is true. Acquiring (and immediately closing) a real channel is
+   * the only reliable liveness signal. Resolves false instead of throwing.
+   */
+  public async probeConnection(timeoutMs = QueueFactory.PROBE_TIMEOUT_MS): Promise<boolean> {
+    if (!this.rabbit) {
+      return false;
+    }
+
+    try {
+      const channel = await this.withTimeout(this.rabbit.acquire(), timeoutMs, 'Queue connection probe timed out');
+      await channel.close().catch(() => {
+        /* channel may already be gone; the acquire succeeding is the signal we need */
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    // Use the global (callback) timer explicitly — this module imports the
+    // promise-based `setTimeout` from node:timers/promises, which would shadow it.
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
+      timer.unref?.();
+    });
+
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) {
+        globalThis.clearTimeout(timer);
+      }
+    }
+  }
+
+  /**
+   * Periodically probe the connection and force recovery if it is wedged. This
+   * is the safety net beyond doReconnect's bounded retry: doReconnect gives up
+   * after 5 attempts, but the watchdog keeps re-arming reconnect for as long as
+   * the broker stays unreachable, and also heals the "ready flag but dead
+   * channels" state that no socket-level signal catches.
+   */
+  private startHealthWatchdog() {
+    if (this.healthWatchdog) {
+      return;
+    }
+
+    this.healthWatchdog = globalThis.setInterval(() => {
+      void this.runWatchdogCheck();
+    }, QueueFactory.WATCHDOG_INTERVAL_MS);
+    // Never hold the event loop open just for the watchdog.
+    this.healthWatchdog.unref?.();
+  }
+
+  private async runWatchdogCheck() {
+    // A reconnect or (re)initialize already in flight will settle readiness itself.
+    if (this.reconnectPromise || this.initializationPromise) {
+      return;
+    }
+
+    if (await this.probeConnection()) {
+      // Connection is genuinely usable. If we were still flagged degraded (e.g.
+      // the library recovered the socket without a fresh 'connection' event),
+      // clear the flag and refresh the RPC clients so publishes stop short-
+      // circuiting on the unavailable gate.
+      if (this.connectionStatus !== 'ready') {
+        this.logger.info('Queue watchdog: connection probe succeeded; refreshing queue bindings');
+        this.connectionAttempts = 0;
+        this.connectionStatus = 'ready';
+        this.lastError = undefined;
+        this.rebindQueues();
+      }
+      return;
+    }
+
+    this.logger.warn('Queue watchdog detected an unusable connection; forcing reconnect');
+    const error = new Error('Queue watchdog: connection probe failed');
+    this.markDegraded(error);
+    // Reset the attempt budget so doReconnect's 5-try cap can't permanently wedge
+    // the queue — each watchdog tick is allowed a fresh reconnect burst.
+    this.connectionAttempts = 0;
+    await this.reconnect(error);
+  }
+
   // Re-establish connection to Queue with exponential backoff
   public async reconnect(error: Error) {
     if (this.reconnectPromise) {
@@ -280,6 +385,11 @@ export class QueueFactory implements OnApplicationShutdown {
   }
 
   async onApplicationShutdown() {
+    if (this.healthWatchdog) {
+      globalThis.clearInterval(this.healthWatchdog);
+      this.healthWatchdog = undefined;
+    }
+
     for (const { queue } of this.createdQueues) {
       queue.stopAllCronTasks();
     }
