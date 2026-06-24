@@ -101,4 +101,72 @@ describe('RegistryService', () => {
       expect(result).toBe('0.0.0');
     });
   });
+
+  describe('getTagsSinceWithHubFallback', () => {
+    it('uses the release feed for hub repo when tag list has no newer semver tags', async () => {
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
+      httpService.get.mockImplementation((url: string) => {
+        if (url === 'https://portal.ci.computer/v2/ci-os-hub/tags/list') {
+          return of({ data: { tags: [] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        if (url === 'https://dl.ci.computer/latest.json') {
+          return of({ data: { version: 'v1.2.0' }, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        throw new Error(`unexpected url: ${url}`);
+      });
+
+      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+
+      expect(result).toEqual(['1.2.0']);
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list');
+      expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json');
+    });
+
+    it('returns [] for non-hub repos without calling the release feed', async () => {
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
+      httpService.get.mockReturnValue(of({ data: { tags: [] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any));
+      httpService.get.mockClear();
+
+      const result = await registryService.getTagsSinceWithHubFallback('custom-repo', '1.0.0');
+
+      expect(result).toEqual([]);
+      expect(httpService.get).toHaveBeenCalledTimes(1);
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/custom-repo/tags/list');
+      expect(httpService.get.mock.calls.some(([url]) => url === 'https://dl.ci.computer/latest.json')).toBe(false);
+    });
+
+    it('returns [] when feed version is invalid', async () => {
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
+      httpService.get.mockImplementation((url: string) => {
+        if (url === 'https://portal.ci.computer/v2/ci-os-hub/tags/list') {
+          return of({ data: { tags: [] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        if (url === 'https://dl.ci.computer/latest.json') {
+          return of({ data: { version: 'not-a-version' }, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        throw new Error(`unexpected url: ${url}`);
+      });
+
+      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+
+      expect(result).toEqual([]);
+    });
+
+    it('returns [] when feed version is missing', async () => {
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
+      httpService.get.mockImplementation((url: string) => {
+        if (url === 'https://portal.ci.computer/v2/ci-os-hub/tags/list') {
+          return of({ data: { tags: [] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        if (url === 'https://dl.ci.computer/latest.json') {
+          return of({ data: {}, status: 200, statusText: 'OK', headers: {}, config: {} } as any);
+        }
+        throw new Error(`unexpected url: ${url}`);
+      });
+
+      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+
+      expect(result).toEqual([]);
+    });
+  });
 });

@@ -35,7 +35,6 @@ describe('SystemUpdateService', () => {
       get: vi.fn(() => ({ dataDir: '/data' })),
     };
     mockRegistryService = {
-      getTagsSince: vi.fn(),
       getTagsSinceWithHubFallback: vi.fn(),
     };
     service = new SystemUpdateService(mockLogger as any, mockConfig as any, mockRegistryService as any);
