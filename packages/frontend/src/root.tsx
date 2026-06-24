@@ -129,15 +129,18 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {
-    if (url.pathname === '/device-registration') {
+    if (url.pathname === '/device-registration' || url.pathname === '/login') {
       return null;
     }
-    if (url.pathname === '/' || url.pathname === '/login') {
+    if (url.pathname === '/') {
       return redirect('/device-registration');
     }
   }
 
   if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
+    if (url.pathname === '/login') {
+      return null;
+    }
     if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
