@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -130,11 +130,11 @@ describe.runIf(RUN)('QueueFactory (real broker)', () => {
     await waitFor(async () => (await queue.publish({ requestId: 'before-restart' })).success === true, 15_000, 'initial publish round-trip');
 
     // 3. Broker goes away — the probe must report the wedge (acquire rejects/times out).
-    execSync(`docker stop ${CONTAINER}`, { stdio: 'ignore' });
+    execFileSync('docker', ['stop', CONTAINER], { stdio: 'ignore' });
     await waitFor(async () => (await f.probeConnection()) === false, 15_000, 'probe detects downed broker');
 
     // 4. Broker returns; a watchdog tick must restore readiness and a usable channel.
-    execSync(`docker start ${CONTAINER}`, { stdio: 'ignore' });
+    execFileSync('docker', ['start', CONTAINER], { stdio: 'ignore' });
     await waitForBrokerAmqp('after restart');
     await waitFor(
       async () => {
