@@ -32,7 +32,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let reset_hub = MenuItem::with_id(
         app,
         "reset_hub",
-        "Reset Hub & Clear Tunnel Token",
+        "Clear Tunnel Token (not full reset)",
         true,
         None::<&str>,
     )?;
@@ -233,7 +233,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = crate::hub_manager::append_desktop_log_for(
                     &data,
                     "tray.reset",
-                    "Reset Hub requested from the tray menu — will stop containers and clear tunnel token.",
+                    "Clear tunnel token requested from tray — stops containers and removes the local tunnel token only. Use Settings → Factory reset or `cihub reset --yes` for a full wipe.",
                 );
                 tauri::async_runtime::spawn(async move {
                     // 1. Stop the Hub compose project (best-effort — keep going on error).

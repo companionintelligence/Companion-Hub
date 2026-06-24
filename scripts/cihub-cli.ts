@@ -732,7 +732,7 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   if (ctx.exists) {
     if (!applianceNoticeShown) {
       applianceNoticeShown = true;
-      printMessageBox('Targeting prod install', ['No CI-Hub checkout here ‚Äî operating on the canonical prod data dir:', dim(ctx.dataDir)], 'cyan');
+      printMessageBox('Targeting prod install', ['No CI-Hub checkout here ù operating on the canonical prod data dir:', dim(ctx.dataDir)], 'cyan');
     }
     return;
   }
@@ -1160,7 +1160,8 @@ function applianceDockerTeardown(removeVolumes: boolean): void {
 /** Tear down a desktop-installed prod Hub from anywhere (canonical data dir). */
 function downApplianceHub(ctx: HubContext, options?: { volumes?: boolean }) {
   const dataDir = ctx.dataDir as string;
-  const composeExists = existsSync(ctx.composeFiles[0]) && existsSync(ctx.envFile);
+  const composePath = ctx.composeFiles[0];
+  const composeExists = composePath !== undefined && existsSync(composePath) && existsSync(ctx.envFile);
   printMessageBox(options?.volumes ? 'Resetting prod hub runtime' : 'Stopping prod hub', [`Data dir: ${dataDir}`], 'yellow');
 
   if (composeExists) {
@@ -1295,8 +1296,65 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
     return false;
   }
   downHub(env, { volumes: true });
-  cleanHub(env);
+  verifyHubVolumesRemoved();
+  try {
+    cleanHub(env);
+  } catch (error) {
+    printMessageBox('Host cleanup reported an error', [String(error)], 'yellow');
+  }
+  cleanRootOwnedHubData(env);
+  printMessageBox(
+    'Reset complete',
+    [
+      'Hub runtime state, volumes, and host data were removed.',
+      'Re-launch Companion Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.',
+    ],
+    'green',
+  );
   return true;
+}
+
+function verifyHubVolumesRemoved() {
+  const { stdout } = runCapture('docker', ['volume', 'ls', '--format', '{{.Name}}']);
+  const lingering = stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter((value) => value.includes('ci_hub_pgdata') || value.includes('ci_hub_app_data') || value.includes('hub_tailscale_state'));
+
+  if (lingering.length === 0) {
+    return;
+  }
+
+  printMessageBox('Removing lingering Hub volumes', lingering, 'yellow');
+  for (const volume of lingering) {
+    runBestEffort('docker', ['volume', 'rm', volume]);
+  }
+}
+
+function cleanRootOwnedHubData(env: HubEnv) {
+  if (isApplianceMode()) return;
+
+  const envFileName = getEnvFileOrExit(env);
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  if (!existsSync(rootFolderHost)) return;
+
+  try {
+    rmSync(rootFolderHost, { recursive: true, force: true });
+    return;
+  } catch {
+    // Fall through to a root-owned bind mount cleanup via Docker.
+  }
+
+  if (!existsSync(rootFolderHost)) return;
+
+  const hostPath = path.resolve(rootFolderHost);
+  printMessageBox('Cleaning root-owned hub data via Docker', [`Target: ${hostPath}`], 'yellow');
+  runBestEffort('docker', ['run', '--rm', '-v', `${hostPath}:/d`, 'alpine', 'sh', '-c', 'rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true']);
+  try {
+    rmSync(rootFolderHost, { recursive: true, force: true });
+  } catch {
+    // Best effort ó directory may still contain root-owned entries.
+  }
 }
 
 export async function recreateHub(env: HubEnv, detached = false, force = false) {
