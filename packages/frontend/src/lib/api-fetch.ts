@@ -24,11 +24,18 @@ export function getTauriSessionId(): string | null {
  * since cross-origin cookies don't work in WebView2 over HTTP.
  */
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const baseUrl = client.getConfig().baseUrl ?? '';
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl ?? '';
   const headers = new Headers(init?.headers);
   const sid = getTauriSessionId();
   if (sid) {
     headers.set('X-CI-Hub-Session', sid);
   }
-  return fetch(`${baseUrl}${path}`, { credentials: 'include', ...init, headers });
+  // Honor the configured credential mode (set to 'omit' in Tauri release builds).
+  // Hardcoding 'include' breaks cross-origin requests in the desktop app: the Hub
+  // can answer with `Access-Control-Allow-Origin: *` (when the WebView sends no
+  // Origin), which browsers reject for any credentialed request — surfacing as a
+  // bare "Load failed". The generated API client already uses this config value.
+  const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
+  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers });
 }
