@@ -12,10 +12,13 @@ import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { retryDynamicImport } from '@/lib/chunk-load-error';
 import { getCategoryLabel } from '../../helpers/category-label';
 
 const AppDescriptionEditor = React.lazy(() =>
-  import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
+  retryDynamicImport(() =>
+    import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
+  ),
 );
 
 interface IProps {
