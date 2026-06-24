@@ -1,10 +1,35 @@
 import type { AppStatus as AppStatusType } from '@/types/app.types';
 import { cn } from '@/lib/utils';
-import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
+import type { AppContainerRuntimeStats, AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 
 type AppStatusVariant = 'inline' | 'pill';
+
+/** One-shot compose jobs (e.g. ci-memory setup-secrets) exit 0 and should not alarm the UI. */
+export function isCompletedOneShotContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'exitCode'>) {
+  return container.state === 'exited' && (container.exitCode === 0 || container.exitCode === null);
+}
+
+export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'health' | 'exitCode'>) {
+  if (container.health === 'unhealthy') {
+    return true;
+  }
+
+  if (container.state === 'dead') {
+    return true;
+  }
+
+  if (container.state === 'exited') {
+    return container.exitCode != null && container.exitCode !== 0;
+  }
+
+  return false;
+}
+
+function containersExpectedToRun(containers: AppContainerRuntimeStats[]) {
+  return containers.filter((container) => !isCompletedOneShotContainer(container));
+}
 
 const friendlyStatusLabels: Partial<Record<AppStatusType, string>> = {
   installing: 'Installing',
@@ -39,9 +64,10 @@ export function getAppStatusPresentation(
   detail: string | null;
 } {
   const containers = runtimeHealth?.containers ?? [];
-  const runningContainers = containers.filter((container) => container.state === 'running').length;
-  const hasUnhealthyContainer = containers.some((container) => container.health === 'unhealthy' || ['dead', 'exited'].includes(container.state));
-  const hasTransitionalContainer = containers.some(
+  const monitoredContainers = containersExpectedToRun(containers);
+  const runningContainers = monitoredContainers.filter((container) => container.state === 'running').length;
+  const hasUnhealthyContainer = monitoredContainers.some(isConcerningContainer);
+  const hasTransitionalContainer = monitoredContainers.some(
     (container) =>
       ['created', 'restarting'].includes(container.state) || container.health === 'starting' || container.status.toLowerCase().includes('starting'),
   );
@@ -57,13 +83,14 @@ export function getAppStatusPresentation(
       };
     }
 
-    if (containers.length === 0 || hasTransitionalContainer || runningContainers < containers.length) {
+    if (monitoredContainers.length === 0 || hasTransitionalContainer || runningContainers < monitoredContainers.length) {
       return {
         labelKey: 'APP_STATUS_INITIALIZING',
         fallbackLabel: 'Initializing',
         tone: 'warning',
         animate: true,
-        detail: containers.length > 0 ? `${runningContainers}/${containers.length} containers ready` : 'Containers are still starting.',
+        detail:
+          monitoredContainers.length > 0 ? `${runningContainers}/${monitoredContainers.length} containers ready` : 'Containers are still starting.',
       };
     }
   }
