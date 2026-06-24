@@ -59,11 +59,7 @@ function resolveAllowedCorsOrigin(origin: string | undefined): string | boolean 
   // Tauri webview origins. Windows (WebView2) serves the app from
   // http(s)://tauri.localhost, while Linux (webkit2gtk) and macOS (WKWebView)
   // serve it from the custom-protocol origin tauri://localhost.
-  if (
-    origin === 'http://tauri.localhost' ||
-    origin === 'https://tauri.localhost' ||
-    origin === 'tauri://localhost'
-  ) {
+  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin === 'tauri://localhost') {
     return origin;
   }
   if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
