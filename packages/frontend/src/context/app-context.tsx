@@ -1,6 +1,5 @@
 import type { AppContextDto } from '@/api-client';
 import { appContextOptions, appContextQueryKey, searchAppsInfiniteOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
-import { captureHubWarning } from '@/lib/sentry';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
@@ -48,19 +47,16 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   } = useQuery({
     ...appContextOptions(),
     staleTime: 30_000, // 30 seconds — don't refetch on every navigation
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 5_000),
   });
 
   if (error && !isFetching && !appContext) {
     // During desktop startup races, backend endpoints can briefly fail before
     // becoming ready. Keep defaults instead of crashing the entire UI.
-    console.warn('appContext unavailable during startup, using defaults:', error);
-    captureHubWarning(
-      'appContext unavailable during startup; using defaults',
-      {
-        error: error instanceof Error ? error.message : String(error),
-      },
-      { dedupeKey: 'app-context-startup-unavailable' },
-    );
+    if (import.meta.env.DEV) {
+      console.warn('appContext unavailable during startup, using defaults:', error);
+    }
   }
 
   const refreshAppContext = async () => {

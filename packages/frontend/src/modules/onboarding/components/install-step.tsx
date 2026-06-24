@@ -118,7 +118,6 @@ export const InstallStep = ({
             try {
               const res = await apiFetch('/api/inference/cloud-providers', {
                 method: 'POST',
-                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
               });
@@ -144,9 +143,7 @@ export const InstallStep = ({
 
           for (const modelId of modelsToPull) {
             try {
-              const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`, {
-                credentials: 'include',
-              });
+              const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`);
               if (!preflightRes.ok) {
                 modelErrors[modelId] = `Preflight check failed (HTTP ${preflightRes.status})`;
                 continue;
@@ -168,7 +165,6 @@ export const InstallStep = ({
               try {
                 const res = await apiFetch('/api/inference/models/pull', {
                   method: 'POST',
-                  credentials: 'include',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ modelId, bestEffort: true }),
                 });
@@ -189,7 +185,7 @@ export const InstallStep = ({
 
             const pollPullProgress = async (): Promise<boolean> => {
               try {
-                const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
+                const res = await apiFetch('/api/inference/models/tracked');
                 if (!res.ok) return false;
                 const tracked = await res.json();
                 let allDone = true;
@@ -264,7 +260,6 @@ export const InstallStep = ({
             try {
               await apiFetch('/api/inference/models/pin', {
                 method: 'POST',
-                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ modelId }),
               });
@@ -281,7 +276,6 @@ export const InstallStep = ({
         try {
           const preferenceRes = await apiFetch('/api/inference/preferences', {
             method: 'PATCH',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               backend: aiSetupConfig.backend,
@@ -334,7 +328,6 @@ export const InstallStep = ({
           const [res] = await Promise.all([
             apiFetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
               method: 'POST',
-              credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(buildInstallBody(app)),
             }),
@@ -354,7 +347,7 @@ export const InstallStep = ({
 
           const checkRunning = async (): Promise<'running' | 'installing' | 'install_failed' | false> => {
             try {
-              const installedRes = await apiFetch('/api/apps/installed', { credentials: 'include' });
+              const installedRes = await apiFetch('/api/apps/installed');
               if (!installedRes.ok) return false;
               const data = await installedRes.json().catch(() => ({}));
               const installed = data.installed || [];

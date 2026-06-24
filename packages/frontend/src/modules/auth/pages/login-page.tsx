@@ -6,8 +6,6 @@ import { apiFetch } from '@/lib/api-fetch';
 import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { rememberPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
-import { resolveRegistrationStatus } from '@/lib/registration-cache';
-import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -23,11 +21,6 @@ const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.lo
 
 export async function clientLoader() {
   try {
-    const registrationStatus = await resolveRegistrationStatus();
-    if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
-      return redirect('/device-registration');
-    }
-
     const user = await userContext();
 
     if (user.data?.isLoggedIn) {
@@ -189,7 +182,10 @@ export default () => {
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if ((data as Record<string, unknown>)?.sessionId) {
+        setTauriSessionId((data as Record<string, unknown>).sessionId as string);
+      }
       setUserContext({ isLoggedIn: true });
       refreshUserContext();
 

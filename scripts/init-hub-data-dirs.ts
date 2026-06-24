@@ -26,14 +26,13 @@ function resolveRootFolderHost(): string {
 
 function healPoisonedEnvMount(cwd: string): void {
   const envFile = process.env.ENV_FILE || '.env.dev';
-  if (envFile === '.env') return;
-  const poisoned = path.join(cwd, '.env');
-  if (!existsSync(poisoned)) return;
+  const envPath = path.isAbsolute(envFile) ? envFile : path.join(cwd, envFile);
+  if (!existsSync(envPath)) return;
   try {
-    if (statSync(poisoned).isDirectory()) {
-      rmSync(poisoned, { recursive: true, force: true });
+    if (statSync(envPath).isDirectory()) {
+      rmSync(envPath, { recursive: true, force: true });
       console.warn(
-        `init-hub-data-dirs: removed poisoned .env/ directory (Docker creates this when the bind-mount source file is missing; use ENV_FILE=${envFile})`,
+        `init-hub-data-dirs: removed poisoned env mount at ${envPath} (Docker creates a directory when the bind-mount source file is missing)`,
       );
     }
   } catch {

@@ -270,10 +270,23 @@ export class AuthController {
           return redirectError(hubOrigin, 'callback_error');
         }
       } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-        // Only allow Portal login for the operator email already configured on this Hub.
-        // This avoids silently elevating a Portal user to local admin.
-        this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
-        return redirectError(hubOrigin, 'account_mismatch');
+        const operators = await this.userRepository.getOperators();
+
+        if (operators.length === 1) {
+          // A verified Portal OIDC login is authoritative for the sole operator on
+          // single-user appliances — sync the local username so Companion Account
+          // sign-in works after onboarding used a different local email.
+          this.logger.warn('Portal login email differs from local operator; syncing from verified Portal identity', {
+            portalEmail: email,
+            operatorEmail: operator.username,
+          });
+          const normalizedEmail = email.trim().toLowerCase();
+          await this.userRepository.updateUser(operator.id, { username: normalizedEmail });
+          operator = { ...operator, username: normalizedEmail };
+        } else {
+          this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
+          return redirectError(hubOrigin, 'account_mismatch');
+        }
       }
 
       const sessionId = await this.sessionManager.createSession(operator.id);

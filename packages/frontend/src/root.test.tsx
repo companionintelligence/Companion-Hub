@@ -87,14 +87,43 @@ describe('root clientLoader registration gating', () => {
     expect(provisioningResult).toBeNull();
   });
 
-  it('redirects root to login when user context is unavailable during startup', async () => {
+  it('redirects root to device registration when registration status is unavailable during startup', async () => {
     apiFetch.mockRejectedValue(new Error('temporary outage'));
     userContext.mockRejectedValue(new Error('backend unavailable'));
 
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
 
     expect(result.status).toBe(302);
-    expect(result.headers.get('Location')).toBe('/login');
+    expect(result.headers.get('Location')).toBe('/device-registration');
+  });
+
+  it('redirects bootstrap routes to device registration when status is temporarily unavailable', async () => {
+    apiFetch.mockRejectedValue(new Error('temporary outage'));
+
+    const rootResult = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+    const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
+
+    expect(rootResult.status).toBe(302);
+    expect(rootResult.headers.get('Location')).toBe('/device-registration');
+    expect(loginResult).toBeNull();
+  });
+
+  it('allows login when registration status is temporarily unavailable', async () => {
+    apiFetch.mockRejectedValue(new Error('temporary outage'));
+
+    const loginWithPortalError = (await clientLoader({
+      request: new Request('http://localhost/login?portal_error=callback_error'),
+    } as never)) as Response | null;
+
+    expect(loginWithPortalError).toBeNull();
+  });
+
+  it('allows login while device registration is still pending', async () => {
+    apiFetch.mockResolvedValue(jsonResponse(makeStatus('unregistered')));
+
+    const result = await clientLoader({ request: new Request('http://localhost/login') } as never);
+
+    expect(result).toBeNull();
   });
 
   it('does not force re-registration when registration status is temporarily unavailable', async () => {

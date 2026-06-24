@@ -81,7 +81,7 @@ export const AiSettingsContainer = () => {
   }, []);
 
   const fetchTrackedModels = useCallback(async () => {
-    const trackedRes = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
+    const trackedRes = await apiFetch('/api/inference/models/tracked');
     if (!trackedRes.ok) {
       applyTrackedModels([]);
       return [] as TrackedModel[];
@@ -95,7 +95,7 @@ export const AiSettingsContainer = () => {
   const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType) => {
     setRuntimeModelsLoading(true);
     try {
-      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${encodeURIComponent(backend)}`, { credentials: 'include' });
+      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${encodeURIComponent(backend)}`);
       if (!runtimeRes.ok) {
         throw new Error(`HTTP ${runtimeRes.status}`);
       }
@@ -116,13 +116,13 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/api/inference/onboarding-profile', { credentials: 'include' });
+      const res = await apiFetch('/api/inference/onboarding-profile');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
 
       let preferredBackend = data.backends.recommended;
-      const prefRes = await apiFetch('/api/inference/preferences', { credentials: 'include' });
+      const prefRes = await apiFetch('/api/inference/preferences');
       if (prefRes.ok) {
         const prefData: InferencePreferencesResponse = await prefRes.json();
         preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
@@ -135,7 +135,7 @@ export const AiSettingsContainer = () => {
       await fetchRuntimeModels(preferredBackend);
 
       // Load configured cloud providers
-      const cloudRes = await apiFetch('/api/inference/cloud-providers', { credentials: 'include' });
+      const cloudRes = await apiFetch('/api/inference/cloud-providers');
       if (cloudRes.ok) {
         const providers = await cloudRes.json();
         const configured: CloudProviderInput[] = providers
@@ -165,7 +165,7 @@ export const AiSettingsContainer = () => {
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProfile(true);
     } catch (e) {
@@ -222,7 +222,6 @@ export const AiSettingsContainer = () => {
 
       const backendRes = await apiFetch('/api/inference/preferences', {
         method: 'PATCH',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           backend: selectedBackend,
@@ -241,7 +240,6 @@ export const AiSettingsContainer = () => {
         if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
           await apiFetch('/api/inference/cloud-providers', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
           });
@@ -249,7 +247,6 @@ export const AiSettingsContainer = () => {
           // Already-configured provider — update enabled state without re-sending key
           await apiFetch('/api/inference/cloud-providers', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: cp.provider, enabled: cp.enabled }),
           });
@@ -268,7 +265,6 @@ export const AiSettingsContainer = () => {
         try {
           const pullRes = await apiFetch('/api/inference/models/pull', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId }),
           });
@@ -280,7 +276,6 @@ export const AiSettingsContainer = () => {
 
           const pinRes = await apiFetch('/api/inference/models/pin', {
             method: 'POST',
-            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId }),
           });
@@ -299,7 +294,6 @@ export const AiSettingsContainer = () => {
           try {
             const unpinRes = await apiFetch('/api/inference/models/unpin', {
               method: 'POST',
-              credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ modelId }),
             });

@@ -118,4 +118,37 @@ describe('frontend sentry', () => {
     expect(captureMessage).toHaveBeenCalledTimes(1);
     expect(captureMessage).toHaveBeenCalledWith('startup fallback warning', 'warning');
   });
+
+  it('drops known handled frontend noise in beforeSend', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = {
+      message?: string;
+      exception?: { values?: Array<{ value?: string }> };
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+
+    expect(
+      beforeSend?.({
+        message: 'userContext unavailable during startup; using defaults',
+      }),
+    ).toBeNull();
+    expect(
+      beforeSend?.({
+        exception: {
+          values: [{ value: 'Failed to fetch dynamically imported module: http://localhost/app.js' }],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      beforeSend?.({
+        exception: {
+          values: [
+            { value: 'window.set_background_color not allowed. Permissions associated with this command: core:window:allow-set-background-color' },
+          ],
+        },
+      }),
+    ).toBeNull();
+  });
 });

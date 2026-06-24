@@ -169,6 +169,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
               state: backendProcess.state || 'running',
               status: 'Node process',
               health: null,
+              exitCode: null,
               cpuPercent: Number((backendProcess.cpu ?? 0).toFixed(2)),
               memoryUsageBytes: Math.max(Math.round((backendProcess.memRss ?? 0) * 1024), 0),
               memoryLimitBytes: 0,

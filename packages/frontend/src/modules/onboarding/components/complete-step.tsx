@@ -71,7 +71,6 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
     try {
       await apiFetch('/api/complete-onboarding', {
         method: 'PATCH',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
       });
       await refreshAppContext();

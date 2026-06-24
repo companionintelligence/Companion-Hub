@@ -8,9 +8,11 @@ import {
   box,
   buildEnvOverrides,
   getComposeFiles,
+  isApplianceMode,
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
+  resolveHubContext,
   normalizeCliArgs,
   parseAppRuntimeArgs,
   parseEnvFile,
@@ -24,6 +26,7 @@ import {
   shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
   resolveEnvFromArgs,
+  resolveUpStartMode,
   resolveWizardActionInput,
   resolveWizardEnvInput,
   stripAnsi,
@@ -588,5 +591,68 @@ describe('package metadata', () => {
     };
     expect(typeof pkg.version).toBe('string');
     expect(pkg.version?.length).toBeGreaterThan(0);
+  });
+});
+
+// --- appliance (canonical prod) mode ---
+
+describe('appliance mode (run outside a CI-Hub checkout)', () => {
+  const ENV_FILE_NAME = process.platform === 'win32' ? '.env' : '.env.dev';
+  let previousCwd: string;
+  let workDir: string;
+  let dataDir: string;
+  let previousDataDir: string | undefined;
+
+  beforeEach(() => {
+    previousCwd = process.cwd();
+    previousDataDir = process.env.CI_HUB_DATA_DIR;
+    // A scratch cwd that is NOT a CI-Hub checkout, plus a separate canonical data dir.
+    workDir = mkdtempSync(join(tmpdir(), 'cihub-appliance-cwd-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'cihub-appliance-data-'));
+    process.env.CI_HUB_DATA_DIR = dataDir;
+    process.chdir(workDir);
+  });
+
+  afterEach(() => {
+    process.chdir(previousCwd);
+    if (previousDataDir === undefined) delete process.env.CI_HUB_DATA_DIR;
+    else process.env.CI_HUB_DATA_DIR = previousDataDir;
+    rmSync(workDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('detects appliance mode when cwd is not a checkout', () => {
+    expect(isApplianceMode()).toBe(true);
+  });
+
+  it('forces prod and points compose/env at the canonical data dir (absolute paths)', () => {
+    const ctx = resolveHubContext('prod');
+    expect(ctx.appliance).toBe(true);
+    expect(ctx.env).toBe('prod');
+    expect(ctx.dataDir).toBe(dataDir);
+    expect(ctx.cwd).toBe(dataDir);
+    expect(ctx.composeFiles).toEqual([join(dataDir, 'docker-compose.prod.yml')]);
+    expect(ctx.envFile).toBe(join(dataDir, ENV_FILE_NAME));
+  });
+
+  it('ignores the requested env arg in appliance mode (always prod)', () => {
+    expect(resolveHubContext('staging').env).toBe('prod');
+    expect(resolveHubContext('local').env).toBe('prod');
+  });
+
+  it('defaults up to detached in appliance mode unless --attached is passed', () => {
+    expect(resolveUpStartMode('prod', { detached: false, attached: false }, true)).toBe('detached');
+    expect(resolveUpStartMode('prod', { detached: false, attached: true }, true)).toBe('attached');
+  });
+});
+
+describe('resolveHubContext (inside the CI-Hub checkout)', () => {
+  it('keeps repo-relative env/compose paths and honors the env arg', () => {
+    const ctx = resolveHubContext('prod');
+    expect(ctx.appliance).toBe(false);
+    expect(ctx.env).toBe('prod');
+    expect(ctx.envFile).toBe('.env.prod');
+    expect(ctx.composeFiles).toEqual(['docker-compose.prod.yml']);
+    expect(ctx.cwd).toBe(process.cwd());
   });
 });

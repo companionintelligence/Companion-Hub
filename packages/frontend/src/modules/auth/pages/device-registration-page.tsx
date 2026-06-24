@@ -83,6 +83,7 @@ export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
+  const [registrationUrl, setRegistrationUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [deviceInfoError, setDeviceInfoError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -121,13 +122,19 @@ export default function DeviceRegistrationPage() {
         return;
       }
 
-      const deviceData = (await deviceRes.json()) as { device_id?: string; ci_cloud_url?: string };
+      const deviceData = (await deviceRes.json()) as { device_id?: string; ci_cloud_url?: string; registration_url?: string | null };
       setDeviceId(deviceData.device_id ?? null);
       setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));
       }
+      // Device-scoped CI Cloud URL (carries device_id + callback_url). Sending the user
+      // here — instead of the bare portal root — lets the Portal recognize this device,
+      // re-issue its tunnel token, and redirect back via /registration/callback. The bare
+      // root bounces an already-logged-in desktop user straight back into the Hub (the
+      // cihub:// deep link), which is the redirect loop seen during restore.
+      setRegistrationUrl(deviceData.registration_url?.trim() || null);
       setDeviceInfoError(null);
     } catch (error) {
       console.error(error);
@@ -519,6 +526,10 @@ export default function DeviceRegistrationPage() {
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
+  // Prefer the device-scoped registration URL (device_id + callback_url) so the Portal
+  // can auto-restore this device and redirect back, rather than bouncing the user into a
+  // desktop deep-link loop from the portal root.
+  const loginUrl = registrationUrl ?? portalUrl;
   const redirectStatus = t(redirectStatusKey);
 
   if (isLoading) {
@@ -638,7 +649,7 @@ export default function DeviceRegistrationPage() {
             </HintText>
           </div>
           <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
-            <a href={portalUrl} target="_blank" rel="noopener noreferrer">
+            <a href={loginUrl} target="_blank" rel="noopener noreferrer">
               {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
             </a>
           </Button>

@@ -66,6 +66,12 @@ const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@example.com";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
+/// Compile-time copy of the bundled compose file. Used as a last-resort fallback
+/// when no `docker-compose.prod.yml` resource is found on disk at runtime (e.g.
+/// `cargo tauri dev`, or a packaging layout where the resource path doesn't match
+/// any candidate). Guarantees the data-dir compose file always exists so startup
+/// never fails with a missing-compose error.
+const HUB_COMPOSE_SEED: &str = include_str!("../resources/docker-compose.prod.yml");
 const TRAEFIK_DYNAMIC_CONFIG_SEED: &str =
     include_str!("../../../backend/assets/traefik/dynamic/dynamic.yml");
 const TRAEFIK_RECREATE_MARKER_FILENAME: &str = ".traefik-recreate-required";
@@ -3603,9 +3609,7 @@ fn ensure_container_released_if_not_running(
             &String::from_utf8_lossy(&output.stdout),
             &String::from_utf8_lossy(&output.stderr),
         );
-        let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
-        {
+        if is_docker_missing_resource_message(&combined) {
             return Ok(());
         }
         return Err(format!(
@@ -3801,6 +3805,11 @@ fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePrefl
     ensure_runtime_file(&data_dir.join(HUB_DOCKER_CONFIG_FILE), "{}", None)
 }
 
+fn is_docker_missing_resource_message(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("no such container") || lower.contains("no such object")
+}
+
 fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
     let output = docker_command()
         .args(["rm", "-f", "traefik"])
@@ -3816,7 +3825,18 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
         &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
     );
-    let combined_lower = combined_output.to_lowercase();
+
+    // `docker rm -f` exits 0 even when the container is already gone, but still
+    // prints "No such container" to stderr. Treat that as a normal clean-state
+    // condition — not a failure and not an error-level telemetry event.
+    if is_docker_missing_resource_message(&combined_output) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "Traefik recreate was requested, but no existing Traefik container was present.",
+        );
+        return Ok(());
+    }
 
     if output.status.success() {
         let message = if combined_output.is_empty() {
@@ -3828,15 +3848,6 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
             )
         };
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        return Ok(());
-    }
-
-    if combined_lower.contains("no such container") || combined_lower.contains("no such object") {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            "Traefik recreate was requested, but no existing Traefik container was present.",
-        );
         return Ok(());
     }
 
@@ -3868,9 +3879,7 @@ fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
             &String::from_utf8_lossy(&output.stdout),
             &String::from_utf8_lossy(&output.stderr),
         );
-        let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
-        {
+        if is_docker_missing_resource_message(&combined) {
             return Ok(());
         }
         return Err(format!(
@@ -5572,12 +5581,20 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         })?;
         log_lines.push("  -> updated in data_dir".to_string());
     } else {
-        log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
+        // No bundled resource was located — fall back to the compile-time embedded
+        // copy so the data-dir compose file always exists and startup can proceed.
+        log_lines.push("  -> WARNING: no compose file found in any candidate path; writing embedded fallback".to_string());
+        std::fs::write(&compose_dst, HUB_COMPOSE_SEED).map_err(|e| {
+            let message = format!("Failed to write embedded compose fallback to {:?}: {}", compose_dst, e);
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            with_view_logs_hint(message)
+        })?;
         let _ = append_desktop_log_for(
             &data_dir,
             "initialize",
-            "No docker-compose.prod.yml resource was found in any candidate path.",
+            "No docker-compose.prod.yml resource was found in any candidate path; wrote the embedded fallback compose instead.",
         );
+        log_lines.push("  -> wrote embedded fallback compose to data_dir".to_string());
     }
 
     // --- Regenerate the runtime env file with preserve-and-derive approach ---
@@ -7851,6 +7868,19 @@ mod tests {
             std::fs::read_to_string(&acme_path).expect("read healed acme file"),
             "{}"
         );
+    }
+
+    #[test]
+    fn detects_docker_missing_resource_messages() {
+        assert!(super::is_docker_missing_resource_message(
+            "Error response from daemon: No such container: traefik"
+        ));
+        assert!(super::is_docker_missing_resource_message(
+            "Error response from daemon: No such object: traefik"
+        ));
+        assert!(!super::is_docker_missing_resource_message(
+            "permission denied while trying to connect"
+        ));
     }
 
     #[test]

@@ -154,7 +154,9 @@ export class ErrorReportingService {
         // Best-effort pairing context.
       }
 
-      Sentry.captureMessage(`Marketplace app ${context.phase} failed: ${context.appUrn}`, level);
+      const scrubbedMessage = scrubString(context.message).trim();
+      const detail = scrubbedMessage ? `: ${scrubbedMessage}` : '';
+      Sentry.captureMessage(`Marketplace app ${context.phase} failed: ${context.appUrn}${detail}`, level);
     });
   }
 

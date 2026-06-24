@@ -140,7 +140,7 @@ export const AiSetupStep = ({
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/api/inference/onboarding-profile', { credentials: 'include' });
+      const res = await apiFetch('/api/inference/onboarding-profile');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
@@ -159,7 +159,7 @@ export const AiSetupStep = ({
   const checkOllamaStatus = async () => {
     setCheckingOllama(true);
     try {
-      const res = await apiFetch('/api/inference/ollama/status', { credentials: 'include' });
+      const res = await apiFetch('/api/inference/ollama/status');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: OllamaStatus = await res.json();
       setOllamaStatus(data);
@@ -180,7 +180,7 @@ export const AiSetupStep = ({
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProfile(true);
     } catch (e) {

@@ -9,6 +9,7 @@ import {
   doctorHub,
   downHub,
   type HubEnv,
+  isApplianceMode,
   logsHub,
   normalizeCliArgs,
   normalizeDetachedFlag,
@@ -42,6 +43,11 @@ export async function runCli(rawArgs: string[]) {
   const first = args[0];
 
   if (!first) {
+    // Outside a checkout there is no source to run; show help instead of auto-starting a stack.
+    if (isApplianceMode()) {
+      console.log(renderHelp());
+      return;
+    }
     await startHub('local-dev', 'local');
     return;
   }

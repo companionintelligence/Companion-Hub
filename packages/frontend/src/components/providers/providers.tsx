@@ -6,6 +6,7 @@ import { ErrorPage } from '../error/error-page';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
 import { DebugPanel } from '../debug-panel/debug-panel';
 import { openExternal } from '@/lib/helpers/open-external';
+import { recoverFromChunkLoadError } from '@/lib/chunk-load-error';
 import { captureHubException } from '@/lib/sentry';
 
 const queryClient = new QueryClient({
@@ -55,6 +56,9 @@ export const Providers = ({ children }: PropsWithChildren) => {
               </PageSuspense>
             )}
             onError={(error, info) => {
+              if (recoverFromChunkLoadError(error)) {
+                return;
+              }
               console.error('Global React error boundary caught error:', error, info);
               captureHubException(error, { componentStack: info.componentStack ?? undefined });
             }}

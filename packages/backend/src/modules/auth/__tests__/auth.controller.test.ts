@@ -274,5 +274,51 @@ describe('AuthController', () => {
       expect(authService.bootstrapOperatorFromPortalEmail).toHaveBeenCalledWith('first@example.com');
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
+
+    it('syncs the sole local operator email from a verified Portal login when they differ', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: false,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'companion@example.com',
+      });
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'admin@local.test' } as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'admin@local.test' }] as never);
+      userRepository.updateUser.mockResolvedValue(true as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(1, { username: 'companion@example.com' });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(1);
+      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+    });
   });
 });

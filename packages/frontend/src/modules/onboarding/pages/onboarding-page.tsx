@@ -102,7 +102,7 @@ function OnboardingWizard() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
+        const res = await apiFetch('/api/system/detect-services');
         if (!res.ok) return;
         const data = await res.json();
         if (!cancelled) setDetectedServices(identifyServices(data.services || []));
@@ -143,7 +143,7 @@ function OnboardingWizard() {
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
             try {
-              await apiFetch('/api/complete-onboarding', { method: 'PATCH', credentials: 'include' });
+              await apiFetch('/api/complete-onboarding', { method: 'PATCH' });
             } catch {
               // Non-fatal — navigate anyway.
             }

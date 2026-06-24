@@ -19,19 +19,21 @@ export function isHostPortBindConflict(output: string): boolean {
   );
 }
 
-function runDockerComposeDetached(args: string[], envOverrides: Record<string, string | undefined>): DockerComposeUpResult {
+function runDockerComposeDetached(args: string[], envOverrides: Record<string, string | undefined>, cwd?: string): DockerComposeUpResult {
   return spawnSync('docker', args, {
     encoding: 'utf-8',
     env: { ...process.env, ...envOverrides },
+    cwd,
   });
 }
 
-function runDockerComposeAttached(args: string[], envOverrides: Record<string, string | undefined>): Promise<DockerComposeUpResult> {
+function runDockerComposeAttached(args: string[], envOverrides: Record<string, string | undefined>, cwd?: string): Promise<DockerComposeUpResult> {
   return new Promise((resolve) => {
     let buffer = '';
     const child = spawn('docker', args, {
       env: { ...process.env, ...envOverrides },
       stdio: ['inherit', 'pipe', 'pipe'],
+      cwd,
     });
 
     const capture = (chunk: Buffer, stream: NodeJS.WriteStream) => {
@@ -76,7 +78,9 @@ function runDockerComposeAttached(args: string[], envOverrides: Record<string, s
 
 export async function runDockerComposeUpOnce(
   args: string[],
-  options: { detached: boolean; envOverrides: Record<string, string | undefined> },
+  options: { detached: boolean; envOverrides: Record<string, string | undefined>; cwd?: string },
 ): Promise<DockerComposeUpResult> {
-  return options.detached ? runDockerComposeDetached(args, options.envOverrides) : runDockerComposeAttached(args, options.envOverrides);
+  return options.detached
+    ? runDockerComposeDetached(args, options.envOverrides, options.cwd)
+    : runDockerComposeAttached(args, options.envOverrides, options.cwd);
 }

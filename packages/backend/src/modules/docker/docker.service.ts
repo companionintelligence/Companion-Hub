@@ -57,6 +57,7 @@ export interface AppContainerRuntimeStats {
   state: string;
   status: string;
   health: string | null;
+  exitCode: number | null;
   cpuPercent: number;
   memoryUsageBytes: number;
   memoryLimitBytes: number;
@@ -196,6 +197,7 @@ export class DockerService {
             state: container.State,
             status: container.Status,
             health: inspect.State?.Health?.Status ?? null,
+            exitCode: inspect.State?.Running ? null : (inspect.State?.ExitCode ?? null),
             cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
             memoryUsageBytes: Math.max(usage - cache, 0),
             memoryLimitBytes: stats?.memory_stats?.limit ?? 0,

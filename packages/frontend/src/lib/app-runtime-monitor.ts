@@ -6,6 +6,7 @@ export interface AppContainerRuntimeStats {
   state: string;
   status: string;
   health: string | null;
+  exitCode?: number | null;
   cpuPercent: number;
   memoryUsageBytes: number;
   memoryLimitBytes: number;
