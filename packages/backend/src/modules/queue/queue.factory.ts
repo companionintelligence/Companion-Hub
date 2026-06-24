@@ -206,13 +206,21 @@ export class QueueFactory implements OnApplicationShutdown {
       return false;
     }
 
+    const acquired = this.rabbit.acquire();
     try {
-      const channel = await this.withTimeout(this.rabbit.acquire(), timeoutMs, 'Queue connection probe timed out');
+      const channel = await this.withTimeout(acquired, timeoutMs, 'Queue connection probe timed out');
       await channel.close().catch(() => {
         /* channel may already be gone; the acquire succeeding is the signal we need */
       });
       return true;
     } catch {
+      // If the timeout won the race, acquire() may still resolve later — close that
+      // orphaned channel so health probes can't slowly leak channels, and swallow
+      // any late rejection so it never surfaces as an unhandledRejection.
+      acquired.then(
+        (channel) => channel.close().catch(() => undefined),
+        () => undefined,
+      );
       return false;
     }
   }

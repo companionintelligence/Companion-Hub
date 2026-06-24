@@ -17,7 +17,7 @@ import { QueueFactory } from '../queue.factory';
  * Skipped unless RABBITMQ_E2E=1, with the throwaway broker's coordinates passed
  * via RABBITMQ_E2E_* env vars (container name, port, user, pass).
  */
-const RUN = Boolean(process.env.RABBITMQ_E2E);
+const RUN = process.env.RABBITMQ_E2E === '1';
 const CONTAINER = process.env.RABBITMQ_E2E_CONTAINER ?? 'ci-hub-rabbitmq-e2e';
 const PORT = Number(process.env.RABBITMQ_E2E_PORT ?? 5680);
 const USER = process.env.RABBITMQ_E2E_USER ?? 'companion';
@@ -45,9 +45,16 @@ async function waitForBrokerAmqp(label: string, timeoutMs = 40_000): Promise<voi
     const probe = new Connection({ hostname: 'localhost', port: PORT, username: USER, password: PASS, connectionTimeout: 3_000 });
     try {
       await new Promise<void>((resolve, reject) => {
-        probe.on('connection', () => resolve());
-        probe.on('error', (e) => reject(e));
-        setTimeout(() => reject(new Error('connect timeout')), 3_000);
+        const timer = setTimeout(() => reject(new Error('connect timeout')), 3_000);
+        timer.unref?.();
+        probe.on('connection', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        probe.on('error', (e) => {
+          clearTimeout(timer);
+          reject(e);
+        });
       });
       const channel = await probe.acquire();
       await channel.close();
