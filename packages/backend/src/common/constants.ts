@@ -53,8 +53,8 @@ export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik'
 // DNS
 export const DEFAULT_DNS_IP = '9.9.9.9';
 
-/** mDNS / LAN hostname used for local Traefik routes (e.g. `hub.ci.lan`) */
-export const DEFAULT_LOCAL_DOMAIN = 'ci.lan';
+/** Last-resort fallback when LOCAL_DOMAIN and DOMAIN are both unset. Prefer localhost:port for local app access. */
+export const DEFAULT_LOCAL_DOMAIN = 'localhost';
 
 function isProductionEnvironmentDefault() {
   return process.env.CI_HUB_ENVIRONMENT === 'production';

@@ -12,28 +12,25 @@ import { GuestLinkTile } from '../components/guest-link-tile';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { openExternal } from '@/lib/helpers/open-external';
 
-const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
+const LOCAL_BROWSER_HOST = '127.0.0.1';
+
+const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslPort: number }) => {
   const { info, app } = data;
 
-  const hostname = typeof window === 'undefined' ? '' : window.location.hostname;
+  const directPort = app.port ?? info.port ?? null;
 
   const handleOpen = (type: string) => {
     let url = '';
     const { https } = info;
     const protocol = https ? 'https' : 'http';
-
-    if (typeof window !== 'undefined') {
-      // Current domain
-      const domain = window.location.hostname;
-      url = `${protocol}://${domain}:${app.port ?? info.port}${info.url_suffix || ''}`;
-    }
+    const urlSuffix = info.url_suffix || '';
 
     if (type === 'domain' && app.domain) {
-      url = `https://${app.domain}${sslPort === 443 ? '' : `:${sslPort}`}${info.url_suffix || ''}`;
+      url = `https://${app.domain}${sslPort === 443 ? '' : `:${sslPort}`}${urlSuffix}`;
     }
 
-    if (type === 'localDomain') {
-      url = `https://${app.localSubdomain}.${localDomain}${sslPort === 443 ? '' : `:${sslPort}`}${info.url_suffix || ''}`;
+    if (type === 'local' && directPort) {
+      url = `${protocol}://${LOCAL_BROWSER_HOST}:${directPort}${urlSuffix}`;
     }
 
     openExternal(url);
@@ -55,17 +52,10 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
               {sslPort === 443 ? '' : `:${sslPort}`}
             </DropdownMenuItem>
           )}
-          {(app.exposedLocal || !info.dynamic_config) && (
-            <DropdownMenuItem onClick={() => handleOpen('localDomain')}>
-              <Lock className="text-muted-foreground mr-2" size={16} />
-              {app.localSubdomain}.{localDomain}
-              {sslPort === 443 ? '' : `:${sslPort}`}
-            </DropdownMenuItem>
-          )}
-          {(app.openPort || !info.dynamic_config) && (
-            <DropdownMenuItem onClick={() => handleOpen('port')}>
+          {(app.exposedLocal || app.openPort || !info.dynamic_config) && directPort && (
+            <DropdownMenuItem onClick={() => handleOpen('local')}>
               <LockOpen className="text-muted-foreground mr-2" size={16} />
-              {hostname}:{app.port ?? info.port}
+              {LOCAL_BROWSER_HOST}:{directPort}
             </DropdownMenuItem>
           )}
         </DropdownMenuGroup>
@@ -75,7 +65,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
 };
 
 export const GuestDashboard = () => {
-  const { localDomain, sslPort } = useUserContext();
+  const { sslPort } = useUserContext();
 
   const { data: appsData, isLoading: appsLoading } = useQuery({
     ...getGuestAppsOptions(),
@@ -97,7 +87,7 @@ export const GuestDashboard = () => {
         {(appsLoading || linksLoading) && <LoadingSpinner />}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {appsData?.installed.map((appData) => {
-            return <Tile key={appData.app.id} data={appData} localDomain={localDomain} sslPort={sslPort} />;
+            return <Tile key={appData.app.id} data={appData} sslPort={sslPort} />;
           })}
           {linksData?.links.map((link) => (
             <GuestLinkTile key={link.id} link={link} />

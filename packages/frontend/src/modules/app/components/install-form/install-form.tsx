@@ -94,7 +94,7 @@ export const InstallForm: React.FC<IProps> = ({
 }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn } = useAppContext();
-  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
+  const { guestDashboard, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
   const globalCpuLimit = userSettings.defaultAppCpuLimit ?? '';
   const isAdvancedMode = user.advancedMode;
 
@@ -451,7 +451,7 @@ export const InstallForm: React.FC<IProps> = ({
       ? publicWebPreview.hostname
           .slice(0, publicWebPreview.hostname.indexOf('.'))
           .slice(sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain).length + 1)
-      : localDomain;
+      : (orgSlug ?? domain);
 
     return (
       <>

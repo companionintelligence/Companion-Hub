@@ -173,7 +173,7 @@ describe('InstallForm', () => {
     expect(screen.getAllByText(/-josh.example.com/).length).toBeGreaterThan(0);
   });
 
-  it('should fallback to local domain when organization slug is missing', () => {
+  it('should fallback to public domain when organization slug is missing', () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
         ciHubOrganizationSlug: undefined,
@@ -201,8 +201,8 @@ describe('InstallForm', () => {
       </MemoryRouter>,
     );
 
-    // Expect to see "-ci.lan"
-    expect(screen.getByText(/-ci.lan/)).toBeInTheDocument();
+    // Expect to see "-example.com"
+    expect(screen.getByText(/-example.com/)).toBeInTheDocument();
   });
 
   it('shows Network settings link when Private VPN exposure is unavailable', () => {

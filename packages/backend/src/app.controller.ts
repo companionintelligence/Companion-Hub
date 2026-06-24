@@ -11,7 +11,6 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
-import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
 import { TailscaleService } from './modules/tailscale/tailscale.service';
@@ -36,6 +35,9 @@ export class AppController {
   @Get('/user-context')
   @ApiResponse({ type: UserContextDto })
   async userContext(@Req() req: Request) {
+    const configuredLocalDomain = this.configuration.get('localDomain');
+    const configuredDomain = this.configuration.get('domain') ?? '';
+
     // Default values to use if anything fails
     const defaults = {
       isLoggedIn: false,
@@ -46,8 +48,8 @@ export class AppController {
       allowErrorMonitoring: true,
       themeColor: 'blue',
       themeBase: 'gray',
-      localDomain: DEFAULT_LOCAL_DOMAIN,
-      domain: '',
+      localDomain: configuredLocalDomain,
+      domain: configuredDomain,
       sslPort: 443,
       version: {
         current: '0.0.0',
@@ -70,9 +72,9 @@ export class AppController {
 
       const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring } = userSettings || {};
 
-      // Ensure required fields have defaults
-      const localDomain = userSettings?.localDomain || defaults.localDomain;
-      const domain = userSettings?.domain || defaults.domain;
+      // Ensure required fields have defaults (prefer resolved config over hardcoded fallbacks)
+      const localDomain = userSettings?.localDomain?.trim() || configuredLocalDomain;
+      const domain = userSettings?.domain?.trim() || configuredDomain;
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
       // Get version with error handling (GitHub API might be unavailable)
@@ -164,8 +166,8 @@ export class AppController {
           body: '',
           releases: [],
         },
-        localDomain: defaultSettings?.localDomain || defaults.localDomain,
-        domain: defaultSettings?.domain || defaults.domain,
+        localDomain: defaultSettings?.localDomain?.trim() || configuredLocalDomain,
+        domain: defaultSettings?.domain?.trim() || configuredDomain,
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
       };
 
