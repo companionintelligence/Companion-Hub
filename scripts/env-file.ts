@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 export function parseEnvFile(envFileName: string): Record<string, string> {
   const vars: Record<string, string> = {};
-  const envPath = envFileName.startsWith('/') ? envFileName : join(process.cwd(), envFileName);
+  const envPath = isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
 
   try {
     const fileContent = readFileSync(envPath, 'utf-8');
@@ -27,7 +27,7 @@ export function parseEnvFile(envFileName: string): Record<string, string> {
 }
 
 export function upsertEnvVar(envFileName: string, key: string, value: string) {
-  const abs = envFileName.startsWith('/') ? envFileName : join(process.cwd(), envFileName);
+  const abs = isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
   const line = `${key}=${value}`;
   const current = existsSync(abs) ? readFileSync(abs, 'utf-8') : '';
   const lines = current.length > 0 ? current.split(/\r?\n/) : [];

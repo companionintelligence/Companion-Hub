@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
 import { parseEnvFile, upsertEnvVar } from './env-file';
-import { resolveRootFolderHost } from './lib/paths';
+import { CANONICAL_DATA_DIR_NAME, resolveProdApplianceContext, resolveRootFolderHost } from './lib/paths';
 import {
   type DeviceIdResponse,
   type RegistrationStatusResponse,
@@ -22,7 +23,7 @@ import {
   waitForHubApi,
 } from './lib/register-hub';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
-import { runHubCleanup } from './hub-cleanup-lib';
+import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
 import { initHubDataDirs } from './init-hub-data-dirs';
@@ -157,8 +158,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     title: 'Maintenance',
     entries: [
       { command: `${BASE_COMMAND} doctor [env]`, description: 'Validate Docker, env files, bind mounts, and compose inputs' },
-      { command: `${BASE_COMMAND} clean [env] [--yes]`, description: 'Remove generated host-state files for the target environment' },
-      { command: `${BASE_COMMAND} reset [env] [--yes]`, description: 'Remove runtime state for the target environment' },
+      {
+        command: `${BASE_COMMAND} clean [env] [--yes]`,
+        description: 'Remove generated host-state files (outside a checkout: full wipe of the prod data dir)',
+      },
+      { command: `${BASE_COMMAND} reset [env] [--yes]`, description: 'Remove runtime state (outside a checkout: full wipe of the prod install)' },
       { command: `${BASE_COMMAND} uninstall [--yes]`, description: 'Full machine cleanup of CI-Hub runtime state' },
     ],
   },
@@ -310,6 +314,9 @@ export function renderManPage() {
       '',
       'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
       'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
+      '',
+      'Run outside a CI-Hub checkout (e.g. a packaged install), up/down/reset/clean infer prod and',
+      'target the canonical desktop data dir (dirs::data_dir()/companion-hub); any [env] arg is ignored.',
     ]),
     ...commandSections.map((s) => renderSection(s.title, s.entries)),
     box(
@@ -341,18 +348,25 @@ export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local')
   return (found || defaultEnv) as HubEnv;
 }
 
-function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}) {
+function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()) {
   console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
   const result = spawnSync(cmd, args, {
     stdio: 'inherit',
     env: { ...process.env, ...extraEnv },
-    cwd: process.cwd(),
+    cwd,
   });
   if (result.error) {
     console.error(colorize(`Failed to run ${cmd}: ${String(result.error)}`, 'red'));
     process.exit(1);
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+/** Best-effort variant of {@link run}: streams output but never aborts the CLI on failure. */
+function runBestEffort(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()): boolean {
+  console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
+  const result = spawnSync(cmd, args, { stdio: 'inherit', env: { ...process.env, ...extraEnv }, cwd });
+  return result.status === 0;
 }
 
 async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}): Promise<T> {
@@ -584,7 +598,16 @@ export function normalizeDetachedFlag(args: string[]): { detached: boolean; atta
 }
 
 /** Non-local appliance stacks default to detached so `cihub up dev` returns after boot. */
-export function resolveUpStartMode(env: HubEnv, options: { detached: boolean; attached: boolean }): StartMode {
+export function resolveUpStartMode(
+  env: HubEnv,
+  options: { detached: boolean; attached: boolean },
+  appliance: boolean = isApplianceMode(),
+): StartMode {
+  // Outside a checkout there is no source to run, so never start local-dev; default to detached
+  // (matching `cihub up dev`) unless the user explicitly asked to stay attached.
+  if (appliance) {
+    return options.attached ? 'attached' : 'detached';
+  }
   if (env === 'local') {
     return 'local-dev';
   }
@@ -636,6 +659,106 @@ function requireRepoRoot(action: string): void {
   process.exit(2);
 }
 
+// --- appliance (canonical prod) context ---
+
+/**
+ * Resolved execution context for a lifecycle command. In a CI-Hub checkout this mirrors the
+ * historical repo behavior (env-arg honored, repo-relative `.env.<env>` + compose). Outside a
+ * checkout we operate in "appliance" mode: the environment is inferred as `prod` and all paths
+ * resolve to the canonical desktop data dir (`dirs::data_dir()/companion-hub`).
+ */
+export type HubContext = {
+  env: HubEnv;
+  appliance: boolean;
+  /** Env file path: repo-relative name in checkout mode, absolute data-dir path in appliance mode. */
+  envFile: string;
+  /** Compose files: repo-relative names in checkout mode, absolute data-dir paths in appliance mode. */
+  composeFiles: string[];
+  /** Working directory for docker/compose invocations. */
+  cwd: string;
+  /** Canonical data dir (appliance mode only). */
+  dataDir?: string;
+};
+
+/** True when the CLI is not running inside a CI-Hub checkout (a packaged/global prod install). */
+export function isApplianceMode(cwd: string = process.cwd()): boolean {
+  return !isHubRepoRoot(cwd);
+}
+
+export function resolveHubContext(env: HubEnv): HubContext {
+  if (!isApplianceMode()) {
+    return {
+      env,
+      appliance: false,
+      envFile: getEnvFileOrExit(env),
+      composeFiles: getComposeFiles(env),
+      cwd: process.cwd(),
+    };
+  }
+  const ctx = resolveProdApplianceContext();
+  return {
+    env: 'prod',
+    appliance: true,
+    envFile: ctx.envFilePath,
+    composeFiles: [ctx.composePath],
+    cwd: ctx.dataDir,
+    dataDir: ctx.dataDir,
+  };
+}
+
+let applianceNoticeShown = false;
+
+/** Compose args bound to a resolved context (absolute paths in appliance mode). */
+function composeArgsForContext(ctx: HubContext): string[] {
+  return buildComposeBaseArgs(ctx.envFile, ctx.composeFiles);
+}
+
+/** Env overrides for a context; pins ROOT_FOLDER_HOST to the data dir in appliance mode. */
+function envOverridesForContext(ctx: HubContext): Record<string, string | undefined> {
+  const overrides = buildEnvOverrides(ctx.envFile);
+  if (ctx.appliance && ctx.dataDir) overrides.ROOT_FOLDER_HOST = ctx.dataDir;
+  return overrides;
+}
+
+/**
+ * Gate for lifecycle commands. Allows a CI-Hub checkout (repo mode) or a canonical prod install
+ * (appliance mode). When the prod data dir has no seeded `.env` + compose:
+ *  - `require-seed` (up/setup/register): error and exit, directing the user to launch the desktop app.
+ *  - `allow-missing` (down/reset/clean): proceed anyway so broken/partial installs can still be torn down.
+ */
+function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'allow-missing' = 'require-seed'): void {
+  if (isHubRepoRoot()) return;
+  const ctx = resolveProdApplianceContext();
+  if (ctx.exists) {
+    if (!applianceNoticeShown) {
+      applianceNoticeShown = true;
+      printMessageBox('Targeting prod install', ['No CI-Hub checkout here — operating on the canonical prod data dir:', dim(ctx.dataDir)], 'cyan');
+    }
+    return;
+  }
+  if (gate === 'allow-missing') {
+    if (!applianceNoticeShown) {
+      applianceNoticeShown = true;
+      printMessageBox(
+        'Targeting prod install',
+        ['No CI-Hub checkout and no seeded prod env at:', dim(ctx.dataDir), 'Proceeding with Docker-level cleanup only.'],
+        'yellow',
+      );
+    }
+    return;
+  }
+  printMessageBox(
+    'No prod Hub install found',
+    [
+      `${action} needs either a CI-Hub checkout or an installed Companion Hub.`,
+      `Expected prod data at: ${ctx.dataDir}`,
+      'Launch the Companion Hub desktop app once to provision it, then retry.',
+    ],
+    'red',
+  );
+  process.exit(2);
+}
+
 export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
 }
@@ -675,8 +798,13 @@ function buildComposeBaseArgs(envFileName: string, files: string[]): string[] {
 }
 
 /** Start Postgres (and queue), then align the DB role password with POSTGRES_PASSWORD in the env file. */
-async function ensurePostgresInfraAndSyncPassword(envFileName: string, composeFiles: string[], envOverrides: Record<string, string | undefined>) {
-  run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides);
+async function ensurePostgresInfraAndSyncPassword(
+  envFileName: string,
+  composeFiles: string[],
+  envOverrides: Record<string, string | undefined>,
+  cwd?: string,
+) {
+  run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides, cwd);
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
 }
 
@@ -695,6 +823,7 @@ async function runDockerComposeUp(
   files: string[],
   detached: boolean,
   envOverrides: Record<string, string | undefined>,
+  cwd?: string,
 ): Promise<void> {
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of files) upArgs.push('-f', f);
@@ -705,7 +834,7 @@ async function runDockerComposeUp(
   const maxAttempts = 3;
   let currentEnvOverrides: Record<string, string | undefined> = { ...envOverrides };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides: currentEnvOverrides });
+    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides: currentEnvOverrides, cwd });
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
@@ -737,6 +866,11 @@ async function runDockerComposeUp(
 }
 
 export async function startHub(mode: StartMode, env: HubEnv) {
+  if (isApplianceMode()) {
+    requireRepoOrApplianceContext('cihub up', 'require-seed');
+    await startApplianceHub(resolveHubContext(env), mode === 'attached' ? 'attached' : 'detached');
+    return;
+  }
   requireRepoRoot(mode === 'local-dev' ? 'cihub up local' : 'cihub up');
   if (mode === 'local-dev' && env !== 'local') {
     usageAndExit('Source-based local development only supports the local environment. Use "cihub up <env>" for appliance environments.');
@@ -786,7 +920,52 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
+/**
+ * Start a desktop-installed prod Hub from anywhere, using the canonical data dir's seeded
+ * `.env` + `docker-compose.prod.yml`. Traefik config and the env file are provisioned by the
+ * desktop app, so we do not re-run the repo-asset Traefik init here.
+ */
+async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'detached') {
+  const dataDir = ctx.dataDir as string;
+  const envOverrides = envOverridesForContext(ctx);
+
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir });
+  await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
+
+  try {
+    const portHeal = healHubPortsBeforeStartup(ctx.envFile, (message) => {
+      printMessageBox('Port preparation', [message], 'yellow');
+    });
+    if (portHeal.info.length > 0) {
+      printMessageBox('Port preparation', portHeal.info, 'yellow');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Port preparation failed', [message], 'red');
+    throw error;
+  }
+
+  const detached = detachedMode === 'detached';
+  printMessageBox(
+    'Starting hub',
+    ['Environment: prod (canonical install)', `Data dir: ${dataDir}`, `Mode: ${detached ? 'detached' : 'attached'}`],
+    'green',
+  );
+  await ensurePostgresInfraAndSyncPassword(ctx.envFile, ctx.composeFiles, envOverrides, dataDir);
+  await runDockerComposeUp(ctx.envFile, ctx.composeFiles, detached, envOverrides, dataDir);
+}
+
 export async function setupHub(env: HubEnv) {
+  if (isApplianceMode()) {
+    requireRepoOrApplianceContext('cihub setup', 'require-seed');
+    const ctx = resolveHubContext(env);
+    printMessageBox(
+      'Setup managed by Companion Hub',
+      ['The Companion Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
+      'cyan',
+    );
+    return;
+  }
   requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });
@@ -805,8 +984,13 @@ export function printConfig(env: HubEnv) {
 }
 
 export async function registerHub(env: HubEnv) {
-  requireRepoRoot('cihub register');
-  const envFileName = getEnvFileOrExit(env);
+  const ctx = resolveHubContext(env);
+  if (ctx.appliance) {
+    requireRepoOrApplianceContext('cihub register', 'require-seed');
+  } else {
+    requireRepoRoot('cihub register');
+  }
+  const envFileName = ctx.envFile;
   const fileVars = parseEnvFile(envFileName);
   const apiBase = resolveRegisterApiBase(envFileName);
   const fallbackPortal = process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
@@ -936,28 +1120,68 @@ export async function registerHub(env: HubEnv) {
   );
 }
 
-function composeBaseArgs(env: HubEnv): string[] {
-  const envFileName = getEnvFileOrExit(env);
-  const args = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
-  for (const f of getComposeFiles(env)) args.push('-f', f);
-  return args;
-}
-
-function removeLeftoverProjectContainers(): void {
-  const { stdout, ok } = runCapture('docker', ['ps', '-a', '--filter', 'label=com.docker.compose.project=ci-hub', '--format', '{{.ID}}']);
+/** Force-remove every container belonging to a compose project (best-effort, never aborts). */
+function removeProjectContainers(project: string): void {
+  const { stdout, ok } = runCapture('docker', ['ps', '-a', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.ID}}']);
   if (!ok || !stdout) return;
   const ids = stdout
     .split('\n')
     .map((value) => value.trim())
     .filter(Boolean);
   if (ids.length === 0) return;
-  run('docker', ['rm', '-f', ...ids]);
+  runBestEffort('docker', ['rm', '-f', ...ids]);
+}
+
+function removeLeftoverProjectContainers(): void {
+  removeProjectContainers('ci-hub');
+}
+
+/**
+ * Label/volume/network teardown for a prod install, independent of any env file or compose file.
+ * Used as the appliance fallback so a broken or partially provisioned Hub can still be cleaned.
+ */
+function applianceDockerTeardown(removeVolumes: boolean): void {
+  for (const project of ['ci-hub', 'ci-os-hub']) {
+    removeProjectContainers(project);
+  }
+  if (!removeVolumes) return;
+
+  const { stdout, ok } = runCapture('docker', ['volume', 'ls', '--format', '{{.Name}}']);
+  if (ok && stdout) {
+    for (const volume of parseNames(stdout).filter(isRelatedVolume)) {
+      runBestEffort('docker', ['volume', 'rm', volume]);
+    }
+  }
+  for (const network of ['ci_os_hub_network', 'ci-os-hub_network']) {
+    runBestEffort('docker', ['network', 'rm', network]);
+  }
+}
+
+/** Tear down a desktop-installed prod Hub from anywhere (canonical data dir). */
+function downApplianceHub(ctx: HubContext, options?: { volumes?: boolean }) {
+  const dataDir = ctx.dataDir as string;
+  const composeExists = existsSync(ctx.composeFiles[0]) && existsSync(ctx.envFile);
+  printMessageBox(options?.volumes ? 'Resetting prod hub runtime' : 'Stopping prod hub', [`Data dir: ${dataDir}`], 'yellow');
+
+  if (composeExists) {
+    const args = composeArgsForContext(ctx);
+    args.push('down');
+    if (options?.volumes) args.push('-v', '--remove-orphans');
+    runBestEffort('docker', args, envOverridesForContext(ctx), dataDir);
+  }
+  // Fallback: remove anything the compose teardown missed (or everything when no seed is present).
+  applianceDockerTeardown(Boolean(options?.volumes));
 }
 
 export function downHub(env: HubEnv, options?: { volumes?: boolean }) {
+  if (isApplianceMode()) {
+    requireRepoOrApplianceContext('cihub down', 'allow-missing');
+    downApplianceHub(resolveHubContext(env), options);
+    return;
+  }
   const envFileName = getEnvFileOrExit(env);
   const envOverrides = buildEnvOverrides(envFileName);
-  const args = composeBaseArgs(env);
+  const args = composeArgsForContext(resolveHubContext(env));
   args.push('down');
   if (options?.volumes) args.push('-v', '--remove-orphans');
   printMessageBox(options?.volumes ? 'Resetting hub runtime' : 'Stopping hub', [`Environment: ${env}`], 'yellow');
@@ -990,7 +1214,38 @@ function removeDirectoryTarget(targetPath: string, label: string, removed: strin
   removed.push(`${label}: ${targetPath}`);
 }
 
+/**
+ * Full wipe of a canonical prod data dir (clean slate; re-registration required afterward).
+ * Removes the entire `<data dir>/companion-hub` tree, which holds the seeded `.env`, compose file,
+ * app/data mounts, and the Cloudflare tunnel token. Guarded so we only ever delete a folder named
+ * `companion-hub` inside the user's data/home directory.
+ */
+function cleanApplianceHub(ctx: HubContext) {
+  const dataDir = ctx.dataDir as string;
+  const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
+  const safe = path.basename(dataDir) === CANONICAL_DATA_DIR_NAME && pathIsWithin(homeDir, dataDir);
+  if (!safe) {
+    printMessageBox(
+      'Refusing to wipe data dir',
+      [`Unexpected canonical data dir: ${dataDir}`, `Expected a "${CANONICAL_DATA_DIR_NAME}" folder inside your user data directory.`],
+      'red',
+    );
+    process.exit(2);
+  }
+  if (existsSync(dataDir)) {
+    rmSync(dataDir, { recursive: true, force: true });
+    printMessageBox('Prod Hub data wiped', [`removed: ${dataDir}`], 'yellow');
+  } else {
+    printMessageBox('Prod Hub data wiped', [dim(`already absent: ${dataDir}`)], 'yellow');
+  }
+}
+
 export function cleanHub(env: HubEnv) {
+  if (isApplianceMode()) {
+    requireRepoOrApplianceContext('cihub clean', 'allow-missing');
+    cleanApplianceHub(resolveHubContext(env));
+    return;
+  }
   requireRepoRoot('cihub clean');
   const envFileName = getEnvFileOrExit(env);
   const rootFolderHost = resolveRootFolderHost(envFileName);
@@ -1023,11 +1278,17 @@ export async function confirmDestructiveAction(actionLabel: string, force: boole
 }
 
 export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
-  requireRepoRoot('cihub reset');
+  const appliance = isApplianceMode();
+  if (appliance) {
+    requireRepoOrApplianceContext('cihub reset', 'allow-missing');
+  } else {
+    requireRepoRoot('cihub reset');
+  }
+  const label = appliance ? 'prod (canonical install)' : env;
   const confirmed = await confirmDestructiveAction(
-    `Resetting ${env}`,
+    `Resetting ${label}`,
     force,
-    `Reset ${env} runtime state (containers, volumes, and host files)? [y/N]: `,
+    `Reset ${label} runtime state (containers, volumes, and host files)? [y/N]: `,
   );
   if (!confirmed) {
     printMessageBox('Reset cancelled', ['Left runtime state untouched.'], 'yellow');
@@ -1045,28 +1306,47 @@ export async function recreateHub(env: HubEnv, detached = false, force = false) 
 }
 
 export function logsHub(env: HubEnv, service?: string) {
-  const envFileName = getEnvFileOrExit(env);
-  const envOverrides = buildEnvOverrides(envFileName);
-  const args = composeBaseArgs(env);
+  const ctx = resolveHubContext(env);
+  const envOverrides = envOverridesForContext(ctx);
+  const args = composeArgsForContext(ctx);
   args.push('logs', '-f');
   if (service) args.push(service);
-  run('docker', args, envOverrides);
+  run('docker', args, envOverrides, ctx.cwd);
 }
 
 export function doctorHub(env: HubEnv) {
-  requireRepoRoot('cihub doctor');
-  const envFileName = getEnvFileOrExit(env);
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  const composeFiles = getComposeFiles(env);
+  const ctx = resolveHubContext(env);
+  if (ctx.appliance) {
+    requireRepoOrApplianceContext('cihub doctor', 'allow-missing');
+  } else {
+    requireRepoRoot('cihub doctor');
+  }
+  const resolvePath = (p: string) => (path.isAbsolute(p) ? p : join(process.cwd(), p));
+  const envFileName = ctx.envFile;
+  const rootFolderHost = ctx.appliance ? (ctx.dataDir as string) : resolveRootFolderHost(envFileName);
+  const composeFiles = ctx.composeFiles;
   const lines = [
     `Docker               ${checkDockerAvailable() ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? cliOk('available') : cliFail('unavailable')}`,
-    `Env file             ${existsSync(join(process.cwd(), envFileName)) ? cliOk('found') : cliWarn('missing')}  ${envFileName}`,
+    `Env file             ${existsSync(resolvePath(envFileName)) ? cliOk('found') : cliWarn('missing')}  ${envFileName}`,
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
-    `Compose files        ${composeFiles.every((file) => existsSync(join(process.cwd(), file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
-    `Tunnel token         ${hasCloudflareTunnelToken(envFileName) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
+    `Compose files        ${composeFiles.every((file) => existsSync(resolvePath(file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
+    `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
   ];
-  printMessageBox(`Hub doctor  [${env}]`, lines, 'cyan');
+  printMessageBox(`Hub doctor  [${ctx.env}]`, lines, 'cyan');
+}
+
+/** Tunnel token lives at `<dataDir>/tunnel/token` in appliance mode, `<root>/../tunnel/token` in a checkout. */
+function doctorHasTunnelToken(ctx: HubContext): boolean {
+  if (ctx.appliance && ctx.dataDir) {
+    const tokenPath = path.join(ctx.dataDir, 'tunnel', 'token');
+    try {
+      return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
+    } catch {
+      return false;
+    }
+  }
+  return hasCloudflareTunnelToken(ctx.envFile);
 }
 
 export async function uninstallHub(force: boolean) {
