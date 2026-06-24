@@ -16,7 +16,14 @@ function resolveIsDark(): boolean {
 export async function syncTauriWindowBackground(): Promise<void> {
   if (!isTauriRuntime()) return;
 
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  const color = resolveIsDark() ? SHELL_BACKGROUND.dark : SHELL_BACKGROUND.light;
-  await getCurrentWindow().setBackgroundColor(color);
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const color = resolveIsDark() ? SHELL_BACKGROUND.dark : SHELL_BACKGROUND.light;
+    await getCurrentWindow().setBackgroundColor(color);
+  } catch (error) {
+    // Older desktop builds may lack the capability; CSS `--background` still applies.
+    if (import.meta.env.DEV) {
+      console.warn('Failed to sync Tauri window background', error);
+    }
+  }
 }

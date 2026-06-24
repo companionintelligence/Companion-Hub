@@ -16,6 +16,7 @@
     "core:window:allow-outer-size",
     "core:window:allow-set-size",
     "core:window:allow-set-position",
+    "core:window:allow-set-background-color",
     "opener:default",
     "notification:default",
     "store:default",
