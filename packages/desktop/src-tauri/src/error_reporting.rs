@@ -196,7 +196,18 @@ fn classify_log_level(message: &str) -> sentry::Level {
     }
 }
 
+fn is_benign_hub_start_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("recreate was requested, but no existing traefik container was present")
+        || ((lower.contains("no such container") || lower.contains("no such object"))
+            && lower.contains("traefik"))
+}
+
 fn should_capture_log_event(operation: &str, message: &str) -> bool {
+    if is_benign_hub_start_message(message) {
+        return false;
+    }
+
     let cache = CAPTURED_LOG_EVENTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let key = format!(
         "{}:{}",
@@ -273,8 +284,9 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_log_level, normalize_portal_url, parse_dsn, portal_environment_for_url,
-        read_deployment_version, read_device_id, read_first_env_value, read_portal_url,
+        classify_log_level, is_benign_hub_start_message, normalize_portal_url, parse_dsn,
+        portal_environment_for_url, read_deployment_version, read_device_id, read_first_env_value,
+        read_portal_url,
     };
 
     #[test]

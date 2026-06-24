@@ -3609,9 +3609,7 @@ fn ensure_container_released_if_not_running(
             &String::from_utf8_lossy(&output.stdout),
             &String::from_utf8_lossy(&output.stderr),
         );
-        let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
-        {
+        if is_docker_missing_resource_message(&combined) {
             return Ok(());
         }
         return Err(format!(
@@ -3807,6 +3805,11 @@ fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePrefl
     ensure_runtime_file(&data_dir.join(HUB_DOCKER_CONFIG_FILE), "{}", None)
 }
 
+fn is_docker_missing_resource_message(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("no such container") || lower.contains("no such object")
+}
+
 fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
     let output = docker_command()
         .args(["rm", "-f", "traefik"])
@@ -3822,7 +3825,18 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
         &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
     );
-    let combined_lower = combined_output.to_lowercase();
+
+    // `docker rm -f` exits 0 even when the container is already gone, but still
+    // prints "No such container" to stderr. Treat that as a normal clean-state
+    // condition — not a failure and not an error-level telemetry event.
+    if is_docker_missing_resource_message(&combined_output) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "Traefik recreate was requested, but no existing Traefik container was present.",
+        );
+        return Ok(());
+    }
 
     if output.status.success() {
         let message = if combined_output.is_empty() {
@@ -3834,15 +3848,6 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
             )
         };
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        return Ok(());
-    }
-
-    if combined_lower.contains("no such container") || combined_lower.contains("no such object") {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            "Traefik recreate was requested, but no existing Traefik container was present.",
-        );
         return Ok(());
     }
 
@@ -3874,9 +3879,7 @@ fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
             &String::from_utf8_lossy(&output.stdout),
             &String::from_utf8_lossy(&output.stderr),
         );
-        let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
-        {
+        if is_docker_missing_resource_message(&combined) {
             return Ok(());
         }
         return Err(format!(
