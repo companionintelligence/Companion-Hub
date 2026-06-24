@@ -1,9 +1,11 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useAppContext } from '@/context/app-context';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { ArrowUpCircle, Loader2, Star, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
@@ -19,6 +21,8 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 
+const FACTORY_RESET_CONFIRMATION = 'factory-reset';
+
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
   const { version, refreshAppContext } = useAppContext();
@@ -29,6 +33,9 @@ export const GeneralActionsContainer = () => {
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
   const [restartingWizard, setRestartingWizard] = useState(false);
+  const [factoryResetOpen, setFactoryResetOpen] = useState(false);
+  const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
+  const [factoryResetting, setFactoryResetting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
 
@@ -53,6 +60,29 @@ export const GeneralActionsContainer = () => {
       toast.error(t('SETTINGS_WIZARD_RESTART_ERROR'));
     }
   }, [t]);
+
+  const handleFactoryReset = useCallback(async () => {
+    if (factoryResetPhrase.trim() !== FACTORY_RESET_CONFIRMATION) {
+      toast.error(t('SETTINGS_FACTORY_RESET_CONFIRMATION_MISMATCH'));
+      return;
+    }
+
+    setFactoryResetting(true);
+    try {
+      const res = await apiFetch('/api/system/factory-reset', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: FACTORY_RESET_CONFIRMATION }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
+      window.location.href = '/login';
+    } catch {
+      setFactoryResetting(false);
+      toast.error(t('SETTINGS_FACTORY_RESET_ERROR'));
+    }
+  }, [factoryResetPhrase, t]);
 
   const refreshUpdateState = useCallback(async () => {
     if (!desktop) {
@@ -301,6 +331,59 @@ export const GeneralActionsContainer = () => {
           </Button>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <TriangleAlert className="h-5 w-5 text-destructive" />
+            <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
+          </div>
+          <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
+          <Button intent="danger" variant="outline" onClick={() => setFactoryResetOpen(true)} data-testid="factory-reset-btn">
+            {t('SETTINGS_FACTORY_RESET_BUTTON')}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Dialog open={factoryResetOpen} onOpenChange={setFactoryResetOpen}>
+        <DialogContent type="danger" size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('SETTINGS_FACTORY_RESET_DIALOG_TITLE')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="space-y-4 py-2">
+            <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
+            <div className="space-y-2 text-left">
+              <label htmlFor="factory-reset-confirmation" className="text-sm font-medium">
+                {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: FACTORY_RESET_CONFIRMATION })}
+              </label>
+              <Input
+                id="factory-reset-confirmation"
+                value={factoryResetPhrase}
+                onChange={(event) => setFactoryResetPhrase(event.target.value)}
+                autoComplete="off"
+                data-testid="factory-reset-confirmation-input"
+              />
+            </div>
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setFactoryResetOpen(false)} disabled={factoryResetting}>
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              intent="danger"
+              loading={factoryResetting}
+              disabled={factoryResetPhrase.trim() !== FACTORY_RESET_CONFIRMATION}
+              onClick={handleFactoryReset}
+              data-testid="factory-reset-confirm-btn"
+            >
+              {t('SETTINGS_FACTORY_RESET_BUTTON')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
