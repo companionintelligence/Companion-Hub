@@ -8,6 +8,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { Navigate, useLocation, useOutlet } from 'react-router';
 import { ErrorPage } from '../error/error-page';
+import { recoverFromChunkLoadError } from '@/lib/chunk-load-error';
 import { captureHubException } from '@/lib/sentry';
 import { DashboardLayout, DashboardLayoutSuspense } from '../layouts/dashboard/layout';
 import { SSEProvider } from '../providers/sse/sse-provider';
@@ -122,6 +123,9 @@ export default () => {
             )}
             onReset={reset}
             onError={(error, info) => {
+              if (recoverFromChunkLoadError(error)) {
+                return;
+              }
               captureHubException(error, { componentStack: info.componentStack ?? undefined });
             }}
           >
