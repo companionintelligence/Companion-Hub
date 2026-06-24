@@ -226,6 +226,31 @@ describe('QueueFactory', () => {
     await expect(factory.probeConnection()).resolves.toBe(false); // the probe catches it
   });
 
+  it('probeConnection times out on a hanging acquire and closes a channel that resolves late', async () => {
+    const factory = new QueueFactory(logger, config);
+    const connection = connectionInstances[0];
+
+    await connection?.emit('connection');
+
+    // acquire() hangs past the timeout, then resolves late with a channel.
+    let resolveAcquire!: (channel: unknown) => void;
+    const lateClose = vi.fn(async () => undefined);
+    connection.acquire.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveAcquire = resolve;
+      }),
+    );
+
+    // Probe gives up within the (short) timeout rather than hanging.
+    await expect(factory.probeConnection(50)).resolves.toBe(false);
+    expect(lateClose).not.toHaveBeenCalled();
+
+    // When the orphaned acquire finally resolves, its channel is closed (no leak).
+    resolveAcquire({ close: lateClose });
+    await flushAsync();
+    expect(lateClose).toHaveBeenCalled();
+  });
+
   it('watchdog forces a reconnect when the probe fails despite a ready flag', async () => {
     const factory = new QueueFactory(logger, config);
     const firstConnection = connectionInstances[0];
