@@ -38,7 +38,8 @@ describe('syncTauriWindowBackground', () => {
     await syncTauriWindowBackground();
 
     expect(getCurrentWindow).toHaveBeenCalledTimes(1);
-    expect(getCurrentWindow().setBackgroundColor).toHaveBeenCalledWith(SHELL_BACKGROUND.light);
+    const currentWindow = getCurrentWindow.mock.results[0]?.value as { setBackgroundColor: ReturnType<typeof vi.fn> } | undefined;
+    expect(currentWindow?.setBackgroundColor).toHaveBeenCalledWith(SHELL_BACKGROUND.light);
   });
 
   it('swallows permission errors instead of rejecting', async () => {

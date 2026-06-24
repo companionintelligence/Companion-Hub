@@ -21,8 +21,6 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
 
   const handleOpen = (type: string) => {
     let url = '';
-    const { https } = info;
-    const protocol = https ? 'https' : 'http';
     const urlSuffix = info.url_suffix || '';
 
     if (type === 'domain' && app.domain) {
@@ -30,7 +28,7 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
     }
 
     if (type === 'local' && directPort) {
-      url = `${protocol}://${LOCAL_BROWSER_HOST}:${directPort}${urlSuffix}`;
+      url = `http://${LOCAL_BROWSER_HOST}:${directPort}${urlSuffix}`;
     }
 
     openExternal(url);

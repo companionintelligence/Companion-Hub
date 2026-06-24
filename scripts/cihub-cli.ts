@@ -369,7 +369,7 @@ function runBestEffort(cmd: string, args: string[], extraEnv: Record<string, str
   return result.status === 0;
 }
 
-async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}): Promise<T> {
+async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}, cwd?: string): Promise<T> {
   console.log(colorize(`\u2192 ${label}`, 'dim'));
   const previousValues = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(extraEnv)) {
@@ -381,12 +381,16 @@ async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: R
     }
   }
 
+  const previousCwd = cwd ? process.cwd() : undefined;
+  if (cwd) process.chdir(cwd);
+
   try {
     return await fn();
   } catch (error) {
     console.error(colorize(`Failed to run ${label}: ${String(error)}`, 'red'));
     process.exit(1);
   } finally {
+    if (cwd && previousCwd) process.chdir(previousCwd);
     for (const [key, value] of previousValues) {
       if (value === undefined) {
         delete process.env[key];
@@ -732,7 +736,11 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   if (ctx.exists) {
     if (!applianceNoticeShown) {
       applianceNoticeShown = true;
-      printMessageBox('Targeting prod install', ['No CI-Hub checkout here  operating on the canonical prod data dir:', dim(ctx.dataDir)], 'cyan');
+      printMessageBox(
+        'Targeting prod install',
+        ['No CI-Hub checkout here \u2014 operating on the canonical prod data dir:', dim(ctx.dataDir)],
+        'cyan',
+      );
     }
     return;
   }
@@ -929,7 +937,7 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   const dataDir = ctx.dataDir as string;
   const envOverrides = envOverridesForContext(ctx);
 
-  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir });
+  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir }, dataDir);
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
 
   try {
@@ -1305,10 +1313,7 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   cleanRootOwnedHubData(env);
   printMessageBox(
     'Reset complete',
-    [
-      'Hub runtime state, volumes, and host data were removed.',
-      'Re-launch Companion Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.',
-    ],
+    ['Hub runtime state, volumes, and host data were removed.', 'Re-launch Companion Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
     'green',
   );
   return true;
@@ -1353,7 +1358,7 @@ function cleanRootOwnedHubData(env: HubEnv) {
   try {
     rmSync(rootFolderHost, { recursive: true, force: true });
   } catch {
-    // Best effort — directory may still contain root-owned entries.
+    // Best effort \u2014 directory may still contain root-owned entries.
   }
 }
 

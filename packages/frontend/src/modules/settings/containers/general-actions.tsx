@@ -71,7 +71,6 @@ export const GeneralActionsContainer = () => {
     try {
       const res = await apiFetch('/api/system/factory-reset', {
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmation: FACTORY_RESET_CONFIRMATION }),
       });
