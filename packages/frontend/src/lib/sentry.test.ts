@@ -122,7 +122,11 @@ describe('frontend sentry', () => {
   it('drops known handled frontend noise in beforeSend', async () => {
     await import('./sentry');
 
-    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: { message?: string }) => { message?: string } | null) | undefined;
+    type SentryEventInput = {
+      message?: string;
+      exception?: { values?: Array<{ value?: string }> };
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
     expect(beforeSend).toBeTypeOf('function');
 
     expect(

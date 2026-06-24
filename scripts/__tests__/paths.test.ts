@@ -50,8 +50,8 @@ describe('resolveProdApplianceContext', () => {
   it('detects a seeded prod install and prefers the platform-primary env file', () => {
     dataDir = mkdtempSync(join(tmpdir(), 'cihub-ctx-'));
     writeFileSync(join(dataDir, 'docker-compose.prod.yml'), 'services: {}\n');
-    writeFileSync(join(dataDir, '.env.dev'), 'ROOT_FOLDER_HOST=' + dataDir + '\n');
-    writeFileSync(join(dataDir, '.env'), 'ROOT_FOLDER_HOST=' + dataDir + '\n');
+    writeFileSync(join(dataDir, '.env.dev'), `ROOT_FOLDER_HOST=${dataDir}\n`);
+    writeFileSync(join(dataDir, '.env'), `ROOT_FOLDER_HOST=${dataDir}\n`);
     const ctx = resolveProdApplianceContext({ CI_HUB_DATA_DIR: dataDir }, 'linux', '/home/tester');
     expect(ctx.exists).toBe(true);
     expect(ctx.envFilePath).toBe(join(dataDir, '.env.dev'));
