@@ -201,9 +201,15 @@ export class AppController {
       this.registrationService.getDeviceRegistrationInfo(),
       this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
-      this.tailscaleService
-        .getStatus()
-        .catch(() => ({ installed: false, connected: false, hostname: null, nodeFqdn: null, tailnet: null, supportsServices: false })),
+      this.tailscaleService.getStatus().catch(() => ({
+        installed: false,
+        connected: false,
+        hostname: null,
+        nodeFqdn: null,
+        tailnet: null,
+        supportsServices: false,
+        httpsAvailable: false,
+      })),
     ]);
 
     const updatesAvailable = installedApps.filter(({ app, metadata }) => {
@@ -234,6 +240,7 @@ export class AppController {
         tailscaleAvailable,
         tailscaleNodeFqdn,
         tailscaleSupportsServices: Boolean(tailscaleStatus.supportsServices),
+        tailscaleHttpsEnabled: Boolean(tailscaleStatus.httpsAvailable),
       },
       { reportOnly: true },
     );

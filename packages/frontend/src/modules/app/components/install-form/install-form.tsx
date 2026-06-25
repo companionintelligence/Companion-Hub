@@ -14,7 +14,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import type { AvailableDomain } from '@ci-hub/common/types';
@@ -93,7 +93,7 @@ export const InstallForm: React.FC<IProps> = ({
   editingAppUrn,
 }) => {
   const { t } = useTranslation();
-  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn } = useAppContext();
+  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
   const { guestDashboard, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
   const globalCpuLimit = userSettings.defaultAppCpuLimit ?? '';
   const isAdvancedMode = user.advancedMode;
@@ -436,6 +436,24 @@ export const InstallForm: React.FC<IProps> = ({
             <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
               {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
             </Link>
+          </p>
+        )}
+        {watchExposureMode === 'tailscale' && tailscaleAvailable && !tailscaleHttpsEnabled && (
+          <p className="mt-2 text-xs text-amber-600 dark:text-amber-500">
+            <Trans
+              i18nKey="APP_INSTALL_FORM_EXPOSURE_TAILSCALE_HTTPS_DISABLED"
+              components={{
+                enableLink: (
+                  // biome-ignore lint/a11y/useAnchorContent: link text is injected by Trans at runtime
+                  <a
+                    href="https://login.tailscale.com/admin/dns"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium underline underline-offset-2"
+                  />
+                ),
+              }}
+            />
           </p>
         )}
       </div>

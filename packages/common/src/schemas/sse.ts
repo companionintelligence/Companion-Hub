@@ -56,6 +56,7 @@ const appScopedEventSchema = z.object({
     'restore_success',
     'restore_error',
     'public_dns_error',
+    'tailscale_serve_error',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),

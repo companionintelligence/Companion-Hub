@@ -912,7 +912,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               httpsPort: desired.port,
               upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${desired.appName} on :${desired.port}: ${e}`));
+            .catch((e) => this.surfaceTailscaleServeFailure(desired.appUrn, e));
         }
       }
 
@@ -968,6 +968,36 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       this.lastPublicDnsToastAt.set(target.appUrn, now);
       this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
     }
+  }
+
+  private readonly lastTailscaleServeToastAt = new Map<string, number>();
+  private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
+
+  /**
+   * Surface a Tailscale Serve failure so Private VPN publishing is never silent.
+   * Always logs the error; when the failure is because HTTPS/Serve is not enabled
+   * on the tailnet (an account-wide setting the Hub cannot toggle), it also emits
+   * a per-app SSE event the frontend turns into a toast with the enable link.
+   * Cooldown-guarded so repeated syncs for a still-broken app don't flood toasts.
+   */
+  private surfaceTailscaleServeFailure(appUrn: AppUrn, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(`[Tailscale] Failed to serve ${appUrn}: ${message}`);
+
+    // Tailscale returns this when HTTPS Certificates / Serve are not enabled for
+    // the tailnet. This is the only serve failure the user can fix themselves.
+    const serveNotEnabled = /serve is not enabled|not enabled on your tailnet|HTTPS.*not enabled/i.test(message);
+    if (!serveNotEnabled) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastToast = this.lastTailscaleServeToastAt.get(appUrn) ?? 0;
+    if (now - lastToast < AppLifecycleService.TAILSCALE_SERVE_FAILURE_COOLDOWN_MS) {
+      return;
+    }
+    this.lastTailscaleServeToastAt.set(appUrn, now);
+    this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn }, appUrn);
   }
 
   public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
