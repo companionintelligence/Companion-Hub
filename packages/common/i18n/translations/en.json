@@ -63,6 +63,7 @@
   "APP_DETAILS_ACCESS_LOCAL_HINT": "Open this app directly on this machine",
   "APP_DETAILS_ACCESS_ENABLED": "Enabled",
   "APP_DETAILS_ACCESS_AVAILABLE": "Available",
+  "APP_DETAILS_ACCESS_PENDING": "Pending",
   "APP_DETAILS_ACCESS_NOT_CONFIGURED": "Not configured",
   "APP_DETAILS_ACCESS_NOT_AVAILABLE": "Unavailable",
   "APP_DETAILS_ACCESS_LOCAL_ONLY": "Local only",

@@ -3,7 +3,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
@@ -74,7 +74,14 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
 }
 
 @Injectable()
-export class AppLifecycleService implements OnApplicationBootstrap {
+export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
+  private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
+
+  private tailscaleReadinessInterval: ReturnType<typeof setInterval> | null = null;
+  private tailscaleReadinessInitialized = false;
+  private lastTailscaleConnected = false;
+  private lastTailscaleHttpsAvailable = false;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -126,6 +133,57 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to regenerate Traefik config on startup: ${e instanceof Error ? e.message : String(e)}`);
       }
     }, 10000); // Wait 10s for all services to be ready
+
+    this.startTailscaleReadinessWatcher();
+  }
+
+  onModuleDestroy() {
+    if (this.tailscaleReadinessInterval) {
+      clearInterval(this.tailscaleReadinessInterval);
+      this.tailscaleReadinessInterval = null;
+    }
+  }
+
+  private startTailscaleReadinessWatcher() {
+    this.tailscaleReadinessInterval = setInterval(() => {
+      void this.checkTailscaleReadinessTransition();
+    }, AppLifecycleService.TAILSCALE_READINESS_POLL_MS);
+  }
+
+  /**
+   * Re-publish Private VPN apps when Tailscale connects or HTTPS/Serve becomes
+   * available on the tailnet (e.g. after admin enables certificates in the console).
+   */
+  private async checkTailscaleReadinessTransition() {
+    const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
+    if (!tailscaleService) {
+      return;
+    }
+
+    const status = await tailscaleService.getStatus().catch(() => null);
+    if (!status) {
+      return;
+    }
+
+    const connected = status.connected;
+    const httpsAvailable = status.httpsAvailable;
+
+    if (!this.tailscaleReadinessInitialized) {
+      this.tailscaleReadinessInitialized = true;
+      this.lastTailscaleConnected = connected;
+      this.lastTailscaleHttpsAvailable = httpsAvailable;
+      return;
+    }
+
+    const becameConnected = !this.lastTailscaleConnected && connected;
+    const becameHttpsReady = !this.lastTailscaleHttpsAvailable && httpsAvailable;
+    this.lastTailscaleConnected = connected;
+    this.lastTailscaleHttpsAvailable = httpsAvailable;
+
+    if (connected && (becameConnected || becameHttpsReady)) {
+      this.logger.info('[Tailscale] Readiness changed — re-syncing Private VPN exposure');
+      await this.syncTailscaleExposurePublic();
+    }
   }
 
   private async emitInstallQueueUpdate() {
@@ -846,6 +904,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    */
   public async syncExposurePublic() {
     return this.syncExposure();
+  }
+
+  /** Reconcile Tailscale Serve for all Private VPN apps (no Cloudflare sync). */
+  public async syncTailscaleExposurePublic() {
+    return this.triggerTailscaleSync();
   }
 
   /**

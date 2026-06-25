@@ -1,17 +1,42 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '../auth/auth.guard';
 import { TailscaleService } from './tailscale.service';
-import { ApiResponse } from '@nestjs/swagger';
+import { LoggerService } from '@/core/logger/logger.service';
 
 @UseGuards(AuthGuard)
 @Controller('tailscale')
 export class TailscaleController {
-  constructor(private readonly tailscaleService: TailscaleService) {}
+  constructor(
+    private readonly tailscaleService: TailscaleService,
+    private readonly moduleRef: ModuleRef,
+    private readonly logger: LoggerService,
+  ) {}
+
+  private async triggerTailscaleExposureSync(): Promise<void> {
+    try {
+      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+      const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      if (lifecycle) {
+        await lifecycle.syncTailscaleExposurePublic();
+      }
+    } catch (error) {
+      this.logger.error(`[Tailscale] Failed to sync Private VPN exposure: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   @Get('status')
   @ApiResponse({ type: Object })
   async getStatus() {
     return this.tailscaleService.getStatus();
+  }
+
+  @Post('sync')
+  @ApiResponse({ type: Object })
+  async syncExposure() {
+    await this.triggerTailscaleExposureSync();
+    return { success: true };
   }
 
   @Post('auth/start')
@@ -29,6 +54,7 @@ export class TailscaleController {
     try {
       const result = await this.tailscaleService.startAuth();
       if (result.authUrl === '') {
+        await this.triggerTailscaleExposureSync();
         return { success: true, alreadyAuthenticated: true };
       }
       return { success: true, authUrl: result.authUrl };
@@ -53,6 +79,7 @@ export class TailscaleController {
 
     try {
       await this.tailscaleService.connectWithAuthKey(body?.authKey || '');
+      await this.triggerTailscaleExposureSync();
       return { success: true };
     } catch (error) {
       return {

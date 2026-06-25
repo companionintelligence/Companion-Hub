@@ -1,11 +1,14 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
+import { apiFetch } from '@/lib/api-fetch';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone } from 'lucide-react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
@@ -52,6 +55,14 @@ function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, s
   return host ? `https://${host}${suffix}` : null;
 }
 
+export function buildTailscaleServedPortSet(entries: Array<{ listenPort?: number }>): ReadonlySet<number> {
+  return new Set(entries.map((entry) => entry.listenPort).filter((port): port is number => typeof port === 'number'));
+}
+
+export function isTailscalePortPublished(port: number | null | undefined, servedPorts: ReadonlySet<number>): boolean {
+  return port != null && servedPorts.has(port);
+}
+
 function hasDirectLocalAccess(record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean }): boolean {
   return record.exposureMode === 'local' || Boolean(record.exposedLocal) || Boolean(record.openPort);
 }
@@ -65,11 +76,25 @@ export function buildAppAccessPoints(input: {
   cloudflareAvailable: boolean;
   tailscaleAvailable: boolean;
   tailscaleNodeFqdn?: string | null;
+  tailscaleHttpsEnabled?: boolean;
+  tailscaleServedPorts?: ReadonlySet<number>;
   organizationSlug?: string;
   deviceSlug?: string;
 }): AppAccessPoint[] {
-  const { app, info, sslPort, internalIp, publicDomain, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, organizationSlug, deviceSlug } =
-    input;
+  const {
+    app,
+    info,
+    sslPort,
+    internalIp,
+    publicDomain,
+    cloudflareAvailable,
+    tailscaleAvailable,
+    tailscaleNodeFqdn,
+    tailscaleHttpsEnabled = false,
+    tailscaleServedPorts = new Set<number>(),
+    organizationSlug,
+    deviceSlug,
+  } = input;
 
   if (!app || info.no_gui) {
     return [];
@@ -110,13 +135,22 @@ export function buildAppAccessPoints(input: {
   const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || null;
   const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 
+  const appPort = app.port ?? info.port ?? null;
+  const expectsTailscalePublish = record.exposureMode === 'tailscale';
+  const legacyVpnActive = Boolean(record.exposedLocal) || !info.dynamic_config;
+  const vpnPortPublished = isTailscalePortPublished(appPort, tailscaleServedPorts);
+  const tailscalePublishReady = tailscaleAvailable && tailscaleHttpsEnabled && vpnPortPublished;
+
   const localState: AccessPointState = directUrl ? 'active' : 'unavailable';
-  const vpnState: AccessPointState =
-    vpnUrl && (Boolean(record.exposedLocal) || record.exposureMode === 'tailscale' || !info.dynamic_config)
+  const vpnState: AccessPointState = vpnUrl
+    ? tailscalePublishReady && (expectsTailscalePublish || legacyVpnActive)
       ? 'active'
-      : tailscaleAvailable && vpnUrl
+      : expectsTailscalePublish && tailscaleAvailable
         ? 'available'
-        : 'unavailable';
+        : tailscaleAvailable && vpnUrl
+          ? 'available'
+          : 'unavailable'
+    : 'unavailable';
   const publicState: AccessPointState =
     publicUrl && Boolean(record.exposed || configuredPublicDomain)
       ? 'active'
@@ -150,11 +184,15 @@ export function buildAppAccessPoints(input: {
       stateLabel:
         vpnState === 'active'
           ? 'APP_DETAILS_ACCESS_ENABLED'
-          : vpnState === 'available'
-            ? 'APP_DETAILS_ACCESS_AVAILABLE'
-            : tailscaleAvailable
-              ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-              : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
+          : vpnState === 'available' && expectsTailscalePublish && !vpnPortPublished
+            ? 'APP_DETAILS_ACCESS_PENDING'
+            : vpnState === 'available'
+              ? tailscaleAvailable
+                ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+                : 'APP_DETAILS_ACCESS_AVAILABLE'
+              : tailscaleAvailable
+                ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+                : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
     },
     {
       key: 'local',
@@ -181,7 +219,19 @@ interface Props {
 
 export const AppAccessPoints = ({ app, info }: Props) => {
   const { t } = useTranslation();
-  const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn } = useAppContext();
+  const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
+
+  const { data: serveStatus } = useQuery({
+    queryKey: ['tailscale-serve'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/tailscale/serve');
+      return res.json() as Promise<{ entries: Array<{ listenPort?: number }> }>;
+    },
+    enabled: tailscaleAvailable,
+    refetchInterval: 30_000,
+  });
+
+  const tailscaleServedPorts = useMemo(() => buildTailscaleServedPortSet(serveStatus?.entries ?? []), [serveStatus?.entries]);
 
   const accessPoints = buildAppAccessPoints({
     app,
@@ -192,6 +242,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     cloudflareAvailable,
     tailscaleAvailable,
     tailscaleNodeFqdn,
+    tailscaleHttpsEnabled,
+    tailscaleServedPorts,
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
   });
