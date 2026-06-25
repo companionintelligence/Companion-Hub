@@ -30,9 +30,9 @@ describe('useTailscaleReadinessSync', () => {
   });
 
   it('syncs when Tailscale transitions to connected', async () => {
-    const { rerender } = renderHook(({ status }) => useTailscaleReadinessSync(status), {
+    const { rerender } = renderHook(({ status }: { status: TailscaleReadinessStatus }) => useTailscaleReadinessSync(status), {
       wrapper: createWrapper(),
-      initialProps: { status: { installed: true, connected: false, httpsAvailable: false } satisfies TailscaleReadinessStatus },
+      initialProps: { status: { installed: true, connected: false, httpsAvailable: false } },
     });
 
     rerender({ status: { installed: true, connected: true, httpsAvailable: false } });
@@ -43,9 +43,9 @@ describe('useTailscaleReadinessSync', () => {
   });
 
   it('syncs when HTTPS becomes available on an already-connected tailnet', async () => {
-    const { rerender } = renderHook(({ status }) => useTailscaleReadinessSync(status), {
+    const { rerender } = renderHook(({ status }: { status: TailscaleReadinessStatus }) => useTailscaleReadinessSync(status), {
       wrapper: createWrapper(),
-      initialProps: { status: { installed: true, connected: true, httpsAvailable: false } satisfies TailscaleReadinessStatus },
+      initialProps: { status: { installed: true, connected: true, httpsAvailable: false } },
     });
 
     rerender({ status: { installed: true, connected: true, httpsAvailable: true } });

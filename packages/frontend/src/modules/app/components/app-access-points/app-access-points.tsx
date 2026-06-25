@@ -118,8 +118,8 @@ export function buildAppAccessPoints(input: {
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record);
   const directUrl = directPort && localEnabled ? `http://${browserHost}:${directPort}${urlSuffix}` : null;
-  const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, app.port ?? null);
-  const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, app.port ?? null, urlSuffix);
+  const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, directPort);
+  const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, directPort, urlSuffix);
 
   const configuredPublicDomain = record.domain?.trim() || null;
   const resolvedPublicDomain = (record.publicDomain?.trim() || publicDomain || '').trim();
@@ -135,21 +135,18 @@ export function buildAppAccessPoints(input: {
   const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || null;
   const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 
-  const appPort = app.port ?? info.port ?? null;
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
   const legacyVpnActive = Boolean(record.exposedLocal) || !info.dynamic_config;
-  const vpnPortPublished = isTailscalePortPublished(appPort, tailscaleServedPorts);
+  const vpnPortPublished = isTailscalePortPublished(directPort, tailscaleServedPorts);
   const tailscalePublishReady = tailscaleAvailable && tailscaleHttpsEnabled && vpnPortPublished;
 
   const localState: AccessPointState = directUrl ? 'active' : 'unavailable';
   const vpnState: AccessPointState = vpnUrl
     ? tailscalePublishReady && (expectsTailscalePublish || legacyVpnActive)
       ? 'active'
-      : expectsTailscalePublish && tailscaleAvailable
+      : tailscaleAvailable
         ? 'available'
-        : tailscaleAvailable && vpnUrl
-          ? 'available'
-          : 'unavailable'
+        : 'unavailable'
     : 'unavailable';
   const publicState: AccessPointState =
     publicUrl && Boolean(record.exposed || configuredPublicDomain)
@@ -186,13 +183,13 @@ export function buildAppAccessPoints(input: {
           ? 'APP_DETAILS_ACCESS_ENABLED'
           : vpnState === 'available' && expectsTailscalePublish && !vpnPortPublished
             ? 'APP_DETAILS_ACCESS_PENDING'
-            : vpnState === 'available'
-              ? tailscaleAvailable
-                ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-                : 'APP_DETAILS_ACCESS_AVAILABLE'
-              : tailscaleAvailable
-                ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
-                : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
+            : vpnState === 'available' && expectsTailscalePublish
+              ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+              : vpnState === 'available'
+                ? 'APP_DETAILS_ACCESS_AVAILABLE'
+                : tailscaleAvailable
+                  ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+                  : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
     },
     {
       key: 'local',
@@ -225,6 +222,9 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     queryKey: ['tailscale-serve'],
     queryFn: async () => {
       const res = await apiFetch('/api/tailscale/serve');
+      if (!res.ok) {
+        throw new Error(`Failed to fetch Tailscale Serve status: ${res.status}`);
+      }
       return res.json() as Promise<{ entries: Array<{ listenPort?: number }> }>;
     },
     enabled: tailscaleAvailable,
