@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { rocmInstallPhaseSchema } from './inference.dto';
+import type { z } from 'zod';
 
-export type RocmInstallPhase = 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
+export type RocmInstallPhase = z.infer<typeof rocmInstallPhaseSchema>;
 
 export interface RocmInstallState {
   phase: RocmInstallPhase;
@@ -62,7 +64,14 @@ export class RocmInstallerService {
     try {
       const raw = await this.filesystem.readTextFile(this.rocmInstallPath);
       if (!raw) return null;
-      return JSON.parse(raw) as RocmInstallState;
+      const parsed = JSON.parse(raw) as { phase?: unknown; updatedAt?: string; message?: string };
+      const phaseResult = rocmInstallPhaseSchema.safeParse(parsed.phase);
+      if (!phaseResult.success || !parsed.updatedAt) return null;
+      return {
+        phase: phaseResult.data,
+        updatedAt: parsed.updatedAt,
+        message: parsed.message,
+      };
     } catch {
       return null;
     }

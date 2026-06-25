@@ -21,3 +21,12 @@ export const runtimeModelsQuerySchema = z.object({
 });
 
 export class RuntimeModelsQueryDto extends createZodDto(runtimeModelsQuerySchema) {}
+
+export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
+
+export const updateRocmInstallStateSchema = z.object({
+  phase: rocmInstallPhaseSchema,
+  message: z.string().optional(),
+});
+
+export class UpdateRocmInstallStateBody extends createZodDto(updateRocmInstallStateSchema) {}

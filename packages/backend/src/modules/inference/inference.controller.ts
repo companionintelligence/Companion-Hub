@@ -16,7 +16,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
+import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -175,10 +175,9 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('rocm/install-state')
-  async updateRocmInstallState(@Body() body: { phase: string; message?: string }) {
-    const phase = body.phase as import('./rocm-installer.service').RocmInstallPhase;
+  async updateRocmInstallState(@Body() body: UpdateRocmInstallStateBody) {
     await this.rocmInstaller.recordInstallState({
-      phase,
+      phase: body.phase,
       updatedAt: new Date().toISOString(),
       message: body.message,
     });

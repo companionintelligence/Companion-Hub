@@ -66,9 +66,11 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
     };
   }, [fetchStatus]);
 
-  const rocmReady = hardware.gpu.hostRocmAvailable || status?.hostRocmAvailable || status?.runtimeRocmAvailable;
+  const hostRocmAvailable = status?.hostRocmAvailable ?? hardware.gpu.hostRocmAvailable ?? false;
+  const runtimeRocmAvailable = status?.runtimeRocmAvailable ?? false;
+  const rocmReady = hostRocmAvailable || runtimeRocmAvailable;
   const installPhase = status?.installPhase ?? 'idle';
-  const notice = resolveAmdHostRocmNotice(hardware);
+  const installHintNotice = resolveAmdHostRocmNotice(hardware);
 
   const handleInstall = useCallback(async () => {
     const invoke = getTauriInvoke();
@@ -128,9 +130,9 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
             <div className="flex items-start gap-3">
               <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
               <div>
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{notice?.title ?? t('AI_ROCM_DETECTED_TITLE')}</div>
+                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('AI_ROCM_DETECTED_TITLE')}</div>
                 <div className="text-xs text-green-700 dark:text-green-300 mt-1">
-                  {notice?.body ?? (isAmdApu(hardware) ? t('AI_ROCM_DETECTED_APU_BODY', { model: hardware.gpu.model }) : t('AI_ROCM_DETECTED_BODY'))}
+                  {isAmdApu(hardware) ? t('AI_ROCM_DETECTED_APU_BODY', { model: hardware.gpu.model }) : t('AI_ROCM_DETECTED_BODY')}
                 </div>
               </div>
             </div>
@@ -156,9 +158,9 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
         <div className="flex items-start gap-3">
           <Download className="h-5 w-5 text-primary shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">{notice?.title ?? t('AI_ROCM_AMD_DETECTED_TITLE')}</div>
+            <div className="text-sm font-semibold">{installHintNotice?.title ?? t('AI_ROCM_AMD_DETECTED_TITLE')}</div>
             <p className="mt-1 text-xs text-muted-foreground">
-              {notice?.body ??
+              {installHintNotice?.body ??
                 (isAmdApu(hardware) ? t('AI_ROCM_AMD_DETECTED_APU_BODY', { model: hardware.gpu.model }) : t('AI_ROCM_AMD_DETECTED_BODY'))}
             </p>
 
@@ -238,7 +240,8 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
                   <div className="mt-2 space-y-2 text-xs">
                     <div className="rounded bg-muted p-2.5 font-mono text-[11px] leading-6">
                       <p className="font-semibold font-sans">{t('AI_ROCM_MANUAL_UBUNTU')}</p>
-                      <p>wget https://repo.radeon.com/amdgpu-install/latest/ubuntu/noble/amdgpu-install_*_all.deb</p>
+                      <p>. /etc/os-release</p>
+                      <p>wget https://repo.radeon.com/amdgpu-install/latest/ubuntu/${'{VERSION_CODENAME}'}/amdgpu-install_*_all.deb</p>
                       <p>sudo apt install ./amdgpu-install_*_all.deb</p>
                       <p>sudo amdgpu-install -y --usecase=rocm</p>
                     </div>

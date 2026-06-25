@@ -74,6 +74,26 @@ describe('RocmSetupCard', () => {
     expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
   });
 
+  it('shows ready messaging from status when hardware scan is stale', async () => {
+    mockApiFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          hostRocmAvailable: true,
+          runtimeRocmAvailable: true,
+          installPhase: 'completed',
+          canAutoInstall: false,
+          platformHint: 'linux-ubuntu',
+        }),
+    });
+
+    render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: false })} onRescan={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument());
+    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Install ROCm on the host/i)).not.toBeInTheDocument();
+  });
+
   it('shows reboot banner when install phase is reboot_required', async () => {
     mockApiFetch.mockResolvedValue({
       ok: true,
