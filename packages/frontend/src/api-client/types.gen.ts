@@ -45,6 +45,7 @@ export type AppContextDto = {
     tailscaleAvailable: boolean;
     tailscaleNodeFqdn?: string | null;
     tailscaleSupportsServices?: boolean;
+    tailscaleHttpsEnabled?: boolean;
     user: {
         hasCompletedOnboarding: boolean;
         id: number;

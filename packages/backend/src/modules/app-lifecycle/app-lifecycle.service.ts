@@ -3,7 +3,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
@@ -74,7 +74,14 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
 }
 
 @Injectable()
-export class AppLifecycleService implements OnApplicationBootstrap {
+export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
+  private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
+
+  private tailscaleReadinessInterval: ReturnType<typeof setInterval> | null = null;
+  private tailscaleReadinessInitialized = false;
+  private lastTailscaleConnected = false;
+  private lastTailscaleHttpsAvailable = false;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -126,6 +133,57 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to regenerate Traefik config on startup: ${e instanceof Error ? e.message : String(e)}`);
       }
     }, 10000); // Wait 10s for all services to be ready
+
+    this.startTailscaleReadinessWatcher();
+  }
+
+  onModuleDestroy() {
+    if (this.tailscaleReadinessInterval) {
+      clearInterval(this.tailscaleReadinessInterval);
+      this.tailscaleReadinessInterval = null;
+    }
+  }
+
+  private startTailscaleReadinessWatcher() {
+    this.tailscaleReadinessInterval = setInterval(() => {
+      void this.checkTailscaleReadinessTransition();
+    }, AppLifecycleService.TAILSCALE_READINESS_POLL_MS);
+  }
+
+  /**
+   * Re-publish Private VPN apps when Tailscale connects or HTTPS/Serve becomes
+   * available on the tailnet (e.g. after admin enables certificates in the console).
+   */
+  private async checkTailscaleReadinessTransition() {
+    const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
+    if (!tailscaleService) {
+      return;
+    }
+
+    const status = await tailscaleService.getStatus().catch(() => null);
+    if (!status) {
+      return;
+    }
+
+    const connected = status.connected;
+    const httpsAvailable = status.httpsAvailable;
+
+    if (!this.tailscaleReadinessInitialized) {
+      this.tailscaleReadinessInitialized = true;
+      this.lastTailscaleConnected = connected;
+      this.lastTailscaleHttpsAvailable = httpsAvailable;
+      return;
+    }
+
+    const becameConnected = !this.lastTailscaleConnected && connected;
+    const becameHttpsReady = !this.lastTailscaleHttpsAvailable && httpsAvailable;
+    this.lastTailscaleConnected = connected;
+    this.lastTailscaleHttpsAvailable = httpsAvailable;
+
+    if (connected && (becameConnected || becameHttpsReady)) {
+      this.logger.info('[Tailscale] Readiness changed — re-syncing Private VPN exposure');
+      await this.syncTailscaleExposurePublic();
+    }
   }
 
   private async emitInstallQueueUpdate() {
@@ -848,6 +906,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     return this.syncExposure();
   }
 
+  /** Reconcile Tailscale Serve for all Private VPN apps (no Cloudflare sync). */
+  public async syncTailscaleExposurePublic() {
+    return this.triggerTailscaleSync();
+  }
+
   /**
    * Sync Tailscale Serve state for apps with exposureMode='tailscale'
    */
@@ -912,7 +975,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               httpsPort: desired.port,
               upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${desired.appName} on :${desired.port}: ${e}`));
+            .catch((e) => this.surfaceTailscaleServeFailure(desired.appUrn, e));
         }
       }
 
@@ -968,6 +1031,36 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       this.lastPublicDnsToastAt.set(target.appUrn, now);
       this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
     }
+  }
+
+  private readonly lastTailscaleServeToastAt = new Map<string, number>();
+  private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
+
+  /**
+   * Surface a Tailscale Serve failure so Private VPN publishing is never silent.
+   * Always logs the error; when the failure is because HTTPS/Serve is not enabled
+   * on the tailnet (an account-wide setting the Hub cannot toggle), it also emits
+   * a per-app SSE event the frontend turns into a toast with the enable link.
+   * Cooldown-guarded so repeated syncs for a still-broken app don't flood toasts.
+   */
+  private surfaceTailscaleServeFailure(appUrn: AppUrn, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(`[Tailscale] Failed to serve ${appUrn}: ${message}`);
+
+    // Tailscale returns this when HTTPS Certificates / Serve are not enabled for
+    // the tailnet. This is the only serve failure the user can fix themselves.
+    const serveNotEnabled = /serve is not enabled|not enabled on your tailnet|HTTPS.*not enabled/i.test(message);
+    if (!serveNotEnabled) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastToast = this.lastTailscaleServeToastAt.get(appUrn) ?? 0;
+    if (now - lastToast < AppLifecycleService.TAILSCALE_SERVE_FAILURE_COOLDOWN_MS) {
+      return;
+    }
+    this.lastTailscaleServeToastAt.set(appUrn, now);
+    this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn }, appUrn);
   }
 
   public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {

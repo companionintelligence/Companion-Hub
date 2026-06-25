@@ -78,6 +78,7 @@ const appContextSchema = z.object({
   tailscaleAvailable: z.boolean(),
   tailscaleNodeFqdn: z.string().trim().nullable().optional(),
   tailscaleSupportsServices: z.boolean().optional(),
+  tailscaleHttpsEnabled: z.boolean().optional(),
 });
 
 export class UserSettingsBody extends createZodDto(settingsSchema.partial()) {}

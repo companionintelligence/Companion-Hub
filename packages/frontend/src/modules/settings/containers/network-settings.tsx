@@ -8,6 +8,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import toast from 'react-hot-toast';
 import { openExternal } from '@/lib/helpers/open-external';
+import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
 
 interface CloudflareStatus {
   tunnelEnabled: boolean;
@@ -30,6 +31,7 @@ interface TailscaleApiStatus {
   ip: string | null;
   hostname: string | null;
   backendState: string | null;
+  httpsAvailable?: boolean;
 }
 
 interface AuthStartResponse {
@@ -51,6 +53,8 @@ const TailscaleSidecarSection = () => {
     },
     refetchInterval: 10_000,
   });
+
+  useTailscaleReadinessSync(data);
 
   const invalidateTailscaleAndAppContext = () => {
     void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });

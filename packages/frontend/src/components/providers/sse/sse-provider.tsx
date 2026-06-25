@@ -114,6 +114,31 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'public_dns_error':
           toast.error(t('APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
           break;
+        case 'tailscale_serve_error':
+          toast.error(
+            (toastInstance) => (
+              <span className="text-sm">
+                <Trans
+                  i18nKey="APP_ERROR_TAILSCALE_SERVE_NOT_ENABLED_TOAST"
+                  values={{ id: appName }}
+                  components={{
+                    enableLink: (
+                      // biome-ignore lint/a11y/useAnchorContent: link text is injected by Trans at runtime
+                      <a
+                        href="https://login.tailscale.com/admin/dns"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium underline"
+                        onClick={() => toast.dismiss(toastInstance.id)}
+                      />
+                    ),
+                  }}
+                />
+              </span>
+            ),
+            { duration: 10000 },
+          );
+          break;
         default:
           break;
       }

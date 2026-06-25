@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
 import { BrandLogo } from './ai-setup/icons';
 import { StepSection } from './ai-setup/primitives';
+import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
 
 /** Per-platform Tailscale download links (the client app to install on each device). */
 const TAILSCALE_DOWNLOADS: { label: string; href: string; brand?: string }[] = [
@@ -31,6 +32,7 @@ interface TailscaleApiStatus {
   ip: string | null;
   hostname: string | null;
   backendState: string | null;
+  httpsAvailable?: boolean;
 }
 
 interface AuthStartResponse {
@@ -63,6 +65,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
     // external browser, so the section flips to "connected" without waiting for the poll.
     refetchOnWindowFocus: true,
   });
+
+  useTailscaleReadinessSync(status);
 
   const browserAuthMutation = useMutation({
     mutationFn: async () => {

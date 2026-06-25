@@ -8,6 +8,16 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+vi.mock('@tanstack/react-query', () => ({
+  useQuery: () => ({
+    data: { entries: [{ listenPort: 3000 }, { listenPort: 8311 }] },
+  }),
+}));
+
+vi.mock('@/lib/api-fetch', () => ({
+  apiFetch: vi.fn(),
+}));
+
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({
     userSettings: {
@@ -21,6 +31,7 @@ vi.mock('@/context/app-context', () => ({
     cloudflareAvailable: true,
     tailscaleAvailable: true,
     tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+    tailscaleHttpsEnabled: true,
   }),
 }));
 
@@ -59,6 +70,8 @@ describe('buildAppAccessPoints', () => {
       cloudflareAvailable: true,
       tailscaleAvailable: true,
       tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set([3000]),
       organizationSlug: 'companion',
       deviceSlug: 'studio',
     });
@@ -118,6 +131,8 @@ describe('buildAppAccessPoints', () => {
       cloudflareAvailable: true,
       tailscaleAvailable: true,
       tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set([8311]),
     });
 
     expect(accessPoints[1]).toMatchObject({
@@ -130,6 +145,33 @@ describe('buildAppAccessPoints', () => {
       url: null,
       host: null,
       state: 'unavailable',
+    });
+  });
+
+  it('marks tailscale-only VPN as pending when the app port is not served yet', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 8311,
+        localSubdomain: 'bitboard',
+        exposureMode: 'tailscale',
+        exposedLocal: false,
+        openPort: false,
+      } as any,
+      info,
+      sslPort: 8443,
+      internalIp: '0.0.0.0',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set(),
+    });
+
+    expect(accessPoints[1]).toMatchObject({
+      key: 'vpn',
+      state: 'available',
+      stateLabel: 'APP_DETAILS_ACCESS_PENDING',
     });
   });
 });

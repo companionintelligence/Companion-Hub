@@ -11,6 +11,8 @@ export interface TailscaleStatus {
   tailnet: string | null;
   ip: string | null;
   supportsServices: boolean;
+  /** True when HTTPS certificates (and therefore Tailscale Serve) are enabled for the tailnet. */
+  httpsAvailable: boolean;
   backendState: string | null;
   authUrl: string | null;
 }
@@ -243,6 +245,7 @@ export class TailscaleService {
       tailnet: null,
       ip: null,
       supportsServices: false,
+      httpsAvailable: false,
       backendState: null,
       authUrl: null,
     };
@@ -265,6 +268,12 @@ export class TailscaleService {
 
       const self = (status.Self as Record<string, unknown>) || {};
 
+      // CertDomains is populated only when HTTPS Certificates are enabled for the
+      // tailnet. It is the same signal Tailscale Serve requires, so we use it to
+      // tell whether per-app Private VPN publishing can succeed.
+      const certDomains = status.CertDomains as string[] | undefined;
+      const httpsAvailable = Array.isArray(certDomains) && certDomains.length > 0;
+
       return {
         installed,
         connected,
@@ -276,6 +285,7 @@ export class TailscaleService {
           null,
         ip: (self.TailscaleIPs as string[])?.[0] || null,
         supportsServices,
+        httpsAvailable,
         backendState: (status.BackendState as string) || null,
         authUrl: (status.AuthURL as string) || null,
       };
@@ -295,6 +305,7 @@ export class TailscaleService {
       tailnet: null,
       ip: null,
       supportsServices: false,
+      httpsAvailable: false,
       backendState: null,
       authUrl: null,
     };
@@ -317,6 +328,7 @@ export class TailscaleService {
       tailnet: null,
       ip: null,
       supportsServices: false,
+      httpsAvailable: false,
       backendState: null,
       authUrl: null,
     };

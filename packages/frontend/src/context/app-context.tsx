@@ -23,6 +23,7 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
   tailscaleAvailable: false,
   tailscaleNodeFqdn: null,
   tailscaleSupportsServices: false,
+  tailscaleHttpsEnabled: false,
 };
 
 // Optimistically prefetch pages that are likely to be visited
