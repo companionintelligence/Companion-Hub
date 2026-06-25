@@ -297,7 +297,20 @@ export class ReposHelpers {
                     'No description provided',
               title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
               description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
-              categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
+              categories: (() => {
+                const cats = new Set<string>();
+                if (Array.isArray(app.categories)) {
+                  for (const c of app.categories) {
+                    if (typeof c === 'string') cats.add(c);
+                  }
+                }
+                if (Array.isArray(app.tags)) {
+                  for (const t of app.tags) {
+                    if (typeof t === 'string') cats.add(t);
+                  }
+                }
+                return cats.size > 0 ? [...cats] : ['utilities'];
+              })(),
               port: typeof app.port === 'number' ? app.port : 8080,
               version: typeof app.version === 'string' ? app.version : '0.0.1',
               cihub_app_version:

@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
+import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/featured-store-view';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
@@ -78,6 +79,7 @@ export default () => {
   });
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
+  const isFeaturedView = category === 'featured';
 
   const {
     data: alternativesData,
@@ -177,15 +179,16 @@ export default () => {
     [setSearch],
   );
 
-  const effectiveCategory = isAlternativesView ? undefined : category;
+  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
 
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
     ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
+    enabled: !isAlternativesView && !isFeaturedView,
   });
 
-  const isLoading = !data;
+  const isLoading = !isAlternativesView && !isFeaturedView && !data;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   const { lastElementRef } = useInfiniteScroll({
@@ -311,7 +314,9 @@ export default () => {
         </div>
       </div>
 
-      {isAlternativesView ? (
+      {isFeaturedView ? (
+        <FeaturedStoreView storeId={ciCloudStore?.slug ?? 'ci-marketplace'} installedAppUrns={installedAppUrns} />
+      ) : isAlternativesView ? (
         <div className="min-w-0 space-y-6">
           {isAlternativesDataLoading && (
             <div className="space-y-4 py-8">

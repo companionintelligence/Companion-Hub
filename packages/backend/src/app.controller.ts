@@ -1,6 +1,6 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
-import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
 import { AppService } from './app.service';
@@ -187,6 +187,19 @@ export class AppController {
   @ApiResponse({ status: 503, description: 'CI Cloud unreachable or CI_CLOUD_URL not set' })
   async getStoreAlternatives() {
     return this.appStoreService.fetchCiCloudStoreAlternatives();
+  }
+
+  @Get('store/listings')
+  @ApiOperation({ summary: 'App store listings (proxied from CI Cloud)' })
+  @ApiResponse({ status: 200, description: 'Store apps JSON array' })
+  @ApiResponse({ status: 503, description: 'CI Cloud unreachable or CI_CLOUD_URL not set' })
+  async getStoreListings(
+    @Query('tags') tags?: string,
+    @Query('sort') sort?: 'newest' | 'trending',
+    @Query('category') category?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.appStoreService.fetchCiCloudStoreListings({ tags, sort, category, q });
   }
 
   @Get('/app-context')

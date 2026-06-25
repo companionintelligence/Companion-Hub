@@ -40,6 +40,49 @@
         ]
       }
     },
+    "/api/store/listings": {
+      "get": {
+        "operationId": "getStoreListings",
+        "parameters": [
+          {
+            "name": "tags",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string", "enum": ["newest", "trending"] }
+          },
+          {
+            "name": "category",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store apps JSON array"
+          },
+          "503": {
+            "description": "CI Cloud unreachable or CI_CLOUD_URL not set"
+          }
+        },
+        "summary": "App store listings (proxied from CI Cloud)",
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/app-context": {
       "get": {
         "operationId": "appContext",
