@@ -24,6 +24,25 @@ import path from 'node:path';
 import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
 
+/** Docker Desktop on Windows rejects backslashes in `-v` mount sources. */
+function normalizeWindowsDockerPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 3 && trimmed[0] === '/' && trimmed[2] === '/' && /[a-zA-Z]/.test(trimmed[1] ?? '')) {
+    return `${trimmed[1]!.toUpperCase()}:${trimmed.slice(2).replace(/\\/g, '/')}`;
+  }
+  return trimmed.replace(/\\/g, '/');
+}
+
+export function dockerBindMountPath(hostPath: string): string {
+  if (process.platform !== 'win32') return path.resolve(hostPath);
+
+  const trimmed = hostPath.trim();
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+    return normalizeWindowsDockerPath(trimmed);
+  }
+  return normalizeWindowsDockerPath(path.resolve(trimmed));
+}
+
 /** Log files a prior root-owned Hub container may leave behind. */
 export const STALE_ROOT_OWNED_FILES = [
   ['state', '.env.resolved'],
@@ -197,7 +216,7 @@ export function hostPathWritable(targetPath: string): boolean {
 export function verifyContainerCanWriteDir(hostDir: string, uid: number, gid: number): boolean {
   if (!existsSync(hostDir) || !isDockerAvailable()) return false;
 
-  const mount = `${path.resolve(hostDir)}:/mnt:rw`;
+  const mount = `${dockerBindMountPath(hostDir)}:/mnt:rw`;
   const result = spawnSync(
     'docker',
     [
@@ -234,7 +253,7 @@ export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, g
     return verifyContainerCanWriteDir(hostDir, uid, gid);
   }
 
-  const mount = `${path.resolve(hostDir)}:/mnt:rw`;
+  const mount = `${dockerBindMountPath(hostDir)}:/mnt:rw`;
   const result = spawnSync('docker', ['run', '--rm', '--user', `${uid}:${gid}`, '-v', mount, 'alpine:3.20', 'touch', `/mnt/${fileName}`], {
     encoding: 'utf8',
     stdio: 'pipe',
@@ -251,7 +270,7 @@ export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: num
     throw new Error('Docker is not available; cannot repair bind-mount permissions automatically.');
   }
 
-  const mount = `${path.resolve(hostSubdir)}:/mnt:rw`;
+  const mount = `${dockerBindMountPath(hostSubdir)}:/mnt:rw`;
   const script = `chown -R ${uid}:${gid} /mnt 2>/dev/null || true; chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true`;
 
   const result = spawnSync('docker', ['run', '--rm', '--user', '0:0', '-v', mount, 'alpine:3.20', 'sh', '-c', script], {

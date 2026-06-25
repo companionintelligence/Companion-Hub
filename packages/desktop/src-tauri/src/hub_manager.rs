@@ -3218,7 +3218,7 @@ fn host_docker_socket_path() -> PathBuf {
 fn docker_socket_mount_arg() -> String {
     format!(
         "{}:/var/run/docker.sock:ro",
-        host_docker_socket_path().display()
+        docker_bind_mount_path(&host_docker_socket_path())
     )
 }
 
@@ -3487,7 +3487,7 @@ fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool
         None => return false,
     };
 
-    let mount_spec = format!("{}:/mnt:rw", host_dir.display());
+    let mount_spec = format!("{}:/mnt:rw", docker_bind_mount_path(host_dir));
     let user_spec = format!("{uid}:{gid}");
     let script = format!("touch /mnt/{file_name}");
     let output = docker_command()
@@ -3516,7 +3516,7 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
         return false;
     }
 
-    let mount_spec = format!("{}:/mnt:rw", host_dir.display());
+    let mount_spec = format!("{}:/mnt:rw", docker_bind_mount_path(host_dir));
     let user_spec = format!("{uid}:{gid}");
     let output = docker_command()
         .args([
@@ -3550,7 +3550,7 @@ fn heal_bind_mount_permissions_via_docker(
         return Ok(());
     }
 
-    let mount_spec = format!("{}:/mnt:rw", host_subdir.display());
+    let mount_spec = format!("{}:/mnt:rw", docker_bind_mount_path(&host_subdir));
     let script = format!(
         "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
          chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
@@ -3920,7 +3920,7 @@ pub fn cleanup_stale_project_containers(
     );
 
     let output = docker_command()
-        .env("ENV_FILE", env_path)
+        .env("ENV_FILE", compose_env_file_var(env_path))
         .args([
             "compose",
             "--env-file",
@@ -4484,7 +4484,7 @@ fn start_database_first(
     );
 
     let output = docker_command()
-        .env("ENV_FILE", env_path)
+        .env("ENV_FILE", compose_env_file_var(env_path))
         .args([
             "compose",
             "--env-file",
@@ -4824,7 +4824,7 @@ fn start_hub_inner(
             ]);
         }
         let output = match docker_command()
-            .env("ENV_FILE", env_path)
+            .env("ENV_FILE", compose_env_file_var(env_path))
             .args(&compose_up_args)
             .output()
         {
@@ -5014,7 +5014,7 @@ pub fn pull_stack_images(
         "Pulling stack images before startup…",
     );
     let output = docker_command()
-        .env("ENV_FILE", env_path)
+        .env("ENV_FILE", compose_env_file_var(env_path))
         .args([
             "compose",
             "--env-file",
@@ -5067,7 +5067,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
     );
 
     let output = docker_command()
-        .env("ENV_FILE", env_path)
+        .env("ENV_FILE", compose_env_file_var(env_path))
         .args([
             "compose",
             "--env-file",
@@ -5116,7 +5116,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     );
 
     let output = docker_command()
-        .env("ENV_FILE", env_path)
+        .env("ENV_FILE", compose_env_file_var(env_path))
         .args([
             "compose",
             "--env-file",
@@ -5350,7 +5350,8 @@ fn render_runtime_env_content(
     existing: &std::collections::HashMap<String, String>,
 ) -> String {
     let root_folder_host = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST")
-        .unwrap_or_else(|| compute_data_dir_str(data_dir));
+        .map(|value| normalize_docker_host_path(&value))
+        .unwrap_or_else(|| docker_bind_mount_path(data_dir));
     let jwt_secret =
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
@@ -5411,7 +5412,7 @@ fn render_runtime_env_content(
     let docker_socket_path = host_docker_socket_path();
     let docker_socket_path_line = format!(
         "DOCKER_SOCKET_PATH={}\n",
-        docker_socket_path.to_string_lossy()
+        normalize_docker_host_path(&docker_socket_path.to_string_lossy())
     );
 
     format!(
@@ -5487,19 +5488,39 @@ fn generate_hex(bytes: usize) -> String {
         .collect()
 }
 
-/// Compute the data directory path string, handling Windows Docker Desktop paths.
-fn compute_data_dir_str(data_dir: &Path) -> String {
+/// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
+/// Docker Desktop on Windows rejects backslashes in volume specifications.
+fn docker_bind_mount_path(path: &Path) -> String {
+    normalize_docker_host_path(&path.to_string_lossy())
+}
+
+/// Normalize a host path string for Docker bind mounts and compose `.env` values.
+fn normalize_docker_host_path(value: &str) -> String {
     if cfg!(windows) {
-        let path = data_dir.to_string_lossy().to_string();
-        if path.len() >= 2 && path.chars().nth(1) == Some(':') {
-            let drive = path.chars().next().unwrap().to_lowercase().to_string();
-            format!("/{}{}", drive, path[2..].replace('\\', "/"))
-        } else {
-            path.replace('\\', "/")
-        }
+        normalize_windows_docker_host_path(value)
     } else {
-        data_dir.to_string_lossy().to_string()
+        value.trim().to_string()
     }
+}
+
+#[cfg(windows)]
+fn normalize_windows_docker_host_path(value: &str) -> String {
+    let trimmed = value.trim();
+
+    // MSYS/Git-Bash style `/c/Users/...` → `C:/Users/...` (works for Docker and std::fs).
+    if trimmed.len() >= 3 {
+        let bytes = trimmed.as_bytes();
+        if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
+            let drive = (bytes[1] as char).to_ascii_uppercase();
+            return format!("{}:{}", drive, &trimmed[2..].replace('\\', "/"));
+        }
+    }
+
+    trimmed.replace('\\', "/")
+}
+
+fn compose_env_file_var(env_path: &Path) -> String {
+    docker_bind_mount_path(env_path)
 }
 
 fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
@@ -8490,5 +8511,20 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let saved = std::fs::read_to_string(&hash_path).expect("hash file");
         let expected = super::compute_config_hash(&compose, &env);
         assert_eq!(saved, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalizes_windows_docker_bind_mount_paths() {
+        assert_eq!(
+            super::normalize_windows_docker_host_path(
+                r"C:\Users\hegem\AppData\Roaming\companion-hub\.env"
+            ),
+            "C:/Users/hegem/AppData/Roaming/companion-hub/.env"
+        );
+        assert_eq!(
+            super::normalize_windows_docker_host_path("/c/Users/hegem/AppData/Roaming/companion-hub"),
+            "C:/Users/hegem/AppData/Roaming/companion-hub"
+        );
     }
 }
