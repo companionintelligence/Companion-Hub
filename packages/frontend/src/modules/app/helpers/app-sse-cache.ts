@@ -5,11 +5,22 @@ import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
 import { updateInstallationProgress } from './use-installation-progress';
 
+export type AppInstallErrorCache = {
+  message: string;
+  ts: number;
+  errorCode?: string;
+  errorDetail?: string;
+  settingsPath?: string;
+};
+
 export type AppSsePayload = {
   event: string;
   appUrn?: string;
   appStatus?: string;
   error?: string;
+  errorCode?: string;
+  errorDetail?: string;
+  settingsPath?: string;
   progress?: number;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];
@@ -84,11 +95,22 @@ function clearUninstalledAppCaches(queryClient: QueryClient, appUrn: string) {
   queryClient.removeQueries({ queryKey: runtimeHealthQueryKey(appUrn) });
 }
 
-function updateInstallErrorCache(queryClient: QueryClient, appUrn: string, error: string | undefined, appStatus?: string) {
+function updateInstallErrorCache(
+  queryClient: QueryClient,
+  appUrn: string,
+  payload: Pick<AppSsePayload, 'error' | 'errorCode' | 'errorDetail' | 'settingsPath'>,
+  appStatus?: string,
+) {
   if (!appUrn) return;
 
-  if (appStatus === 'install_failed' && error) {
-    queryClient.setQueryData(['app-install-error', appUrn], { message: error, ts: Date.now() });
+  if (appStatus === 'install_failed' && payload.error) {
+    queryClient.setQueryData<AppInstallErrorCache>(['app-install-error', appUrn], {
+      message: payload.error,
+      ts: Date.now(),
+      errorCode: payload.errorCode,
+      errorDetail: payload.errorDetail,
+      settingsPath: payload.settingsPath,
+    });
     return;
   }
 
@@ -100,7 +122,7 @@ function updateInstallErrorCache(queryClient: QueryClient, appUrn: string, error
  * Progress-only install ticks do not invalidate queries.
  */
 export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload) {
-  const { event, appUrn, appStatus, error } = data;
+  const { event, appUrn, appStatus, error, errorCode, errorDetail, settingsPath } = data;
   const progress = data.progress;
 
   if (event === 'install_queue') {
@@ -119,7 +141,13 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   if (event === 'install_error' && error) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
-    queryClient.setQueryData(['app-install-error', urn], { message: error, ts: Date.now() });
+    queryClient.setQueryData<AppInstallErrorCache>(['app-install-error', urn], {
+      message: error,
+      ts: Date.now(),
+      errorCode,
+      errorDetail,
+      settingsPath,
+    });
     updateInstallationProgress(urn, null);
     invalidateAppQueries(queryClient, appUrn);
     return;
@@ -159,7 +187,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   if (appStatus === 'installing' && progress === undefined) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
-    updateInstallErrorCache(queryClient, appUrn, error, appStatus);
+    updateInstallErrorCache(queryClient, appUrn, { error, errorCode, errorDetail, settingsPath }, appStatus);
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
@@ -169,7 +197,13 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (appStatus === 'install_failed' && error) {
-    queryClient.setQueryData(['app-install-error', urn], { message: error, ts: Date.now() });
+    queryClient.setQueryData<AppInstallErrorCache>(['app-install-error', urn], {
+      message: error,
+      ts: Date.now(),
+      errorCode,
+      errorDetail,
+      settingsPath,
+    });
   } else if (appStatus === 'running' || appStatus === 'missing' || appStatus === 'installing') {
     queryClient.setQueryData(['app-install-error', urn], null);
   }

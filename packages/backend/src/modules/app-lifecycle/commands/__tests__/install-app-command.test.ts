@@ -237,8 +237,9 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
-    expect(result.message).toContain('(/dev/kfd)');
+    expect(result.errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
+    expect(result.settingsPath).toBe('/settings?tab=ai&section=rocm');
   });
 
   it('SHOULD fail fast before compose up when /dev/kfd is required but missing', async () => {
@@ -251,8 +252,8 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
-    expect(result.message).toContain('(/dev/kfd)');
+    expect(result.errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
     // The destructive down must not run before the preflight either.
     expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
@@ -278,8 +279,8 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
-    expect(result.message).toContain('(/dev/kfd)');
+    expect(result.errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
     // The destructive down must not run before the preflight either.
     expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
@@ -307,8 +308,8 @@ describe('InstallAppCommand — pull policy', () => {
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
-    expect(result.message).toContain('(/dev/kfd)');
+    expect(result.errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
     expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
   });

@@ -411,7 +411,7 @@ describe('AppLifecycleService', () => {
       });
 
       await service.invokeCommand(data, reply);
-      expect(reply).toHaveBeenCalledWith({ success: false, message: 'Error: Exec failed' });
+      expect(reply).toHaveBeenCalledWith({ success: false, message: 'Exec failed' });
     });
   });
 

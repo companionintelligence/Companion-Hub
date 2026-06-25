@@ -146,6 +146,22 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
     hub_manager::install_ollama()
 }
 
+/// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
+#[tauri::command]
+async fn install_rocm_command() -> Result<hub_manager::RocmInstallResult, String> {
+    tokio::task::spawn_blocking(hub_manager::install_rocm)
+        .await
+        .map_err(|e| format!("ROCm install task failed: {e}"))?
+}
+
+/// Re-probe host ROCm after reboot and refresh probe caches.
+#[tauri::command]
+async fn verify_rocm_command() -> Result<hub_manager::RocmInstallResult, String> {
+    tokio::task::spawn_blocking(hub_manager::verify_rocm_probe)
+        .await
+        .map_err(|e| format!("ROCm verify task failed: {e}"))?
+}
+
 /// Install a licensing-free Docker engine (Colima on macOS, Engine-in-WSL2 on
 /// Windows, the standard Engine on Linux).
 #[tauri::command]
@@ -324,6 +340,8 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_rocm_command,
+            verify_rocm_command,
             install_docker_engine_alternative_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,

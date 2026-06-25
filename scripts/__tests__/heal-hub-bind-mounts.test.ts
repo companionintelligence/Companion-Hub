@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +13,7 @@ vi.mock('node:child_process', () => ({
 
 import { DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from '../lib/bind-mounts';
 import {
+  dockerBindMountPath,
   dockerSocketIsRootOnlyInsideContainers,
   ensureHubBindMountsWritable,
   hostPathWritable,
@@ -235,5 +237,40 @@ describe('repairHostRootOwnedBindMounts policy', () => {
     });
     expect(Array.isArray(result.blockedDataDirs)).toBe(true);
     expect(Array.isArray(result.repaired)).toBe(true);
+  });
+});
+
+describe('dockerBindMountPath', () => {
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  });
+
+  it('uses forward slashes on Windows-style paths', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    expect(dockerBindMountPath(String.raw`C:\Users\hegem\AppData\Roaming\companion-hub\state`)).toBe(
+      'C:/Users/hegem/AppData/Roaming/companion-hub/state',
+    );
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+  });
+
+  it('normalizes MSYS paths before Windows resolution', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const mangled = path.win32.resolve('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(mangled).not.toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+  });
+
+  it('resolves relative paths on Windows', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    expect(dockerBindMountPath('state')).toMatch(/[/\\]state$/);
+    expect(dockerBindMountPath('state')).not.toContain('\\');
+  });
+
+  it('leaves POSIX paths unchanged on non-Windows platforms', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    expect(dockerBindMountPath('/var/lib/companion-hub/state')).toBe('/var/lib/companion-hub/state');
   });
 });

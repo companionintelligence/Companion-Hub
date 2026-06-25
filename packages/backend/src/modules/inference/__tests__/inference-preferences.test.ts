@@ -11,6 +11,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
+import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
 import { inferencePreferencesSchema } from '../inference.dto';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -34,6 +35,7 @@ describe('InferenceController — preferences', () => {
         { provide: ModelPullerService, useValue: mock<ModelPullerService>() },
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
+        { provide: RocmInstallerService, useValue: mock<RocmInstallerService>() },
         { provide: AppCredentialsService, useValue: mock<AppCredentialsService>() },
         { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },

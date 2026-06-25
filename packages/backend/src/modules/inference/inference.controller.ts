@@ -8,6 +8,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
+import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -15,7 +16,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
+import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -40,6 +41,7 @@ export class InferenceController {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
+    private readonly rocmInstaller: RocmInstallerService,
     private readonly appCredentials: AppCredentialsService,
     private readonly hostMetrics: HostMetricsService,
     private readonly configurationService: ConfigurationService,
@@ -163,6 +165,23 @@ export class InferenceController {
   @Post('hardware/rescan')
   async rescanHardware() {
     return this.hardwareInspector.rescan();
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('rocm/status')
+  async getRocmStatus() {
+    return this.rocmInstaller.getStatus();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('rocm/install-state')
+  async updateRocmInstallState(@Body() body: UpdateRocmInstallStateBody) {
+    await this.rocmInstaller.recordInstallState({
+      phase: body.phase,
+      updatedAt: new Date().toISOString(),
+      message: body.message,
+    });
+    return this.rocmInstaller.getStatus();
   }
 
   @UseGuards(AuthGuard)

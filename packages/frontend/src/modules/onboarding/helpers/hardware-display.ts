@@ -69,19 +69,15 @@ export function resolveAmdHostRocmNotice(hardware: HardwareProfile): AmdHostRocm
   if (hardware.gpu.hostRocmAvailable) {
     return {
       tone: 'ready',
-      title: i18next.t('ONBOARDING_HOST_ROCM_DETECTED'),
-      body: isAmdApu(hardware)
-        ? i18next.t('ONBOARDING_HOST_ROCM_DETECTED_APU_BODY', { model: hardware.gpu.model })
-        : i18next.t('ONBOARDING_HOST_ROCM_DETECTED_BODY'),
+      title: i18next.t('AI_ROCM_DETECTED_TITLE'),
+      body: isAmdApu(hardware) ? i18next.t('AI_ROCM_DETECTED_APU_BODY', { model: hardware.gpu.model }) : i18next.t('AI_ROCM_DETECTED_BODY'),
     };
   }
 
   return {
     tone: 'hint',
-    title: i18next.t('ONBOARDING_AMD_GPU_DETECTED'),
-    body: isAmdApu(hardware)
-      ? i18next.t('ONBOARDING_AMD_GPU_DETECTED_APU_BODY', { model: hardware.gpu.model })
-      : i18next.t('ONBOARDING_AMD_GPU_DETECTED_BODY'),
+    title: i18next.t('AI_ROCM_AMD_DETECTED_TITLE'),
+    body: isAmdApu(hardware) ? i18next.t('AI_ROCM_AMD_DETECTED_APU_BODY', { model: hardware.gpu.model }) : i18next.t('AI_ROCM_AMD_DETECTED_BODY'),
   };
 }
 

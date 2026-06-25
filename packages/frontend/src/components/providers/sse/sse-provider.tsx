@@ -19,7 +19,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error } = payload;
+      const { event, appUrn, error, errorCode, settingsPath } = payload;
 
       if (error) {
         console.error(error);
@@ -51,6 +51,26 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_INSTALL_SUCCESS', { id: appName }));
           break;
         case 'install_error':
+          if (errorCode === 'rocm_kfd_missing') {
+            toast.error((toastInstance) => (
+              <span className="text-sm">
+                <Trans
+                  i18nKey="APP_ERROR_ROCM_KFD_MISSING_TOAST"
+                  values={{ id: appName }}
+                  components={{
+                    settingsLink: (
+                      <Link
+                        to={settingsPath ?? '/settings?tab=ai&section=rocm'}
+                        className="font-medium underline"
+                        onClick={() => toast.dismiss(toastInstance.id)}
+                      />
+                    ),
+                  }}
+                />
+              </span>
+            ));
+            break;
+          }
           toast.error((toastInstance) => (
             <span className="text-sm">
               <Trans

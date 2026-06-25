@@ -18,9 +18,7 @@ import { buildOriginServerName } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
-
-export const ROCM_KFD_MISSING_MESSAGE =
-  'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. Verify that you have a supported AMD GPU and ROCm drivers installed before running this app.';
+import { AppLifecycleError, type AppCommandFailureResult, translateRocmKfdInstallMessage } from './app-lifecycle-errors';
 
 export class AppLifecycleCommand {
   constructor(
@@ -132,11 +130,33 @@ export class AppLifecycleCommand {
     await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
-  protected handleAppError = async (err: unknown, appId: string, event: string): Promise<{ success: false; message: string }> => {
+  protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {
+    if (err instanceof AppLifecycleError) {
+      this.reportCommandFailure(appId, event, err.errorDetail ?? err.message);
+      return {
+        success: false,
+        message: err.message,
+        errorCode: err.errorCode,
+        errorDetail: err.errorDetail,
+        settingsPath: err.settingsPath,
+      };
+    }
+
     if (err instanceof Error) {
-      const translatedMessage = this.translateKnownInstallError(err.message);
-      this.reportCommandFailure(appId, event, translatedMessage);
-      return { success: false, message: translatedMessage };
+      const translated = translateRocmKfdInstallMessage(err.message);
+      if (translated) {
+        this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message);
+        return {
+          success: false,
+          message: translated.message,
+          errorCode: translated.errorCode,
+          errorDetail: translated.errorDetail,
+          settingsPath: translated.settingsPath,
+        };
+      }
+
+      this.reportCommandFailure(appId, event, err.message);
+      return { success: false, message: err.message };
     }
 
     const message = `An error occurred: ${String(err)}`;
@@ -182,19 +202,5 @@ export class AppLifecycleCommand {
       default:
         return null;
     }
-  }
-
-  private translateKnownInstallError(message: string): string {
-    const normalizedMessage = message.toLowerCase();
-    const referencesKfd = normalizedMessage.includes('/dev/kfd');
-    const missingRocmDevice =
-      normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
-    const blockedKfdPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
-
-    if (referencesKfd && (missingRocmDevice || blockedKfdPath)) {
-      return ROCM_KFD_MISSING_MESSAGE;
-    }
-
-    return message;
   }
 }

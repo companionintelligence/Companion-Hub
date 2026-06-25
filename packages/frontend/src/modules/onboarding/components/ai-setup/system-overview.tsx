@@ -1,13 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
-import {
-  formatMemoryMb,
-  resolveAmdHostRocmNotice,
-  resolveGpuSubLabel,
-  resolveTierBadge,
-  resolveVramDisplay,
-} from '@/modules/onboarding/helpers/hardware-display';
+import { formatMemoryMb, resolveGpuSubLabel, resolveTierBadge, resolveVramDisplay } from '@/modules/onboarding/helpers/hardware-display';
+import { RocmSetupCard } from '@/modules/onboarding/components/ai-setup/rocm-setup-card';
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { GpuIcon, VramIcon } from './icons';
@@ -66,7 +61,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const vramDisplay = resolveVramDisplay(hardware);
   const os = getClientPlatform();
   const noGpu = !hardware.gpu.available;
-  const amdHostRocm = resolveAmdHostRocmNotice(hardware);
+  const showRocmSetup = hardware.gpu.available && hardware.gpu.vendor === 'amd';
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
   const showLinuxRuntimeSteps = isLinuxClient();
@@ -141,20 +136,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         </div>
       )}
 
-      {amdHostRocm && (
-        <div
-          className={cn(
-            'mt-4 rounded-md border p-3 text-xs',
-            amdHostRocm.tone === 'ready'
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100'
-              : 'border-border bg-muted/40 text-muted-foreground',
-          )}
-          data-testid={amdHostRocm.tone === 'ready' ? 'amd-host-rocm-ready' : 'amd-host-rocm-hint'}
-        >
-          <p className="font-semibold text-foreground">{amdHostRocm.title}</p>
-          <p className="mt-1">{amdHostRocm.body}</p>
-        </div>
-      )}
+      {showRocmSetup && <RocmSetupCard hardware={hardware} onRescan={onRescan} rescanning={rescanning} />}
 
       {nvidiaRuntimeMissing && (
         <div
