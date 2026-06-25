@@ -6891,7 +6891,8 @@ pub fn refresh_rocm_host_probe_cache(data_dir: &Path) {
                 .output();
             match smi {
                 Ok(output) if output.status.success() => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim();
+                    let stdout_raw = String::from_utf8_lossy(&output.stdout);
+                    let stdout = stdout_raw.trim();
                     if !stdout.is_empty() {
                         let payload = serde_json::json!({
                             "available": true,
