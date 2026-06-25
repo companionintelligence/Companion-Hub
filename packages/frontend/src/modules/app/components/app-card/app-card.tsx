@@ -10,8 +10,10 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
+type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'>;
+
 interface AppCardProps {
-  app: AppInfoSimple;
+  app: AppCardApp;
   isLoading?: boolean;
   isInstalled?: boolean;
   imageUrlOverride?: string | null;

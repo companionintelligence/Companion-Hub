@@ -31,7 +31,16 @@ export type PortalStoreListingsParams = {
 
 export const CI_MARKETPLACE_STORE_ID = 'ci-marketplace';
 
-export type HubStoreApp = AppInfoSimple & { iconUrl?: string | null };
+/** Portal-sourced listing shape used by AppCard and featured store sections. */
+export type HubStoreApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc' | 'categories'> & {
+  iconUrl?: string | null;
+};
+
+function hubAppSlug(app: HubStoreApp): string {
+  const slug = app.urn.split(':')[0];
+  if (!slug) throw new Error(`Invalid portal store app URN: ${app.urn}`);
+  return slug;
+}
 
 export function mapPortalStoreAppToHub(app: PortalStoreApp, storeId = CI_MARKETPLACE_STORE_ID): HubStoreApp {
   const id = app.id;
@@ -40,14 +49,9 @@ export function mapPortalStoreAppToHub(app: PortalStoreApp, storeId = CI_MARKETP
   const categories = toAppCategories(app.categories?.length ? app.categories : (app.tags ?? []));
   return {
     urn: `${id}:${storeId}`,
-    id,
     name,
     short_desc,
     categories,
-    available: true,
-    created_at: 0,
-    deprecated: false,
-    supported_architectures: ['amd64', 'arm64'],
     iconUrl: app.icon ?? null,
   };
 }
@@ -142,18 +146,21 @@ export async function fetchPortalStoreListings(params: PortalStoreListingsParams
   throw new Error(`Failed to load store listings (${res.status})${detail}`);
 }
 
-export function portalStoreListingsQueryKey(params: PortalStoreListingsParams) {
-  return ['portal', 'store-listings', params] as const;
+export function portalStoreListingsQueryKey(params: PortalStoreListingsParams, storeId = CI_MARKETPLACE_STORE_ID) {
+  return ['portal', 'store-listings', storeId, params] as const;
 }
 
 export function portalStoreListingsQueryOptions(params: PortalStoreListingsParams, storeId = CI_MARKETPLACE_STORE_ID) {
   return {
-    queryKey: portalStoreListingsQueryKey(params),
+    queryKey: portalStoreListingsQueryKey(params, storeId),
     queryFn: async () => {
       const apps = await fetchPortalStoreListings(params);
       if (storeId === CI_MARKETPLACE_STORE_ID) return apps;
       return apps.map((app) =>
-        mapPortalStoreAppToHub({ id: app.id, name: app.name, short_desc: app.short_desc, categories: app.categories, icon: app.iconUrl }, storeId),
+        mapPortalStoreAppToHub(
+          { id: hubAppSlug(app), name: app.name, short_desc: app.short_desc, categories: app.categories, icon: app.iconUrl },
+          storeId,
+        ),
       );
     },
     staleTime: 5 * 60 * 1000,

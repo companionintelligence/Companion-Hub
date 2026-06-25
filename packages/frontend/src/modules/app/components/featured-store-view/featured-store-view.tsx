@@ -3,25 +3,34 @@ import type { HubStoreApp } from '@/lib/portal-store';
 import { portalStoreListingsQueryOptions } from '@/lib/portal-store';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const PREVIEW_COUNT = 4;
+
+const LOADING_APP = { urn: 'loading:loading', name: '', short_desc: '' } as const;
 
 function AppSection({
   title,
   subtitle,
   apps,
   isLoading,
+  isError,
+  error,
+  onRetry,
   installedAppUrns,
 }: {
   title: string;
   subtitle: string;
   apps: HubStoreApp[] | undefined;
   isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  onRetry: () => void;
   installedAppUrns: Set<string>;
 }) {
   const { t } = useTranslation();
+  const gridId = useId();
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? apps : apps?.slice(0, PREVIEW_COUNT);
   const hasMore = (apps?.length ?? 0) > PREVIEW_COUNT;
@@ -33,10 +42,12 @@ function AppSection({
           <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
           <p className="text-muted-foreground">{subtitle}</p>
         </div>
-        {hasMore && !isLoading && (
+        {hasMore && !isLoading && !isError && (
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-controls={gridId}
             className="flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
           >
             {expanded ? (
@@ -58,19 +69,27 @@ function AppSection({
             <AppCard
               // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholders
               key={i}
-              app={{ urn: `loading-${i}:loading`, name: '', short_desc: '', categories: [] } as any}
+              app={LOADING_APP}
               isLoading
             />
           ))}
         </div>
-      ) : visible?.length === 0 ? (
-        <p className="py-4 text-sm text-muted-foreground">{t('APP_STORE_NO_RESULTS')}</p>
-      ) : (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+      ) : isError ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}
+          {error?.message ? `: ${error.message}` : ''}.{' '}
+          <button type="button" className="font-medium underline" onClick={onRetry}>
+            {t('COMMON_RETRY')}
+          </button>
+        </div>
+      ) : apps?.length ? (
+        <div id={gridId} className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           {visible?.map((app) => (
             <AppCard key={app.urn} app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} imageUrlOverride={app.iconUrl} />
           ))}
         </div>
+      ) : (
+        <p className="py-4 text-sm text-muted-foreground">{t('APP_STORE_NO_RESULTS')}</p>
       )}
     </section>
   );
@@ -79,13 +98,31 @@ function AppSection({
 export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: string; installedAppUrns: Set<string> }) {
   const { t } = useTranslation();
 
-  const { data: featured, isLoading: loadingFeatured } = useQuery({
+  const {
+    data: featured,
+    isLoading: loadingFeatured,
+    isError: featuredError,
+    error: featuredErrorDetail,
+    refetch: refetchFeatured,
+  } = useQuery({
     ...portalStoreListingsQueryOptions({ tags: 'featured' }, storeId),
   });
-  const { data: trending, isLoading: loadingTrending } = useQuery({
+  const {
+    data: trending,
+    isLoading: loadingTrending,
+    isError: trendingError,
+    error: trendingErrorDetail,
+    refetch: refetchTrending,
+  } = useQuery({
     ...portalStoreListingsQueryOptions({ sort: 'trending' }, storeId),
   });
-  const { data: newest, isLoading: loadingNewest } = useQuery({
+  const {
+    data: newest,
+    isLoading: loadingNewest,
+    isError: newestError,
+    error: newestErrorDetail,
+    refetch: refetchNewest,
+  } = useQuery({
     ...portalStoreListingsQueryOptions({ sort: 'newest' }, storeId),
   });
 
@@ -96,6 +133,9 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         subtitle={t('APP_STORE_FEATURED_SECTION_SUBTITLE')}
         apps={featured}
         isLoading={loadingFeatured}
+        isError={featuredError}
+        error={featuredErrorDetail}
+        onRetry={() => void refetchFeatured()}
         installedAppUrns={installedAppUrns}
       />
       <AppSection
@@ -103,6 +143,9 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         subtitle={t('APP_STORE_TRENDING_SECTION_SUBTITLE')}
         apps={trending}
         isLoading={loadingTrending}
+        isError={trendingError}
+        error={trendingErrorDetail}
+        onRetry={() => void refetchTrending()}
         installedAppUrns={installedAppUrns}
       />
       <AppSection
@@ -110,6 +153,9 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         subtitle={t('APP_STORE_RECENT_SECTION_SUBTITLE')}
         apps={newest}
         isLoading={loadingNewest}
+        isError={newestError}
+        error={newestErrorDetail}
+        onRetry={() => void refetchNewest()}
         installedAppUrns={installedAppUrns}
       />
     </div>

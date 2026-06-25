@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mapPortalStoreAppToHub } from '@/lib/portal-store';
+import { mapPortalStoreAppToHub, portalStoreListingsQueryKey } from '@/lib/portal-store';
 
 describe('mapPortalStoreAppToHub', () => {
-  it('maps portal store app fields to hub AppInfoSimple shape', () => {
+  it('maps portal store app fields to hub store listing shape', () => {
     const result = mapPortalStoreAppToHub(
       {
         id: 'nextcloud',
@@ -14,18 +14,15 @@ describe('mapPortalStoreAppToHub', () => {
       'ci-marketplace',
     );
 
-    expect(result).toEqual({
-      urn: 'nextcloud:ci-marketplace',
-      id: 'nextcloud',
-      name: 'Nextcloud',
-      short_desc: 'Self-hosted cloud',
-      categories: ['featured', 'utilities'],
-      available: true,
-      created_at: 0,
-      deprecated: false,
-      supported_architectures: ['amd64', 'arm64'],
-      iconUrl: 'https://cdn.example.com/nextcloud.png',
-    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        urn: 'nextcloud:ci-marketplace',
+        name: 'Nextcloud',
+        short_desc: 'Self-hosted cloud',
+        categories: ['featured', 'utilities'],
+        iconUrl: 'https://cdn.example.com/nextcloud.png',
+      }),
+    );
   });
 
   it('falls back to description and name fields', () => {
@@ -35,8 +32,27 @@ describe('mapPortalStoreAppToHub', () => {
       description: 'Full description',
     });
 
-    expect(result.name).toBe('App One');
-    expect(result.short_desc).toBe('Full description');
-    expect(result.urn).toBe('app1:ci-marketplace');
+    expect(result).toMatchObject({
+      name: 'App One',
+      short_desc: 'Full description',
+      urn: 'app1:ci-marketplace',
+    });
+  });
+
+  it('filters unknown categories and defaults to utilities', () => {
+    const result = mapPortalStoreAppToHub({
+      id: 'app1',
+      tags: ['not-a-real-category'],
+    });
+
+    expect(result.categories).toEqual(['utilities']);
+  });
+});
+
+describe('portalStoreListingsQueryKey', () => {
+  it('includes storeId so listings for different stores do not share cache entries', () => {
+    const params = { tags: 'featured' };
+    expect(portalStoreListingsQueryKey(params, 'ci-apps')).not.toEqual(portalStoreListingsQueryKey(params, 'ci-marketplace'));
+    expect(portalStoreListingsQueryKey(params, 'ci-marketplace')).toEqual(['portal', 'store-listings', 'ci-marketplace', params]);
   });
 });

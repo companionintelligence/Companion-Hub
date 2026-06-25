@@ -947,6 +947,7 @@
   "ONBOARDING_UNIFIED_MEMORY": "Unified Memory",
   "MY_APPS_SUBTITLE": "Manage your installed applications and links",
   "APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS": "Could not load app recommendations",
+  "APP_STORE_COULD_NOT_LOAD_FEATURED": "Could not load featured apps",
   "APP_STORE_PROPRIETARY": "Proprietary",
   "APP_STORE_OPEN_SOURCE_ALTERNATIVES": "Open Source Alternatives",
   "APP_STORE_SYNCING": "Syncing...",
