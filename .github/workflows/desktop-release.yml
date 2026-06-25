@@ -613,3 +613,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: ./.github/scripts/finalize-desktop-release.sh
+
+  publish-package-managers:
+    if: inputs.environment == 'production' && !inputs.prerelease
+    needs: [release]
+    uses: ./.github/workflows/publish-package-managers.yml
+    secrets: inherit
+    with:
+      tag: ${{ inputs.tag }}

@@ -10,7 +10,7 @@ cask "companion-hub" do
   end
 
   on_arm do
-    url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
+    url "https://github.com/companionintelligence/CI-Hub/releases/download/v\#{version}/Companion.Hub_\#{version}_aarch64.dmg"
     sha256 "04c874602846e7bacdd2caabe35f1568e4954f0267b3105592dadc54476abda2"
   end
 

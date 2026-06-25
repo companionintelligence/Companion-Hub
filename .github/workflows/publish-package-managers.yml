@@ -1,0 +1,48 @@
+name: Publish package managers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.2.28)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./distribution/scripts/update-package-manifests.sh "${{ inputs.tag }}"
+
+      - name: Publish Homebrew tap and Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./distribution/scripts/publish-package-managers.sh
+          ./distribution/scripts/publish-package-managers.sh "companion-hub ${{ inputs.tag }}"
+
+      - name: Commit manifest updates to CI-Hub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add distribution/homebrew distribution/scoop distribution/publish
+          if git diff --staged --quiet; then
+            echo "No CI-Hub manifest changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(distribution): update package manifests for ${{ inputs.tag }}"
+          git push
