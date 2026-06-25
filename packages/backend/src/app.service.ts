@@ -140,7 +140,7 @@ export class AppService implements OnApplicationShutdown {
   public async getVersion() {
     const { version: currentVersion } = this.configuration.getConfig();
 
-    const [releasesSince] = await Promise.all([this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion)]);
+    const [releasesSince] = await Promise.all([this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, currentVersion)]);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,

@@ -40,7 +40,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   async checkForUpdates() {
     const { version: currentVersion } = this.config.getConfig();
-    const releasesSince = await this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion);
+    const releasesSince = await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, currentVersion);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,
