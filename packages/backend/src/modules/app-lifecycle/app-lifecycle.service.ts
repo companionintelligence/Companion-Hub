@@ -23,6 +23,7 @@ import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
+import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
@@ -222,18 +223,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     try {
       const command = this.commandFactory.createCommand(data);
-      const { success, message } = await command.execute(data.appUrn, data.form);
+      const result = await command.execute(data.appUrn, data.form);
 
-      if (success) {
+      if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
       }
 
-      await reply({ success, message });
+      await reply(result);
     } catch (err) {
       this.logger.error('Error invoking command:', err);
-      await reply({ success: false, message: String(err) });
+      await reply(toAppCommandFailureResult(err));
     } finally {
       release();
       if (isInstall) {
@@ -482,7 +483,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} installed successfully`);
           const latest = await this.appRepository.getAppById(appId);
@@ -515,7 +517,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               `Failed to persist 'install_failed' status for ${appUrn} (continuing without crashing): ${statusError instanceof Error ? statusError.message : String(statusError)}`,
             );
           }
-          this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'install_failed', error: message });
+          this.sseService.emit('app', {
+            event: 'install_error',
+            appUrn,
+            appStatus: 'install_failed',
+            error: message,
+            errorCode,
+            errorDetail,
+            settingsPath,
+          });
           void this.emitInstallQueueUpdate();
           this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
           this.reportAppFailure(appUrn, 'install', message);

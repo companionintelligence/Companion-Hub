@@ -9,6 +9,7 @@ import { ModelPullerService } from './model-puller.service';
 import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
+import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
 import { OllamaBackend } from './backends/ollama.backend';
@@ -27,6 +28,7 @@ import { InferenceController } from './inference.controller';
     InferenceRouterService,
     CloudFallbackService,
     OllamaInstallerService,
+    RocmInstallerService,
     AppCredentialsService,
     InferenceEnvResolver,
     OllamaBackend,
@@ -41,6 +43,7 @@ import { InferenceController } from './inference.controller';
     InferenceRouterService,
     CloudFallbackService,
     OllamaInstallerService,
+    RocmInstallerService,
     AppCredentialsService,
     InferenceEnvResolver,
     OllamaBackend,

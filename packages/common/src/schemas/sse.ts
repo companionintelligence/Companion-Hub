@@ -61,6 +61,9 @@ const appScopedEventSchema = z.object({
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
   error: z.string().optional(),
+  errorCode: z.string().optional(),
+  errorDetail: z.string().optional(),
+  settingsPath: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
 });
 

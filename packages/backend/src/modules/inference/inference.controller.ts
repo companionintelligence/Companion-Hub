@@ -8,6 +8,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
+import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -40,6 +41,7 @@ export class InferenceController {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
+    private readonly rocmInstaller: RocmInstallerService,
     private readonly appCredentials: AppCredentialsService,
     private readonly hostMetrics: HostMetricsService,
     private readonly configurationService: ConfigurationService,
@@ -163,6 +165,24 @@ export class InferenceController {
   @Post('hardware/rescan')
   async rescanHardware() {
     return this.hardwareInspector.rescan();
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('rocm/status')
+  async getRocmStatus() {
+    return this.rocmInstaller.getStatus();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('rocm/install-state')
+  async updateRocmInstallState(@Body() body: { phase: string; message?: string }) {
+    const phase = body.phase as import('./rocm-installer.service').RocmInstallPhase;
+    await this.rocmInstaller.recordInstallState({
+      phase,
+      updatedAt: new Date().toISOString(),
+      message: body.message,
+    });
+    return this.rocmInstaller.getStatus();
   }
 
   @UseGuards(AuthGuard)

@@ -82,6 +82,9 @@ export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema)
 export const appEventResultSchema = z.object({
   success: z.boolean(),
   message: z.string(),
+  errorCode: z.string().optional(),
+  errorDetail: z.string().optional(),
+  settingsPath: z.string().optional(),
 });
 
 export type AppEventFormInput = z.input<typeof commonAppCommandSchema>['form'];

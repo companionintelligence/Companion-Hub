@@ -28,7 +28,7 @@ import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_D
 function normalizeWindowsDockerPath(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length >= 3 && trimmed[0] === '/' && trimmed[2] === '/' && /[a-zA-Z]/.test(trimmed[1] ?? '')) {
-    return `${trimmed[1]!.toUpperCase()}:${trimmed.slice(2).replace(/\\/g, '/')}`;
+    return `${trimmed[1]?.toUpperCase()}:${trimmed.slice(2).replace(/\\/g, '/')}`;
   }
   return trimmed.replace(/\\/g, '/');
 }

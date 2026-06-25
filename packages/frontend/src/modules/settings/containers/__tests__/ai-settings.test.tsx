@@ -1,10 +1,19 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router';
 import { AiSettingsContainer } from '../ai-settings';
 import toast from 'react-hot-toast';
 
 const mockApiFetch = vi.fn();
+
+function renderAiSettings(initialEntry = '/settings?tab=ai') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <AiSettingsContainer />
+    </MemoryRouter>,
+  );
+}
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -154,7 +163,7 @@ describe('AiSettingsContainer', () => {
   });
 
   it('loads preferred backend from preferences endpoint', async () => {
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm');
@@ -167,7 +176,7 @@ describe('AiSettingsContainer', () => {
 
   it('persists backend changes on save', async () => {
     const user = userEvent.setup();
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm');
@@ -190,7 +199,7 @@ describe('AiSettingsContainer', () => {
   });
 
   it('keeps runtime models read-only', async () => {
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByText('Recommended Models')).toBeInTheDocument();
@@ -233,7 +242,7 @@ describe('AiSettingsContainer', () => {
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
 
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked();
@@ -281,7 +290,7 @@ describe('AiSettingsContainer', () => {
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
 
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByText('Downloading 42%')).toBeInTheDocument();
@@ -351,7 +360,7 @@ describe('AiSettingsContainer', () => {
     });
 
     const user = userEvent.setup();
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked();
@@ -394,7 +403,7 @@ describe('AiSettingsContainer', () => {
     });
 
     const user = userEvent.setup();
-    render(<AiSettingsContainer />);
+    renderAiSettings();
 
     await waitFor(() => {
       expect(screen.getByTestId('hardware-profile-card')).toBeInTheDocument();

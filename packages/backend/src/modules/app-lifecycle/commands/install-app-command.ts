@@ -14,7 +14,8 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
-import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
+import { AppLifecycleCommand } from './command';
+import { createRocmKfdMissingError, type AppCommandResult } from './app-lifecycle-errors';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
@@ -118,11 +119,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
     try {
       await fs.promises.access('/dev/kfd', fs.constants.F_OK);
     } catch {
-      throw new Error(ROCM_KFD_MISSING_MESSAGE);
+      throw createRocmKfdMissingError();
     }
   }
 
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
+  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<AppCommandResult> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const _config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });

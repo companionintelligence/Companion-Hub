@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
 import type {
   CloudProviderInput,
@@ -45,6 +46,8 @@ const resolvePreferredModelId = (
 
 export const AiSettingsContainer = () => {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const rocmSectionRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -161,6 +164,11 @@ export const AiSettingsContainer = () => {
   useEffect(() => {
     fetchProfile();
   }, []);
+
+  useEffect(() => {
+    if (searchParams.get('section') !== 'rocm' || loading) return;
+    rocmSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loading, searchParams]);
 
   const handleRescan = async () => {
     setRescanning(true);
@@ -367,14 +375,16 @@ export const AiSettingsContainer = () => {
   return (
     <div className="space-y-5">
       {/* Hardware overview — same component as FTUE */}
-      <SystemOverview
-        hardware={profile.hardware}
-        tier={profile.tier}
-        onRescan={handleRescan}
-        rescanning={rescanning}
-        availableDiskMb={profile.resourceEstimate.availableDiskMb}
-        diskTotalMb={profile.resourceEstimate.diskTotalMb}
-      />
+      <div ref={rocmSectionRef}>
+        <SystemOverview
+          hardware={profile.hardware}
+          tier={profile.tier}
+          onRescan={handleRescan}
+          rescanning={rescanning}
+          availableDiskMb={profile.resourceEstimate.availableDiskMb}
+          diskTotalMb={profile.resourceEstimate.diskTotalMb}
+        />
+      </div>
 
       {!isInsufficient && (
         <>

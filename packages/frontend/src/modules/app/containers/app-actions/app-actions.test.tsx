@@ -1,6 +1,7 @@
 import { render, screen } from '@/tests/test-utils';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router';
 import { AppActions } from './app-actions';
 
 const hoisted = vi.hoisted(() => ({
@@ -182,5 +183,23 @@ describe('AppActions', () => {
     render(<AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} layout="hero" />);
 
     expect(screen.getByTestId('action-app_action_retry_install')).toHaveClass('retry-install-action-button');
+  });
+
+  it('shows a short ROCm message and AI Settings link for rocm_kfd_missing errors', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue({
+      message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+      errorCode: 'rocm_kfd_missing',
+      settingsPath: '/settings?tab=ai&section=rocm',
+    });
+
+    render(
+      <MemoryRouter>
+        <AppActions app={runningApp} metadata={metadata} info={info} layout="hero" />
+      </MemoryRouter>,
+    );
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('APP_ERROR_ROCM_KFD_MISSING');
+    expect(screen.getByRole('link', { name: 'APP_ERROR_OPEN_AI_SETTINGS' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
   });
 });

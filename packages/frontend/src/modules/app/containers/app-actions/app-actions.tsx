@@ -22,7 +22,8 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, Link } from 'react-router';
+import type { AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
@@ -231,8 +232,8 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
   const queryClient = useQueryClient();
   const { data: installError } = useQuery({
     queryKey: ['app-install-error', info.urn],
-    queryFn: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
-    initialData: () => queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null,
+    queryFn: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
+    initialData: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
     staleTime: Number.POSITIVE_INFINITY,
   });
 
@@ -498,22 +499,40 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
   };
 
   // If there was an install error for this app, show it under the open/action area
-  const InstallErrorMessage = installError?.message ? (
+  const installErrorMessage = installError?.errorCode === 'rocm_kfd_missing' ? t('APP_ERROR_ROCM_KFD_MISSING') : installError?.message;
+  const installErrorSettingsPath =
+    installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
+
+  const InstallErrorMessage = installErrorMessage ? (
     <div
       className={clsx(
         'min-w-0 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive',
         layout === 'hero' && 'hero-inline-install-error',
       )}
       role="alert"
-      title={installError.message}
+      title={installError?.errorDetail ?? installErrorMessage}
     >
       {layout === 'hero' ? (
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <p className="min-w-0 flex-1 break-words line-clamp-2">{installError.message}</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="min-w-0 flex-1 break-words">{installErrorMessage}</p>
+          </div>
+          {installErrorSettingsPath ? (
+            <Link to={installErrorSettingsPath} className="shrink-0 font-medium underline underline-offset-2 hover:text-destructive/80">
+              {t('APP_ERROR_OPEN_AI_SETTINGS')}
+            </Link>
+          ) : null}
         </div>
       ) : (
-        installError.message
+        <div className="space-y-2">
+          <p>{installErrorMessage}</p>
+          {installErrorSettingsPath ? (
+            <Link to={installErrorSettingsPath} className="font-medium underline underline-offset-2">
+              {t('APP_ERROR_OPEN_AI_SETTINGS')}
+            </Link>
+          ) : null}
+        </div>
       )}
     </div>
   ) : null;
