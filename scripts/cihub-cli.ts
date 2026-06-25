@@ -23,6 +23,7 @@ import {
   waitForHubApi,
 } from './lib/register-hub';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
+import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
@@ -1354,7 +1355,16 @@ function cleanRootOwnedHubData(env: HubEnv) {
 
   const hostPath = path.resolve(rootFolderHost);
   printMessageBox('Cleaning root-owned hub data via Docker', [`Target: ${hostPath}`], 'yellow');
-  runBestEffort('docker', ['run', '--rm', '-v', `${hostPath}:/d`, 'alpine', 'sh', '-c', 'rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true']);
+  runBestEffort('docker', [
+    'run',
+    '--rm',
+    '-v',
+    `${dockerBindMountPath(hostPath)}:/d`,
+    'alpine',
+    'sh',
+    '-c',
+    'rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true',
+  ]);
   try {
     rmSync(rootFolderHost, { recursive: true, force: true });
   } catch {

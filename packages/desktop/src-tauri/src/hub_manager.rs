@@ -5496,14 +5496,17 @@ fn docker_bind_mount_path(path: &Path) -> String {
 
 /// Normalize a host path string for Docker bind mounts and compose `.env` values.
 fn normalize_docker_host_path(value: &str) -> String {
-    if cfg!(windows) {
-        normalize_windows_docker_host_path(value)
-    } else {
+    #[cfg(windows)]
+    {
+        return normalize_windows_docker_host_path(value);
+    }
+    #[cfg(not(windows))]
+    {
         value.trim().to_string()
     }
 }
 
-#[cfg(windows)]
+/// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
 fn normalize_windows_docker_host_path(value: &str) -> String {
     let trimmed = value.trim();
 
@@ -8513,7 +8516,6 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         assert_eq!(saved, expected);
     }
 
-    #[cfg(windows)]
     #[test]
     fn normalizes_windows_docker_bind_mount_paths() {
         assert_eq!(
