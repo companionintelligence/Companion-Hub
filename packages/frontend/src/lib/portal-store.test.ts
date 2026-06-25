@@ -16,10 +16,14 @@ describe('mapPortalStoreAppToHub', () => {
 
     expect(result).toEqual({
       urn: 'nextcloud:ci-marketplace',
+      id: 'nextcloud',
       name: 'Nextcloud',
       short_desc: 'Self-hosted cloud',
       categories: ['featured', 'utilities'],
       available: true,
+      created_at: 0,
+      deprecated: false,
+      supported_architectures: ['amd64', 'arm64'],
       iconUrl: 'https://cdn.example.com/nextcloud.png',
     });
   });

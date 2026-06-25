@@ -1,6 +1,14 @@
-import type { AppInfoSimple } from '@/types/app.types';
+import type { AppCategory, AppInfoSimple } from '@/types/app.types';
+import { APP_CATEGORIES } from '@ci-hub/common/schemas';
 import { apiFetch } from '@/lib/api-fetch';
 import { captureHubWarning } from '@/lib/sentry';
+
+const APP_CATEGORY_SET = new Set<string>(APP_CATEGORIES);
+
+function toAppCategories(raw: string[]): AppCategory[] {
+  const categories = raw.filter((c): c is AppCategory => APP_CATEGORY_SET.has(c));
+  return categories.length > 0 ? categories : ['utilities'];
+}
 
 export type PortalStoreApp = {
   id: string;
@@ -29,13 +37,17 @@ export function mapPortalStoreAppToHub(app: PortalStoreApp, storeId = CI_MARKETP
   const id = app.id;
   const name = app.name ?? app.title ?? id;
   const short_desc = app.short_desc ?? app.shortDescription ?? app.description ?? '';
-  const categories = app.categories?.length ? app.categories : (app.tags ?? []);
+  const categories = toAppCategories(app.categories?.length ? app.categories : (app.tags ?? []));
   return {
     urn: `${id}:${storeId}`,
+    id,
     name,
     short_desc,
     categories,
     available: true,
+    created_at: 0,
+    deprecated: false,
+    supported_architectures: ['amd64', 'arm64'],
     iconUrl: app.icon ?? null,
   };
 }
@@ -139,10 +151,10 @@ export function portalStoreListingsQueryOptions(params: PortalStoreListingsParam
     queryKey: portalStoreListingsQueryKey(params),
     queryFn: async () => {
       const apps = await fetchPortalStoreListings(params);
-      return apps.map((app) => {
-        const [id] = app.urn.split(':');
-        return mapPortalStoreAppToHub({ id, name: app.name, short_desc: app.short_desc, categories: app.categories, icon: app.iconUrl }, storeId);
-      });
+      if (storeId === CI_MARKETPLACE_STORE_ID) return apps;
+      return apps.map((app) =>
+        mapPortalStoreAppToHub({ id: app.id, name: app.name, short_desc: app.short_desc, categories: app.categories, icon: app.iconUrl }, storeId),
+      );
     },
     staleTime: 5 * 60 * 1000,
   } as const;

@@ -58,7 +58,7 @@ function AppSection({
             <AppCard
               // biome-ignore lint/suspicious/noArrayIndexKey: skeleton placeholders
               key={i}
-              app={{ urn: `loading-${i}:loading`, name: '', short_desc: '', categories: [] }}
+              app={{ urn: `loading-${i}:loading`, name: '', short_desc: '', categories: [] } as any}
               isLoading
             />
           ))}
