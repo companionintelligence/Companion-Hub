@@ -158,6 +158,33 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     return res.json() as Promise<unknown>;
   }
 
+  /** Proxies CI Cloud `GET /api/store` (featured/trending/newest listings for the app store UI). */
+  public async fetchCiCloudStoreListings(params: { category?: string; tags?: string; sort?: 'newest' | 'trending'; q?: string }): Promise<unknown> {
+    const { ciCloudUrl } = this.config.getConfig();
+    const base = ciCloudUrl?.trim().replace(/\/$/, '');
+    if (!base) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+    const searchParams = new URLSearchParams();
+    if (params.category) searchParams.set('category', params.category);
+    if (params.tags) searchParams.set('tags', params.tags);
+    if (params.sort) searchParams.set('sort', params.sort);
+    if (params.q) searchParams.set('q', params.q);
+    const qs = searchParams.toString();
+    const url = `${base}/api/store${qs ? `?${qs}` : ''}`;
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown error';
+      throw new ServiceUnavailableException(`Could not reach CI Cloud store catalog (${msg}).`);
+    }
+    if (!res.ok) {
+      throw new ServiceUnavailableException(`CI Cloud store catalog returned HTTP ${res.status}.`);
+    }
+    return res.json() as Promise<unknown>;
+  }
+
   public async getEnabledAppStores() {
     return this.appStoreRepository.getEnabledAppStores();
   }

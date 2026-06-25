@@ -80,6 +80,10 @@ vi.mock('@/lib/portal-alternatives', () => ({
   portalAlternativesQueryOptions: () => ({ queryKey: ['alternatives'], enabled: false }),
 }));
 
+vi.mock('@/modules/app/components/featured-store-view/featured-store-view', () => ({
+  FeaturedStoreView: () => <div data-testid="featured-store-view" />,
+}));
+
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => ({ data: { registered: true }, isLoading: false }),
 }));
@@ -236,5 +240,21 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS')).toHaveValue('updated elsewhere');
+  });
+
+  it('renders featured view instead of category search when featured is selected', () => {
+    setupQueries();
+    mockStoreState.category = 'featured';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('featured-store-view')).toBeInTheDocument();
+    expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
+      query: { search: '', category: undefined, pageSize: 24, storeId: 'ci-apps' },
+    });
   });
 });

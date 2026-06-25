@@ -10,23 +10,26 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
+type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'>;
+
 interface AppCardProps {
-  app: AppInfoSimple;
+  app: AppCardApp;
   isLoading?: boolean;
   isInstalled?: boolean;
+  imageUrlOverride?: string | null;
 }
 
-export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
+export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, imageUrlOverride }) => {
   const { t } = useTranslation();
   const [appId, storeId] = app.urn.split(':');
-  const logoUrl = getMarketplaceAppImageUrl(app.urn);
+  const logoUrl = imageUrlOverride ?? getMarketplaceAppImageUrl(app.urn);
   const [imgSrc, setImgSrc] = useState(logoUrl);
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
 
   useEffect(() => {
-    setImgSrc(logoUrl);
+    setImgSrc(imageUrlOverride ?? getMarketplaceAppImageUrl(app.urn));
     setShowAvatarFallback(false);
-  }, [logoUrl]);
+  }, [app.urn, imageUrlOverride]);
 
   const handleImageError = () => {
     if (imgSrc !== '/app-not-found.jpg') {

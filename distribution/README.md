@@ -8,9 +8,9 @@ This directory contains package manifests and formulas for distributing **Compan
 
 | Channel | Platform | File(s) | Submission URL | Account Required | Status |
 |---------|----------|---------|----------------|-----------------|--------|
-| Homebrew Cask | macOS | `homebrew/companion-hub.rb` | <https://github.com/Homebrew/homebrew-cask> or own tap `companionintelligence/homebrew-tap` | GitHub | Manual PR |
-| Winget | Windows | `winget/manifests/c/CompanionIntelligence/CompanionHub/0.2.4/` | <https://github.com/microsoft/winget-pkgs> | GitHub | Manual PR |
-| Scoop | Windows | `scoop/companion-hub.json` | Own bucket: `companionintelligence/scoop-bucket` or submit to <https://github.com/ScoopInstaller/Extras> | GitHub | Manual PR |
+| Homebrew Cask | macOS | `homebrew/companion-hub.rb` | [companionintelligence/homebrew-tap](https://github.com/companionintelligence/homebrew-tap) | GitHub | **Published** — `brew tap companionintelligence/homebrew-tap` |
+| Winget | Windows | `winget/manifests/...` | <https://github.com/microsoft/winget-pkgs> | GitHub | Manual PR |
+| Scoop | Windows | `scoop/companion-hub.json` | [companionintelligence/scoop-bucket](https://github.com/companionintelligence/scoop-bucket) | GitHub | **Published** — add bucket then `scoop install companion-hub` |
 | AUR (Arch) | Linux | `aur/PKGBUILD`, `aur/.SRCINFO` | <https://aur.archlinux.org/> | AUR account | Manual publish |
 | Snap | Linux | `../snap/snapcraft.yaml` | <https://snapcraft.io/snaps> | Ubuntu One | `snapcraft push` |
 | Chocolatey | Windows | `chocolatey/companion-hub.nuspec` + `tools/` | <https://push.chocolatey.org/> | Chocolatey.org | `choco push` |
@@ -24,9 +24,18 @@ For every new version, you must update the following in **all** manifests:
 
 ### 1. Version numbers
 
-Replace the old version string (e.g. `0.2.4`) with the new version everywhere it appears.
+Replace the old version string everywhere it appears, or run:
 
-### 2. SHA256 hashes
+```bash
+./distribution/scripts/update-package-manifests.sh vX.Y.Z
+./distribution/scripts/publish-package-managers.sh "companion-hub vX.Y.Z"
+```
+
+The update script downloads release assets, computes SHA256 hashes, and refreshes `homebrew/companion-hub.rb`, `scoop/companion-hub.json`, and the `publish/` copies. The publish script pushes to [homebrew-tap](https://github.com/companionintelligence/homebrew-tap) and [scoop-bucket](https://github.com/companionintelligence/scoop-bucket).
+
+Production desktop releases run this automatically via `.github/workflows/publish-package-managers.yml`.
+
+### 2. SHA256 hashes (manual fallback)
 
 **Every manifest requires real SHA256 hashes before submission.** Placeholders are marked as:
 
@@ -67,8 +76,15 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 
 ### Homebrew Cask
 
-- For an **official Homebrew** submission, open a PR to <https://github.com/Homebrew/homebrew-cask> following their [contribution guide](https://github.com/Homebrew/homebrew-cask/blob/master/CONTRIBUTING.md).
-- Alternatively, maintain a **private tap**: `brew tap companionintelligence/tap https://github.com/companionintelligence/homebrew-tap` then `brew install --cask companionintelligence/tap/companion-hub`.
+Our tap is published at [companionintelligence/homebrew-tap](https://github.com/companionintelligence/homebrew-tap):
+
+```bash
+brew tap companionintelligence/homebrew-tap
+brew trust companionintelligence/homebrew-tap   # first time only
+brew install --cask companion-hub
+```
+
+For an **official Homebrew** submission later, open a PR to <https://github.com/Homebrew/homebrew-cask>.
 
 ### Winget
 
@@ -77,12 +93,12 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 
 ### Scoop
 
-- Host a bucket repo at `companionintelligence/scoop-bucket`. Users add it with:
+Published bucket: [companionintelligence/scoop-bucket](https://github.com/companionintelligence/scoop-bucket)
 
-  ```
-  scoop bucket add companionintelligence https://github.com/companionintelligence/scoop-bucket
-  scoop install companion-hub
-  ```
+```powershell
+scoop bucket add companionintelligence https://github.com/companionintelligence/scoop-bucket
+scoop install companion-hub
+```
 
 ### AUR (Arch Linux)
 

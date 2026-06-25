@@ -1,0 +1,43 @@
+{
+  "version": "0.2.28",
+  "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
+  "homepage": "https://ci.computer/hub",
+  "license": "CI-Commercial-1.0",
+  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.28/Companion.Hub_0.2.28_x64-setup.exe",
+  "hash": "1a37e0be189edfa50c124decc2447c0eb04c10ebbfdb1228fb5f930d2f3337e1",
+  "installer": {
+    "script": "& \"$dir\\Companion.Hub_$version_x64-setup.exe\" /S"
+  },
+  "uninstaller": {
+    "script": [
+      "# IMPORTANT: Scoop runs this uninstaller during `scoop update` as well as `scoop uninstall`,",
+      "# and it gives the script no way to tell the two apart. So this script must only remove",
+      "# recreatable resources (containers + networks) and must NOT touch persistent data — otherwise",
+      "# every `scoop update companion-hub` would wipe the user's database and app state.",
+      "if (Get-Command docker -ErrorAction SilentlyContinue) {",
+      "  $managedProjects = docker ps -a --filter 'label=ci-os-hub.managed=true' --format '{{.Label \"com.docker.compose.project\"}}' 2>$null | Where-Object { $_ -and $_.Trim().Length -gt 0 } | Select-Object -Unique",
+      "  foreach ($project in $managedProjects) {",
+      "    if ($project -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { continue }",
+      "    if ($project -in @('ci-os-hub','ci-hub')) { continue }",
+      "    foreach ($cid in (docker ps -a --filter \"label=com.docker.compose.project=$project\" --format '{{.ID}}' 2>$null)) { if ($cid) { docker rm -f $cid 2>$null | Out-Null } }",
+      "    foreach ($net in (docker network ls --filter \"label=com.docker.compose.project=$project\" --format '{{.Name}}' 2>$null)) { if ($net -and $net -notin @('bridge','host','none','ci_os_hub_network','ci-os-hub_network')) { docker network rm $net 2>$null | Out-Null } }",
+      "  }",
+      "  $containerNames = @()",
+      "  $containerNames += docker ps -a --filter 'label=com.docker.compose.project=ci-os-hub' --format '{{.Names}}' 2>$null",
+      "  $containerNames += docker ps -a --filter 'label=com.docker.compose.project=ci-hub' --format '{{.Names}}' 2>$null",
+      "  $containerNames += docker ps -a --filter 'network=ci_os_hub_network' --format '{{.Names}}' 2>$null",
+      "  $containerNames += docker ps -a --filter 'network=ci-os-hub_network' --format '{{.Names}}' 2>$null",
+      "  $containerNames = $containerNames | Where-Object { $_ -and $_.Trim().Length -gt 0 } | Select-Object -Unique",
+      "  foreach ($name in $containerNames) { docker rm -f $name 2>$null | Out-Null }",
+      "  docker network rm ci_os_hub_network ci-os-hub_network 2>$null | Out-Null",
+      "}"
+    ]
+  },
+  "shortcuts": [["Companion Hub\\Companion Hub.exe", "Companion Hub"]],
+  "checkver": {
+    "github": "https://github.com/companionintelligence/CI-Hub"
+  },
+  "autoupdate": {
+    "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v$version/Companion.Hub_$version_x64-setup.exe"
+  }
+}

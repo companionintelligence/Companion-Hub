@@ -1,29 +1,22 @@
 # Homebrew Cask formula for Companion Hub
-# Submit to: https://github.com/Homebrew/homebrew-cask or maintain own tap at companionintelligence/homebrew-tap
+# Published via: https://github.com/companionintelligence/homebrew-tap
 
 cask "companion-hub" do
-  version "0.2.4"
+  version "0.2.28"
 
   on_intel do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
-    # TODO: sha256 of release asset (Companion.Hub_0.2.4_x64.dmg)
-    sha256 "PLACEHOLDER_SHA256_X64"
+    sha256 "0277577f6a43732186dead233e7511bd285421c655e360a0f50370e5bbc73062"
   end
 
   on_arm do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
-    # TODO: sha256 of release asset (Companion.Hub_0.2.4_aarch64.dmg)
-    sha256 "PLACEHOLDER_SHA256_AARCH64"
+    sha256 "04c874602846e7bacdd2caabe35f1568e4954f0267b3105592dadc54476abda2"
   end
 
   name "Companion Hub"
-  desc "AI-powered companion intelligence hub"
-  homepage "https://github.com/companionintelligence/CI-Hub"
-
-  livecheck do
-    url :url
-    strategy :github_latest
-  end
+  desc "Self-hosted app platform and local AI hub from Companion Intelligence"
+  homepage "https://ci.computer/hub"
 
   app "Companion Hub.app"
 

@@ -46,7 +46,7 @@ describe('AppStoreService', () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('should pull repositories', async () => {
@@ -81,5 +81,21 @@ describe('AppStoreService', () => {
 
     expect(repoHelpers.pullRepo).toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith({ success: true, message: 'All repos updated' });
+  });
+
+  it('should proxy store listings from CI Cloud', async () => {
+    const mockApps = [{ id: 'app1', title: 'App One' }];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockApps,
+      } as Response),
+    );
+
+    const result = await service.fetchCiCloudStoreListings({ tags: 'featured' });
+
+    expect(global.fetch).toHaveBeenCalledWith('cloud-url/api/store?tags=featured', expect.any(Object));
+    expect(result).toEqual(mockApps);
   });
 });
