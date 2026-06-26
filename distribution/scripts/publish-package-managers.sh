@@ -4,10 +4,13 @@
 # Usage: ./distribution/scripts/publish-package-managers.sh [commit message suffix]
 set -euo pipefail
 
-if [[ -z "${GH_TOKEN:-}" ]] && ! gh auth status &>/dev/null; then
-  echo "GH_TOKEN or gh auth required" >&2
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  echo "GH_TOKEN is required (set CI_PACKAGE_MANAGERS_TOKEN in CI-Hub Actions secrets)" >&2
   exit 1
 fi
+
+export GIT_TERMINAL_PROMPT=0
+gh auth setup-git
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/distribution/publish"
@@ -41,6 +44,8 @@ publish_repo() {
     git config user.name "github-actions[bot]"
     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
     git commit -m "chore: ${MSG}"
+    # Public repos clone without auth; push must use the PAT explicitly.
+    git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/companionintelligence/${repo_name}.git"
     git push origin HEAD
   )
   echo "Published ${repo_name}"
