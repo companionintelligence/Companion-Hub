@@ -38,13 +38,21 @@ export interface AppCredentialsConfig {
   managedKeys: string[];
 }
 
-const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings: string; apiKey: string; numCtx: string }> = {
+const APP_ENV_KEYS: Record<
+  AppSlug,
+  { baseUrl: string; model: string; embeddings: string; apiKey: string; numCtx: string; minContextLength?: number }
+> = {
   'hermes-agent': {
     baseUrl: 'HERMES_OPENAI_BASE_URL',
     model: 'HERMES_DEFAULT_MODEL',
     embeddings: 'HERMES_EMBEDDINGS_MODEL',
     apiKey: 'HERMES_OPENAI_API_KEY',
     numCtx: 'HERMES_NUM_CTX',
+    // Hermes Agent fatally rejects a context window below 64K at startup, so the
+    // hardware-aware recommendation must be floored to that minimum (capped by the
+    // model's own window). Without this, Ollama would allocate a smaller KV cache
+    // than the agent assumes and long sessions would silently truncate.
+    minContextLength: 64_000,
   },
   openclaw: {
     baseUrl: 'OPENAI_API_BASE',
@@ -195,8 +203,18 @@ export class AppCredentialsService {
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         modelFootprintMb: availableLlm.runtime.memoryFootprintMb,
         modelContextWindow: availableLlm.runtime.contextWindow,
+        minContextLength: keys.minContextLength,
       });
       env[keys.numCtx] = String(numCtx);
+      // When an app declares a minimum the model cannot satisfy, the floor is
+      // capped to the model window and the app will refuse to start — surface it.
+      if (keys.minContextLength && numCtx < keys.minContextLength) {
+        this.logger.warn(
+          `[AppCredentials] ${slug}: resolved context window ${numCtx} is below the app's ` +
+            `${keys.minContextLength}-token minimum (model ${availableLlm.runtime.contextWindow}-token window ` +
+            `caps the floor); ${slug} may refuse to start. Choose a larger-context model.`,
+        );
+      }
     }
 
     // Always declare the per-app num_ctx key as Hub-managed — even when we don't

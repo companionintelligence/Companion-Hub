@@ -19,6 +19,15 @@ export interface ContextLengthInput {
   modelFootprintMb: number;
   /** The model's maximum supported context window, in tokens. */
   modelContextWindow: number;
+  /**
+   * Optional app-specific minimum context window, in tokens. Some apps cannot
+   * function below a hard floor — e.g. Hermes Agent fatally rejects any window
+   * below 64K. When set, the recommendation is raised up to this floor (the
+   * memory ladder may pick something smaller on constrained hardware), but it is
+   * still capped by the model's own window: a model whose maximum is below the
+   * floor simply cannot satisfy it, and the app is expected to surface that.
+   */
+  minContextLength?: number;
 }
 
 const FALLBACK_CONTEXT = 8192;
@@ -26,11 +35,13 @@ const FLOOR_CONTEXT = 4096;
 
 /** Returns a hardware-appropriate num_ctx in tokens, never exceeding the model's window. */
 export function recommendContextLength(input: ContextLengthInput): number {
-  const { effectiveInferenceMemoryMb, modelFootprintMb, modelContextWindow } = input;
+  const { effectiveInferenceMemoryMb, modelFootprintMb, modelContextWindow, minContextLength } = input;
   const cap = modelContextWindow > 0 ? modelContextWindow : FALLBACK_CONTEXT;
+  // App-specific floor, never raised above what the model can actually serve.
+  const floor = Math.min(Math.max(0, minContextLength ?? 0), cap);
 
   if (!Number.isFinite(effectiveInferenceMemoryMb) || effectiveInferenceMemoryMb <= 0) {
-    return Math.min(FALLBACK_CONTEXT, cap);
+    return Math.min(Math.max(FALLBACK_CONTEXT, floor), cap);
   }
 
   const freeForContextMb = effectiveInferenceMemoryMb - Math.max(0, modelFootprintMb || 0);
@@ -42,5 +53,5 @@ export function recommendContextLength(input: ContextLengthInput): number {
   else if (freeForContextMb >= 2048) ladder = 8192;
   else ladder = FLOOR_CONTEXT;
 
-  return Math.min(ladder, cap);
+  return Math.min(Math.max(ladder, floor), cap);
 }

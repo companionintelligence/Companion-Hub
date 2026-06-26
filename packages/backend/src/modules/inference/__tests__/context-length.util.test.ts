@@ -34,4 +34,58 @@ describe('recommendContextLength', () => {
     const ctx = recommendContextLength({ effectiveInferenceMemoryMb: 65536, modelFootprintMb: 0, modelContextWindow: 0 });
     expect(ctx).toBe(8192);
   });
+
+  describe('minContextLength (app-specific floor)', () => {
+    it('raises a memory-limited recommendation up to the floor', () => {
+      // 12 GiB free → 32768 tier, but the app requires >= 64000.
+      const ctx = recommendContextLength({
+        effectiveInferenceMemoryMb: 12288,
+        modelFootprintMb: 0,
+        modelContextWindow: 131072,
+        minContextLength: 64_000,
+      });
+      expect(ctx).toBe(64_000);
+    });
+
+    it('does not lower a recommendation that already clears the floor', () => {
+      // 16 GiB free → 65536 tier, well above the 64000 floor.
+      const ctx = recommendContextLength({
+        effectiveInferenceMemoryMb: 16384,
+        modelFootprintMb: 0,
+        modelContextWindow: 131072,
+        minContextLength: 64_000,
+      });
+      expect(ctx).toBe(65536);
+    });
+
+    it('never raises the floor above the model window', () => {
+      // Model maxes out at 32768; the floor cannot exceed what the model serves.
+      const ctx = recommendContextLength({
+        effectiveInferenceMemoryMb: 4096,
+        modelFootprintMb: 0,
+        modelContextWindow: 32768,
+        minContextLength: 64_000,
+      });
+      expect(ctx).toBe(32768);
+    });
+
+    it('applies the floor even when memory is unknown', () => {
+      const ctx = recommendContextLength({
+        effectiveInferenceMemoryMb: 0,
+        modelFootprintMb: 0,
+        modelContextWindow: 131072,
+        minContextLength: 64_000,
+      });
+      expect(ctx).toBe(64_000);
+    });
+
+    it('is a no-op when no floor is given (default behavior preserved)', () => {
+      const ctx = recommendContextLength({
+        effectiveInferenceMemoryMb: 12288,
+        modelFootprintMb: 0,
+        modelContextWindow: 131072,
+      });
+      expect(ctx).toBe(32768);
+    });
+  });
 });
