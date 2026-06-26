@@ -13,6 +13,7 @@ import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
+import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 
 /**
@@ -392,7 +393,10 @@ export class AppHelpers {
     const inferenceMapping = config.hub_integration?.inference;
     if (inferenceMapping && Object.keys(inferenceMapping).length > 0) {
       try {
-        const aiEnv = await this.inferenceEnv.resolve();
+        // Apply the app's context floor (e.g. Hermes' 64K minimum) so this path
+        // matches the credentials.env endpoint and never emits a sub-minimum
+        // num_ctx that would make the app abort at startup.
+        const aiEnv = await this.inferenceEnv.resolve({ minContextLength: appMinContextLength(appName) });
         const HUB_TO_RESOLVED: Record<string, string | undefined> = {
           llm_base_url: aiEnv.CI_LLM_BASE_URL,
           llm_api_key: aiEnv.CI_LLM_API_KEY,

@@ -163,6 +163,24 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_LLM_NUM_CTX).toBe('16384');
   });
 
+  it('raises num_ctx to an app-specific minContextLength floor when given', async () => {
+    // 4096 MB budget → 16384 tier, but the caller (e.g. hermes-agent) requires 64K.
+    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+
+    const env = await service.resolve({ minContextLength: 64_000 });
+
+    // Floored up to 64000 (model window 131072 leaves room).
+    expect(env.CI_LLM_NUM_CTX).toBe('64000');
+  });
+
+  it('does not apply any floor when minContextLength is omitted (default behavior)', async () => {
+    hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 4096 });
+
+    const env = await service.resolve();
+
+    expect(env.CI_LLM_NUM_CTX).toBe('16384');
+  });
+
   it('omits all inference variables when Ollama is unavailable and no cloud provider is configured', async () => {
     ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
 

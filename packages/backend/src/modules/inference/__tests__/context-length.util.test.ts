@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recommendContextLength } from '../context-length.util';
+import { appMinContextLength, recommendContextLength } from '../context-length.util';
 
 describe('recommendContextLength', () => {
   it('scales the context window up with available memory', () => {
@@ -86,6 +86,23 @@ describe('recommendContextLength', () => {
         modelContextWindow: 131072,
       });
       expect(ctx).toBe(32768);
+    });
+  });
+
+  describe('appMinContextLength (per-app floor registry)', () => {
+    it('returns 64000 for hermes-agent (its hard startup minimum)', () => {
+      expect(appMinContextLength('hermes-agent')).toBe(64_000);
+    });
+
+    it('returns undefined for apps with no declared minimum', () => {
+      expect(appMinContextLength('openclaw')).toBeUndefined();
+      expect(appMinContextLength('some-other-app')).toBeUndefined();
+    });
+
+    it('returns undefined for null/empty slugs', () => {
+      expect(appMinContextLength(null)).toBeUndefined();
+      expect(appMinContextLength(undefined)).toBeUndefined();
+      expect(appMinContextLength('')).toBeUndefined();
     });
   });
 });

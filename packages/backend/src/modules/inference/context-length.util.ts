@@ -55,3 +55,22 @@ export function recommendContextLength(input: ContextLengthInput): number {
 
   return Math.min(Math.max(ladder, floor), cap);
 }
+
+/**
+ * Per-app minimum context window, in tokens. Apps that cannot function below a
+ * hard floor declare it here so EVERY Hub code path that sizes their context —
+ * the `credentials.env` endpoint (AppCredentialsService) and the standardized
+ * env-file generator (InferenceEnvResolver via AppHelpers) — applies the same
+ * floor. Apps not listed have no minimum and keep the pure hardware ladder.
+ *
+ * hermes-agent: the upstream Hermes Agent fatally rejects a context window below
+ * 64K (its MINIMUM_CONTEXT_LENGTH) at startup.
+ */
+const APP_MIN_CONTEXT_LENGTH: Record<string, number> = {
+  'hermes-agent': 64_000,
+};
+
+/** The app's minimum context window in tokens, or undefined when it has no floor. */
+export function appMinContextLength(slug: string | null | undefined): number | undefined {
+  return slug ? APP_MIN_CONTEXT_LENGTH[slug] : undefined;
+}

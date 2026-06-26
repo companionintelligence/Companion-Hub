@@ -57,7 +57,13 @@ export class InferenceEnvResolver {
     private readonly cloudFallback: CloudFallbackService,
   ) {}
 
-  async resolve(): Promise<StandardizedAiEnv> {
+  /**
+   * @param options.minContextLength App-specific floor for the recommended Ollama
+   *   context window (tokens). Apps with a hard minimum (e.g. Hermes' 64K) pass it
+   *   so this path applies the same floor as the credentials.env endpoint. Omit for
+   *   apps with no minimum — the pure hardware ladder is used.
+   */
+  async resolve(options?: { minContextLength?: number }): Promise<StandardizedAiEnv> {
     const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
     if (cloudProvider) {
       const env: StandardizedAiEnv = {};
@@ -147,6 +153,7 @@ export class InferenceEnvResolver {
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         modelFootprintMb: chatCurated.runtime.memoryFootprintMb,
         modelContextWindow: chatCurated.runtime.contextWindow,
+        minContextLength: options?.minContextLength,
       });
       env.CI_LLM_NUM_CTX = String(numCtx);
     }
