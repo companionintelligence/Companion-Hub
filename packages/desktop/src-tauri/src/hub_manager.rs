@@ -5519,8 +5519,9 @@ fn generate_hex(bytes: usize) -> String {
 }
 
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
-/// Docker Desktop on Windows rejects backslashes and `C:/...` (the drive colon
-/// is parsed as the host/container delimiter); use `/mnt/c/Users/...` instead.
+/// On Windows the canonical form is `/mnt/<drive>/...` (lowercase drive); `C:/...`,
+/// `C:\...`, and MSYS `/c/...` are normalized to that form (Docker Desktop rejects
+/// `C:/...` because the drive colon is parsed as the host/container delimiter).
 fn docker_bind_mount_path(path: &Path) -> String {
     normalize_docker_host_path(&path.to_string_lossy())
 }
@@ -5566,10 +5567,11 @@ fn host_path_from_docker_path(value: &str) -> PathBuf {
 }
 
 /// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
+/// Canonical output: `/mnt/<drive>/...` with lowercase drive letter.
 fn normalize_windows_docker_host_path(value: &str) -> String {
     let trimmed = value.trim().replace('\\', "/");
 
-    // WSL/Docker Desktop style `/mnt/c/Users/...` binds both files and directories correctly.
+    // Already `/mnt/<drive>/...` — normalize drive letter to lowercase.
     if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
         let bytes = trimmed.as_bytes();
         if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
@@ -5578,8 +5580,8 @@ fn normalize_windows_docker_host_path(value: &str) -> String {
         }
     }
 
-    // MSYS/Git-Bash style `/c/Users/...` works for Compose parsing but can turn file binds
-    // into directories on Docker Desktop; normalize it to `/mnt/c/Users/...`.
+    // MSYS/Git-Bash `/c/...` — compose-safe but file binds can become directories;
+    // normalize to `/mnt/<drive>/...`.
     if trimmed.len() >= 3 {
         let bytes = trimmed.as_bytes();
         if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
@@ -5588,7 +5590,7 @@ fn normalize_windows_docker_host_path(value: &str) -> String {
         }
     }
 
-    // `C:/Users/...` or `C:\Users\...` → `/mnt/c/Users/...`
+    // `C:/...` or `C:\...` → `/mnt/<drive>/...`
     if trimmed.len() >= 2 {
         let bytes = trimmed.as_bytes();
         if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {

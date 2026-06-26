@@ -24,21 +24,28 @@ import path from 'node:path';
 import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
 
-/**
- * Canonical Windows bind-mount source format for Docker Desktop (Linux containers):
- * `/c/Users/...` — drive letter as a path segment, no colon. Native `C:\` or `C:/`
- * paths break compose because Docker treats the first `:` as the volume delimiter.
- */
+/** MSYS/Git-Bash bind-mount input (`/c/...`); normalized to `/mnt/<drive>/...`. */
 function isMsysDockerPath(value: string): boolean {
   return value.length >= 3 && value[0] === '/' && value[2] === '/' && /[a-zA-Z]/.test(value[1] ?? '');
 }
 
+/** Already-canonical Docker Desktop bind-mount form (`/mnt/<drive>/...`). */
+function isMntDockerPath(value: string): boolean {
+  return value.length >= 7 && value.startsWith('/mnt/') && /[a-zA-Z]/.test(value[5] ?? '') && value[6] === '/';
+}
+
+/** Normalize Windows host paths to `/mnt/<drive>/...` (lowercase drive). */
 function normalizeWindowsDockerPath(value: string): string {
   const trimmed = value.trim().replace(/\\/g, '/');
 
+  if (isMntDockerPath(trimmed)) {
+    const drive = (trimmed[5] ?? 'c').toLowerCase();
+    return `/mnt/${drive}${trimmed.slice(6)}`;
+  }
+
   if (isMsysDockerPath(trimmed)) {
     const drive = (trimmed[1] ?? 'c').toLowerCase();
-    return `/${drive}${trimmed.slice(2)}`;
+    return `/mnt/${drive}${trimmed.slice(2)}`;
   }
 
   const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
@@ -46,12 +53,20 @@ function normalizeWindowsDockerPath(value: string): string {
   if (driveLetter) {
     const drive = driveLetter.toLowerCase();
     const rest = driveMatch[2] ?? '';
-    return rest.length === 0 ? `/${drive}` : `/${drive}/${rest}`;
+    return rest.length === 0 ? `/mnt/${drive}` : `/mnt/${drive}/${rest}`;
   }
 
   return trimmed;
 }
 
+/**
+ * Host path for Docker bind mounts (`-v`, compose volume sources).
+ *
+ * On Windows the canonical form is `/mnt/<drive>/...` (lowercase drive), matching
+ * the desktop runtime (`hub_manager.rs`). Inputs `C:/...`, `C:\...`, and MSYS
+ * `/c/...` are normalized to that form; native `C:/...` breaks compose parsing
+ * because Docker treats the first `:` as the volume delimiter.
+ */
 export function dockerBindMountPath(hostPath: string): string {
   // Use path.posix.resolve on non-Windows so that absolute POSIX paths (e.g.
   // /var/lib/companion-hub) are never interpreted by the Windows path resolver
@@ -59,9 +74,7 @@ export function dockerBindMountPath(hostPath: string): string {
   if (process.platform !== 'win32') return path.posix.resolve(hostPath);
 
   const trimmed = hostPath.trim();
-  // MSYS paths must be normalized before path.win32.resolve — on Windows that
-  // turns `/c/Users/foo` into `\c\Users\foo` or `C:\c\Users\foo`.
-  if (isMsysDockerPath(trimmed)) {
+  if (isMntDockerPath(trimmed) || isMsysDockerPath(trimmed)) {
     return normalizeWindowsDockerPath(trimmed);
   }
   if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {

@@ -247,23 +247,24 @@ describe('dockerBindMountPath', () => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
-  it('uses /c/Users form on Windows-style paths for Docker bind mounts', () => {
+  it('normalizes Windows paths to /mnt/<drive>/... for Docker bind mounts', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     expect(dockerBindMountPath(String.raw`C:\Users\hegem\AppData\Roaming\companion-hub\state`)).toBe(
-      '/c/Users/hegem/AppData/Roaming/companion-hub/state',
+      '/mnt/c/Users/hegem/AppData/Roaming/companion-hub/state',
     );
-    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/mnt/C/Users/hegem/AppData/Roaming/companion-hub')).toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
   });
 
-  it('normalizes MSYS paths before Windows resolution', () => {
+  it('normalizes MSYS /c/... inputs before Windows path resolution', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const mangled = path.win32.resolve('/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(mangled).not.toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(mangled).not.toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
   });
 
-  it('resolves relative paths on Windows', () => {
+  it('resolves relative paths on Windows without backslashes', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const resolved = dockerBindMountPath('state');
     expect(resolved).toMatch(/\/state$/);
