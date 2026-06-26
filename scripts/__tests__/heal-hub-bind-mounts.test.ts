@@ -247,26 +247,27 @@ describe('dockerBindMountPath', () => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
-  it('uses forward slashes on Windows-style paths', () => {
+  it('uses /c/Users form on Windows-style paths for Docker bind mounts', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     expect(dockerBindMountPath(String.raw`C:\Users\hegem\AppData\Roaming\companion-hub\state`)).toBe(
-      'C:/Users/hegem/AppData/Roaming/companion-hub/state',
+      '/c/Users/hegem/AppData/Roaming/companion-hub/state',
     );
-    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
-    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
   });
 
   it('normalizes MSYS paths before Windows resolution', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     const mangled = path.win32.resolve('/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(mangled).not.toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
-    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('C:/Users/hegem/AppData/Roaming/companion-hub');
+    expect(mangled).not.toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
   });
 
   it('resolves relative paths on Windows', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
-    expect(dockerBindMountPath('state')).toMatch(/[/\\]state$/);
-    expect(dockerBindMountPath('state')).not.toContain('\\');
+    const resolved = dockerBindMountPath('state');
+    expect(resolved).toMatch(/\/state$/);
+    expect(resolved).not.toContain('\\');
   });
 
   it('leaves POSIX paths unchanged on non-Windows platforms', () => {

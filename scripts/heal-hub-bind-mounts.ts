@@ -25,20 +25,30 @@ import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
 
 /**
- * Canonical Windows bind-mount source format for Docker Desktop: `C:/Users/...`
- * (drive letter + forward slashes). Accepts native (`C:\Users\...`), MSYS/Git Bash
- * (`/c/Users/...`), or relative paths; all normalize to that form.
+ * Canonical Windows bind-mount source format for Docker Desktop (Linux containers):
+ * `/c/Users/...` — drive letter as a path segment, no colon. Native `C:\` or `C:/`
+ * paths break compose because Docker treats the first `:` as the volume delimiter.
  */
 function isMsysDockerPath(value: string): boolean {
   return value.length >= 3 && value[0] === '/' && value[2] === '/' && /[a-zA-Z]/.test(value[1] ?? '');
 }
 
 function normalizeWindowsDockerPath(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = value.trim().replace(/\\/g, '/');
+
   if (isMsysDockerPath(trimmed)) {
-    return `${trimmed[1]?.toUpperCase()}:${trimmed.slice(2).replace(/\\/g, '/')}`;
+    const drive = (trimmed[1] ?? 'c').toLowerCase();
+    return `/${drive}${trimmed.slice(2)}`;
   }
-  return trimmed.replace(/\\/g, '/');
+
+  const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
+  if (driveMatch) {
+    const drive = driveMatch[1]!.toLowerCase();
+    const rest = driveMatch[2]!;
+    return rest.length === 0 ? `/${drive}` : `/${drive}/${rest}`;
+  }
+
+  return trimmed;
 }
 
 export function dockerBindMountPath(hostPath: string): string {

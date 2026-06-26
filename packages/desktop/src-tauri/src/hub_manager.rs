@@ -5317,7 +5317,9 @@ fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, Stri
     let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
         return false;
     };
-    let token_path = PathBuf::from(root).join("tunnel").join("token");
+    let token_path = host_path_from_docker_path(&root)
+        .join("tunnel")
+        .join("token");
     std::fs::metadata(&token_path)
         .map(|m| m.is_file() && m.len() > 0)
         .unwrap_or(false)
@@ -5514,7 +5516,8 @@ fn generate_hex(bytes: usize) -> String {
 }
 
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
-/// Docker Desktop on Windows rejects backslashes in volume specifications.
+/// Docker Desktop on Windows rejects backslashes and `C:/...` (the drive colon
+/// is parsed as the host/container delimiter); use `/c/Users/...` instead.
 fn docker_bind_mount_path(path: &Path) -> String {
     normalize_docker_host_path(&path.to_string_lossy())
 }
@@ -5531,20 +5534,54 @@ fn normalize_docker_host_path(value: &str) -> String {
     }
 }
 
-/// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
-fn normalize_windows_docker_host_path(value: &str) -> String {
-    let trimmed = value.trim();
-
-    // MSYS/Git-Bash style `/c/Users/...` → `C:/Users/...` (works for Docker and std::fs).
+/// Convert a Docker bind-mount path back to a native host path for filesystem access.
+#[cfg(windows)]
+fn host_path_from_docker_path(value: &str) -> PathBuf {
+    let trimmed = value.trim().replace('\\', "/");
     if trimmed.len() >= 3 {
         let bytes = trimmed.as_bytes();
         if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
             let drive = (bytes[1] as char).to_ascii_uppercase();
-            return format!("{}:{}", drive, &trimmed[2..].replace('\\', "/"));
+            let rest = trimmed[3..].replace('/', "\\");
+            return PathBuf::from(format!("{drive}:\\{rest}"));
+        }
+    }
+    PathBuf::from(value)
+}
+
+#[cfg(not(windows))]
+fn host_path_from_docker_path(value: &str) -> PathBuf {
+    PathBuf::from(value)
+}
+
+/// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
+fn normalize_windows_docker_host_path(value: &str) -> String {
+    let trimmed = value.trim().replace('\\', "/");
+
+    // MSYS/Git-Bash style `/c/Users/...` — canonical for Linux containers on Docker Desktop.
+    if trimmed.len() >= 3 {
+        let bytes = trimmed.as_bytes();
+        if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
+            let drive = (bytes[1] as char).to_ascii_lowercase();
+            return format!("/{drive}{}", &trimmed[2..]);
         }
     }
 
-    trimmed.replace('\\', "/")
+    // `C:/Users/...` or `C:\Users\...` → `/c/Users/...`
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            let rest = trimmed[2..].trim_start_matches('/');
+            return if rest.is_empty() {
+                format!("/{drive}")
+            } else {
+                format!("/{drive}/{rest}")
+            };
+        }
+    }
+
+    trimmed
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
@@ -8877,13 +8914,19 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     fn normalizes_windows_docker_bind_mount_paths() {
         assert_eq!(
             super::normalize_windows_docker_host_path(
-                r"C:\Users\hegem\AppData\Roaming\companion-hub\.env"
+                r"C:\Users\hegem\AppData\Roaming\companion-hub\media"
             ),
-            "C:/Users/hegem/AppData/Roaming/companion-hub/.env"
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
+        );
+        assert_eq!(
+            super::normalize_windows_docker_host_path(
+                "C:/Users/hegem/AppData/Roaming/companion-hub/media"
+            ),
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
         );
         assert_eq!(
             super::normalize_windows_docker_host_path("/c/Users/hegem/AppData/Roaming/companion-hub"),
-            "C:/Users/hegem/AppData/Roaming/companion-hub"
+            "/c/Users/hegem/AppData/Roaming/companion-hub"
         );
     }
 }
