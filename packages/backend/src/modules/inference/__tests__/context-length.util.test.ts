@@ -79,6 +79,18 @@ describe('recommendContextLength', () => {
       expect(ctx).toBe(64_000);
     });
 
+    it('ignores a non-finite floor instead of returning NaN', () => {
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        const ctx = recommendContextLength({
+          effectiveInferenceMemoryMb: 12288,
+          modelFootprintMb: 0,
+          modelContextWindow: 131072,
+          minContextLength: bad,
+        });
+        expect(ctx).toBe(32768); // falls back to the pure ladder value, never NaN
+      }
+    });
+
     it('is a no-op when no floor is given (default behavior preserved)', () => {
       const ctx = recommendContextLength({
         effectiveInferenceMemoryMb: 12288,
@@ -103,6 +115,13 @@ describe('recommendContextLength', () => {
       expect(appMinContextLength(null)).toBeUndefined();
       expect(appMinContextLength(undefined)).toBeUndefined();
       expect(appMinContextLength('')).toBeUndefined();
+    });
+
+    it('returns undefined for Object.prototype keys (no prototype pollution leak)', () => {
+      expect(appMinContextLength('toString')).toBeUndefined();
+      expect(appMinContextLength('constructor')).toBeUndefined();
+      expect(appMinContextLength('__proto__')).toBeUndefined();
+      expect(appMinContextLength('hasOwnProperty')).toBeUndefined();
     });
   });
 });

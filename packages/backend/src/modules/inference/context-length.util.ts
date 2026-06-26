@@ -38,7 +38,10 @@ export function recommendContextLength(input: ContextLengthInput): number {
   const { effectiveInferenceMemoryMb, modelFootprintMb, modelContextWindow, minContextLength } = input;
   const cap = modelContextWindow > 0 ? modelContextWindow : FALLBACK_CONTEXT;
   // App-specific floor, never raised above what the model can actually serve.
-  const floor = Math.min(Math.max(0, minContextLength ?? 0), cap);
+  // Guard against a non-finite minContextLength (NaN/Infinity) so a bad caller
+  // input can never poison the Math ops and return a non-numeric recommendation.
+  const requestedFloor = Number.isFinite(minContextLength) ? (minContextLength as number) : 0;
+  const floor = Math.min(Math.max(0, requestedFloor), cap);
 
   if (!Number.isFinite(effectiveInferenceMemoryMb) || effectiveInferenceMemoryMb <= 0) {
     return Math.min(Math.max(FALLBACK_CONTEXT, floor), cap);
@@ -64,7 +67,8 @@ export function recommendContextLength(input: ContextLengthInput): number {
  * floor. Apps not listed have no minimum and keep the pure hardware ladder.
  *
  * hermes-agent: the upstream Hermes Agent fatally rejects a context window below
- * 64K (its MINIMUM_CONTEXT_LENGTH) at startup.
+ * its MINIMUM_CONTEXT_LENGTH, which is the literal 64000 (not 65536) and is
+ * compared with a strict `<`, so 64000 itself is accepted.
  */
 const APP_MIN_CONTEXT_LENGTH: Record<string, number> = {
   'hermes-agent': 64_000,
@@ -72,5 +76,9 @@ const APP_MIN_CONTEXT_LENGTH: Record<string, number> = {
 
 /** The app's minimum context window in tokens, or undefined when it has no floor. */
 export function appMinContextLength(slug: string | null | undefined): number | undefined {
-  return slug ? APP_MIN_CONTEXT_LENGTH[slug] : undefined;
+  // Own-property check so a slug colliding with an Object.prototype member
+  // (e.g. "toString", "constructor", "__proto__") can't return a non-number.
+  if (!slug || !Object.hasOwn(APP_MIN_CONTEXT_LENGTH, slug)) return undefined;
+  const min = APP_MIN_CONTEXT_LENGTH[slug];
+  return typeof min === 'number' ? min : undefined;
 }
