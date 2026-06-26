@@ -77,6 +77,9 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
     if (cmd === 'check_docker_access_command') {
       return { state: 'daemon_unavailable', detail: 'No container engine found at /var/run/docker.sock' };
     }
+    if (cmd === 'is_stack_dev_mode_command') {
+      return false;
+    }
     if (cmd === 'get_startup_progress_command') {
       return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
     }
@@ -282,6 +285,8 @@ describe('HubStatus Docker guidance', () => {
           return 'Hub started successfully';
         case 'check_docker_access_command':
           return { state: 'daemon_unavailable', detail: null };
+        case 'is_stack_dev_mode_command':
+          return false;
         case 'get_startup_progress_command':
           return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
@@ -330,6 +335,8 @@ describe('HubStatus Docker guidance', () => {
           return 'Hub started successfully';
         case 'check_docker_access_command':
           return { state: 'available', detail: null };
+        case 'is_stack_dev_mode_command':
+          return false;
         case 'get_startup_progress_command':
           return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
@@ -357,6 +364,42 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('does not auto-start the hub on Windows while Tauri is in stack-dev mode', async () => {
+    vi.useFakeTimers();
+
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return 'Stopped';
+        case 'is_stack_dev_mode_command':
+          return true;
+        case 'check_docker_access_command':
+          return { state: 'available', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByRole('button', { name: 'Start Hub' })).toBeInTheDocument();
   });
 
   it('renders the normal app immediately when the hub is already running', async () => {

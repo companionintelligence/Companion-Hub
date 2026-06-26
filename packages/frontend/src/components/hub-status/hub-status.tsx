@@ -631,6 +631,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isWindows = isTauri && detectPlatform() === 'windows';
   const shouldAutoStartWindowsHubRef = useRef(true);
+  const stackDevModeRef = useRef<boolean | null>(null);
   const checkStatusInFlightRef = useRef(false);
   // Track whether we've seen a non-Running state so we can reload once the Hub
   // becomes healthy. Without this, React Router's cached clientLoader errors
@@ -668,6 +669,24 @@ export function HubStatus({ children }: HubStatusProps) {
     }
   }, []);
 
+  const isStackDevMode = useCallback(async () => {
+    if (stackDevModeRef.current !== null) return stackDevModeRef.current;
+
+    const invoke = getTauriInvoke();
+    if (!invoke) {
+      stackDevModeRef.current = false;
+      return false;
+    }
+
+    try {
+      stackDevModeRef.current = Boolean(await invoke('is_stack_dev_mode_command'));
+    } catch {
+      stackDevModeRef.current = false;
+    }
+
+    return stackDevModeRef.current;
+  }, []);
+
   const checkStatus = useCallback(async () => {
     if (checkStatusInFlightRef.current) return;
     checkStatusInFlightRef.current = true;
@@ -677,7 +696,7 @@ export function HubStatus({ children }: HubStatusProps) {
         try {
           const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
 
-          if (isWindows) {
+          if (isWindows && !(await isStackDevMode())) {
             if (result === 'DockerNotAvailable') {
               shouldAutoStartWindowsHubRef.current = true;
             } else if (result === 'Running' || result === 'Starting' || (typeof result === 'object' && 'Error' in result)) {
@@ -720,7 +739,7 @@ export function HubStatus({ children }: HubStatusProps) {
     } finally {
       checkStatusInFlightRef.current = false;
     }
-  }, [isTauri, isWindows, checkHealthFallback, startHub, t]);
+  }, [isTauri, isWindows, checkHealthFallback, isStackDevMode, startHub, t]);
 
   // Track elapsed seconds while in Starting state
   useEffect(() => {

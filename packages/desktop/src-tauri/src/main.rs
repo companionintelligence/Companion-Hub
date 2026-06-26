@@ -122,6 +122,11 @@ async fn start_hub_command(
         })?
 }
 
+#[tauri::command]
+fn is_stack_dev_mode_command() -> bool {
+    stack_dev_mode_enabled()
+}
+
 /// Check if Docker is available on this machine.
 #[tauri::command]
 async fn check_docker_available() -> Result<bool, String> {
@@ -330,6 +335,7 @@ pub fn run() {
             check_hub_status,
             discover_hubs,
             start_hub_command,
+            is_stack_dev_mode_command,
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
