@@ -656,7 +656,7 @@ export default function DeviceRegistrationPage() {
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
-              <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer">
+              <a href={`${portalUrl}/home`} target="_blank" rel="noopener noreferrer">
                 {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
               </a>
             </Button>
