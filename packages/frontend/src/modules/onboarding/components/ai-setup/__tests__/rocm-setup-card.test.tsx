@@ -16,6 +16,14 @@ vi.mock('@/lib/helpers/open-external', () => ({
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> } };
 
+const originalUserAgent = navigator.userAgent;
+const originalPlatform = navigator.platform;
+
+function setNavigatorPlatform(userAgent: string, platform: string) {
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+  Object.defineProperty(navigator, 'platform', { configurable: true, value: platform });
+}
+
 function installTauriMock(invoke: (cmd: string) => Promise<unknown>) {
   (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
 }
@@ -51,6 +59,7 @@ const ubuntuMissingStatus = {
 
 afterEach(() => {
   delete (window as TauriWindow).__TAURI_INTERNALS__;
+  setNavigatorPlatform(originalUserAgent, originalPlatform);
   vi.clearAllMocks();
 });
 
@@ -112,6 +121,7 @@ describe('RocmSetupCard', () => {
   });
 
   it('invokes install_rocm_command on Ubuntu desktop', async () => {
+    setNavigatorPlatform('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64');
     mockApiFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(ubuntuMissingStatus),

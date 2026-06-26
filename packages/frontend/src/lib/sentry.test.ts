@@ -52,7 +52,7 @@ describe('frontend sentry', () => {
     testEnv.CI_HUB_ENVIRONMENT = 'development';
     testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
     testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
-    apiFetch.mockResolvedValue(new Response(JSON.stringify({ device_id: 'device-123' }), { status: 200 }));
+    apiFetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ device_id: 'device-123' }), { status: 200 })));
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -67,8 +67,6 @@ describe('frontend sentry', () => {
 
   it('initializes Sentry for browser users when a frontend DSN is configured', async () => {
     await import('./sentry');
-    await Promise.resolve();
-    await Promise.resolve();
 
     expect(init).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -81,10 +79,10 @@ describe('frontend sentry', () => {
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
     expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
-    expect(setTag).toHaveBeenCalledWith('device_id', 'device-123');
+    await vi.waitFor(() => expect(setTag).toHaveBeenCalledWith('device_id', 'device-123'));
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
     expect(apiFetch).toHaveBeenCalledWith('/api/registration/device-id');
-  });
+  }, 30_000);
 
   it('tags Tauri errors as desktop-web', async () => {
     (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};

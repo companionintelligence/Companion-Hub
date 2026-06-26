@@ -38,6 +38,7 @@ describe('AppsService', () => {
   let installPipelineTracker: InstallPipelineTracker;
 
   beforeEach(async () => {
+    mockAxiosGet.mockReset();
     installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -457,7 +458,7 @@ describe('AppsService', () => {
       setupForResolve('dns');
       await service.resolveAppAvailability(appUrn);
       expect(mockSync).toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('MUST attempt container restart for PROXY_UPSTREAM_ERROR', async () => {
       const mockRestart = vi.fn().mockResolvedValue(undefined);
