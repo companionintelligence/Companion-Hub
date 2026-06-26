@@ -9,6 +9,8 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { DockerService } from '@/modules/docker/docker.service';
+import { isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -128,6 +130,47 @@ export class AppLifecycleCommand {
 
     // Set permissions
     await appFilesManager.setAppDataDirPermissions(appUrn);
+  }
+
+  protected async removeStaleAppNetworks(appUrn: AppUrn): Promise<void> {
+    const dockerService = this.moduleRef.get(DockerService, { strict: false });
+    await dockerService?.removeAppNetworks(appUrn);
+  }
+
+  /**
+   * Run compose for an app, removing stale project networks first and retrying
+   * with a fresh subnet when Docker reports overlapping bridge ranges.
+   */
+  protected async composeAppWithNetworkRecovery(appUrn: AppUrn, form: AppEventFormInput, command: string, maxAttempts = 3): Promise<void> {
+    const dockerService = this.moduleRef.get(DockerService, { strict: false });
+    const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+
+    if (!dockerService) {
+      throw new Error('DockerService unavailable');
+    }
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await this.removeStaleAppNetworks(appUrn);
+
+      try {
+        await dockerService.composeApp(appUrn, command);
+        return;
+      } catch (error) {
+        lastError = error;
+        const canRetry = isDockerNetworkOverlapError(error) && attempt < maxAttempts;
+        if (!canRetry) {
+          throw error;
+        }
+
+        logger.warn(`Docker network overlap for ${appUrn} on attempt ${attempt}/${maxAttempts}; releasing subnet and regenerating compose`);
+        await subnetManager?.releaseSubnet(appUrn);
+        await this.ensureAppDir(appUrn, form);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {

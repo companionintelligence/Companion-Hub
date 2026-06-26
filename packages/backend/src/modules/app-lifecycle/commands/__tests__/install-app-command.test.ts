@@ -84,6 +84,7 @@ describe('InstallAppCommand — pull policy', () => {
         summary: { total: 1, running: 1, exitZero: 0 },
         message: 'All containers are running',
       }),
+      removeAppNetworks: vi.fn().mockResolvedValue(undefined),
     };
 
     const logger = mockDeep<LoggerService>();

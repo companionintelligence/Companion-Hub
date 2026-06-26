@@ -43,6 +43,7 @@ describe('StartAppCommand — pull policy', () => {
       composeApp: vi.fn(async (_urn: string, args: string) => {
         composeArgs.push(args);
       }),
+      removeAppNetworks: vi.fn().mockResolvedValue(undefined),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -76,6 +77,7 @@ describe('StartAppCommand — pull policy', () => {
 
     const subnetManager = mock<SubnetManagerService>();
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
+    subnetManager.releaseSubnet.mockResolvedValue(undefined);
 
     const dockerode = mock<Dockerode>();
     // @ts-expect-error
@@ -131,5 +133,23 @@ describe('StartAppCommand — pull policy', () => {
     await command.execute(appUrn, { skipPull: true });
     const upCmd = composeArgs.find((a) => a.includes('up'));
     expect(upCmd).not.toContain('--pull');
+  });
+
+  it('SHOULD remove stale networks before compose up', async () => {
+    await command.execute(appUrn, {});
+
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('SHOULD retry compose up after a Docker network overlap error', async () => {
+    dockerService.composeApp
+      .mockRejectedValueOnce(new Error('failed to create network ghost_ci-marketplace_network: networks have overlapping IPv4'))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledTimes(2);
+    expect(dockerService.composeApp).toHaveBeenCalledTimes(2);
   });
 });

@@ -464,7 +464,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       await emitProgress(99);
-      await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans');
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
