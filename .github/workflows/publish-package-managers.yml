@@ -30,7 +30,8 @@ jobs:
 
       - name: Publish Homebrew tap and Scoop bucket
         env:
-          GH_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN || secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN cannot push to homebrew-tap / scoop-bucket; PAT required.
+          GH_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}
         run: |
           chmod +x ./distribution/scripts/publish-package-managers.sh
           ./distribution/scripts/publish-package-managers.sh "companion-hub ${{ inputs.tag }}"
