@@ -42,9 +42,10 @@ function normalizeWindowsDockerPath(value: string): string {
   }
 
   const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
-  if (driveMatch) {
-    const drive = driveMatch[1]!.toLowerCase();
-    const rest = driveMatch[2]!;
+  const driveLetter = driveMatch?.[1];
+  if (driveLetter) {
+    const drive = driveLetter.toLowerCase();
+    const rest = driveMatch[2] ?? '';
     return rest.length === 0 ? `/${drive}` : `/${drive}/${rest}`;
   }
 
