@@ -86,6 +86,9 @@ services:
     logging: *default-logging
     restart: unless-stopped
     # Match the host user that owns ROOT_FOLDER_HOST (set CI_HUB_CONTAINER_UID/GID in .env).
+    # The desktop app always writes this from resolve_hub_container_identity():
+    # 0:0 on Windows (Docker Desktop / NTFS bind mounts require root),
+    # or the host UID:GID on Linux/macOS.
     user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
     # Host docker.sock is root:docker (660); add the host docker group GID (see init-hub-data-dirs.ts).
     group_add:

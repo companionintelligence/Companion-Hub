@@ -42,7 +42,10 @@ function normalizeWindowsDockerPath(value: string): string {
 }
 
 export function dockerBindMountPath(hostPath: string): string {
-  if (process.platform !== 'win32') return path.resolve(hostPath);
+  // Use path.posix.resolve on non-Windows so that absolute POSIX paths (e.g.
+  // /var/lib/companion-hub) are never interpreted by the Windows path resolver
+  // (which would add a drive letter prefix).
+  if (process.platform !== 'win32') return path.posix.resolve(hostPath);
 
   const trimmed = hostPath.trim();
   // MSYS paths must be normalized before path.win32.resolve — on Windows that
@@ -298,6 +301,11 @@ export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: num
 }
 
 function isHostRootOwnedPath(targetPath: string): boolean {
+  // Windows NTFS does not have POSIX UID semantics; statSync().uid is always 0
+  // on Windows, so every path would falsely appear root-owned. Skip this check
+  // entirely — on Windows the container runs as root (UID 0) and can write
+  // NTFS bind mounts without any chown repair.
+  if (process.platform === 'win32') return false;
   try {
     return statSync(targetPath).uid === 0;
   } catch {
@@ -316,9 +324,11 @@ export function effectiveBindMountIdentity(identity: HubContainerIdentity): { ui
 }
 
 function trySudoChown(targetPath: string, uid: number, gid: number, recursive = true): boolean {
+  // sudo and Unix-style chown do not exist on Windows.
+  if (process.platform === 'win32') return false;
   const args = recursive ? ['-R'] : [];
   const result = spawnSync('sudo', ['-n', 'chown', ...args, `${uid}:${gid}`, targetPath], { encoding: 'utf8', stdio: 'pipe' });
-  return result.status === 0;
+  return result?.status === 0;
 }
 
 function trySudoChownRecursive(targetPath: string, uid: number, gid: number): boolean {

@@ -3293,21 +3293,34 @@ fn likely_docker_desktop() -> bool {
 /// UID/GID for the Hub container and the host docker group GID for `group_add`.
 /// Mirrors scripts/init-hub-data-dirs.ts so desktop launches stay compatible with Docker Desktop.
 pub(crate) fn resolve_hub_container_identity() -> (u32, u32, u32) {
-    if let Some((socket_uid, socket_gid)) = docker_socket_uid_gid_inside_container() {
-        // Docker Desktop exposes the socket as root:root inside containers; group_add is ineffective.
-        if socket_uid == 0 && socket_gid == 0 {
-            return (0, 0, default_docker_gid());
-        }
-        let (host_uid, host_gid) = host_container_uid_gid();
-        return (host_uid, host_gid, socket_gid);
-    }
-
-    if likely_docker_desktop() {
+    // On Windows, Linux containers always run through Docker Desktop.
+    // NTFS bind mounts do not honour Linux UID/GID ownership semantics, so the
+    // container must run as root (0:0) to guarantee write access to host paths.
+    // The Docker socket probe below cannot work on Windows because Docker Desktop
+    // uses a named pipe (//./pipe/docker_engine) rather than /var/run/docker.sock.
+    #[cfg(target_os = "windows")]
+    {
         return (0, 0, default_docker_gid());
     }
 
-    let (host_uid, host_gid) = host_container_uid_gid();
-    (host_uid, host_gid, default_docker_gid())
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some((socket_uid, socket_gid)) = docker_socket_uid_gid_inside_container() {
+            // Docker Desktop exposes the socket as root:root inside containers; group_add is ineffective.
+            if socket_uid == 0 && socket_gid == 0 {
+                return (0, 0, default_docker_gid());
+            }
+            let (host_uid, host_gid) = host_container_uid_gid();
+            return (host_uid, host_gid, socket_gid);
+        }
+
+        if likely_docker_desktop() {
+            return (0, 0, default_docker_gid());
+        }
+
+        let (host_uid, host_gid) = host_container_uid_gid();
+        (host_uid, host_gid, default_docker_gid())
+    }
 }
 
 #[cfg(windows)]
