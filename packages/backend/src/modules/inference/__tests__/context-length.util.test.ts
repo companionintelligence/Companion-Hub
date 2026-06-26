@@ -79,6 +79,25 @@ describe('recommendContextLength', () => {
       expect(ctx).toBe(64_000);
     });
 
+    it('returns an integer token count even for a fractional floor or model window', () => {
+      const fractionalFloor = recommendContextLength({
+        effectiveInferenceMemoryMb: 12288,
+        modelFootprintMb: 0,
+        modelContextWindow: 131072,
+        minContextLength: 64000.5,
+      });
+      expect(fractionalFloor).toBe(64000);
+      expect(Number.isInteger(fractionalFloor)).toBe(true);
+
+      const fractionalCap = recommendContextLength({
+        effectiveInferenceMemoryMb: 131072,
+        modelFootprintMb: 0,
+        modelContextWindow: 8192.9,
+      });
+      expect(fractionalCap).toBe(8192);
+      expect(Number.isInteger(fractionalCap)).toBe(true);
+    });
+
     it('ignores a non-finite floor instead of returning NaN', () => {
       for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
         const ctx = recommendContextLength({

@@ -36,11 +36,14 @@ const FLOOR_CONTEXT = 4096;
 /** Returns a hardware-appropriate num_ctx in tokens, never exceeding the model's window. */
 export function recommendContextLength(input: ContextLengthInput): number {
   const { effectiveInferenceMemoryMb, modelFootprintMb, modelContextWindow, minContextLength } = input;
-  const cap = modelContextWindow > 0 ? modelContextWindow : FALLBACK_CONTEXT;
+  // Floor the model window so a fractional registry value can't yield a fractional
+  // num_ctx; the ladder constants are already integers.
+  const cap = Math.floor(modelContextWindow > 0 ? modelContextWindow : FALLBACK_CONTEXT);
   // App-specific floor, never raised above what the model can actually serve.
   // Guard against a non-finite minContextLength (NaN/Infinity) so a bad caller
-  // input can never poison the Math ops and return a non-numeric recommendation.
-  const requestedFloor = Number.isFinite(minContextLength) ? (minContextLength as number) : 0;
+  // input can never poison the Math ops; floor it so a fractional minimum (e.g.
+  // 64000.5) can't produce a fractional, invalid token count.
+  const requestedFloor = Number.isFinite(minContextLength) ? Math.floor(minContextLength as number) : 0;
   const floor = Math.min(Math.max(0, requestedFloor), cap);
 
   if (!Number.isFinite(effectiveInferenceMemoryMb) || effectiveInferenceMemoryMb <= 0) {
