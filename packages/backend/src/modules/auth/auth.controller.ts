@@ -131,13 +131,16 @@ export class AuthController {
   @Post('/logout')
   async logout(@Res() res: Response, @Req() req: Request) {
     res.clearCookie(SESSION_COOKIE_NAME);
-    const sessionId = req.cookies[SESSION_COOKIE_NAME];
+    // The auth middleware accepts both cookie and X-CI-Hub-Session header (Tauri desktop
+    // uses the header because WebView2 blocks cross-origin cookies). The logout handler
+    // must do the same — without the header fallback the Tauri logout request finds no
+    // session ID, hits the early return without sending a response, and the request hangs
+    // indefinitely so onSuccess (and the subsequent page reload) never fires.
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string);
 
-    if (!sessionId) {
-      return;
+    if (sessionId) {
+      await this.authService.logout(sessionId);
     }
-
-    await this.authService.logout(sessionId);
 
     return res.status(204).send();
   }
