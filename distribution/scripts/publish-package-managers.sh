@@ -10,11 +10,27 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 fi
 
 export GIT_TERMINAL_PROMPT=0
+# Actions always injects GITHUB_TOKEN; gh/git may prefer it over our PAT unless we
+# authenticate explicitly. Unset it so every gh/git call uses CI_PACKAGE_MANAGERS_TOKEN.
+unset GITHUB_TOKEN
+printf '%s\n' "$GH_TOKEN" | gh auth login --with-token
 gh auth setup-git
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIST="$ROOT/distribution/publish"
 MSG="${1:-Update Companion Hub package manifests}"
+
+assert_repo_push_access() {
+  local repo_name="$1"
+  local login can_push
+  login="$(gh api user --jq .login)"
+  can_push="$(gh api "repos/companionintelligence/${repo_name}" --jq '.permissions.push // false')"
+  if [[ "$can_push" != "true" ]]; then
+    echo "CI_PACKAGE_MANAGERS_TOKEN (authenticated as ${login}) cannot push to companionintelligence/${repo_name}." >&2
+    echo "Use a PAT with Contents: Read and write on homebrew-tap and scoop-bucket." >&2
+    exit 1
+  fi
+}
 
 publish_repo() {
   local repo_name="$1"
@@ -22,6 +38,8 @@ publish_repo() {
   local work
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' RETURN
+
+  assert_repo_push_access "$repo_name"
 
   if gh repo view "companionintelligence/${repo_name}" &>/dev/null; then
     gh repo clone "companionintelligence/${repo_name}" "$work" -- --depth=1
@@ -44,9 +62,9 @@ publish_repo() {
     git config user.name "github-actions[bot]"
     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
     git commit -m "chore: ${MSG}"
-    # Public repos clone without auth; push must use the PAT explicitly.
+    # Force the PAT embedded in the remote URL; ignore credential helpers.
     git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/companionintelligence/${repo_name}.git"
-    git push origin HEAD
+    git -c credential.helper= push origin HEAD
   )
   echo "Published ${repo_name}"
 }
