@@ -78,6 +78,12 @@ describe('InstallAppCommand — pull policy', () => {
       }),
       pullImages: vi.fn().mockResolvedValue(undefined),
       diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
+        ok: true,
+        appStatus: 'running',
+        summary: { total: 1, running: 1, exitZero: 0 },
+        message: 'All containers are running',
+      }),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -326,5 +332,36 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(result.message).toContain('installed successfully (skipped run)');
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+  });
+
+  it('SHOULD fail install when labeled containers are missing after compose up', async () => {
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      appStatus: 'missing',
+      summary: { total: 0, running: 0, exitZero: 0 },
+      message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('no Hub-managed containers were found');
+    expect(dockerService.waitForManagedAppContainersReady).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('SHOULD fail install with container logs when containers exit after compose up', async () => {
+    dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+      ok: false,
+      appStatus: 'stopped',
+      summary: { total: 1, running: 0, exitZero: 0 },
+      message: 'One or more containers exited after install.',
+      errorDetail: 'ghost-ghost-ci-marketplace (Exited (1)): bootstrap failed',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('exited after install');
+    expect(result.errorDetail).toContain('bootstrap failed');
   });
 });

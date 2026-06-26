@@ -15,7 +15,7 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand } from './command';
-import { createRocmKfdMissingError, type AppCommandResult } from './app-lifecycle-errors';
+import { createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
@@ -467,7 +467,19 @@ export class InstallAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
-      // Post-start health check: fire-and-forget — don't block install completion
+      const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
+      if (!containerVerification.ok) {
+        logger.error(
+          `[AppDiag] Post-install container verification failed for ${appUrn}: ${containerVerification.message}${
+            containerVerification.errorDetail ? `\n${containerVerification.errorDetail}` : ''
+          }`,
+        );
+        throw new AppLifecycleError(containerVerification.message, {
+          detail: containerVerification.errorDetail ?? containerVerification.message,
+        });
+      }
+
+      // Supplemental health check for slow-fail crashes after the initial verification.
       setTimeout(async () => {
         try {
           const diagResults = await dockerService.diagnoseAppContainers(appUrn);
