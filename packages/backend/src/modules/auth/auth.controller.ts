@@ -136,7 +136,7 @@ export class AuthController {
     // must do the same — without the header fallback the Tauri logout request finds no
     // session ID, hits the early return without sending a response, and the request hangs
     // indefinitely so onSuccess (and the subsequent page reload) never fires.
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string);
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
 
     if (sessionId) {
       await this.authService.logout(sessionId);
