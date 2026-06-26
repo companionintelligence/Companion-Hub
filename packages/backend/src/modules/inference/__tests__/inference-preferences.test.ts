@@ -1,8 +1,13 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+
+vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
+  AppLifecycleService: class AppLifecycleService {},
+}));
+
 import { InferenceController } from '../inference.controller';
 import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';

@@ -5421,6 +5421,7 @@ fn render_runtime_env_content(
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
     // Always recompute from the current binary so upgrades pick up the new stack image tag.
     let hub_image = default_hub_image().to_string();
+    let compose_file_host = docker_bind_mount_path(&data_dir.join(HUB_COMPOSE_FILENAME));
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
     } else {
@@ -5454,6 +5455,7 @@ fn render_runtime_env_content(
          CI_CLOUD_URL={cloud_url}\n\
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
+         COMPOSE_FILE_HOST={compose_file_host}\n\
          DOCKER_PLATFORM={docker_platform}\n\
          {docker_socket_path_line}\
          {docker_gid_line}\
@@ -5471,6 +5473,7 @@ fn render_runtime_env_content(
         cloud_url = cloud_url,
         hub_version = hub_version,
         hub_image = hub_image,
+        compose_file_host = compose_file_host,
         docker_socket_path_line = docker_socket_path_line,
         docker_platform = docker_platform,
         docker_gid_line = docker_gid_line,
@@ -5517,7 +5520,7 @@ fn generate_hex(bytes: usize) -> String {
 
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
 /// Docker Desktop on Windows rejects backslashes and `C:/...` (the drive colon
-/// is parsed as the host/container delimiter); use `/c/Users/...` instead.
+/// is parsed as the host/container delimiter); use `/mnt/c/Users/...` instead.
 fn docker_bind_mount_path(path: &Path) -> String {
     normalize_docker_host_path(&path.to_string_lossy())
 }
@@ -5538,6 +5541,14 @@ fn normalize_docker_host_path(value: &str) -> String {
 #[cfg(windows)]
 fn host_path_from_docker_path(value: &str) -> PathBuf {
     let trimmed = value.trim().replace('\\', "/");
+    if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
+        let bytes = trimmed.as_bytes();
+        if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
+            let drive = (bytes[5] as char).to_ascii_uppercase();
+            let rest = trimmed[7..].replace('/', "\\");
+            return PathBuf::from(format!("{drive}:\\{rest}"));
+        }
+    }
     if trimmed.len() >= 3 {
         let bytes = trimmed.as_bytes();
         if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
@@ -5558,25 +5569,35 @@ fn host_path_from_docker_path(value: &str) -> PathBuf {
 fn normalize_windows_docker_host_path(value: &str) -> String {
     let trimmed = value.trim().replace('\\', "/");
 
-    // MSYS/Git-Bash style `/c/Users/...` — canonical for Linux containers on Docker Desktop.
+    // WSL/Docker Desktop style `/mnt/c/Users/...` binds both files and directories correctly.
+    if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
+        let bytes = trimmed.as_bytes();
+        if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
+            let drive = (bytes[5] as char).to_ascii_lowercase();
+            return format!("/mnt/{drive}{}", &trimmed[6..]);
+        }
+    }
+
+    // MSYS/Git-Bash style `/c/Users/...` works for Compose parsing but can turn file binds
+    // into directories on Docker Desktop; normalize it to `/mnt/c/Users/...`.
     if trimmed.len() >= 3 {
         let bytes = trimmed.as_bytes();
         if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
             let drive = (bytes[1] as char).to_ascii_lowercase();
-            return format!("/{drive}{}", &trimmed[2..]);
+            return format!("/mnt/{drive}{}", &trimmed[2..]);
         }
     }
 
-    // `C:/Users/...` or `C:\Users\...` → `/c/Users/...`
+    // `C:/Users/...` or `C:\Users\...` → `/mnt/c/Users/...`
     if trimmed.len() >= 2 {
         let bytes = trimmed.as_bytes();
         if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
             let drive = (bytes[0] as char).to_ascii_lowercase();
             let rest = trimmed[2..].trim_start_matches('/');
             return if rest.is_empty() {
-                format!("/{drive}")
+                format!("/mnt/{drive}")
             } else {
-                format!("/{drive}/{rest}")
+                format!("/mnt/{drive}/{rest}")
             };
         }
     }
@@ -8916,17 +8937,49 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             super::normalize_windows_docker_host_path(
                 r"C:\Users\hegem\AppData\Roaming\companion-hub\media"
             ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
         );
         assert_eq!(
             super::normalize_windows_docker_host_path(
                 "C:/Users/hegem/AppData/Roaming/companion-hub/media"
             ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
         );
         assert_eq!(
-            super::normalize_windows_docker_host_path("/c/Users/hegem/AppData/Roaming/companion-hub"),
-            "/c/Users/hegem/AppData/Roaming/companion-hub"
+            super::normalize_windows_docker_host_path(
+                "/c/Users/hegem/AppData/Roaming/companion-hub"
+            ),
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+        );
+        assert_eq!(
+            super::normalize_windows_docker_host_path(
+                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+            ),
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn renders_windows_runtime_env_with_docker_safe_mount_paths() {
+        let data_dir = PathBuf::from(r"C:\Users\hegem\AppData\Roaming\companion-hub");
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(
+            "ROOT_FOLDER_HOST".to_string(),
+            r"C:\Users\hegem\AppData\Roaming\companion-hub".to_string(),
+        );
+        existing.insert("JWT_SECRET".to_string(), "jwt".to_string());
+        existing.insert("POSTGRES_PASSWORD".to_string(), "postgres".to_string());
+
+        let env = super::render_runtime_env_content(&data_dir, &existing);
+
+        assert!(
+            env.contains("ROOT_FOLDER_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub\n"),
+            "env should normalize ROOT_FOLDER_HOST for Docker: {env}"
+        );
+        assert!(
+            env.contains("COMPOSE_FILE_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"),
+            "env should expose a Docker-safe compose file mount: {env}"
         );
     }
 }

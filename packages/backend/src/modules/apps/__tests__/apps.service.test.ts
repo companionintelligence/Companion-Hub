@@ -4,6 +4,10 @@ vi.mock('../../docker/docker.service', () => ({
   DockerService: vi.fn().mockImplementation(() => ({})),
 }));
 
+vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
+  AppLifecycleService: class AppLifecycleService {},
+}));
+
 const mockAxiosGet = vi.fn();
 vi.mock('axios', () => ({
   default: { get: (...args: any[]) => mockAxiosGet(...args) },
