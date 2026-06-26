@@ -196,6 +196,38 @@ describe('AppCredentialsService', () => {
       });
     });
 
+    it('floors hermes-agent context to its 64K minimum on memory-constrained hardware, but not openclaw', async () => {
+      // ~12 GiB inference budget → memory ladder picks the 32768 tier. Hermes
+      // declares a 64000-token minimum (it aborts below that), so its value is
+      // floored up; openclaw has no minimum and keeps the ladder value.
+      hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 12288 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
+
+      const hermes = await service.getCredentials('hermes-agent');
+      expect(hermes.env.HERMES_NUM_CTX).toBe('64000');
+
+      const openclaw = await service.getCredentials('openclaw');
+      expect(openclaw.env.CI_LLM_NUM_CTX).toBe('32768');
+    });
+
+    it('warns when no model can satisfy hermes-agent’s minimum context window', async () => {
+      // A model whose own window is below the 64K floor cannot satisfy it: the
+      // recommendation caps to the model window and we surface a warning.
+      const smallModel = {
+        ...makeLlm('small-1b', 'small:1b', 1024, 2048),
+        runtime: { ...makeLlm('small-1b', 'small:1b').runtime, contextWindow: 32768 },
+      } as unknown as CuratedModel;
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['small:1b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([smallModel]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'small-1b' ? smallModel : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('hermes-agent');
+      expect(config.env.HERMES_NUM_CTX).toBe('32768');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('may refuse to start'));
+    });
+
     it('always includes OLLAMA_HOST (direct native ollama url) even when no model is runnable', async () => {
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
       modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(null);

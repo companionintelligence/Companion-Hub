@@ -12,6 +12,7 @@ import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -26,6 +27,7 @@ describe('AppHelpers', () => {
   let envUtils = mock<EnvUtils>();
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
+  let inferenceEnv = mock<InferenceEnvResolver>();
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -42,6 +44,7 @@ describe('AppHelpers', () => {
     envUtils = moduleRef.get(EnvUtils);
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
+    inferenceEnv = moduleRef.get(InferenceEnvResolver);
   });
 
   describe('generateEnvFile', () => {
@@ -501,6 +504,39 @@ describe('AppHelpers', () => {
 
       // Assert
       expect(appFilesManager.writeAppEnv).toHaveBeenCalledWith(testAppUrn, transformedEnv);
+    });
+
+    it('passes the app-specific context floor (hermes-agent → 64K) to the inference resolver', async () => {
+      // Arrange — a hermes-agent install that opts into standardized inference env.
+      const hermesUrn = createAppUrn('hermes-agent', 'test-store');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        id: 'hermes-agent',
+        urn: hermesUrn,
+        hub_integration: { inference: { num_ctx: 'HERMES_NUM_CTX' } },
+      } as unknown as AppInfo);
+      inferenceEnv.resolve.mockResolvedValue({ CI_LLM_NUM_CTX: '64000' });
+
+      // Act
+      await appHelpers.generateEnvFile(hermesUrn, {});
+
+      // Assert — the resolver is asked to floor at Hermes' 64K minimum.
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: 64_000 });
+    });
+
+    it('passes no context floor for apps without a declared minimum', async () => {
+      // Arrange — an app with an inference mapping but no minimum.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { inference: { num_ctx: 'APP_NUM_CTX' } },
+      } as unknown as AppInfo);
+      inferenceEnv.resolve.mockResolvedValue({ CI_LLM_NUM_CTX: '32768' });
+
+      // Act
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      // Assert
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: undefined });
     });
 
     it('should use default value when form field is not provided', async () => {

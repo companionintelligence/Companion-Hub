@@ -8,7 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { isCatalogModelInstalled } from './model-availability.util';
-import { recommendContextLength } from './context-length.util';
+import { appMinContextLength, recommendContextLength } from './context-length.util';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -191,12 +191,23 @@ export class AppCredentialsService {
     // as the native Ollama `num_ctx` so they don't inherit Ollama's oversized
     // memory-based default (e.g. 262144 on unified-memory APUs).
     if (provider === 'ollama' && availableLlm) {
+      const minContextLength = appMinContextLength(slug);
       const numCtx = recommendContextLength({
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         modelFootprintMb: availableLlm.runtime.memoryFootprintMb,
         modelContextWindow: availableLlm.runtime.contextWindow,
+        minContextLength,
       });
       env[keys.numCtx] = String(numCtx);
+      // When an app declares a minimum the model cannot satisfy, the floor is
+      // capped to the model window and the app will refuse to start — surface it.
+      if (minContextLength && numCtx < minContextLength) {
+        this.logger.warn(
+          `[AppCredentials] ${slug}: resolved context window ${numCtx} is below the app's ` +
+            `${minContextLength}-token minimum (model ${availableLlm.runtime.contextWindow}-token window ` +
+            `caps the floor); ${slug} may refuse to start. Choose a larger-context model.`,
+        );
+      }
     }
 
     // Always declare the per-app num_ctx key as Hub-managed — even when we don't
