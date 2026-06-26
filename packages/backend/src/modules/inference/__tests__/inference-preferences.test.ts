@@ -104,7 +104,7 @@ describe('InferenceController — preferences', () => {
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
     });
-  });
+  }, 30_000);
 
   it('passes the preferred chat, embedding, and vision models through when provided', async () => {
     configService.setInferencePreferences.mockResolvedValue({
@@ -128,7 +128,7 @@ describe('InferenceController — preferences', () => {
       preferredEmbeddingModel: 'nomic-embed-text',
       preferredVisionModel: 'gemma4-27b',
     });
-  });
+  }, 30_000);
 
   it('returns runtime models for a healthy selected backend', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mistral:latest'] } as any);

@@ -12,7 +12,7 @@ describe('remapContainerDataPath', () => {
 
   it('remaps /data paths to the local DATA_DIR in source dev', () => {
     expect(remapContainerDataPath('/data/state/hardware/host_metrics.json', localDataDir)).toBe(
-      path.join(localDataDir, 'state/hardware/host_metrics.json'),
+      path.join(path.resolve(localDataDir), 'state/hardware/host_metrics.json'),
     );
   });
 

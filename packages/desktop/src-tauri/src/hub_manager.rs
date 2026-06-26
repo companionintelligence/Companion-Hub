@@ -3396,41 +3396,51 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let (container_uid, container_gid, _) = resolve_hub_container_identity();
-    let state_dir = data_dir.join("state");
+    // On Windows the Hub container always runs as root (UID/GID 0:0) and NTFS
+    // bind mounts do not honour Linux ownership semantics, so there is nothing
+    // to probe or heal.  The docker-run volume spec that these probes use
+    // (`C:/path:/mnt:rw`) is also rejected by the Docker daemon on Windows
+    // because it splits the spec on `:` and sees four components instead of
+    // three (the Windows drive-letter colon is mistaken for a separator).
+    // Attempting the probes therefore crashes startup — skip them entirely.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let (container_uid, container_gid, _) = resolve_hub_container_identity();
+        let state_dir = data_dir.join("state");
 
-    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "hub.start",
-            &format!(
-                "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
-            ),
-        );
-        heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
-    }
-
-    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
-        remove_host_root_owned_state_files(data_dir);
-        if !settings_path.exists() {
-            std::fs::write(&settings_path, b"{}").map_err(|error| {
-                format!("Failed to recreate {}: {}", settings_path.display(), error)
-            })?;
-            #[cfg(unix)]
-            let _ =
-                std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+        if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
+                ),
+            );
+            heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
         }
-    }
 
-    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
-        return Err(format!(
-            "Hub data directory is not writable by the Hub container (UID/GID {container_uid}:{container_gid}). \
-             This usually happens when an older Hub version wrote bind-mounted files as a different user. \
-             Fix manually: sudo chown -R {container_uid}:{container_gid} \"{}\" \
-             or remove \"{}\" and restart the Hub.",
-            state_dir.display(),
-            settings_path.display()
-        ));
+        if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
+            remove_host_root_owned_state_files(data_dir);
+            if !settings_path.exists() {
+                std::fs::write(&settings_path, b"{}").map_err(|error| {
+                    format!("Failed to recreate {}: {}", settings_path.display(), error)
+                })?;
+                #[cfg(unix)]
+                let _ =
+                    std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+            }
+        }
+
+        if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
+            return Err(format!(
+                "Hub data directory is not writable by the Hub container (UID/GID {container_uid}:{container_gid}). \
+                 This usually happens when an older Hub version wrote bind-mounted files as a different user. \
+                 Fix manually: sudo chown -R {container_uid}:{container_gid} \"{}\" \
+                 or remove \"{}\" and restart the Hub.",
+                state_dir.display(),
+                settings_path.display()
+            ));
+        }
     }
 
     Ok(())

@@ -26,14 +26,14 @@ export function getFilenameFromContentDisposition(header: string | null, fallbac
 
 export async function downloadResponseAsFile(response: Response, fallbackFilename: string) {
   const filename = getFilenameFromContentDisposition(response.headers.get('Content-Disposition'), fallbackFilename);
-  const blob = await response.blob();
 
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    const buffer = await blob.arrayBuffer();
+    const buffer = await response.arrayBuffer();
     await saveFileInTauri(filename, new Uint8Array(buffer));
     return;
   }
 
+  const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
 
