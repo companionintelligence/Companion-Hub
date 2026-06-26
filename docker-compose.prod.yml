@@ -124,7 +124,7 @@ services:
       # ${ROOT_FOLDER_HOST}/.docker/config.json (whole dir mounted for non-root Hub).
       - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
       - /proc/meminfo:/host/proc/meminfo:ro
-      - ./docker-compose.prod.yml:/data/docker-compose.yml
+      - ${COMPOSE_FILE_HOST:-./docker-compose.prod.yml}:/data/docker-compose.yml
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/machine-id:/etc/machine-id:ro
