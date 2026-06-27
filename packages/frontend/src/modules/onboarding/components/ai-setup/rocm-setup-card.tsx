@@ -67,7 +67,6 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
     };
   }, [fetchStatus]);
 
-  const hostRocmAvailable = status?.hostRocmAvailable ?? hardware.gpu.hostRocmAvailable ?? false;
   const hostRocmKfdAvailable = status?.hostRocmKfdAvailable ?? hardware.gpu.hostRocmKfdAvailable ?? false;
   const runtimeRocmAvailable = status?.runtimeRocmAvailable ?? false;
   const rocmReady = hostRocmKfdAvailable || runtimeRocmAvailable;
