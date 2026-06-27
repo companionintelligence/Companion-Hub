@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cidrConflictsWithAny, cidrOverlaps, normalizeIpv4Cidr, parseIpv4Cidr } from '../cidr-overlap';
+import { cidrConflictsWithAny, cidrOverlaps, hubManagedOctetPairsOverlappingRange, normalizeIpv4Cidr, parseIpv4Cidr } from '../cidr-overlap';
 
 describe('cidr-overlap', () => {
   it('detects identical /24 ranges as overlapping', () => {
@@ -36,6 +36,51 @@ describe('cidr-overlap', () => {
 
   it('treats normalized equivalents as overlapping', () => {
     expect(cidrOverlaps('10.128.10.1/24', '10.128.10.0/24')).toBe(true);
+  });
+
+  describe('hubManagedOctetPairsOverlappingRange', () => {
+    it('returns a single pair for an overlapping /24', () => {
+      const range = parseIpv4Cidr('10.128.15.0/24');
+      expect(range).not.toBeNull();
+      if (!range) return;
+      expect(hubManagedOctetPairsOverlappingRange(range.start, range.end)).toEqual(['128.15']);
+    });
+
+    it('returns adjacent pairs for a /23 overlapping two Hub /24s', () => {
+      const range = parseIpv4Cidr('10.128.10.0/23');
+      expect(range).not.toBeNull();
+      if (!range) return;
+      expect(hubManagedOctetPairsOverlappingRange(range.start, range.end)).toEqual(['128.10', '128.11']);
+    });
+
+    it('blocks allocatable space covered by a /16 without scanning the full pool', () => {
+      const range = parseIpv4Cidr('10.128.0.0/16');
+      expect(range).not.toBeNull();
+      if (!range) return;
+      const pairs = hubManagedOctetPairsOverlappingRange(range.start, range.end);
+      expect(pairs).toContain('128.10');
+      expect(pairs).toContain('128.254');
+      expect(pairs).not.toContain('128.9');
+      expect(pairs).not.toContain('128.255');
+      expect(pairs.length).toBe(245);
+    });
+
+    it('includes partial /20 overlaps at pool boundaries', () => {
+      const range = parseIpv4Cidr('10.254.240.0/20');
+      expect(range).not.toBeNull();
+      if (!range) return;
+      const pairs = hubManagedOctetPairsOverlappingRange(range.start, range.end);
+      expect(pairs[0]).toBe('254.240');
+      expect(pairs.at(-1)).toBe('254.254');
+      expect(pairs.length).toBe(15);
+    });
+
+    it('returns nothing for ranges outside the Hub allocation space', () => {
+      const range = parseIpv4Cidr('172.20.0.0/16');
+      expect(range).not.toBeNull();
+      if (!range) return;
+      expect(hubManagedOctetPairsOverlappingRange(range.start, range.end)).toEqual([]);
+    });
   });
 });
 

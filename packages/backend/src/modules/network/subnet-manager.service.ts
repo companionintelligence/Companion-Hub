@@ -5,7 +5,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from '../docker/constants';
-import { cidrOverlaps, normalizeIpv4Cidr, parseIpv4Cidr, rangesOverlap } from './cidr-overlap';
+import { cidrOverlaps, normalizeIpv4Cidr, parseIpv4Cidr, hubManagedOctetPairsOverlappingRange } from './cidr-overlap';
 import { collectOccupiedSubnets, occupiedCidrStrings, type OccupiedSubnet } from './subnet-occupancy';
 
 const SUBNET_MASK = '/24';
@@ -146,23 +146,21 @@ export class SubnetManagerService {
 
   private blockedHubOctetPairs(occupiedCidrs: string[]): Set<string> {
     const blocked = new Set<string>();
-    const parsedOccupied = occupiedCidrs.map((cidr) => parseIpv4Cidr(cidr)).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
-    for (const occupied of parsedOccupied) {
+    for (const cidr of occupiedCidrs) {
+      const occupied = parseIpv4Cidr(cidr);
+      if (!occupied) {
+        continue;
+      }
+
       const hubMatch = occupied.normalized.match(HUB_SUBNET_REGEX);
       if (hubMatch) {
         blocked.add(`${hubMatch[1]}.${hubMatch[2]}`);
         continue;
       }
 
-      for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
-        const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;
-        for (let z = startOctet3; z <= MAX_OCTET_VALUE; z++) {
-          const candidate = parseIpv4Cidr(`10.${y}.${z}.0${SUBNET_MASK}`);
-          if (candidate && rangesOverlap(candidate, occupied)) {
-            blocked.add(`${y}.${z}`);
-          }
-        }
+      for (const pair of hubManagedOctetPairsOverlappingRange(occupied.start, occupied.end)) {
+        blocked.add(pair);
       }
     }
 

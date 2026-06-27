@@ -78,16 +78,17 @@ export async function runNetworkDoctorSection(
   options?: { repairNetworks?: boolean },
 ): Promise<{ lines: string[]; issueCount: number; repaired?: NetworkRepairResponse }> {
   try {
-    const report = await fetchNetworkDiagnostics(envFileName);
-    const lines = formatNetworkDiagnosticsLines(report);
+    let report = await fetchNetworkDiagnostics(envFileName);
 
     if (options?.repairNetworks && report.orphanNetworks.length > 0) {
       const repaired = await repairOrphanNetworks(envFileName);
+      report = await fetchNetworkDiagnostics(envFileName);
+      const lines = formatNetworkDiagnosticsLines(report);
       lines.push(`Repair orphans           removed ${repaired.removed.length}, skipped ${repaired.skipped.length}, failed ${repaired.failed.length}`);
       return { lines, issueCount: report.issueCount, repaired };
     }
 
-    return { lines, issueCount: report.issueCount };
+    return { lines: formatNetworkDiagnosticsLines(report), issueCount: report.issueCount };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {

@@ -34,6 +34,7 @@ vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
 describe('StartAppCommand — pull policy', () => {
   let command: StartAppCommand;
   let dockerService: any;
+  let subnetManager: ReturnType<typeof mock<SubnetManagerService>>;
   let composeArgs: string[];
   let appFilesManager: any;
   const appUrn = 'urn:store:test-app' as AppUrn;
@@ -76,10 +77,11 @@ describe('StartAppCommand — pull policy', () => {
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
-    const subnetManager = mock<SubnetManagerService>();
-    subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
-    subnetManager.releaseSubnet.mockResolvedValue(undefined);
-    subnetManager.listOccupiedSubnets.mockResolvedValue([
+    const subnetManagerMock = mock<SubnetManagerService>();
+    subnetManager = subnetManagerMock;
+    subnetManagerMock.allocateSubnet.mockResolvedValue('172.20.0.0/16');
+    subnetManagerMock.releaseSubnet.mockResolvedValue(undefined);
+    subnetManagerMock.listOccupiedSubnets.mockResolvedValue([
       { cidr: '10.128.10.0/24', source: 'docker', dockerNetworkName: 'chatwoot_ci-marketplace_network' },
     ]);
 
@@ -102,7 +104,7 @@ describe('StartAppCommand — pull policy', () => {
         if (token === AppHelpers) return appHelpers;
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === MarketplaceService) return marketplaceService;
-        if (token === SubnetManagerService) return subnetManager;
+        if (token === SubnetManagerService) return subnetManagerMock;
         if (token === AppsRepository) return appsRepository;
         if (token === EnvUtils) return new EnvUtils();
         return mock();
@@ -176,5 +178,18 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.message).toContain('network range conflict');
     expect(result.errorDetail).toContain('10.128.10.0/24');
     expect(dockerService.composeApp).toHaveBeenCalledTimes(3);
+  });
+
+  it('SHOULD not retry compose up for a Docker network name collision', async () => {
+    dockerService.composeApp.mockRejectedValue(
+      new Error('failed to create network ghost_ci-marketplace_network: network with name ghost_ci-marketplace_network already exists'),
+    );
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBeUndefined();
+    expect(dockerService.composeApp).toHaveBeenCalledTimes(1);
+    expect(subnetManager.releaseSubnet).not.toHaveBeenCalled();
   });
 });

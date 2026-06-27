@@ -79,6 +79,54 @@ export function cidrConflictsWithAny(candidate: string, occupied: string[]): boo
   return occupied.some((other) => cidrOverlaps(candidate, other));
 }
 
+import { HUB_APP_ALLOCATION_END_CIDR, HUB_APP_ALLOCATION_START_CIDR } from './network-constants';
+
+const HUB_ALLOCATABLE_START = parseIpv4Cidr(HUB_APP_ALLOCATION_START_CIDR)?.start;
+const HUB_ALLOCATABLE_END = parseIpv4Cidr(HUB_APP_ALLOCATION_END_CIDR)?.end;
+
+/**
+ * Hub-managed /24 octet pairs (10.{128-254}.{0-254}.0/24, minus 10.128.0–9) whose ranges
+ * intersect [occStart, occEnd]. O(|overlapping /24s|) instead of scanning the full pool.
+ */
+export function hubManagedOctetPairsOverlappingRange(occStart: number, occEnd: number): string[] {
+  if (HUB_ALLOCATABLE_START === undefined || HUB_ALLOCATABLE_END === undefined) {
+    return [];
+  }
+
+  const overlapStart = Math.max(occStart, HUB_ALLOCATABLE_START);
+  const overlapEnd = Math.min(occEnd, HUB_ALLOCATABLE_END);
+  if (overlapStart > overlapEnd) {
+    return [];
+  }
+
+  const pairs: string[] = [];
+  let blockStart = overlapStart & 0xffffff00;
+
+  while (blockStart <= overlapEnd) {
+    const blockEnd = blockStart + 255;
+    if (blockStart <= occEnd && occStart <= blockEnd) {
+      const secondOctet = (blockStart >>> 16) & 255;
+      const thirdOctet = (blockStart >>> 8) & 255;
+      if (isHubManagedOctetPair(secondOctet, thirdOctet)) {
+        pairs.push(`${secondOctet}.${thirdOctet}`);
+      }
+    }
+    blockStart += 256;
+  }
+
+  return pairs;
+}
+
+function isHubManagedOctetPair(secondOctet: number, thirdOctet: number): boolean {
+  if (secondOctet < 128 || secondOctet > 254 || thirdOctet > 254) {
+    return false;
+  }
+  if (secondOctet === 128 && thirdOctet <= 9) {
+    return false;
+  }
+  return true;
+}
+
 export function rangesOverlap(left: ParsedIpv4Cidr, right: ParsedIpv4Cidr): boolean {
   return left.start <= right.end && right.start <= left.end;
 }
