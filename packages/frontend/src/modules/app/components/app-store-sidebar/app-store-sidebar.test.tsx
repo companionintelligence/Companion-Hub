@@ -57,6 +57,16 @@ describe('AppStoreSidebar', () => {
     expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('router');
   });
 
+  it('clears the search when the trailing clear button is clicked', () => {
+    mockStoreState.search = 'router';
+    render(<AppStoreSidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+    expect(mockStoreState.setSearch).toHaveBeenCalledWith('');
+    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('');
+  });
+
   it('keeps the desktop sidebar elevated and sticky while the store page scrolls', () => {
     const { container } = render(<AppStoreSidebar />);
 

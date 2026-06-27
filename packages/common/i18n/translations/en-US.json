@@ -324,6 +324,8 @@
   "APP_STORE_ADD_FORM_URL_PLACEHOLDER": "https://github.com/myusername/my-awesome-repo",
   "APP_STORE_ADD_FORM_SUBMIT": "Create new appstore",
   "APP_STORE_ADD_BUTTON": "Add App Store",
+  "APP_STORE_ADD_COMING_SOON": "Feature coming soon",
+  "APP_STORE_ADD_COMING_SOON_DETAIL": "Custom app store setup is under maintenance. Your Hub uses the CI Marketplace automatically—no manual store URL is needed.",
   "APP_STORE_ADD_SUCCESS": "Appstore added successfully",
   "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Remove backups",
   "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Delete all data",
