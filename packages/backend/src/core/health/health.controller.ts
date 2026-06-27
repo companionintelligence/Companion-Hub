@@ -1,6 +1,6 @@
 import { APP_DATA_DIR, DATA_DIR } from '@/common/constants';
 import { QueueHealthIndicator } from '@/modules/queue/queue.health';
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,7 +29,7 @@ export class HealthController {
     const checkPromise = this.health.check([() => this.queueHealthIndicator.isHealthy('queue')]);
     let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = globalThis.setTimeout(() => reject(new Error('readiness check timed out')), READINESS_TIMEOUT_MS);
+      timer = globalThis.setTimeout(() => reject(new ServiceUnavailableException('readiness check timed out')), READINESS_TIMEOUT_MS);
       timer.unref?.();
     });
 

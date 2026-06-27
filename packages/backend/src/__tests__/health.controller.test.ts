@@ -2,6 +2,7 @@ import { APP_DATA_DIR } from '@/common/constants';
 import { HealthController } from '@/core/health/health.controller';
 import { QueueHealthIndicator } from '@/modules/queue/queue.health';
 import { HealthCheckService } from '@nestjs/terminus';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -69,6 +70,34 @@ describe('HealthController', () => {
 
       expect(result).toEqual({ status: 'ok' });
       expect(healthCheckService.check).toHaveBeenCalledOnce();
+    });
+
+    it('should reject with ServiceUnavailableException when readiness check times out', async () => {
+      vi.useFakeTimers();
+
+      const healthCheckService = mock<HealthCheckService>();
+      const queueHealthIndicator = mock<QueueHealthIndicator>();
+      healthCheckService.check.mockReturnValue(new Promise(() => {}));
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [HealthController],
+        providers: [
+          { provide: HealthCheckService, useValue: healthCheckService },
+          { provide: QueueHealthIndicator, useValue: queueHealthIndicator },
+        ],
+      }).compile();
+
+      const controller = moduleRef.get(HealthController);
+      const checkPromise = controller.check();
+      const expectation = expect(checkPromise).rejects.toMatchObject({
+        message: 'readiness check timed out',
+        status: 503,
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      await expectation;
+
+      vi.useRealTimers();
     });
   });
 
