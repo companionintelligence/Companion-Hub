@@ -29,7 +29,7 @@
     "@ci-hub/openclaw-plugin#bundle": {
       "dependsOn": [],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": []
+      "outputs": ["dist/hub-plugin.mjs"]
     },
     "desktop#bundle": {
       "dependsOn": [],

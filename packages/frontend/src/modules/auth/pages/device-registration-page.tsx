@@ -32,6 +32,19 @@ const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
 
+function buildPortalPairingRedirectPath(deviceId: string | null): string {
+  const params = new URLSearchParams({ add_device: '1' });
+  if (deviceId) {
+    params.set('hub_device_id', deviceId);
+  }
+  return `/home?${params.toString()}`;
+}
+
+function buildPortalSignupUrl(portalBaseUrl: string, deviceId: string | null): string {
+  const redirect = buildPortalPairingRedirectPath(deviceId);
+  return `${portalBaseUrl.replace(/\/+$/, '')}/signup?redirect=${encodeURIComponent(redirect)}`;
+}
+
 type PairingTarget = {
   domain?: string;
   subdomain?: string;
@@ -129,11 +142,7 @@ export default function DeviceRegistrationPage() {
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));
       }
-      // Device-scoped CI Cloud URL (carries device_id + callback_url). Sending the user
-      // here — instead of the bare portal root — lets the Portal recognize this device,
-      // re-issue its tunnel token, and redirect back via /registration/callback. The bare
-      // root bounces an already-logged-in desktop user straight back into the Hub (the
-      // cihub:// deep link), which is the redirect loop seen during restore.
+      // Portal entry URL (device_id + callback_url) opens login/signup and the Add Device flow.
       setRegistrationUrl(deviceData.registration_url?.trim() || null);
       setDeviceInfoError(null);
     } catch (error) {
@@ -526,10 +535,9 @@ export default function DeviceRegistrationPage() {
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
-  // Prefer the device-scoped registration URL (device_id + callback_url) so the Portal
-  // can auto-restore this device and redirect back, rather than bouncing the user into a
-  // desktop deep-link loop from the portal root.
+  // Prefer the device-scoped registration URL so Portal can route into Add Device pairing.
   const loginUrl = registrationUrl ?? portalUrl;
+  const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
 
   if (isLoading) {
@@ -656,7 +664,7 @@ export default function DeviceRegistrationPage() {
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
-              <a href={`${portalUrl}/home`} target="_blank" rel="noopener noreferrer">
+              <a href={signupUrl} target="_blank" rel="noopener noreferrer">
                 {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
               </a>
             </Button>

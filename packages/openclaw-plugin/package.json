@@ -5,12 +5,13 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "bundle": "node -e \"process.exit(0)\"",
+    "bundle": "node scripts/bundle-to-openclaw.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {},
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "vitest": "^4.0.0",
     "vitest-mock-extended": "^2.0.0"
   }
