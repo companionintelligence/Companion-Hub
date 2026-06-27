@@ -80,7 +80,7 @@ jobs:
       # Required environment secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
       # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE.
       WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
-      BUILD_ENABLED: ${{ inputs.platforms == 'all' || startsWith(matrix.label, 'macOS') }}
+      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || startsWith(matrix.label, 'macOS')) && 'true' || '' }}
     steps:
       - name: Checkout
         if: env.BUILD_ENABLED
@@ -239,26 +239,51 @@ jobs:
           chmod 755 "$CLI_OUT"
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
           codesign --verify --verbose=2 "$CLI_OUT"
+      - name: Install create-dmg
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        run: brew install create-dmg
       - name: Build Tauri app (signed)
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
-          # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
-          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          # Fail the release if platform-gated helpers regress to dead_code on macOS.
+          RUSTFLAGS: '-D dead_code'
+          # CI=true skips Finder AppleScript DMG layout (reliable on GitHub runners).
+          # Do not set TAURI_BUNDLER_DMG_IGNORE_CI — it forces custom layout and
+          # AppleEvent timeouts on current macos-latest images (tauri-action#1091).
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
+        shell: bash
         run: |
           cd packages/desktop
-          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
+          retry_build "${base_args[@]}"
 
       - name: Build Tauri app
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
-          # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
-          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
+          RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
+          # CI=true skips Finder AppleScript DMG layout (see signed macOS build step).
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
           SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
