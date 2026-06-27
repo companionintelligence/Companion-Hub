@@ -1,4 +1,5 @@
 import { TranslatableError } from '@/common/error/translatable-error';
+import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -186,7 +187,22 @@ export class AppsService {
       this.logger.debug(`Could not get port allocation for ${appUrn}: ${err}`);
     }
 
-    return { app: app ?? null, info, metadata, allocatedPort };
+    // Resolve the host path of the app's data folder so the desktop app can
+    // open it in the OS file explorer. Best-effort: never fail getApp over it.
+    let appDataHostPath: string | null = null;
+    try {
+      const config = this.configurationService.getConfig();
+      appDataHostPath = getAppDataHostPath(appUrn, {
+        ciHubAppDataPath: config.userSettings.appDataPath,
+        appDataPath: config.userSettings.appDataPath,
+        rootFolderHost: config.rootFolderHost,
+      });
+      this.logger.debug(`Resolved app data host path for ${appUrn}: ${appDataHostPath}`);
+    } catch (err) {
+      this.logger.warn(`Could not resolve app data host path for ${appUrn}: ${err}`);
+    }
+
+    return { app: app ?? null, info, metadata, allocatedPort, appDataHostPath };
   }
 
   public async checkAppAvailability(appUrn: AppUrn): Promise<{

@@ -61,7 +61,7 @@ export default () => {
     return <PageLoadingSpinner />;
   }
 
-  const { info, app, metadata } = getApp.data;
+  const { info, app, metadata, appDataHostPath } = getApp.data;
   const logoUrn = info?.urn ?? appUrn;
   const logoUrl = getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
@@ -151,6 +151,7 @@ export default () => {
                   app={app}
                   metadata={metadata}
                   info={info}
+                  appDataHostPath={appDataHostPath}
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}

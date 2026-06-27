@@ -5,6 +5,7 @@ import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
 import { configureHubApiPort, getTauriInvoke, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { openLogsFolder } from '@/lib/helpers/open-folder';
 import {
   DOCKER_MAC_ARCH_HINT,
   DOCKER_REQUIRED_HINT,
@@ -803,22 +804,12 @@ export function HubStatus({ children }: HubStatusProps) {
       setShowLogs(true);
     } catch {
       // Fallback: open the logs directory instead
-      try {
-        await invoke('open_logs_dir_command');
-      } catch {
-        // ignore
-      }
+      await openLogsFolder();
     }
   }, []);
 
   const handleOpenLogsDir = useCallback(async () => {
-    const invoke = getTauriInvoke();
-    if (!invoke) return;
-    try {
-      await invoke('open_logs_dir_command');
-    } catch {
-      // ignore
-    }
+    await openLogsFolder();
   }, []);
 
   // If not in Tauri, don't block the UI — web users have the backend proxied

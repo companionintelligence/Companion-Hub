@@ -1,3 +1,4 @@
+import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
@@ -206,7 +207,20 @@ export class AppController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppContextDto })
   async appContext(@Req() req: Request) {
-    const { userSettings, isProduction } = this.configuration.getConfig();
+    const { userSettings, isProduction, rootFolderHost } = this.configuration.getConfig();
+
+    // Resolve the host path of the root app-data folder so the desktop app can
+    // open it in the OS file explorer. Best-effort: never fail the context over it.
+    let appDataRootHostPath: string | null = null;
+    try {
+      appDataRootHostPath = resolveAppDataHostRoot({
+        ciHubAppDataPath: userSettings.appDataPath,
+        appDataPath: userSettings.appDataPath,
+        rootFolderHost,
+      });
+    } catch (error) {
+      this.logger.warn(`Could not resolve app data root host path: ${error}`);
+    }
 
     // Parallelize all independent async calls
     const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
@@ -245,6 +259,7 @@ export class AppController {
       {
         version,
         userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
+        appDataRootHostPath,
         user: req.user as UserDto,
         apps,
         updatesAvailable: updatesAvailable.length,

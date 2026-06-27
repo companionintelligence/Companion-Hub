@@ -70,6 +70,9 @@ const versionSchema = z.object({
 const appContextSchema = z.object({
   version: versionSchema,
   userSettings: settingsSchema,
+  // Absolute host path of the root app-data folder (parent of every app's data).
+  // Used by the Settings "Open app data folder" button; null when unresolved.
+  appDataRootHostPath: z.string().nullable().optional(),
   user: userSchema,
   apps: z.array(simpleAppInfoSchema),
   updatesAvailable: z.number(),
