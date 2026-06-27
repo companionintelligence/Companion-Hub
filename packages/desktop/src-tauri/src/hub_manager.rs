@@ -5540,7 +5540,7 @@ fn normalize_docker_host_path(value: &str) -> String {
 
 /// Convert a Docker bind-mount path back to a native host path for filesystem access.
 #[cfg(windows)]
-fn host_path_from_docker_path(value: &str) -> PathBuf {
+pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
     let trimmed = value.trim().replace('\\', "/");
     if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
         let bytes = trimmed.as_bytes();
@@ -5562,7 +5562,7 @@ fn host_path_from_docker_path(value: &str) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn host_path_from_docker_path(value: &str) -> PathBuf {
+pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
