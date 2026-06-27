@@ -1103,7 +1103,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       const defaultPublicDomain = userSettings.domain || this.config.getConfig().domain;
       const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
 
-      type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+      type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
       const exclude = new Set(options?.excludeAppUrns ?? []);
 
       const exposedApps: AppInfo[] = await Promise.all(
