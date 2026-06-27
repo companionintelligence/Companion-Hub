@@ -214,7 +214,9 @@ export class AppController {
     let appDataRootHostPath: string | null = null;
     try {
       appDataRootHostPath = resolveAppDataHostRoot({
-        ciHubAppDataPath: userSettings.appDataPath,
+        // Mirror the precedence used during compose generation (app.helpers.ts):
+        // CI_HUB_APP_DATA_PATH env override → userSettings.appDataPath → ROOT_FOLDER_HOST.
+        ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
         appDataPath: userSettings.appDataPath,
         rootFolderHost,
       });

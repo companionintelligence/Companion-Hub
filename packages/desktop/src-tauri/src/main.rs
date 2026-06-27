@@ -220,7 +220,12 @@ fn validate_open_path(path: &Path) -> Result<(), String> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => Ok(()),
         Ok(_) => Err(format!("Path is not a directory: {}", path.display())),
-        Err(err) => Err(format!("Path does not exist: {} ({err})", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("Path does not exist: {}", path.display()))
+        }
+        // Other errors (permission denied, invalid path, ...) — report accurately
+        // rather than claiming the path is missing.
+        Err(err) => Err(format!("Cannot access path: {} ({err})", path.display())),
     }
 }
 

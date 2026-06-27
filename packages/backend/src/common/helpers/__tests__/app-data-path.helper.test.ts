@@ -49,6 +49,16 @@ describe('app-data-path.helper', () => {
       expect(resolveAppDataHostRoot({ ciHubAppDataPath: 'storage', rootFolderHost: '/srv/hub' })).toBe(path.join('/srv/hub', 'storage', 'app-data'));
     });
 
+    it('resolves a relative base against a Windows host root using win32 semantics', () => {
+      // On a POSIX backend, the default path.resolve would corrupt this to /cwd/C:\hub\...;
+      // win32 resolution keeps it anchored to the Windows root (not the container CWD).
+      const result = resolveAppDataHostRoot({ ciHubAppDataPath: 'storage', rootFolderHost: 'C:\\hub' });
+      expect(result.startsWith('C:\\hub')).toBe(true);
+      expect(result.startsWith('/')).toBe(false);
+      expect(result).toContain('storage');
+      expect(result).toContain('app-data');
+    });
+
     it('throws when nothing resolves to an absolute path', () => {
       expect(() => resolveAppDataHostRoot({ ciHubAppDataPath: 'rel', rootFolderHost: 'also-rel' })).toThrow();
     });

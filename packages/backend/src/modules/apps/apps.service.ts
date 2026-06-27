@@ -193,7 +193,9 @@ export class AppsService {
     try {
       const config = this.configurationService.getConfig();
       appDataHostPath = getAppDataHostPath(appUrn, {
-        ciHubAppDataPath: config.userSettings.appDataPath,
+        // Mirror the precedence used during compose generation (app.helpers.ts):
+        // CI_HUB_APP_DATA_PATH env override → userSettings.appDataPath → ROOT_FOLDER_HOST.
+        ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
         appDataPath: config.userSettings.appDataPath,
         rootFolderHost: config.rootFolderHost,
       });

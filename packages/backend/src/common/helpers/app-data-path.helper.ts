@@ -26,6 +26,20 @@ export function isAbsoluteHostPath(value: string): boolean {
 }
 
 /**
+ * Resolve a relative `base` against an absolute host `root`. The backend runs on
+ * POSIX, but a host root may be Windows/UNC (e.g. `C:\\hub`). Using the default
+ * (POSIX) `path.resolve` on a Windows root would prepend the container CWD and
+ * produce a corrupt path like `/cwd/C:\hub/...`, so resolve with the path flavor
+ * that matches the root.
+ */
+function resolveAgainstHostRoot(root: string, base: string): string {
+  if (path.win32.isAbsolute(root) && !path.posix.isAbsolute(root)) {
+    return path.win32.resolve(root, base);
+  }
+  return path.resolve(root, base);
+}
+
+/**
  * Fallback host base used when the resolved path looks like a *container* path
  * rather than a host path. Prefers the configured `rootFolderHost`, then the
  * `ROOT_FOLDER_HOST` env var, and finally `/tmp` as a last resort.
@@ -55,11 +69,11 @@ function resolveHostBase({ ciHubAppDataPath, appDataPath, rootFolderHost }: AppD
   if (isAbsoluteHostPath(base)) {
     hostBase = base;
   } else if (isAbsoluteHostPath(rootFolderHost)) {
-    hostBase = path.resolve(rootFolderHost, base);
+    hostBase = resolveAgainstHostRoot(rootFolderHost, base);
   } else {
     const envRoot = process.env.ROOT_FOLDER_HOST;
     if (envRoot && isAbsoluteHostPath(envRoot)) {
-      hostBase = path.resolve(envRoot, base);
+      hostBase = resolveAgainstHostRoot(envRoot, base);
     } else {
       throw new Error(
         'Cannot resolve app data host path: both ROOT_FOLDER_HOST and CI_HUB_APP_DATA_PATH are relative paths. ' +
