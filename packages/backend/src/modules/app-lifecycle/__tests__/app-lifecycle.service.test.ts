@@ -21,6 +21,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
@@ -641,6 +642,24 @@ describe('AppLifecycleService', () => {
         ]),
         'tunnel-123',
       );
+    });
+  });
+
+  describe('triggerCloudflareSync during device restore', () => {
+    it('skips sync while restore intent is active and rehydration is incomplete', async () => {
+      vi.spyOn(registrationRecoveryState, 'hasRestoreIntent').mockResolvedValue(true);
+      vi.spyOn(registrationRecoveryState, 'readRehydrationState').mockResolvedValue(null);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'myorg',
+        hubSubdomain: 'hub-myorg',
+      } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.syncState).not.toHaveBeenCalled();
     });
   });
 

@@ -34,6 +34,7 @@ import { ErrorReportingService, type AppFailurePhase } from '@/core/error-report
 import { publishesHostPort } from '../apps/app-exposure.helpers';
 import { didPublicRoutingIdentityChange, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
+import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -1075,6 +1076,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
   public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
     try {
+      if (await hasRestoreIntent()) {
+        const rehydrationState = await readRehydrationState();
+        if (!rehydrationState?.completedAt) {
+          this.logger.debug('[Cloudflare] Skipping sync during device restore until rehydration completes');
+          return;
+        }
+      }
+
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
       if (!orgInfo) {
