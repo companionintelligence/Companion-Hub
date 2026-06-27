@@ -130,7 +130,8 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'doctor') {
-    doctorHub(resolveEnvFromArgs(args.slice(1)));
+    const repairNetworks = args.includes('--repair-networks');
+    await doctorHub(resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--repair-networks')), { repairNetworks });
     return;
   }
 

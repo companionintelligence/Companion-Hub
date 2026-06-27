@@ -31,6 +31,7 @@ import { initHubDataDirs } from './init-hub-data-dirs';
 import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase, publicWebRepairHasFailures } from './public-web-cli';
 import { syncPostgresPasswordFromEnv } from './sync-postgres-password';
+import { runNetworkDoctorSection } from './network-diagnostics-cli';
 
 declare const CIHUB_BUILD_VERSION: string | undefined;
 
@@ -158,7 +159,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'Maintenance',
     entries: [
-      { command: `${BASE_COMMAND} doctor [env]`, description: 'Validate Docker, env files, bind mounts, and compose inputs' },
+      {
+        command: `${BASE_COMMAND} doctor [env] [--repair-networks]`,
+        description: 'Validate Docker, env files, bind mounts, compose inputs, and app network ranges',
+      },
       {
         command: `${BASE_COMMAND} clean [env] [--yes]`,
         description: 'Remove generated host-state files (outside a checkout: full wipe of the prod data dir)',
@@ -1387,7 +1391,7 @@ export function logsHub(env: HubEnv, service?: string) {
   run('docker', args, envOverrides, ctx.cwd);
 }
 
-export function doctorHub(env: HubEnv) {
+export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolean }) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
     requireRepoOrApplianceContext('cihub doctor', 'allow-missing');
@@ -1398,6 +1402,7 @@ export function doctorHub(env: HubEnv) {
   const envFileName = ctx.envFile;
   const rootFolderHost = ctx.appliance ? (ctx.dataDir as string) : resolveRootFolderHost(envFileName);
   const composeFiles = ctx.composeFiles;
+  const networkSection = await runNetworkDoctorSection(envFileName, { repairNetworks: options?.repairNetworks });
   const lines = [
     `Docker               ${checkDockerAvailable() ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? cliOk('available') : cliFail('unavailable')}`,
@@ -1405,8 +1410,10 @@ export function doctorHub(env: HubEnv) {
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
     `Compose files        ${composeFiles.every((file) => existsSync(resolvePath(file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
+    ...networkSection.lines,
   ];
-  printMessageBox(`Hub doctor  [${ctx.env}]`, lines, 'cyan');
+  const tone = networkSection.issueCount > 0 ? 'yellow' : 'cyan';
+  printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 
 /** Tunnel token lives at `<dataDir>/tunnel/token` in appliance mode, `<root>/../tunnel/token` in a checkout. */

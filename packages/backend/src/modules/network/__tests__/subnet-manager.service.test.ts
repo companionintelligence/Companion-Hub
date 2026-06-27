@@ -45,22 +45,95 @@ describe('SubnetManagerService', () => {
       await expect(service.allocateSubnet(appUrn)).rejects.toThrow(TranslatableError);
     });
 
-    it('should reuse an existing subnet without updating the app record', async () => {
+    it('should reuse an existing subnet when it does not conflict with Docker', async () => {
       const appUrn = 'app:test/app' as AppUrn;
       const existingSubnet = '10.128.15.0/24';
 
       appsRepository.getAppByUrn.mockResolvedValue(
         fromPartial({
           id: 1,
+          appName: 'app',
+          appStoreSlug: 'test/app',
           subnet: existingSubnet,
         }),
       );
+      dockerMock.listNetworks.mockResolvedValue([]);
 
       const result = await service.allocateSubnet(appUrn);
 
       expect(result).toBe(existingSubnet);
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
-      expect(dockerMock.listNetworks).not.toHaveBeenCalled();
+      expect(dockerMock.listNetworks).toHaveBeenCalled();
+    });
+
+    it('should normalize stored subnets to canonical network CIDRs', async () => {
+      const appUrn = 'ghost:ci-marketplace' as AppUrn;
+
+      appsRepository.getAppByUrn.mockResolvedValue(
+        fromPartial({
+          id: 1,
+          appName: 'ghost',
+          appStoreSlug: 'ci-marketplace',
+          subnet: '10.128.15.1/24',
+        }),
+      );
+      dockerMock.listNetworks.mockResolvedValue([]);
+
+      const result = await service.allocateSubnet(appUrn);
+
+      expect(result).toBe('10.128.15.0/24');
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { subnet: '10.128.15.0/24' });
+    });
+
+    it('should block allocation when Docker reports a non-/24 overlapping range', async () => {
+      const appUrn = 'ghost:ci-marketplace' as AppUrn;
+
+      appsRepository.getAppByUrn.mockResolvedValue(
+        fromPartial({
+          id: 1,
+          appName: 'ghost',
+          appStoreSlug: 'ci-marketplace',
+          subnet: null,
+        }),
+      );
+      appsRepository.getApps.mockResolvedValue([]);
+      dockerMock.listNetworks.mockResolvedValue([
+        fromPartial({
+          IPAM: { Config: [{ Subnet: '10.128.0.0/16' }] },
+        }),
+      ]);
+      appsRepository.updateAppById.mockResolvedValue(fromPartial({ id: 1, subnet: '10.129.0.0/24' }));
+
+      const result = await service.allocateSubnet(appUrn);
+
+      expect(result).toBe('10.129.0.0/24');
+    });
+
+    it('should reassign a stored subnet that overlaps a live Docker network', async () => {
+      const appUrn = 'ghost:ci-marketplace' as AppUrn;
+
+      appsRepository.getAppByUrn.mockResolvedValue(
+        fromPartial({
+          id: 1,
+          appName: 'ghost',
+          appStoreSlug: 'ci-marketplace',
+          subnet: '10.128.10.0/24',
+        }),
+      );
+      dockerMock.listNetworks.mockResolvedValue([
+        fromPartial({
+          Labels: { 'com.docker.compose.project': 'chatwoot_ci-marketplace' },
+          IPAM: { Config: [{ Subnet: '10.128.10.1/24' }] },
+        }),
+      ]);
+      appsRepository.getApps.mockResolvedValue([]);
+      appsRepository.updateAppById.mockResolvedValue(fromPartial({ id: 1, subnet: '10.128.11.0/24' }));
+
+      const result = await service.allocateSubnet(appUrn);
+
+      expect(result).toBe('10.128.11.0/24');
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { subnet: null });
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { subnet: '10.128.11.0/24' });
     });
 
     it('should allocate a new subnet if app does not have one', async () => {

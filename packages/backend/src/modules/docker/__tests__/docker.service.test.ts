@@ -386,6 +386,47 @@ describe('DockerService', () => {
     });
   });
 
+  describe('getManagedAppContainerVerification', () => {
+    it('returns ok when all labeled containers are running', async () => {
+      dockerode.listContainers.mockResolvedValue([{ State: 'running', Status: 'Up 1 second' }] as any);
+
+      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: true,
+        filters: {
+          label: ['ci-os-hub.managed=true', 'ci-os-hub.appurn=ghost:ci-marketplace'],
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.appStatus).toBe('running');
+    });
+
+    it('returns missing when no labeled containers exist', async () => {
+      dockerode.listContainers.mockResolvedValue([] as any);
+
+      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+
+      expect(result.ok).toBe(false);
+      expect(result.appStatus).toBe('missing');
+      expect(result.message).toContain('no Hub-managed containers');
+    });
+
+    it('returns stopped with container logs when containers exited', async () => {
+      dockerode.listContainers.mockResolvedValue([{ State: 'exited', Status: 'Exited (1) 2 seconds ago' }] as any);
+      vi.spyOn(service, 'diagnoseAppContainers').mockResolvedValue({
+        unhealthy: [{ name: 'ghost', state: 'Exited (1)', logs: 'boot error' }],
+        healthy: [],
+      });
+
+      const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
+
+      expect(result.ok).toBe(false);
+      expect(result.appStatus).toBe('stopped');
+      expect(result.errorDetail).toContain('boot error');
+    });
+  });
+
   describe('getAppRuntimeStats', () => {
     it('should skip containers that disappear between list and inspect', async () => {
       dockerode.listContainers.mockResolvedValue([{ Id: 'gone', Names: ['/gone'], State: 'running', Status: 'Up' }] as any);

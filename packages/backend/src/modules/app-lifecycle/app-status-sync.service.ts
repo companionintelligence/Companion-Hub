@@ -11,6 +11,7 @@ import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
@@ -37,6 +38,7 @@ export class AppStatusSyncService {
     @Inject(DOCKERODE) private readonly docker: Dockerode,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
+    @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -53,6 +55,17 @@ export class AppStatusSyncService {
     this.systemEventsQueue.onEvent(async (data, reply) => {
       if (data.command === 'sync_app_statuses') {
         const result = await this.syncAllAppStatuses();
+        await reply(result);
+        return;
+      }
+
+      if (data.command === 'reconcile_orphan_networks') {
+        if (!this.networkDiagnostics) {
+          await reply({ success: false, message: 'Network diagnostics unavailable' });
+          return;
+        }
+
+        const result = await this.networkDiagnostics.reconcileOrphanNetworks();
         await reply(result);
       }
     });

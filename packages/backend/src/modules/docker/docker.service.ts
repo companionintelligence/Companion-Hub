@@ -10,6 +10,23 @@ import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { DOCKERODE } from './constants';
+import {
+  managedAppStatusFromSummary,
+  summarizeManagedAppContainers,
+  type ManagedAppContainerAppStatus,
+  type ManagedAppContainerSummary,
+} from './managed-app-containers';
+
+export type ManagedAppContainerVerification = {
+  ok: boolean;
+  appStatus: ManagedAppContainerAppStatus;
+  summary: ManagedAppContainerSummary;
+  message: string;
+  errorDetail?: string;
+};
+
+const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
+const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
 interface DockerCpuStatsSnapshot {
   cpu_usage?: {
@@ -1012,6 +1029,84 @@ export class DockerService {
         reject(err);
       });
     });
+  }
+
+  /**
+   * Verify Hub-labeled containers exist and match the same running/stopped/missing
+   * rules used by app status sync (ci-os-hub.managed + ci-os-hub.appurn labels).
+   */
+  public async getManagedAppContainerVerification(appUrn: AppUrn): Promise<ManagedAppContainerVerification> {
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: {
+        label: ['ci-os-hub.managed=true', `ci-os-hub.appurn=${appUrn}`],
+      },
+    });
+
+    const summary = summarizeManagedAppContainers(containers);
+    const appStatus = managedAppStatusFromSummary(summary);
+
+    if (appStatus === 'running') {
+      return {
+        ok: true,
+        appStatus,
+        summary,
+        message: 'All containers are running',
+      };
+    }
+
+    const diagResults = appStatus === 'missing' ? { unhealthy: [], healthy: [] } : await this.diagnoseAppContainers(appUrn);
+    const logSummary =
+      diagResults.unhealthy.length > 0
+        ? diagResults.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs}`).join('\n')
+        : undefined;
+
+    if (appStatus === 'missing') {
+      return {
+        ok: false,
+        appStatus,
+        summary,
+        message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
+        errorDetail: logSummary,
+      };
+    }
+
+    return {
+      ok: false,
+      appStatus,
+      summary,
+      message: 'One or more containers exited after install.',
+      errorDetail: logSummary,
+    };
+  }
+
+  /**
+   * Poll after compose up until labeled containers reach a stable running state,
+   * or return the last failed verification.
+   */
+  public async waitForManagedAppContainersReady(
+    appUrn: AppUrn,
+    options?: { maxAttempts?: number; delayMs?: number },
+  ): Promise<ManagedAppContainerVerification> {
+    const maxAttempts = options?.maxAttempts ?? MANAGED_APP_STARTUP_MAX_ATTEMPTS;
+    const delayMs = options?.delayMs ?? MANAGED_APP_STARTUP_DELAY_MS;
+
+    let lastVerification: ManagedAppContainerVerification | undefined;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      lastVerification = await this.getManagedAppContainerVerification(appUrn);
+      if (lastVerification.ok) {
+        return lastVerification;
+      }
+
+      const shouldRetry = attempt < maxAttempts && (lastVerification.appStatus === 'missing' || lastVerification.appStatus === 'stopped');
+      if (!shouldRetry) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return lastVerification ?? (await this.getManagedAppContainerVerification(appUrn));
   }
 
   /**

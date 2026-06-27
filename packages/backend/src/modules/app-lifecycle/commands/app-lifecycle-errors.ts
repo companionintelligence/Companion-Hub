@@ -1,4 +1,22 @@
+import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/modules/network/docker-network-errors';
+
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
+
+export const NETWORK_OVERLAP_CODE = 'network_overlap';
+
+export const NETWORK_OVERLAP_USER_MESSAGE = 'App network range conflict — Hub is reassigning a new internal network. Retry install or start.';
+
+export function createNetworkOverlapError(conflictingCidrs: string[] = []): AppLifecycleError {
+  const detailParts = ['Docker reported overlapping bridge network IPv4 ranges after automatic subnet recovery attempts.'];
+  if (conflictingCidrs.length > 0) {
+    detailParts.push(`Conflicting ranges: ${conflictingCidrs.join(', ')}`);
+  }
+
+  return new AppLifecycleError(NETWORK_OVERLAP_USER_MESSAGE, {
+    code: NETWORK_OVERLAP_CODE,
+    detail: detailParts.join(' '),
+  });
+}
 
 export const ROCM_KFD_MISSING_SETTINGS_PATH = '/settings?tab=ai&section=rocm';
 
@@ -67,6 +85,16 @@ export function toAppCommandFailureResult(err: unknown): AppCommandFailureResult
   }
 
   return { success: false, message: String(err) };
+}
+
+export function translateDockerNetworkOverlapError(error: unknown, conflictingCidrs: string[] = []): AppLifecycleError | null {
+  if (!isDockerNetworkOverlapError(error)) {
+    return null;
+  }
+
+  const fromMessage = extractOverlapCidrsFromError(error);
+  const merged = [...new Set([...conflictingCidrs, ...fromMessage])];
+  return createNetworkOverlapError(merged);
 }
 
 export function translateRocmKfdInstallMessage(message: string): AppLifecycleError | null {

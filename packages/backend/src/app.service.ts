@@ -117,6 +117,10 @@ export class AppService implements OnApplicationShutdown {
       this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
       this.logger.info('App status sync job scheduled');
 
+      this.logger.info('Setting up repeatable orphan network reconcile job...');
+      this.systemEventsQueue.publishRepeatable({ command: 'reconcile_orphan_networks' }, '*/30 * * * *');
+      this.logger.info('Orphan network reconcile job scheduled');
+
       this.logger.info('Copying assets...');
       await this.copyAssets();
       this.logger.info('Assets copied');

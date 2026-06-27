@@ -5,12 +5,15 @@ import type { AppUrn } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from '../docker/constants';
+import { cidrOverlaps, normalizeIpv4Cidr, parseIpv4Cidr, hubManagedOctetPairsOverlappingRange } from './cidr-overlap';
+import { collectOccupiedSubnets, occupiedCidrStrings, type OccupiedSubnet } from './subnet-occupancy';
 
 const SUBNET_MASK = '/24';
 const MAX_RETRIES = 3;
 const STARTING_OCTET_2 = 128;
 const MAX_OCTET_VALUE = 254;
 const RESERVED_SUBNET_MAX_OCTET_3 = 9;
+const HUB_SUBNET_REGEX = /^10\.(\d{1,3})\.(\d{1,3})\.0\/24$/;
 
 @Injectable()
 export class SubnetManagerService {
@@ -33,12 +36,22 @@ export class SubnetManagerService {
     }
 
     if (existingApp.subnet) {
-      this.logger.info(`App ${appUrn} already has subnet ${existingApp.subnet}`);
-      return existingApp.subnet;
+      const normalizedSubnet = normalizeIpv4Cidr(existingApp.subnet) ?? existingApp.subnet;
+      const available = await this.isSubnetAvailable(normalizedSubnet, appUrn);
+      if (available) {
+        if (normalizedSubnet !== existingApp.subnet) {
+          await this.appsRepository.updateAppById(existingApp.id, { subnet: normalizedSubnet });
+        }
+        this.logger.info(`App ${appUrn} already has subnet ${normalizedSubnet}`);
+        return normalizedSubnet;
+      }
+
+      this.logger.warn(`App ${appUrn} subnet ${existingApp.subnet} conflicts with occupied ranges; reassigning`);
+      await this.appsRepository.updateAppById(existingApp.id, { subnet: null });
     }
 
-    const allocatedSubnets = await this.getAllocatedSubnets();
-    const nextSubnet = this.findNextAvailableSubnet(allocatedSubnets);
+    const occupied = await this.listOccupiedSubnets(appUrn);
+    const nextSubnet = this.findNextAvailableSubnet(occupied);
 
     if (!nextSubnet) {
       throw new TranslatableError('NETWORK_ERROR_NO_AVAILABLE_SUBNETS');
@@ -58,51 +71,99 @@ export class SubnetManagerService {
     return nextSubnet;
   }
 
-  /**
-   * Get all currently allocated subnets
-   * @returns Array of subnets in use
-   */
-  private async getAllocatedSubnets(): Promise<string[]> {
-    const appSubnets = (await this.appsRepository.getApps().then((apps) => apps.map((app) => app.subnet))).filter((subnet) => subnet !== null);
+  /** Clear the stored subnet so the next allocate call picks a fresh range. */
+  public async releaseSubnet(appUrn: AppUrn): Promise<void> {
+    const existingApp = await this.appsRepository.getAppByUrn(appUrn);
+    if (!existingApp?.subnet) {
+      return;
+    }
 
-    const networks = await this.docker.listNetworks();
-    return (networks ?? [])
-      .flatMap((network) => network.IPAM?.Config?.map((c) => c))
-      .map((c) => c?.Subnet)
-      .filter((c) => c !== undefined)
-      .concat(appSubnets);
+    await this.appsRepository.updateAppById(existingApp.id, { subnet: null });
+    this.logger.info(`Released subnet ${existingApp.subnet} for app ${appUrn}`);
+  }
+
+  /** DB + Docker IPv4 ranges currently occupied on the host. */
+  public async listOccupiedSubnets(excludeAppUrn?: AppUrn): Promise<OccupiedSubnet[]> {
+    const apps = await this.appsRepository.getApps();
+    return collectOccupiedSubnets(apps, this.docker, { excludeAppUrn });
+  }
+
+  private composeProjectName(appUrn: AppUrn): string {
+    return appUrn.replace(':', '_');
+  }
+
+  private async isSubnetAvailable(subnet: string, appUrn: AppUrn): Promise<boolean> {
+    const normalized = normalizeIpv4Cidr(subnet);
+    if (!normalized) {
+      return false;
+    }
+
+    const projectName = this.composeProjectName(appUrn);
+    const occupied = await this.listOccupiedSubnets();
+
+    for (const entry of occupied) {
+      if (!cidrOverlaps(normalized, entry.cidr)) {
+        continue;
+      }
+
+      if (entry.source === 'database') {
+        if (entry.appUrn !== appUrn) {
+          return false;
+        }
+        continue;
+      }
+
+      if (entry.composeProject !== projectName) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
-   * Find the next available subnet that's not in use
-   * @param allocatedSubnets List of subnets already in use
+   * Find the next available Hub /24 that's not in use
+   * @param occupied Unified DB + Docker occupancy entries
    * @returns The next available subnet or null if all are used
    */
-  private findNextAvailableSubnet(allocatedSubnets: string[]): string | null {
-    const usedOctetPairs = new Set<string>();
-    const subnetRegex = /^10\.(\d{1,3})\.(\d{1,3})\.0\/24$/;
-
-    for (const subnet of allocatedSubnets) {
-      const match = subnet.match(subnetRegex);
-      if (match) {
-        const octet2 = match[1];
-        const octet3 = match[2];
-        usedOctetPairs.add(`${octet2}.${octet3}`);
-      }
-    }
+  private findNextAvailableSubnet(occupied: OccupiedSubnet[]): string | null {
+    const occupiedCidrs = occupiedCidrStrings(occupied);
+    const blockedOctetPairs = this.blockedHubOctetPairs(occupiedCidrs);
 
     for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
       const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;
 
       for (let z = startOctet3; z <= MAX_OCTET_VALUE; z++) {
         const candidatePair = `${y}.${z}`;
-        if (!usedOctetPairs.has(candidatePair)) {
+        if (!blockedOctetPairs.has(candidatePair)) {
           return `10.${y}.${z}.0${SUBNET_MASK}`;
         }
       }
     }
 
-    // All subnets in the 10.128.0.0 - 10.254.254.0 range are exhausted
     return null;
+  }
+
+  private blockedHubOctetPairs(occupiedCidrs: string[]): Set<string> {
+    const blocked = new Set<string>();
+
+    for (const cidr of occupiedCidrs) {
+      const occupied = parseIpv4Cidr(cidr);
+      if (!occupied) {
+        continue;
+      }
+
+      const hubMatch = occupied.normalized.match(HUB_SUBNET_REGEX);
+      if (hubMatch) {
+        blocked.add(`${hubMatch[1]}.${hubMatch[2]}`);
+        continue;
+      }
+
+      for (const pair of hubManagedOctetPairsOverlappingRange(occupied.start, occupied.end)) {
+        blocked.add(pair);
+      }
+    }
+
+    return blocked;
   }
 }
