@@ -25,6 +25,16 @@ function isAbsoluteHostPath(value: string): boolean {
   return path.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
+function parseAppBaseUrl(url: string): URL {
+  const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
+  return new URL(withScheme);
+}
+
+function deriveAppBaseWsOrigin(parsed: URL): string {
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
+  return `${wsScheme}://${parsed.host}`;
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -415,9 +425,9 @@ export class AppHelpers {
     const appBaseUrl = envMap.get('APP_BASE_URL');
     if (appBaseUrl) {
       try {
-        const parsed = new URL(appBaseUrl.startsWith('http') ? appBaseUrl : `https://${appBaseUrl}`);
+        const parsed = parseAppBaseUrl(appBaseUrl);
         envMap.set('APP_BASE_HOST', parsed.host);
-        envMap.set('APP_BASE_WSS_ORIGIN', `wss://${parsed.host}`);
+        envMap.set('APP_BASE_WSS_ORIGIN', deriveAppBaseWsOrigin(parsed));
       } catch {
         this.logger.warn(`Unable to parse APP_BASE_URL for derived host vars: ${appBaseUrl}`);
       }

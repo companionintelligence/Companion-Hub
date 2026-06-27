@@ -864,6 +864,61 @@ describe('AppHelpers', () => {
 
         expect(envMap.get('APP_URL')).toBe('http://127.0.0.1:9091');
         expect(envMap.get('APP_BASE_URL')).toBe('http://127.0.0.1:9091');
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://127.0.0.1:9091');
+      });
+
+      it('derives ws origin for http APP_BASE_URL and wss for https', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          form_fields: [
+            {
+              env_variable: 'APP_BASE_URL',
+              label: 'Public URL',
+              type: 'app_base_url' as const,
+              required: false,
+            },
+          ],
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: 'http://localhost:5678',
+        });
+
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://localhost:5678');
+
+        envMap.clear();
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: 'https://n8n.example.com',
+        });
+
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('wss://n8n.example.com');
+      });
+
+      it('defaults scheme-less APP_BASE_URL to http when deriving host vars', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          form_fields: [
+            {
+              env_variable: 'APP_BASE_URL',
+              label: 'Public URL',
+              type: 'app_base_url' as const,
+              required: false,
+            },
+          ],
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: '127.0.0.1:8080',
+        });
+
+        expect(envMap.get('APP_BASE_HOST')).toBe('127.0.0.1:8080');
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://127.0.0.1:8080');
       });
     });
 

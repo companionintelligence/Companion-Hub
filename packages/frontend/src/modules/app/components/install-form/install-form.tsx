@@ -176,6 +176,7 @@ export const InstallForm: React.FC<IProps> = ({
   // Track the previously-rendered app URN so the init effect can detect when
   // the form is reused for a different app and force-reset stale field values.
   const prevUrnRef = useRef<string | undefined>(undefined);
+  const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
@@ -302,11 +303,18 @@ export const InstallForm: React.FC<IProps> = ({
       if (field.type !== 'app_base_url') continue;
       if (dirtyFields[field.env_variable]) continue;
 
-      const currentValue = getValues(field.env_variable);
       const initialValue = initialValues?.[field.env_variable];
-      if (currentValue || initialValue) continue;
+      if (initialValue !== undefined && initialValue !== null && initialValue !== '') continue;
 
-      setValue(field.env_variable, suggestedAppBaseUrl, { shouldDirty: false });
+      const envVar = field.env_variable;
+      const currentValue = getValues(envVar) as string | undefined;
+      const lastPrefilled = lastAutoPrefilledAppBaseUrl.current[envVar];
+      if (currentValue && currentValue !== lastPrefilled) continue;
+
+      if (currentValue === suggestedAppBaseUrl) continue;
+
+      setValue(envVar, suggestedAppBaseUrl, { shouldDirty: false });
+      lastAutoPrefilledAppBaseUrl.current[envVar] = suggestedAppBaseUrl;
     }
   }, [suggestedAppBaseUrl, formFields, dirtyFields, getValues, setValue, initialValues]);
 
