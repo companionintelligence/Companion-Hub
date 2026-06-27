@@ -1,6 +1,8 @@
 import type { GetAllAppStoresResponse, GetAppDto, LinksDto, SearchAppsDto } from '@/api-client';
+import type { FormField as CommonFormField } from '@ci-hub/common/schemas';
 
-export type FormField = NonNullable<GetAppDto['info']['form_fields']>[number];
+/** Use the marketplace schema as source of truth (includes app_base_url and other field types). */
+export type FormField = CommonFormField;
 export type AppInfo = GetAppDto['info'];
 export type AppMetadata = GetAppDto['metadata'];
 export type AppDetails = NonNullable<GetAppDto['app']>;

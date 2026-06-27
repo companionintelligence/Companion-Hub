@@ -802,6 +802,126 @@ describe('AppHelpers', () => {
       });
     });
 
+    describe('app_base_url form fields', () => {
+      it('defaults APP_BASE_URL to suggested public URL when org is registered', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: '123',
+          slug: 'myorg',
+          name: 'My Org',
+          hubSubdomain: 'hub-test1-myorg',
+          tunnelId: 'tunnel-id',
+          tunnelToken: 'tunnel-token',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          exposedLocal: true,
+          localSubdomain: 'n8n',
+        });
+
+        expect(envMap.get('APP_BASE_URL')).toBe('https://n8n-test1-myorg.example.com');
+        expect(envMap.get('APP_BASE_HOST')).toBe('n8n-test1-myorg.example.com');
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('wss://n8n-test1-myorg.example.com');
+      });
+
+      it('uses form override and alias env vars with trailing slash', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          form_fields: [
+            {
+              env_variable: 'APP_BASE_URL',
+              label: 'Public URL',
+              type: 'app_base_url' as const,
+              alias_env_variables: ['N8N_EDITOR_BASE_URL', 'WEBHOOK_URL'],
+              trailing_slash: true,
+              required: false,
+            },
+          ],
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: 'https://n8n.example.com/',
+        });
+
+        expect(envMap.get('APP_BASE_URL')).toBe('https://n8n.example.com');
+        expect(envMap.get('N8N_EDITOR_BASE_URL')).toBe('https://n8n.example.com/');
+        expect(envMap.get('WEBHOOK_URL')).toBe('https://n8n.example.com/');
+      });
+
+      it('falls back to APP_URL when org is not registered', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, { port: 9091 });
+
+        expect(envMap.get('APP_URL')).toBe('http://127.0.0.1:9091');
+        expect(envMap.get('APP_BASE_URL')).toBe('http://127.0.0.1:9091');
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://127.0.0.1:9091');
+      });
+
+      it('derives ws origin for http APP_BASE_URL and wss for https', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          form_fields: [
+            {
+              env_variable: 'APP_BASE_URL',
+              label: 'Public URL',
+              type: 'app_base_url' as const,
+              required: false,
+            },
+          ],
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: 'http://localhost:5678',
+        });
+
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://localhost:5678');
+
+        envMap.clear();
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: 'https://n8n.example.com',
+        });
+
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('wss://n8n.example.com');
+      });
+
+      it('defaults scheme-less APP_BASE_URL to http when deriving host vars', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          form_fields: [
+            {
+              env_variable: 'APP_BASE_URL',
+              label: 'Public URL',
+              type: 'app_base_url' as const,
+              required: false,
+            },
+          ],
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          APP_BASE_URL: '127.0.0.1:8080',
+        });
+
+        expect(envMap.get('APP_BASE_HOST')).toBe('127.0.0.1:8080');
+        expect(envMap.get('APP_BASE_WSS_ORIGIN')).toBe('ws://127.0.0.1:8080');
+      });
+    });
+
     describe('R-ENV: MCP env injection for agent harness apps', () => {
       it('R-ENV-1/2/3: should inject HUB_URL, HUB_MCP_URL, and HUB_MCP_MESSAGES_URL when hub_integration.mcp_client is true', async () => {
         const envMap = new Map<string, string>();

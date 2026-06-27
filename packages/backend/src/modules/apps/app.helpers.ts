@@ -16,6 +16,16 @@ import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 
+function parseAppBaseUrl(url: string): URL {
+  const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
+  return new URL(withScheme);
+}
+
+function deriveAppBaseWsOrigin(parsed: URL): string {
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
+  return `${wsScheme}://${parsed.host}`;
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -149,6 +159,10 @@ export class AppHelpers {
     }
 
     for (const field of config.form_fields) {
+      if (field.type === 'app_base_url') {
+        continue;
+      }
+
       const formValue = form[field.env_variable];
       const envVar = field.env_variable;
 
@@ -284,6 +298,74 @@ export class AppHelpers {
       const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
       if (internalAuthority) {
         envMap.set('APP_URL', `http://${internalAuthority}`);
+      }
+    }
+
+    const configDomain = domain;
+    const suggestedPublicUrl =
+      org?.slug && config.exposable
+        ? buildPublicWebIdentity({
+            appSubdomain: form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`,
+            hubSubdomain: org.hubSubdomain,
+            orgSlug: org.slug,
+            publicDomainRoot: resolvePublicDomainRoot({
+              selectedPublicDomain: typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined,
+              envDomain: envMap.get('DOMAIN'),
+              configDomain,
+            }),
+          }).publicUrl
+        : undefined;
+
+    const defaultAppBaseUrl = (suggestedPublicUrl ?? envMap.get('APP_URL') ?? '').replace(/\/+$/, '');
+
+    for (const field of config.form_fields) {
+      if (field.type !== 'app_base_url') {
+        continue;
+      }
+
+      const envVar = field.env_variable;
+      const formValue = form[envVar];
+      const hasValidFormValue = formValue !== undefined && formValue !== '' && formValue !== null;
+
+      let resolvedBaseUrl: string | undefined;
+
+      if (hasValidFormValue) {
+        resolvedBaseUrl = String(formValue).replace(/\/+$/, '');
+      } else if (existingAppEnvMap.has(envVar)) {
+        resolvedBaseUrl = String(existingAppEnvMap.get(envVar)).replace(/\/+$/, '');
+      } else if (field.default !== undefined && String(field.default).trim() !== '') {
+        resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
+      } else if (defaultAppBaseUrl) {
+        resolvedBaseUrl = defaultAppBaseUrl;
+      }
+
+      if (!resolvedBaseUrl) {
+        if (field.required) {
+          throw new Error(`Variable ${field.label || envVar} is required`);
+        }
+        continue;
+      }
+
+      envMap.set(envVar, resolvedBaseUrl);
+
+      const aliasValue = field.trailing_slash ? `${resolvedBaseUrl}/` : resolvedBaseUrl;
+      for (const alias of field.alias_env_variables ?? []) {
+        envMap.set(alias, aliasValue);
+      }
+    }
+
+    if (config.exposable && !envMap.has('APP_BASE_URL') && defaultAppBaseUrl) {
+      envMap.set('APP_BASE_URL', defaultAppBaseUrl);
+    }
+
+    const appBaseUrl = envMap.get('APP_BASE_URL');
+    if (appBaseUrl) {
+      try {
+        const parsed = parseAppBaseUrl(appBaseUrl);
+        envMap.set('APP_BASE_HOST', parsed.host);
+        envMap.set('APP_BASE_WSS_ORIGIN', deriveAppBaseWsOrigin(parsed));
+      } catch {
+        this.logger.warn(`Unable to parse APP_BASE_URL for derived host vars: ${appBaseUrl}`);
       }
     }
 

@@ -6,6 +6,19 @@ type ValidationError = {
   params?: Record<string, string>;
 };
 
+/** Generic public URLs — keeps Validator.js default TLD requirement. */
+const isGenericUrl = (value: string) => validator.isURL(value);
+
+/**
+ * App base URLs may use localhost or other non-TLD hosts in local/dev installs.
+ * Require an explicit http(s) scheme; allow hosts without a public suffix.
+ */
+const isAppBaseUrl = (value: string) =>
+  validator.isURL(value, {
+    require_protocol: true,
+    require_tld: false,
+  });
+
 export const validateField = (field: FormField, value: unknown): ValidationError | undefined => {
   if (field.required && !value && typeof value !== 'boolean') {
     return { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: field.label } };
@@ -62,7 +75,12 @@ export const validateField = (field: FormField, value: unknown): ValidationError
       }
       break;
     case 'url':
-      if (!validator.isURL(value)) {
+      if (!isGenericUrl(value)) {
+        return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
+      }
+      break;
+    case 'app_base_url':
+      if (!isAppBaseUrl(value)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
       }
       break;

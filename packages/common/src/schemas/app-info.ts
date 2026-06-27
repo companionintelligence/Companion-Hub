@@ -70,7 +70,7 @@ export const APP_CATEGORIES = [
 export type AppCategory = (typeof APP_CATEGORIES)[number];
 export const ARCHITECTURES = ['arm64', 'amd64'] as const;
 
-export const FIELD_TYPES = ['text', 'password', 'email', 'number', 'fqdn', 'ip', 'fqdnip', 'url', 'random', 'boolean'] as const;
+export const FIELD_TYPES = ['text', 'password', 'email', 'number', 'fqdn', 'ip', 'fqdnip', 'url', 'app_base_url', 'random', 'boolean'] as const;
 export type FieldType = (typeof FIELD_TYPES)[number];
 
 export const RANDOM_ENCODINGS = ['hex', 'base64'] as const;
@@ -90,6 +90,10 @@ export const formFieldSchema = z.object({
   pattern_error: z.string().optional(),
   env_variable: z.string(),
   encoding: z.enum(RANDOM_ENCODINGS).optional(),
+  /** When set on `app_base_url`, also write the resolved value to these env vars. */
+  alias_env_variables: z.array(z.string().min(1)).optional(),
+  /** When true, append a trailing slash to alias env var values. */
+  trailing_slash: z.boolean().optional(),
 });
 
 /** Accept legacy Runtipi field names when parsing app config.json from stores or backups. */

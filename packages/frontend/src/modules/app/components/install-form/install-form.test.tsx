@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
@@ -605,6 +605,165 @@ describe('InstallForm', () => {
 
     expect(screen.getByText('COMMON_HOSTNAME')).toBeInTheDocument();
     expect(screen.getByText('localhost:3001')).toBeInTheDocument();
+  });
+
+  const appBaseUrlField = {
+    env_variable: 'APP_BASE_URL',
+    label: 'Public URL',
+    type: 'app_base_url',
+    required: true,
+  } as never;
+
+  const exposableContext = (overrides: Record<string, unknown> = {}) =>
+    ({
+      userSettings: {
+        ciHubOrganizationSlug: 'bc',
+        ciHubDeviceSlug: 'blaptop',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
+      tailscaleHttpsEnabled: false,
+      ...overrides,
+    }) as unknown as ReturnType<typeof useAppContext>;
+
+  const exposableInfo = (port = 3001) =>
+    ({
+      urn: 'n8n:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port,
+    }) as unknown as AppInfo;
+
+  const getAppBaseUrlInput = () => screen.getByLabelText(/Public URL/);
+
+  it('prefills app_base_url for local exposure mode', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo(3001)}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'local' }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('http://localhost:3001');
+    });
+  });
+
+  it('prefills app_base_url for cloudflare exposure mode', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('https://n8n-blaptop-bc.companionintelligence.com');
+    });
+  });
+
+  it('prefills app_base_url for tailscale exposure mode', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo(3000)}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'tailscale' }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('http://hub-tailscale-1.example.ts.net:3000');
+    });
+  });
+
+  it('does not overwrite configured app_base_url initial values', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo()}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'local', APP_BASE_URL: 'https://custom.example.com' }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('https://custom.example.com');
+    });
+  });
+
+  it('does not overwrite user-edited app_base_url when exposure mode changes', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo(3001)}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'local' }}
+        />
+      </MemoryRouter>,
+    );
+
+    const input = await waitFor(() => {
+      const field = getAppBaseUrlInput();
+      expect(field).toHaveValue('http://localhost:3001');
+      return field;
+    });
+
+    fireEvent.change(input, { target: { value: 'https://user.example.com' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+
+    expect(input).toHaveValue('https://user.example.com');
+  });
+
+  it('updates auto-prefilled app_base_url when the cloudflare hostname preview changes', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo(3001)} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('https://n8n-blaptop-bc.companionintelligence.com');
+    });
+
+    fireEvent.change(screen.getByLabelText(/APP_INSTALL_FORM_LOCAL_SUBDOMAIN/), { target: { value: 'wiki' } });
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('https://wiki-blaptop-bc.companionintelligence.com');
+    });
   });
 
   it('does not show advanced settings toggle when there are no optional fields', () => {
