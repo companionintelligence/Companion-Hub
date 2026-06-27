@@ -756,6 +756,7 @@
   "ONBOARDING_TAILSCALE_AUTH_OPENING": "Opening Tailscale login in new window...",
   "ONBOARDING_TAILSCALE_AUTH_FAILED": "Failed to start Tailscale authentication",
   "ONBOARDING_CONFIGURE_PRIVATE_COMPANION": "Configure your private, local-first companion.",
+  "ONBOARDING_CONFIGURE_PRIVATE_COMPANION_HINT": "You can edit these anytime in Settings.",
   "ONBOARDING_RECOMMENDED_APPS": "Recommended Apps",
   "ONBOARDING_RECOMMENDED_APPS_DESC": "Here are some popular open-source apps you can self-host. Select any you'd like installed.",
   "ONBOARDING_CHANGE_LATER_SETTINGS": "You can change everything later in Settings.",
