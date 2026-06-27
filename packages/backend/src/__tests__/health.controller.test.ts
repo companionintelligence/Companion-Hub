@@ -2,7 +2,6 @@ import { APP_DATA_DIR } from '@/common/constants';
 import { HealthController } from '@/core/health/health.controller';
 import { QueueHealthIndicator } from '@/modules/queue/queue.health';
 import { HealthCheckService } from '@nestjs/terminus';
-import { ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
