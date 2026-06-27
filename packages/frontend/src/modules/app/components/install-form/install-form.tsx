@@ -145,6 +145,21 @@ export const InstallForm: React.FC<IProps> = ({
     return resolvedPort ? `localhost:${resolvedPort}` : 'localhost';
   }, [watchExposureMode, watchPort, info.port]);
 
+  const suggestedAppBaseUrl = useMemo(() => {
+    if (watchExposureMode === 'cloudflare' && publicWebPreview?.publicUrl) {
+      return publicWebPreview.publicUrl.replace(/\/+$/, '');
+    }
+    if (watchExposureMode === 'tailscale' && tailscalePreviewHost) {
+      const scheme = tailscaleHttpsEnabled ? 'https' : 'http';
+      return `${scheme}://${tailscalePreviewHost}`.replace(/\/+$/, '');
+    }
+    if (watchExposureMode === 'local' && localPreviewHost) {
+      const host = localPreviewHost.startsWith('http') ? localPreviewHost : `http://${localPreviewHost}`;
+      return host.replace(/\/+$/, '');
+    }
+    return publicWebPreview?.publicUrl?.replace(/\/+$/, '') ?? '';
+  }, [watchExposureMode, publicWebPreview, tailscalePreviewHost, tailscaleHttpsEnabled, localPreviewHost]);
+
   const previewHostname =
     watchExposureMode === 'cloudflare'
       ? publicWebPreview?.hostname || ''
@@ -281,6 +296,21 @@ export const InstallForm: React.FC<IProps> = ({
   }, [watchExposureMode, info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
+    if (!suggestedAppBaseUrl) return;
+
+    for (const field of formFields) {
+      if (field.type !== 'app_base_url') continue;
+      if (dirtyFields[field.env_variable]) continue;
+
+      const currentValue = getValues(field.env_variable);
+      const initialValue = initialValues?.[field.env_variable];
+      if (currentValue || initialValue) continue;
+
+      setValue(field.env_variable, suggestedAppBaseUrl, { shouldDirty: false });
+    }
+  }, [suggestedAppBaseUrl, formFields, dirtyFields, getValues, setValue, initialValues]);
+
+  useEffect(() => {
     if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {
       return;
     }
@@ -355,12 +385,15 @@ export const InstallForm: React.FC<IProps> = ({
   });
 
   const renderField = (field: FormField) => {
+    const resolvedField =
+      field.type === 'app_base_url' && suggestedAppBaseUrl && !field.placeholder ? { ...field, placeholder: suggestedAppBaseUrl } : field;
+
     return (
       <InstallFormField
         loading={loading}
         initialValue={(initialValues ? initialValues[field.env_variable] : field.default) as string}
         register={register}
-        field={field}
+        field={resolvedField}
         control={control}
         key={field.env_variable}
         error={errors[field.env_variable]?.message}

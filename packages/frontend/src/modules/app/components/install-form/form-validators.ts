@@ -62,6 +62,7 @@ export const validateField = (field: FormField, value: unknown): ValidationError
       }
       break;
     case 'url':
+    case 'app_base_url':
       if (!validator.isURL(value)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
       }

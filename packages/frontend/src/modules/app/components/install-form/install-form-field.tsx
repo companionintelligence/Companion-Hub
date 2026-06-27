@@ -92,6 +92,7 @@ export const InstallFormField = (props: IProps) => {
       type = 'email' as const;
       break;
     case 'url':
+    case 'app_base_url':
       type = 'url' as const;
       break;
     default:
