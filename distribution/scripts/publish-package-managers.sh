@@ -11,9 +11,10 @@ fi
 
 export GIT_TERMINAL_PROMPT=0
 # Actions always injects GITHUB_TOKEN; gh/git may prefer it over our PAT unless we
-# authenticate explicitly. Unset it so every gh/git call uses CI_PACKAGE_MANAGERS_TOKEN.
+# unset it so every gh/git call uses CI_PACKAGE_MANAGERS_TOKEN (passed as GH_TOKEN).
 unset GITHUB_TOKEN
-printf '%s\n' "$GH_TOKEN" | gh auth login --with-token
+# gh reads GH_TOKEN automatically in CI — do not run `gh auth login` while it is set
+# (that command exits 1 with "The value of the GH_TOKEN environment variable is being used").
 gh auth setup-git
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
