@@ -10,10 +10,9 @@ use serde::Deserialize;
 
 use sha2::{Digest, Sha256};
 
+use crate::hub_env::{default_update_cdn_base, default_update_cdn_host};
 use crate::hub_manager::{self, PersistedLaunchMode};
 
-const UPDATE_BASE_URL: &str = "https://dl.ci.computer";
-const ALLOWED_DOWNLOAD_HOST: &str = "dl.ci.computer";
 const UPDATE_LISTENER_ADDR: &str = "127.0.0.1:17400";
 const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 #[cfg(debug_assertions)]
@@ -39,8 +38,8 @@ pub(crate) struct UpdateSource {
 impl UpdateSource {
     fn prod() -> Self {
         Self {
-            base: UPDATE_BASE_URL.to_string(),
-            host: ALLOWED_DOWNLOAD_HOST.to_string(),
+            base: default_update_cdn_base().to_string(),
+            host: default_update_cdn_host().to_string(),
             allow_http: false,
         }
     }

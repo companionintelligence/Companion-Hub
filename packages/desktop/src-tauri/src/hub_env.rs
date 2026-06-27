@@ -9,6 +9,10 @@ pub(crate) const DEFAULT_DEV_PUBLIC_DOMAIN: &str = "companionintelligence.com";
 pub(crate) const DEFAULT_PROD_PUBLIC_DOMAIN: &str = "companionintelligence.com";
 pub(crate) const DEFAULT_DEV_CI_CLOUD_URL: &str = "https://hub.companionintelligence.com";
 pub(crate) const DEFAULT_PROD_CI_CLOUD_URL: &str = "https://hub.ci.computer";
+pub(crate) const DEFAULT_DEV_UPDATE_CDN_BASE: &str = "https://dl-dev.ci.computer";
+pub(crate) const DEFAULT_PROD_UPDATE_CDN_BASE: &str = "https://dl.ci.computer";
+pub(crate) const DEFAULT_DEV_UPDATE_CDN_HOST: &str = "dl-dev.ci.computer";
+pub(crate) const DEFAULT_PROD_UPDATE_CDN_HOST: &str = "dl.ci.computer";
 
 pub(crate) fn default_public_domain() -> &'static str {
     match option_env!("CI_HUB_ENVIRONMENT") {
@@ -33,6 +37,20 @@ pub(crate) fn default_hub_image() -> &'static str {
         Some("production") => "ghcr.io/companionintelligence/ci-hub:latest",
         Some("staging") => "ghcr.io/companionintelligence/ci-hub:staging",
         _ => "ghcr.io/companionintelligence/ci-hub:dev",
+    }
+}
+
+pub(crate) fn default_update_cdn_base() -> &'static str {
+    match option_env!("CI_HUB_ENVIRONMENT") {
+        Some("production") => DEFAULT_PROD_UPDATE_CDN_BASE,
+        _ => DEFAULT_DEV_UPDATE_CDN_BASE,
+    }
+}
+
+pub(crate) fn default_update_cdn_host() -> &'static str {
+    match option_env!("CI_HUB_ENVIRONMENT") {
+        Some("production") => DEFAULT_PROD_UPDATE_CDN_HOST,
+        _ => DEFAULT_DEV_UPDATE_CDN_HOST,
     }
 }
 
