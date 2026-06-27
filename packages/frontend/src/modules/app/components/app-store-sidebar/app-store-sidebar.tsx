@@ -1,9 +1,9 @@
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
-import { ArrowLeftRight, LayoutGrid, Search } from 'lucide-react';
+import { ArrowLeftRight, LayoutGrid } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
@@ -32,9 +32,9 @@ export const AppStoreSidebar = () => {
   }, [navigate, location.pathname, storeId]);
 
   const onSearch = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setLocalSearch(e.target.value);
-      setSearch(e.target.value);
+    (value: string) => {
+      setLocalSearch(value);
+      setSearch(value);
       navigatePreservingStore();
     },
     [setSearch, navigatePreservingStore],
@@ -51,10 +51,7 @@ export const AppStoreSidebar = () => {
   return (
     <aside className="sticky top-4 ml-6 mb-6 hidden max-h-[calc(100vh-2rem)] w-64 flex-shrink-0 self-start flex-col overflow-hidden rounded-2xl border border-border/70 bg-card/90 shadow-sm shadow-slate-300/70 md:flex dark:border-white/10 dark:bg-muted/10 dark:shadow-none">
       <div className="p-4 border-b">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
-          <Input placeholder={t('APP_STORE_SEARCH_APPS')} className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
-        </div>
+        <AppStoreSearchInput value={localSearch} onChange={onSearch} />
       </div>
       <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
         <div className="space-y-1">

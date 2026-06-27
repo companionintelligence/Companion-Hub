@@ -8,18 +8,18 @@ import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/featured-store-view';
+import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
+import { ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -172,9 +172,9 @@ export default () => {
   );
 
   const onSearch = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setLocalSearch(e.target.value);
-      setSearch(e.target.value);
+    (value: string) => {
+      setLocalSearch(value);
+      setSearch(value);
     },
     [setSearch],
   );
@@ -263,10 +263,7 @@ export default () => {
 
       {/* Mobile Search & Categories */}
       <div className="md:hidden space-y-4 mb-6">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder={t('APP_STORE_SEARCH_APPS')} className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
-        </div>
+        <AppStoreSearchInput value={localSearch} onChange={onSearch} />
         <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
           <Button
             variant="outline"
