@@ -57,6 +57,15 @@ describe('app-data-path.helper', () => {
       expect(result.startsWith('/')).toBe(false);
       expect(result).toContain('storage');
       expect(result).toContain('app-data');
+      // Segments are joined with win32 separators — no mixed-separator output.
+      expect(result).not.toContain('/');
+      expect(result).toBe(path.win32.join('C:\\hub', 'storage', 'app-data'));
+    });
+
+    it('joins an absolute Windows base with win32 separators (no mixed separators)', () => {
+      const result = getAppDataHostPath('nextcloud:ci-app-store' as AppUrn, { ciHubAppDataPath: 'C:\\hub', rootFolderHost: 'C:\\hub' });
+      expect(result).toBe(path.win32.join('C:\\hub', 'app-data', 'ci-app-store', 'nextcloud'));
+      expect(result).not.toContain('/');
     });
 
     it('throws when nothing resolves to an absolute path', () => {

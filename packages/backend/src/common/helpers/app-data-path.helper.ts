@@ -40,6 +40,20 @@ function resolveAgainstHostRoot(root: string, base: string): string {
 }
 
 /**
+ * Join path segments onto a host `base` using the path flavor that matches the
+ * base. The backend runs on POSIX, so the default `path.join` would emit
+ * mixed-separator paths like `C:\\hub/app-data/...` for a Windows/UNC base; use
+ * `path.win32.join` in that case so the rebuilt host path stays valid for bind
+ * mounts and the desktop "open folder" action.
+ */
+function joinHostPath(base: string, ...segments: string[]): string {
+  if (path.win32.isAbsolute(base) && !path.posix.isAbsolute(base)) {
+    return path.win32.join(base, ...segments);
+  }
+  return path.join(base, ...segments);
+}
+
+/**
  * Fallback host base used when the resolved path looks like a *container* path
  * rather than a host path. Prefers the configured `rootFolderHost`, then the
  * `ROOT_FOLDER_HOST` env var, and finally `/tmp` as a last resort.
@@ -114,7 +128,7 @@ function looksLikeContainerPath(resolved: string): boolean {
  */
 function ensureHostPath(candidate: string, rootFolderHost: string, fallbackSegments: string[]): string {
   if (looksLikeContainerPath(candidate)) {
-    return path.join(fallbackHostBase(rootFolderHost), 'app-data', ...fallbackSegments);
+    return joinHostPath(fallbackHostBase(rootFolderHost), 'app-data', ...fallbackSegments);
   }
   if (!isAbsoluteHostPath(candidate)) {
     throw new Error(`App data host path must be absolute, got: ${candidate}`);
@@ -131,7 +145,7 @@ function ensureHostPath(candidate: string, rootFolderHost: string, fallbackSegme
  * can open), never the in-container `/app-data` path.
  */
 export function resolveAppDataHostRoot(inputs: AppDataPathInputs): string {
-  const root = path.join(resolveHostBase(inputs), 'app-data');
+  const root = joinHostPath(resolveHostBase(inputs), 'app-data');
   return ensureHostPath(root, inputs.rootFolderHost, []);
 }
 
@@ -144,6 +158,6 @@ export function resolveAppDataHostRoot(inputs: AppDataPathInputs): string {
  */
 export function getAppDataHostPath(appUrn: AppUrn, inputs: AppDataPathInputs): string {
   const { appName, appStoreId } = extractAppUrn(appUrn);
-  const final = path.join(resolveHostBase(inputs), 'app-data', appStoreId, appName);
+  const final = joinHostPath(resolveHostBase(inputs), 'app-data', appStoreId, appName);
   return ensureHostPath(final, inputs.rootFolderHost, [appStoreId, appName]);
 }
