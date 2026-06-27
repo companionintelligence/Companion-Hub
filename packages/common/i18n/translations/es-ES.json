@@ -895,6 +895,7 @@
   "ONBOARDING_COMPLETE_RUNNING_COUNT": "{{count}} ejecutándose",
   "ONBOARDING_COMPLETE_STARTING_COUNT": "{{count}} aún iniciándose",
   "ONBOARDING_CONFIGURE_PRIVATE_COMPANION": "Configura tu compañero privado y local primero.",
+  "ONBOARDING_CONFIGURE_PRIVATE_COMPANION_HINT": "Puedes editar esto en cualquier momento en Configuración.",
   "ONBOARDING_CONFIGURING_AI_SETUP": "Configurando configuración de IA...",
   "ONBOARDING_CONTINUE_AI_BACKGROUND": "Continuar (configuración de IA en segundo plano)",
   "ONBOARDING_CONTINUE_APPS_AI_BACKGROUND": "Continuar (aplicaciones y configuración de IA en segundo plano)",

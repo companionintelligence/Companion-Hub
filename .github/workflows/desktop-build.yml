@@ -105,14 +105,19 @@ jobs:
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
 
+      - name: Install create-dmg
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
       # Use the published CLI via npx (avoids `cargo install` and bogus CARGO_NET_RETRY_LIMIT → `net.retry` errors).
       # PR/CI has no TAURI_SIGNING_PRIVATE_KEY; merge off createUpdaterArtifacts so .app/.dmg still build.
       # Release jobs that set TAURI_SIGNING_PRIVATE_KEY can omit `-c` to emit .tar.gz + .sig for the updater.
       # Linux merge-target (tauri.linux.conf.json): deb + rpm only by default so local builds do not require linuxdeploy / librsvg2-dev for AppImage. CI passes -b deb,rpm,appimage on Ubuntu runners where deps are installed.
       - name: Build Tauri app
         env:
-          # CI sets CI=true; tauri-bundler skips DMG background/layout unless this is set (tauri#592).
-          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
+          RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
+          # CI=true skips Finder AppleScript DMG layout for reliable macOS CI builds.
+          # Do not set TAURI_BUNDLER_DMG_IGNORE_CI (tauri-action#1091).
         shell: bash
         run: |
           cd packages/desktop
@@ -120,7 +125,28 @@ jobs:
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             args+=(-b "deb,rpm,appimage")
           fi
-          npx --yes @tauri-apps/cli@2 build "${args[@]}"
+
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            retry_build "${args[@]}"
+          else
+            npx --yes @tauri-apps/cli@2 build "${args[@]}"
+          fi
 
       - name: Patch Linux deb maintainer scripts
         if: runner.os == 'Linux'
