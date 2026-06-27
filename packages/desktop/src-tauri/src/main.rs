@@ -282,7 +282,12 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
 /// machine; a missing path returns an error so the UI can show a toast.
 #[tauri::command]
 async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    open_directory(&app, Path::new(&path), false)
+    // The backend resolves host paths from ROOT_FOLDER_HOST, which on Windows is
+    // stored in Docker bind-mount format (e.g. `/mnt/c/Users/...`). Convert it back
+    // to a native host path (`C:\Users\...`) so the OS file explorer can open it;
+    // otherwise `validate_open_path` rejects it as non-absolute. No-op on POSIX hosts.
+    let native = hub_manager::host_path_from_docker_path(&path);
+    open_directory(&app, &native, false)
 }
 
 #[tauri::command]
