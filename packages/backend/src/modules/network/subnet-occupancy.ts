@@ -27,7 +27,12 @@ function appendUniqueOccupied(occupied: OccupiedSubnet[], seen: Set<string>, ent
   occupied.push(entry);
 }
 
-function collectDockerIpamValues(config: Dockerode.IPAMConfig): string[] {
+interface DockerIpamConfig {
+  Subnet?: string;
+  IPRange?: string;
+}
+
+function collectDockerIpamValues(config: DockerIpamConfig): string[] {
   const values: string[] = [];
   if (config.Subnet) {
     values.push(config.Subnet);

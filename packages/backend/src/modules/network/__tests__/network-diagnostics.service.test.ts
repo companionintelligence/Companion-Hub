@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { mock } from 'vitest-mock-extended';
-import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { NetworkDiagnosticsService } from '../network-diagnostics.service';

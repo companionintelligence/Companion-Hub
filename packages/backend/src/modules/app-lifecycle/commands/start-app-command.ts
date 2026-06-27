@@ -1,7 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
-import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -11,7 +10,6 @@ export class StartAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput) {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
-    const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
 

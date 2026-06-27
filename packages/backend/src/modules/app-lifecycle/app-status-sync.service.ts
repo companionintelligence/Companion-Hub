@@ -10,6 +10,7 @@ import { SystemEventsQueue } from '../queue/entities/system-events';
 import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];

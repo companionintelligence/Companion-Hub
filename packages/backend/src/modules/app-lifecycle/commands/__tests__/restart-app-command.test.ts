@@ -43,6 +43,7 @@ describe('RestartAppCommand — pull policy', () => {
       composeApp: vi.fn(async (_urn: string, args: string) => {
         composeArgs.push(args);
       }),
+      removeAppNetworks: vi.fn().mockResolvedValue(undefined),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -76,6 +77,7 @@ describe('RestartAppCommand — pull policy', () => {
 
     const subnetManager = mock<SubnetManagerService>();
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
+    subnetManager.releaseSubnet.mockResolvedValue(undefined);
 
     const dockerode = mock<Dockerode>();
     // @ts-expect-error

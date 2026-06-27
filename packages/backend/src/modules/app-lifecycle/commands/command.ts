@@ -168,9 +168,11 @@ export class AppLifecycleCommand {
         lastError = error;
         const canRetry = isDockerNetworkOverlapError(error) && attempt < maxAttempts;
         if (!canRetry) {
-          const overlapError = translateDockerNetworkOverlapError(error, await this.describeNetworkOverlap(appUrn));
-          if (overlapError) {
-            throw overlapError;
+          if (isDockerNetworkOverlapError(error)) {
+            const overlapError = translateDockerNetworkOverlapError(error, await this.describeNetworkOverlap(appUrn));
+            if (overlapError) {
+              throw overlapError;
+            }
           }
           throw error;
         }

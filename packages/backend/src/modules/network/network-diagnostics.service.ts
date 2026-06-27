@@ -138,14 +138,12 @@ export class NetworkDiagnosticsService {
     const conflicts: HubPoolOverlapIssue[] = [];
     const seen = new Set<string>();
 
-    for (let index = 0; index < occupied.length; index++) {
-      const left = occupied[index];
+    for (const [index, left] of occupied.entries()) {
       if (!cidrOverlaps(left.cidr, HUB_APP_POOL_CIDR)) {
         continue;
       }
 
-      for (let otherIndex = index + 1; otherIndex < occupied.length; otherIndex++) {
-        const right = occupied[otherIndex];
+      for (const right of occupied.slice(index + 1)) {
         if (!cidrOverlaps(left.cidr, right.cidr)) {
           continue;
         }
