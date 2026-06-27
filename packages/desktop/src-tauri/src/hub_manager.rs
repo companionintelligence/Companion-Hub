@@ -5568,6 +5568,7 @@ fn host_path_from_docker_path(value: &str) -> PathBuf {
 
 /// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
 /// Canonical output: `/mnt/<drive>/...` with lowercase drive letter.
+#[cfg(any(windows, test))]
 fn normalize_windows_docker_host_path(value: &str) -> String {
     let trimmed = value.trim().replace('\\', "/");
 
@@ -6926,14 +6927,17 @@ pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn rocm_probe_path(data_dir: &Path) -> PathBuf {
     data_dir.join("state/hardware/rocm.json")
 }
 
+#[cfg(target_os = "linux")]
 fn rocm_install_state_path(data_dir: &Path) -> PathBuf {
     data_dir.join("state/hardware/rocm-install.json")
 }
 
+#[cfg(target_os = "linux")]
 fn write_rocm_install_state(data_dir: &Path, phase: &str, message: &str) {
     let path = rocm_install_state_path(data_dir);
     if let Some(parent) = path.parent() {
