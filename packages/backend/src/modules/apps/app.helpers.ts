@@ -417,6 +417,22 @@ export class AppHelpers {
       }
     }
 
+    // --- Portal OIDC issuer (first-party CI apps only) ---
+    // CI-Server's "Sign in with CI-Portal" flow needs the Portal OIDC IdP origin.
+    // That is CI_CLOUD_URL (ciCloudUrl) — already normalized to the Portal origin
+    // per environment (https://hub.ci.computer in prod, https://hub.companionintelligence.com
+    // in dev). NOTE: this is NOT hub.<DOMAIN>: DOMAIN is the public *app* zone
+    // (apps deploy at ci-memory-<org>.companionintelligence.com), which in prod is
+    // a different zone from the Portal IdP. We only inject for first-party CI apps;
+    // a third-party app (e.g. AnythingLLM) may read OIDC_ISSUER_URL for its own IdP,
+    // so we must never clobber it.
+    const { ciCloudUrl } = this.config.getConfig();
+    const isFirstPartyPortalOidcApp =
+      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+    if (isFirstPartyPortalOidcApp && ciCloudUrl) {
+      envMap.set('OIDC_ISSUER_URL', ciCloudUrl.replace(/\/+$/, ''));
+    }
+
     envMap.delete('APP_PUBLIC_DOMAIN');
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
