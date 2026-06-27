@@ -28,6 +28,7 @@ export type UserContextDto = {
 };
 
 export type AppContextDto = {
+    appDataRootHostPath?: string | null;
     apps: Array<{
         available: boolean;
         categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
@@ -455,6 +456,7 @@ export type GetAppDto = {
         localSubdomain?: string | null;
         updatedAt?: string;
     } | null;
+    appDataHostPath?: string | null;
 };
 
 export type GetComposeDiffDto = {

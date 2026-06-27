@@ -1,6 +1,6 @@
-import { render, screen } from '@/tests/test-utils';
+import { render, screen, userEvent } from '@/tests/test-utils';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { AppActions } from './app-actions';
 
@@ -9,6 +9,18 @@ const hoisted = vi.hoisted(() => ({
     getQueryData: vi.fn(),
   },
   navigate: vi.fn(),
+  // null => web client (no Tauri); a function => running inside the desktop app.
+  tauriInvoke: null as null | (() => unknown),
+  openPath: vi.fn(),
+}));
+
+vi.mock('@/lib/helpers/open-folder', () => ({
+  openPathInFileExplorer: (...args: unknown[]) => hoisted.openPath(...args),
+  openLogsFolder: vi.fn(),
+}));
+
+vi.mock('@/lib/helpers/tauri-invoke', () => ({
+  getTauriInvoke: () => hoisted.tauriInvoke,
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -163,7 +175,45 @@ const metadata: AppMetadata = {
 
 const runningApp = makeApp();
 
+const OPEN_DATA_FOLDER_TESTID = 'icon-action-app_action_open_data_folder';
+
 describe('AppActions', () => {
+  afterEach(() => {
+    hoisted.tauriInvoke = null;
+    hoisted.openPath.mockReset();
+  });
+
+  it('hides the "Open data folder" button in the web client (no Tauri)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+    hoisted.tauriInvoke = null;
+
+    render(<AppActions app={runningApp} metadata={metadata} info={info} appDataHostPath="/srv/hub/app-data/community/test-app" layout="hero" />);
+
+    expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+  });
+
+  it('shows the "Open data folder" button in the desktop app and opens the host path on click', async () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+    hoisted.tauriInvoke = vi.fn();
+
+    render(<AppActions app={runningApp} metadata={metadata} info={info} appDataHostPath="/srv/hub/app-data/community/test-app" layout="hero" />);
+
+    const button = screen.getByTestId(OPEN_DATA_FOLDER_TESTID);
+    expect(button).toBeInTheDocument();
+
+    await userEvent.click(button);
+    expect(hoisted.openPath).toHaveBeenCalledWith('/srv/hub/app-data/community/test-app');
+  });
+
+  it('hides the "Open data folder" button when no host path is available', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+    hoisted.tauriInvoke = vi.fn();
+
+    render(<AppActions app={runningApp} metadata={metadata} info={info} layout="hero" />);
+
+    expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+  });
+
   it('keeps install errors inline in hero layout with constrained width', () => {
     hoisted.queryClient.getQueryData.mockReturnValue({
       message: 'Install completed with warnings and needs your attention before the app is fully usable.',
