@@ -70,6 +70,7 @@ describe('RocmSetupCard', () => {
       json: () =>
         Promise.resolve({
           hostRocmAvailable: true,
+          hostRocmKfdAvailable: true,
           runtimeRocmAvailable: true,
           installPhase: 'completed',
           canAutoInstall: false,
@@ -77,7 +78,7 @@ describe('RocmSetupCard', () => {
         }),
     });
 
-    render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: true })} onRescan={vi.fn()} />);
+    render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: true, hostRocmKfdAvailable: true })} onRescan={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument());
     expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
@@ -89,6 +90,7 @@ describe('RocmSetupCard', () => {
       json: () =>
         Promise.resolve({
           hostRocmAvailable: true,
+          hostRocmKfdAvailable: true,
           runtimeRocmAvailable: true,
           installPhase: 'completed',
           canAutoInstall: false,

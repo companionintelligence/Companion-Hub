@@ -12,6 +12,8 @@ export interface HardwareProfile {
     runtimeAvailable: boolean;
     /** Host ROCm stack detected via init-gpu-runtime probe. Linux AMD only; optional on older profiles. */
     hostRocmAvailable?: boolean;
+    /** Host /dev/kfd is available for ROCm container apps (ComfyUI, etc.). Optional on older profiles. */
+    hostRocmKfdAvailable?: boolean;
   };
   npu: {
     available: boolean;
