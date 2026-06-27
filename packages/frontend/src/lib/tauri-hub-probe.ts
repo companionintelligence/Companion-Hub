@@ -21,7 +21,7 @@ async function probeWithFetch(): Promise<number | null> {
   const outcomes = await Promise.all(
     TAURI_HUB_HEALTH_PROBE_PORTS.map(async (port) => {
       try {
-        const res = await fetch(`http://localhost:${port}/api/health`, {
+        const res = await fetch(`http://localhost:${port}/api/health/live`, {
           signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
         });
         return res.ok ? port : null;

@@ -255,7 +255,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         });
     }
 
-    await this.cloudValidationInFlight;
+    // Never block status/API handlers on Portal or tunnel probes — return the
+    // last-known phase immediately while validation runs in the background.
   }
 
   /**
@@ -439,7 +440,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
         {
-          timeout: 10_000,
+          timeout: 5_000,
           validateStatus: () => true,
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
         },
@@ -473,26 +474,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.info('Registration validation passed: device is active in CI Portal');
       }
 
-      // Probe DNS reachability for locally_ready phase — log a warning if the public
-      // hostname is not yet resolving (tunnel may still be stabilising after a restart).
+      // Best-effort tunnel reachability logging — never block validation completion.
       if (this._currentPhase === 'locally_ready') {
-        const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-        const { domain } = this.config.getConfig();
-
-        if (org?.hubSubdomain && domain && domain !== 'example.com') {
-          const hostname = `${org.hubSubdomain}.${domain}`;
-          try {
-            const dnsCheck = await axios.head(`https://${hostname}`, {
-              timeout: 5_000,
-              validateStatus: () => true,
-            });
-            if (dnsCheck.status >= 400 && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
-              this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
-            }
-          } catch {
-            this.logger.warn(`Registration validation: public hostname ${hostname} not yet reachable — tunnel may still be stabilising`);
-          }
-        }
+        void this.logPublicHostnameReachability().catch((error) => {
+          this.logger.debug(`Registration validation: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
     } catch (e) {
       // Network/timeout errors are transient — count toward the 3-strike threshold.
@@ -501,6 +487,29 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (this.consecutiveValidationFailures >= 3) {
         await this.setPhase('degraded', ['cloud_validation_failed']);
       }
+    }
+  }
+
+  /** Log-only probe for tunnel DNS/HTTPS reachability — must not block request handlers. */
+  private async logPublicHostnameReachability(): Promise<void> {
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    const { domain } = this.config.getConfig();
+
+    if (!org?.hubSubdomain || !domain || domain === 'example.com') {
+      return;
+    }
+
+    const hostname = `${org.hubSubdomain}.${domain}`;
+    try {
+      const dnsCheck = await axios.head(`https://${hostname}`, {
+        timeout: 2_000,
+        validateStatus: () => true,
+      });
+      if (dnsCheck.status >= 400 && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
+        this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
+      }
+    } catch {
+      this.logger.warn(`Registration validation: public hostname ${hostname} not yet reachable — tunnel may still be stabilising`);
     }
   }
 
