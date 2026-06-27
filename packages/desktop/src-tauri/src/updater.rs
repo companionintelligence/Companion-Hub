@@ -25,9 +25,11 @@ const UPDATE_BASE_URL_ENV: &str = "CI_HUB_UPDATE_BASE_URL";
 pub const RELAUNCH_AFTER_UPDATE_FLAG: &str = "--relaunch-after-update";
 const DETACHED_FLAG: &str = "--detached";
 
-/// Where update metadata and artifacts come from. Release builds always use the
-/// production CDN; debug builds may point at a local QA server via
-/// `CI_HUB_UPDATE_BASE_URL` (e.g. `http://127.0.0.1:8765`).
+/// Where update metadata and artifacts come from.
+///
+/// Release builds use the CDN baked in at compile time via `CI_HUB_ENVIRONMENT`
+/// (`https://dl.ci.computer` for production, `https://dl-dev.ci.computer` for dev).
+/// Debug builds may override with `CI_HUB_UPDATE_BASE_URL` (e.g. `http://127.0.0.1:8765`).
 #[derive(Debug, Clone)]
 pub(crate) struct UpdateSource {
     base: String,
@@ -36,7 +38,8 @@ pub(crate) struct UpdateSource {
 }
 
 impl UpdateSource {
-    fn prod() -> Self {
+    /// Compile-time default CDN for this binary (see `hub_env::default_update_cdn_*`).
+    fn default_cdn() -> Self {
         Self {
             base: default_update_cdn_base().to_string(),
             host: default_update_cdn_host().to_string(),
@@ -51,7 +54,7 @@ impl UpdateSource {
                 return source;
             }
         }
-        Self::prod()
+        Self::default_cdn()
     }
 
     #[cfg(any(debug_assertions, test))]
@@ -100,7 +103,7 @@ impl UpdateSource {
     }
 
     /// HTTP client that only follows redirects staying on the trusted host, so a
-    /// redirect cannot silently move the download off `dl.ci.computer`.
+    /// redirect cannot silently move the download off the configured CDN origin.
     fn http_client(&self, timeout: Duration) -> Result<reqwest::blocking::Client, String> {
         let host = self.host.clone();
         reqwest::blocking::Client::builder()
@@ -1647,7 +1650,7 @@ mod tests {
 
     #[test]
     fn artifact_for_platform_selects_expected_installers() {
-        let source = UpdateSource::prod();
+        let source = UpdateSource::default_cdn();
         let mac = serde_json::json!({ "dmg": sample_artifact(&cdn_url("v1/macos/arm/hub.dmg")) });
         assert_eq!(
             artifact_for_platform_data(&mac, HostOs::Macos, "appimage", &source)
@@ -1711,7 +1714,7 @@ mod tests {
             version: "1.0.0".to_string(),
             platforms,
         };
-        let artifact = resolve_download_artifact(&manifest, &UpdateSource::prod())
+        let artifact = resolve_download_artifact(&manifest, &UpdateSource::default_cdn())
             .expect("artifact for current platform");
         assert!(artifact.url.starts_with(&format!("{}/", default_update_cdn_base())));
     }
@@ -1750,7 +1753,7 @@ mod tests {
 
     #[test]
     fn release_cdn_source_trusts_only_its_host() {
-        let source = UpdateSource::prod();
+        let source = UpdateSource::default_cdn();
         assert!(source.is_trusted(&cdn_url("v0.2.18/macos/arm/hub.dmg")));
         assert!(!source.is_trusted(&format!(
             "http://{}/v0.2.18/macos/arm/hub.dmg",
@@ -1828,7 +1831,7 @@ mod tests {
     }
 
     /// Minimal HTTP server for hermetic end-to-end coverage of the check →
-    /// manifest → download → verify pipeline, without touching dl.ci.computer.
+    /// Hermetic local-HTTP-server end-to-end of check → manifest → download → verify.
     fn spawn_test_update_server(latest_version: &str, artifact: Vec<u8>) -> (String, String) {
         let sha = {
             let mut hasher = Sha256::new();
