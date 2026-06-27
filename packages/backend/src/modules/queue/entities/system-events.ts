@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Queue } from '../queue.entity';
 
 export const systemCommandSchema = z.object({
-  command: z.literal('sync_app_statuses'),
+  command: z.union([z.literal('sync_app_statuses'), z.literal('reconcile_orphan_networks')]),
 });
 
 export const systemCommandResultSchema = z.object({
@@ -13,6 +13,7 @@ export const systemCommandResultSchema = z.object({
   skippedCount: z.number().optional(),
   errorCount: z.number().optional(),
   totalApps: z.number().optional(),
+  removedCount: z.number().optional(),
 });
 
 @Injectable()

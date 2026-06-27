@@ -6,20 +6,23 @@ import { SubnetManagerService } from './subnet-manager.service';
 import { PortManagerService } from './port-manager.service';
 import { PortAllocationRepository } from './port-allocation.repository';
 import { PortController } from './port.controller';
+import { NetworkDiagnosticsService } from './network-diagnostics.service';
+import { NetworkController } from './network.controller';
 
 @Module({
-  controllers: [PortController],
+  controllers: [PortController, NetworkController],
   providers: [
     AppsRepository,
     SubnetManagerService,
     PortManagerService,
     PortAllocationRepository,
+    NetworkDiagnosticsService,
     {
       provide: DOCKERODE,
       useFactory: (): Dockerode => new Dockerode(),
       inject: [],
     },
   ],
-  exports: [SubnetManagerService, PortManagerService, PortAllocationRepository],
+  exports: [SubnetManagerService, PortManagerService, PortAllocationRepository, NetworkDiagnosticsService],
 })
 export class NetworkModule {}

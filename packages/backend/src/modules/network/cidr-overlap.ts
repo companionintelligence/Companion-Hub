@@ -1,5 +1,17 @@
+export interface ParsedIpv4Cidr {
+  /** Canonical network address + prefix, e.g. 10.128.10.0/24 */
+  normalized: string;
+  start: number;
+  end: number;
+  prefix: number;
+}
+
+function numberToIpv4(value: number): string {
+  return `${(value >>> 24) & 255}.${(value >>> 16) & 255}.${(value >>> 8) & 255}.${value & 255}`;
+}
+
 /** Parse an IPv4 CIDR into numeric start/end (inclusive). Returns null when invalid. */
-export function ipv4CidrRange(cidr: string): { start: number; end: number } | null {
+export function parseIpv4Cidr(cidr: string): ParsedIpv4Cidr | null {
   const trimmed = cidr.trim();
   const slash = trimmed.indexOf('/');
   if (slash <= 0) {
@@ -32,12 +44,31 @@ export function ipv4CidrRange(cidr: string): { start: number; end: number } | nu
   const start = (network & mask) >>> 0;
   const end = (start | (~mask >>> 0)) >>> 0;
 
-  return { start, end };
+  return {
+    normalized: `${numberToIpv4(start)}/${prefix}`,
+    start,
+    end,
+    prefix,
+  };
+}
+
+/** @deprecated Use parseIpv4Cidr().start/end */
+export function ipv4CidrRange(cidr: string): { start: number; end: number } | null {
+  const parsed = parseIpv4Cidr(cidr);
+  if (!parsed) {
+    return null;
+  }
+  return { start: parsed.start, end: parsed.end };
+}
+
+/** Normalize Docker/DB variants (e.g. 10.128.10.1/24) to canonical network CIDRs. */
+export function normalizeIpv4Cidr(cidr: string): string | null {
+  return parseIpv4Cidr(cidr)?.normalized ?? null;
 }
 
 export function cidrOverlaps(left: string, right: string): boolean {
-  const leftRange = ipv4CidrRange(left);
-  const rightRange = ipv4CidrRange(right);
+  const leftRange = parseIpv4Cidr(left);
+  const rightRange = parseIpv4Cidr(right);
   if (!leftRange || !rightRange) {
     return false;
   }
@@ -46,4 +77,8 @@ export function cidrOverlaps(left: string, right: string): boolean {
 
 export function cidrConflictsWithAny(candidate: string, occupied: string[]): boolean {
   return occupied.some((other) => cidrOverlaps(candidate, other));
+}
+
+export function rangesOverlap(left: ParsedIpv4Cidr, right: ParsedIpv4Cidr): boolean {
+  return left.start <= right.end && right.start <= left.end;
 }

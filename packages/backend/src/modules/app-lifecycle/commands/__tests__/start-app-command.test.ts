@@ -12,6 +12,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import type { AppUrn } from '@ci-hub/common/types';
 
 vi.mock('node:fs', async () => ({
@@ -78,6 +79,15 @@ describe('StartAppCommand — pull policy', () => {
     const subnetManager = mock<SubnetManagerService>();
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
     subnetManager.releaseSubnet.mockResolvedValue(undefined);
+    subnetManager.listOccupiedSubnets.mockResolvedValue([
+      { cidr: '10.128.10.0/24', source: 'docker', dockerNetworkName: 'chatwoot_ci-marketplace_network' },
+    ]);
+
+    const appsRepository = mock<AppsRepository>();
+    appsRepository.getAppByUrn.mockResolvedValue({
+      id: 1,
+      subnet: '10.128.10.0/24',
+    } as any);
 
     const dockerode = mock<Dockerode>();
     // @ts-expect-error
@@ -93,6 +103,7 @@ describe('StartAppCommand — pull policy', () => {
         if (token === TraefikConfigService) return traefikConfigService;
         if (token === MarketplaceService) return marketplaceService;
         if (token === SubnetManagerService) return subnetManager;
+        if (token === AppsRepository) return appsRepository;
         if (token === EnvUtils) return new EnvUtils();
         return mock();
       }),
@@ -151,5 +162,19 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledTimes(2);
     expect(dockerService.composeApp).toHaveBeenCalledTimes(2);
+  });
+
+  it('SHOULD return a friendly network overlap error after retries are exhausted', async () => {
+    dockerService.composeApp.mockRejectedValue(
+      new Error('failed to create network ghost_ci-marketplace_network: networks have overlapping IPv4 10.128.10.0/24'),
+    );
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('network_overlap');
+    expect(result.message).toContain('network range conflict');
+    expect(result.errorDetail).toContain('10.128.10.0/24');
+    expect(dockerService.composeApp).toHaveBeenCalledTimes(3);
   });
 });

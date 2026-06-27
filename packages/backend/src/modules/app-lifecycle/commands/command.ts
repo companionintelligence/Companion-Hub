@@ -4,6 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -20,7 +21,13 @@ import { buildOriginServerName } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
-import { AppLifecycleError, type AppCommandFailureResult, translateRocmKfdInstallMessage } from './app-lifecycle-errors';
+import {
+  AppLifecycleError,
+  type AppCommandFailureResult,
+  translateRocmKfdInstallMessage,
+  translateDockerNetworkOverlapError,
+} from './app-lifecycle-errors';
+import { cidrOverlaps } from '@/modules/network/cidr-overlap';
 
 export class AppLifecycleCommand {
   constructor(
@@ -161,6 +168,10 @@ export class AppLifecycleCommand {
         lastError = error;
         const canRetry = isDockerNetworkOverlapError(error) && attempt < maxAttempts;
         if (!canRetry) {
+          const overlapError = translateDockerNetworkOverlapError(error, await this.describeNetworkOverlap(appUrn));
+          if (overlapError) {
+            throw overlapError;
+          }
           throw error;
         }
 
@@ -171,6 +182,23 @@ export class AppLifecycleCommand {
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async describeNetworkOverlap(appUrn: AppUrn): Promise<string[]> {
+    const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
+    if (!subnetManager) {
+      return [];
+    }
+
+    const occupied = await subnetManager.listOccupiedSubnets(appUrn);
+    const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+    const app = appsRepository ? await appsRepository.getAppByUrn(appUrn).catch(() => null) : null;
+    const candidateSubnet = app?.subnet;
+    if (!candidateSubnet) {
+      return occupied.map((entry) => entry.cidr);
+    }
+
+    return occupied.filter((entry) => cidrOverlaps(candidateSubnet, entry.cidr)).map((entry) => entry.cidr);
   }
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {
@@ -186,6 +214,17 @@ export class AppLifecycleCommand {
     }
 
     if (err instanceof Error) {
+      const overlapTranslated = translateDockerNetworkOverlapError(err);
+      if (overlapTranslated) {
+        this.reportCommandFailure(appId, event, overlapTranslated.errorDetail ?? overlapTranslated.message);
+        return {
+          success: false,
+          message: overlapTranslated.message,
+          errorCode: overlapTranslated.errorCode,
+          errorDetail: overlapTranslated.errorDetail,
+        };
+      }
+
       const translated = translateRocmKfdInstallMessage(err.message);
       if (translated) {
         this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message);

@@ -10,7 +10,7 @@ import { AppStoreModule } from '../app-stores/app-store.module';
 import { QueueModule } from '../queue/queue.module';
 import { RegistrationModule } from '../registration/registration.module';
 import { TailscaleModule } from '../tailscale/tailscale.module';
-import { UserModule } from '../user/user.module';
+import { NetworkModule } from '../network/network.module';
 import { AppRehydrationService } from './app-rehydration.service';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
@@ -31,6 +31,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
     RegistrationModule,
     TailscaleModule,
     UserModule,
+    NetworkModule,
   ],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService, AppRehydrationService],
   controllers: [AppLifecycleController],

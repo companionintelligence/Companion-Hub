@@ -499,7 +499,12 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
   };
 
   // If there was an install error for this app, show it under the open/action area
-  const installErrorMessage = installError?.errorCode === 'rocm_kfd_missing' ? t('APP_ERROR_ROCM_KFD_MISSING') : installError?.message;
+  const installErrorMessage =
+    installError?.errorCode === 'rocm_kfd_missing'
+      ? t('APP_ERROR_ROCM_KFD_MISSING')
+      : installError?.errorCode === 'network_overlap'
+        ? t('APP_ERROR_NETWORK_OVERLAP')
+        : installError?.message;
   const installErrorSettingsPath =
     installError?.settingsPath ?? (installError?.errorCode === 'rocm_kfd_missing' ? '/settings?tab=ai&section=rocm' : undefined);
 

@@ -5,13 +5,15 @@ import type { AppUrn } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from '../docker/constants';
-import { cidrConflictsWithAny, cidrOverlaps } from './cidr-overlap';
+import { cidrOverlaps, normalizeIpv4Cidr, parseIpv4Cidr, rangesOverlap } from './cidr-overlap';
+import { collectOccupiedSubnets, occupiedCidrStrings, type OccupiedSubnet } from './subnet-occupancy';
 
 const SUBNET_MASK = '/24';
 const MAX_RETRIES = 3;
 const STARTING_OCTET_2 = 128;
 const MAX_OCTET_VALUE = 254;
 const RESERVED_SUBNET_MAX_OCTET_3 = 9;
+const HUB_SUBNET_REGEX = /^10\.(\d{1,3})\.(\d{1,3})\.0\/24$/;
 
 @Injectable()
 export class SubnetManagerService {
@@ -34,18 +36,22 @@ export class SubnetManagerService {
     }
 
     if (existingApp.subnet) {
-      const available = await this.isSubnetAvailable(existingApp.subnet, appUrn);
+      const normalizedSubnet = normalizeIpv4Cidr(existingApp.subnet) ?? existingApp.subnet;
+      const available = await this.isSubnetAvailable(normalizedSubnet, appUrn);
       if (available) {
-        this.logger.info(`App ${appUrn} already has subnet ${existingApp.subnet}`);
-        return existingApp.subnet;
+        if (normalizedSubnet !== existingApp.subnet) {
+          await this.appsRepository.updateAppById(existingApp.id, { subnet: normalizedSubnet });
+        }
+        this.logger.info(`App ${appUrn} already has subnet ${normalizedSubnet}`);
+        return normalizedSubnet;
       }
 
-      this.logger.warn(`App ${appUrn} subnet ${existingApp.subnet} conflicts with Docker; reassigning`);
+      this.logger.warn(`App ${appUrn} subnet ${existingApp.subnet} conflicts with occupied ranges; reassigning`);
       await this.appsRepository.updateAppById(existingApp.id, { subnet: null });
     }
 
-    const allocatedSubnets = await this.collectOccupiedCidrs(appUrn);
-    const nextSubnet = this.findNextAvailableSubnet(allocatedSubnets);
+    const occupied = await this.listOccupiedSubnets(appUrn);
+    const nextSubnet = this.findNextAvailableSubnet(occupied);
 
     if (!nextSubnet) {
       throw new TranslatableError('NETWORK_ERROR_NO_AVAILABLE_SUBNETS');
@@ -76,31 +82,38 @@ export class SubnetManagerService {
     this.logger.info(`Released subnet ${existingApp.subnet} for app ${appUrn}`);
   }
 
+  /** DB + Docker IPv4 ranges currently occupied on the host. */
+  public async listOccupiedSubnets(excludeAppUrn?: AppUrn): Promise<OccupiedSubnet[]> {
+    const apps = await this.appsRepository.getApps();
+    return collectOccupiedSubnets(apps, this.docker, { excludeAppUrn });
+  }
+
+  private composeProjectName(appUrn: AppUrn): string {
+    return appUrn.replace(':', '_');
+  }
+
   private async isSubnetAvailable(subnet: string, appUrn: AppUrn): Promise<boolean> {
-    const projectName = appUrn.replace(':', '_');
-    const networks = await this.docker.listNetworks();
-
-    for (const network of networks ?? []) {
-      for (const config of network.IPAM?.Config ?? []) {
-        const dockerSubnet = config.Subnet;
-        if (!dockerSubnet || !cidrOverlaps(subnet, dockerSubnet)) {
-          continue;
-        }
-
-        const networkProject = network.Labels?.['com.docker.compose.project'];
-        if (networkProject !== projectName) {
-          return false;
-        }
-      }
+    const normalized = normalizeIpv4Cidr(subnet);
+    if (!normalized) {
+      return false;
     }
 
-    const apps = await this.appsRepository.getApps();
-    for (const record of apps) {
-      const recordUrn = `${record.appName}:${record.appStoreSlug}` as AppUrn;
-      if (recordUrn === appUrn || !record.subnet) {
+    const projectName = this.composeProjectName(appUrn);
+    const occupied = await this.listOccupiedSubnets();
+
+    for (const entry of occupied) {
+      if (!cidrOverlaps(normalized, entry.cidr)) {
         continue;
       }
-      if (cidrOverlaps(subnet, record.subnet)) {
+
+      if (entry.source === 'database') {
+        if (entry.appUrn !== appUrn) {
+          return false;
+        }
+        continue;
+      }
+
+      if (entry.composeProject !== projectName) {
         return false;
       }
     }
@@ -108,55 +121,14 @@ export class SubnetManagerService {
     return true;
   }
 
-  /** Subnets reserved in the DB (excluding this app) plus live Docker IPAM ranges. */
-  private async collectOccupiedCidrs(excludeAppUrn?: AppUrn): Promise<string[]> {
-    const apps = await this.appsRepository.getApps();
-    const appSubnets = apps
-      .filter((record) => {
-        if (!excludeAppUrn) {
-          return true;
-        }
-        const recordUrn = `${record.appName}:${record.appStoreSlug}` as AppUrn;
-        return recordUrn !== excludeAppUrn;
-      })
-      .map((record) => record.subnet)
-      .filter((subnet): subnet is string => subnet !== null);
-
-    const networks = await this.docker.listNetworks();
-    const dockerSubnets = (networks ?? [])
-      .flatMap((network) => network.IPAM?.Config ?? [])
-      .map((config) => config.Subnet)
-      .filter((subnet): subnet is string => Boolean(subnet));
-
-    return [...new Set([...appSubnets, ...dockerSubnets])];
-  }
-
   /**
-   * Find the next available subnet that's not in use
-   * @param occupiedCidrs CIDR ranges already in use on the host
+   * Find the next available Hub /24 that's not in use
+   * @param occupied Unified DB + Docker occupancy entries
    * @returns The next available subnet or null if all are used
    */
-  private findNextAvailableSubnet(occupiedCidrs: string[]): string | null {
-    const blockedOctetPairs = new Set<string>();
-    const hubSubnetRegex = /^10\.(\d{1,3})\.(\d{1,3})\.0\/24$/;
-
-    for (const occupied of occupiedCidrs) {
-      const match = occupied.match(hubSubnetRegex);
-      if (match) {
-        blockedOctetPairs.add(`${match[1]}.${match[2]}`);
-        continue;
-      }
-
-      for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
-        const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;
-        for (let z = startOctet3; z <= MAX_OCTET_VALUE; z++) {
-          const candidate = `10.${y}.${z}.0${SUBNET_MASK}`;
-          if (cidrConflictsWithAny(candidate, [occupied])) {
-            blockedOctetPairs.add(`${y}.${z}`);
-          }
-        }
-      }
-    }
+  private findNextAvailableSubnet(occupied: OccupiedSubnet[]): string | null {
+    const occupiedCidrs = occupiedCidrStrings(occupied);
+    const blockedOctetPairs = this.blockedHubOctetPairs(occupiedCidrs);
 
     for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
       const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;
@@ -170,5 +142,30 @@ export class SubnetManagerService {
     }
 
     return null;
+  }
+
+  private blockedHubOctetPairs(occupiedCidrs: string[]): Set<string> {
+    const blocked = new Set<string>();
+    const parsedOccupied = occupiedCidrs.map((cidr) => parseIpv4Cidr(cidr)).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    for (const occupied of parsedOccupied) {
+      const hubMatch = occupied.normalized.match(HUB_SUBNET_REGEX);
+      if (hubMatch) {
+        blocked.add(`${hubMatch[1]}.${hubMatch[2]}`);
+        continue;
+      }
+
+      for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
+        const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;
+        for (let z = startOctet3; z <= MAX_OCTET_VALUE; z++) {
+          const candidate = parseIpv4Cidr(`10.${y}.${z}.0${SUBNET_MASK}`);
+          if (candidate && rangesOverlap(candidate, occupied)) {
+            blocked.add(`${y}.${z}`);
+          }
+        }
+      }
+    }
+
+    return blocked;
   }
 }

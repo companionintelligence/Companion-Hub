@@ -71,6 +71,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             ));
             break;
           }
+          if (errorCode === 'network_overlap') {
+            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+            break;
+          }
           toast.error((toastInstance) => (
             <span className="text-sm">
               <Trans
@@ -87,6 +91,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.success(t('APP_START_SUCCESS', { id: appName }));
           break;
         case 'start_error':
+          if (errorCode === 'network_overlap') {
+            toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
+            break;
+          }
           toast.error(t('APP_ERROR_APP_FAILED_TO_START', { id: appName }));
           break;
         case 'stop_success':
