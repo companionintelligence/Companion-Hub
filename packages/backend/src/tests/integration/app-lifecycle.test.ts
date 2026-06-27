@@ -110,6 +110,15 @@ describe('App lifecycle', () => {
     localDomain: 'ci.lan',
   });
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
+  dockerService.removeAppNetworks.mockResolvedValue(undefined);
+  dockerService.pullImages.mockResolvedValue(undefined);
+  dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+    ok: true,
+    appStatus: 'running',
+    summary: { total: 1, running: 1, exitZero: 0 },
+    message: 'All containers are running',
+  });
+  dockerService.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
   let appEventsQueue: AppEventsQueue;
