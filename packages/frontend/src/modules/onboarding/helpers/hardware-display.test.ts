@@ -36,14 +36,14 @@ describe('hardware-display', () => {
     expect(vram.sub).toBe('Shared · APU');
   });
 
-  it('returns host ROCm ready notice when hostRocmAvailable is true', () => {
-    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmAvailable: true }));
+  it('returns host ROCm ready notice when hostRocmKfdAvailable is true', () => {
+    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmKfdAvailable: true }));
     expect(notice?.tone).toBe('ready');
     expect(notice?.title).toBe('Host ROCm detected');
   });
 
-  it('returns install hint when AMD GPU lacks host ROCm', () => {
-    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmAvailable: false }));
+  it('returns install hint when AMD GPU lacks host /dev/kfd passthrough', () => {
+    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmAvailable: false, hostRocmKfdAvailable: false }));
     expect(notice?.tone).toBe('hint');
     expect(notice?.body).toMatch(/Install ROCm on the host/i);
   });

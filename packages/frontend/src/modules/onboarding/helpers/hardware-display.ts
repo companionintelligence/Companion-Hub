@@ -66,7 +66,7 @@ export function resolveAmdHostRocmNotice(hardware: HardwareProfile): AmdHostRocm
     return null;
   }
 
-  if (hardware.gpu.hostRocmAvailable) {
+  if (hardware.gpu.hostRocmKfdAvailable ?? hardware.gpu.hostRocmAvailable) {
     return {
       tone: 'ready',
       title: i18next.t('AI_ROCM_DETECTED_TITLE'),

@@ -275,6 +275,7 @@ describe('AiSetupStep', () => {
           available: true,
           runtimeAvailable: false,
           hostRocmAvailable: true,
+          hostRocmKfdAvailable: true,
           vendor: 'amd',
           model: 'Radeon RX 7900 XTX',
         },
