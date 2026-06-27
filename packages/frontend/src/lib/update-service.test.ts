@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkForUpdates,
   getInstalledDesktopVersion,
@@ -32,7 +32,12 @@ describe('update-service', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'production');
   });
 
   it('rejects untrusted manual download URLs before opening them', async () => {
@@ -132,8 +137,13 @@ describe('update-service', () => {
     expect(mockInvoke).toHaveBeenCalledWith('check_desktop_update_command');
   });
 
-  it('accepts dl.ci.computer HTTPS URLs', () => {
+  it('accepts dl.ci.computer HTTPS URLs for production builds', () => {
     expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/macos/arm/Companion%20Hub_0.2.18_aarch64.dmg')).toBe(true);
+  });
+
+  it('accepts dl-dev.ci.computer HTTPS URLs for dev builds', () => {
+    vi.stubEnv('CI_HUB_ENVIRONMENT', 'dev');
+    expect(isTrustedDownloadUrl('https://dl-dev.ci.computer/v0.2.18/macos/arm/Companion%20Hub_0.2.18_aarch64.dmg')).toBe(true);
   });
 
   it('rejects non-HTTPS URLs', () => {

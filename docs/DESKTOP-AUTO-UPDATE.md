@@ -16,8 +16,15 @@ dl.ci.computer/v<ver>/manifest.json   → per-platform installer URLs + size + s
 dl.ci.computer/v<ver>/<os>/<arch>/…   → installers (dmg/msi/exe/deb/rpm/AppImage)
 ```
 
-Both files are produced by `.github/workflows/desktop-release.yml` (`upload-r2` job)
-and only update on **production** releases — dev releases never move the update feed.
+Both files are produced by `.github/workflows/desktop-release.yml` (`upload-r2` job).
+
+| Environment | CDN | Bucket |
+|---|---|---|
+| production | `https://dl.ci.computer` | `dl-prod` |
+| dev | `https://dl-dev.ci.computer` | `dl-dev` |
+
+Production releases update the public auto-update feed. Dev releases update a
+separate dev feed so dev desktop builds can update without touching production.
 
 ### Update triggers
 
@@ -76,4 +83,5 @@ CI_HUB_UPDATE_BASE_URL=http://127.0.0.1:8765 ./target/debug/ci-os-hub-desktop up
 ```
 
 Release builds ignore `CI_HUB_UPDATE_BASE_URL` entirely (compiled out via
-`debug_assertions`) and always pin `https://dl.ci.computer`.
+`debug_assertions`) and use the compile-time CDN for the build environment
+(`https://dl.ci.computer` for production, `https://dl-dev.ci.computer` for dev).

@@ -46,6 +46,60 @@ describe('HealthController', () => {
     controller = moduleRef.get(HealthController);
   });
 
+  it('live should return ok immediately', () => {
+    expect(controller.live()).toEqual({ status: 'ok' });
+  });
+
+  describe('check', () => {
+    it('should delegate readiness to terminus with a timeout guard', async () => {
+      const healthCheckService = mock<HealthCheckService>();
+      const queueHealthIndicator = mock<QueueHealthIndicator>();
+      healthCheckService.check.mockResolvedValue({ status: 'ok' } as any);
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [HealthController],
+        providers: [
+          { provide: HealthCheckService, useValue: healthCheckService },
+          { provide: QueueHealthIndicator, useValue: queueHealthIndicator },
+        ],
+      }).compile();
+
+      const controller = moduleRef.get(HealthController);
+      const result = await controller.check();
+
+      expect(result).toEqual({ status: 'ok' });
+      expect(healthCheckService.check).toHaveBeenCalledOnce();
+    });
+
+    it('should reject with ServiceUnavailableException when readiness check times out', async () => {
+      vi.useFakeTimers();
+
+      const healthCheckService = mock<HealthCheckService>();
+      const queueHealthIndicator = mock<QueueHealthIndicator>();
+      healthCheckService.check.mockReturnValue(new Promise(() => {}));
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [HealthController],
+        providers: [
+          { provide: HealthCheckService, useValue: healthCheckService },
+          { provide: QueueHealthIndicator, useValue: queueHealthIndicator },
+        ],
+      }).compile();
+
+      const controller = moduleRef.get(HealthController);
+      const checkPromise = controller.check();
+      const expectation = expect(checkPromise).rejects.toMatchObject({
+        message: 'readiness check timed out',
+        status: 503,
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      await expectation;
+
+      vi.useRealTimers();
+    });
+  });
+
   describe('checkDataIntegrity', () => {
     it('should return ok when all directories exist and are writable', async () => {
       vi.mocked(fs.promises.access).mockResolvedValue(undefined);

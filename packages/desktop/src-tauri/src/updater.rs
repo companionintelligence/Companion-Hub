@@ -10,10 +10,9 @@ use serde::Deserialize;
 
 use sha2::{Digest, Sha256};
 
+use crate::hub_env::{default_update_cdn_base, default_update_cdn_host};
 use crate::hub_manager::{self, PersistedLaunchMode};
 
-const UPDATE_BASE_URL: &str = "https://dl.ci.computer";
-const ALLOWED_DOWNLOAD_HOST: &str = "dl.ci.computer";
 const UPDATE_LISTENER_ADDR: &str = "127.0.0.1:17400";
 const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 #[cfg(debug_assertions)]
@@ -26,9 +25,11 @@ const UPDATE_BASE_URL_ENV: &str = "CI_HUB_UPDATE_BASE_URL";
 pub const RELAUNCH_AFTER_UPDATE_FLAG: &str = "--relaunch-after-update";
 const DETACHED_FLAG: &str = "--detached";
 
-/// Where update metadata and artifacts come from. Release builds always use the
-/// production CDN; debug builds may point at a local QA server via
-/// `CI_HUB_UPDATE_BASE_URL` (e.g. `http://127.0.0.1:8765`).
+/// Where update metadata and artifacts come from.
+///
+/// Release builds use the CDN baked in at compile time via `CI_HUB_ENVIRONMENT`
+/// (`https://dl.ci.computer` for production, `https://dl-dev.ci.computer` for dev).
+/// Debug builds may override with `CI_HUB_UPDATE_BASE_URL` (e.g. `http://127.0.0.1:8765`).
 #[derive(Debug, Clone)]
 pub(crate) struct UpdateSource {
     base: String,
@@ -37,10 +38,11 @@ pub(crate) struct UpdateSource {
 }
 
 impl UpdateSource {
-    fn prod() -> Self {
+    /// Compile-time default CDN for this binary (see `hub_env::default_update_cdn_*`).
+    fn default_cdn() -> Self {
         Self {
-            base: UPDATE_BASE_URL.to_string(),
-            host: ALLOWED_DOWNLOAD_HOST.to_string(),
+            base: default_update_cdn_base().to_string(),
+            host: default_update_cdn_host().to_string(),
             allow_http: false,
         }
     }
@@ -52,7 +54,7 @@ impl UpdateSource {
                 return source;
             }
         }
-        Self::prod()
+        Self::default_cdn()
     }
 
     #[cfg(any(debug_assertions, test))]
@@ -101,7 +103,7 @@ impl UpdateSource {
     }
 
     /// HTTP client that only follows redirects staying on the trusted host, so a
-    /// redirect cannot silently move the download off `dl.ci.computer`.
+    /// redirect cannot silently move the download off the configured CDN origin.
     fn http_client(&self, timeout: Duration) -> Result<reqwest::blocking::Client, String> {
         let host = self.host.clone();
         reqwest::blocking::Client::builder()
@@ -1418,18 +1420,25 @@ pub fn trigger_host_update_via_listener() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hub_env::{default_update_cdn_base, default_update_cdn_host};
+
+    fn cdn_url(path: &str) -> String {
+        format!(
+            "{}/{}",
+            default_update_cdn_base(),
+            path.trim_start_matches('/')
+        )
+    }
 
     #[test]
-    fn trusted_url_accepts_dl_ci_computer() {
-        assert!(is_trusted_download_url(
-            "https://dl.ci.computer/v0.2.18/windows/x64/setup.exe"
-        ));
+    fn trusted_url_accepts_configured_cdn_host() {
+        assert!(is_trusted_download_url(&cdn_url("v0.2.18/windows/x64/setup.exe")));
     }
 
     #[test]
     fn trusted_url_accepts_uppercase_https_scheme() {
         assert!(is_trusted_download_url(
-            "HTTPS://dl.ci.computer/v0.2.18/windows/x64/setup.exe"
+            &cdn_url("v0.2.18/windows/x64/setup.exe").replace("https://", "HTTPS://")
         ));
     }
 
@@ -1452,30 +1461,38 @@ mod tests {
 
     #[test]
     fn trusted_url_rejects_non_https() {
-        assert!(!is_trusted_download_url("http://dl.ci.computer/file.exe"));
+        assert!(!is_trusted_download_url(&format!(
+            "http://{}/file.exe",
+            default_update_cdn_host()
+        )));
     }
 
     #[test]
     fn trusted_url_rejects_path_traversal() {
-        assert!(!is_trusted_download_url(
-            "https://dl.ci.computer/v0.2.18/../evil.exe"
-        ));
-        assert!(!is_trusted_download_url(
-            "HTTPS://dl.ci.computer/v0.2.18/../evil.exe"
-        ));
+        assert!(!is_trusted_download_url(&format!(
+            "https://{}/v0.2.18/../evil.exe",
+            default_update_cdn_host()
+        )));
+        assert!(!is_trusted_download_url(&format!(
+            "HTTPS://{}/v0.2.18/../evil.exe",
+            default_update_cdn_host()
+        )));
     }
 
     #[test]
     fn trusted_url_rejects_percent_encoded_path_traversal() {
-        assert!(!is_trusted_download_url(
-            "https://dl.ci.computer/v0.2.18/%2e%2e/evil.exe"
-        ));
-        assert!(!is_trusted_download_url(
-            "https://dl.ci.computer/v0.2.18/%2E%2E/evil.exe"
-        ));
-        assert!(!is_trusted_download_url(
-            "https://dl.ci.computer/v0.2.18/%252e%252e/evil.exe"
-        ));
+        assert!(!is_trusted_download_url(&format!(
+            "https://{}/v0.2.18/%2e%2e/evil.exe",
+            default_update_cdn_host()
+        )));
+        assert!(!is_trusted_download_url(&format!(
+            "https://{}/v0.2.18/%2E%2E/evil.exe",
+            default_update_cdn_host()
+        )));
+        assert!(!is_trusted_download_url(&format!(
+            "https://{}/v0.2.18/%252e%252e/evil.exe",
+            default_update_cdn_host()
+        )));
     }
 
     #[test]
@@ -1633,48 +1650,48 @@ mod tests {
 
     #[test]
     fn artifact_for_platform_selects_expected_installers() {
-        let source = UpdateSource::prod();
-        let mac = serde_json::json!({ "dmg": sample_artifact("https://dl.ci.computer/v1/macos/arm/hub.dmg") });
+        let source = UpdateSource::default_cdn();
+        let mac = serde_json::json!({ "dmg": sample_artifact(&cdn_url("v1/macos/arm/hub.dmg")) });
         assert_eq!(
             artifact_for_platform_data(&mac, HostOs::Macos, "appimage", &source)
                 .expect("dmg")
                 .url,
-            "https://dl.ci.computer/v1/macos/arm/hub.dmg"
+            cdn_url("v1/macos/arm/hub.dmg")
         );
 
         let win = serde_json::json!({
-            "exe": sample_artifact("https://dl.ci.computer/v1/windows/x64/setup.exe"),
-            "msi": sample_artifact("https://dl.ci.computer/v1/windows/x64/setup.msi"),
+            "exe": sample_artifact(&cdn_url("v1/windows/x64/setup.exe")),
+            "msi": sample_artifact(&cdn_url("v1/windows/x64/setup.msi")),
         });
         assert_eq!(
             artifact_for_platform_data(&win, HostOs::Windows, "appimage", &source)
                 .expect("exe")
                 .url,
-            "https://dl.ci.computer/v1/windows/x64/setup.exe"
+            cdn_url("v1/windows/x64/setup.exe")
         );
 
         let linux = serde_json::json!({
-            "deb": sample_artifact("https://dl.ci.computer/v1/linux/deb/x64/hub.deb"),
-            "rpm": sample_artifact("https://dl.ci.computer/v1/linux/rpm/x64/hub.rpm"),
-            "appimage": sample_artifact("https://dl.ci.computer/v1/linux/appimage/x64/hub.AppImage"),
+            "deb": sample_artifact(&cdn_url("v1/linux/deb/x64/hub.deb")),
+            "rpm": sample_artifact(&cdn_url("v1/linux/rpm/x64/hub.rpm")),
+            "appimage": sample_artifact(&cdn_url("v1/linux/appimage/x64/hub.AppImage")),
         });
         assert_eq!(
             artifact_for_platform_data(&linux, HostOs::Linux, "deb", &source)
                 .expect("deb")
                 .url,
-            "https://dl.ci.computer/v1/linux/deb/x64/hub.deb"
+            cdn_url("v1/linux/deb/x64/hub.deb")
         );
         assert_eq!(
             artifact_for_platform_data(&linux, HostOs::Linux, "rpm", &source)
                 .expect("rpm")
                 .url,
-            "https://dl.ci.computer/v1/linux/rpm/x64/hub.rpm"
+            cdn_url("v1/linux/rpm/x64/hub.rpm")
         );
         assert_eq!(
             artifact_for_platform_data(&linux, HostOs::Linux, "appimage", &source)
                 .expect("appimage")
                 .url,
-            "https://dl.ci.computer/v1/linux/appimage/x64/hub.AppImage"
+            cdn_url("v1/linux/appimage/x64/hub.AppImage")
         );
     }
 
@@ -1687,19 +1704,19 @@ mod tests {
         platforms.insert(
             key.clone(),
             serde_json::json!({
-                "dmg": sample_artifact("https://dl.ci.computer/v1/current/hub.dmg"),
-                "exe": sample_artifact("https://dl.ci.computer/v1/current/setup.exe"),
-                "deb": sample_artifact("https://dl.ci.computer/v1/current/hub.deb"),
-                "appimage": sample_artifact("https://dl.ci.computer/v1/current/hub.AppImage"),
+                "dmg": sample_artifact(&cdn_url("v1/current/hub.dmg")),
+                "exe": sample_artifact(&cdn_url("v1/current/setup.exe")),
+                "deb": sample_artifact(&cdn_url("v1/current/hub.deb")),
+                "appimage": sample_artifact(&cdn_url("v1/current/hub.AppImage")),
             }),
         );
         let manifest = ManifestJson {
             version: "1.0.0".to_string(),
             platforms,
         };
-        let artifact = resolve_download_artifact(&manifest, &UpdateSource::prod())
+        let artifact = resolve_download_artifact(&manifest, &UpdateSource::default_cdn())
             .expect("artifact for current platform");
-        assert!(artifact.url.starts_with("https://dl.ci.computer/"));
+        assert!(artifact.url.starts_with(&format!("{}/", default_update_cdn_base())));
     }
 
     #[test]
@@ -1735,10 +1752,13 @@ mod tests {
     }
 
     #[test]
-    fn prod_source_behavior_unchanged() {
-        let source = UpdateSource::prod();
-        assert!(source.is_trusted("https://dl.ci.computer/v0.2.18/macos/arm/hub.dmg"));
-        assert!(!source.is_trusted("http://dl.ci.computer/v0.2.18/macos/arm/hub.dmg"));
+    fn release_cdn_source_trusts_only_its_host() {
+        let source = UpdateSource::default_cdn();
+        assert!(source.is_trusted(&cdn_url("v0.2.18/macos/arm/hub.dmg")));
+        assert!(!source.is_trusted(&format!(
+            "http://{}/v0.2.18/macos/arm/hub.dmg",
+            default_update_cdn_host()
+        )));
         assert!(!source.is_trusted("https://dl.ci.computer.evil.com/file.exe"));
     }
 
@@ -1811,7 +1831,7 @@ mod tests {
     }
 
     /// Minimal HTTP server for hermetic end-to-end coverage of the check →
-    /// manifest → download → verify pipeline, without touching dl.ci.computer.
+    /// Hermetic local-HTTP-server end-to-end of check → manifest → download → verify.
     fn spawn_test_update_server(latest_version: &str, artifact: Vec<u8>) -> (String, String) {
         let sha = {
             let mut hasher = Sha256::new();

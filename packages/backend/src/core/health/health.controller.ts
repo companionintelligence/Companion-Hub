@@ -1,6 +1,6 @@
 import { APP_DATA_DIR, DATA_DIR } from '@/common/constants';
 import { QueueHealthIndicator } from '@/modules/queue/queue.health';
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,10 +12,34 @@ export class HealthController {
     private queueHealthIndicator: QueueHealthIndicator,
   ) {}
 
+  /**
+   * Liveness probe — must stay fast and dependency-free so Docker/desktop
+   * healthchecks never wedge the HTTP server when readiness checks stall.
+   */
+  @Get('live')
+  live() {
+    return { status: 'ok' };
+  }
+
+  /** Readiness probe — verifies RabbitMQ connectivity (may take a few seconds). */
   @Get()
   @HealthCheck()
-  check() {
-    return this.health.check([() => this.queueHealthIndicator.isHealthy('queue')]);
+  async check() {
+    const READINESS_TIMEOUT_MS = 4_000;
+    const checkPromise = this.health.check([() => this.queueHealthIndicator.isHealthy('queue')]);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = globalThis.setTimeout(() => reject(new ServiceUnavailableException('readiness check timed out')), READINESS_TIMEOUT_MS);
+      timer.unref?.();
+    });
+
+    try {
+      return await Promise.race([checkPromise, timeout]);
+    } finally {
+      if (timer) {
+        globalThis.clearTimeout(timer);
+      }
+    }
   }
 
   /**

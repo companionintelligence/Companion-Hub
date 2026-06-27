@@ -102,6 +102,12 @@ async function bootstrap() {
 
   const port = process.env.API_PORT || 3000;
   await app.listen(port, '0.0.0.0');
+
+  const httpServer = app.getHttpServer();
+  // Drop slow clients so health probes and UI polling cannot accumulate CLOSE_WAIT sockets.
+  httpServer.requestTimeout = 30_000;
+  httpServer.headersTimeout = 35_000;
+  httpServer.keepAliveTimeout = 5_000;
 }
 
 bootstrap().catch((err) => {

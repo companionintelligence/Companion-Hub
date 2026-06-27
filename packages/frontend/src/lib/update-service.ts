@@ -1,12 +1,17 @@
 import semver from 'semver';
 import { openExternal } from '@/lib/helpers/open-external';
 
-const UPDATE_CHECK_URL = 'https://dl.ci.computer/latest.json';
-const MANIFEST_URL = (version: string) => `https://dl.ci.computer/v${version.replace(/^v/, '')}/manifest.json`;
+function updateCdnConfig() {
+  const isProduction = import.meta.env.CI_HUB_ENVIRONMENT === 'production';
+  return {
+    base: isProduction ? 'https://dl.ci.computer' : 'https://dl-dev.ci.computer',
+    host: isProduction ? 'dl.ci.computer' : 'dl-dev.ci.computer',
+  };
+}
+
 const POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DISMISSED_KEY = 'ci-hub-update-dismissed-version';
 const TOAST_SHOWN_KEY = 'ci-hub-update-toast-shown';
-const ALLOWED_DOWNLOAD_HOST = 'dl.ci.computer';
 const HOST_UPDATE_URL = 'http://127.0.0.1:17400/update';
 
 function decodePathSegment(segment: string): string | null {
@@ -42,7 +47,7 @@ export function isTrustedDownloadUrl(url: string): boolean {
   try {
     if (pathHasParentTraversal(url)) return false;
     const parsed = new URL(url);
-    return parsed.protocol === 'https:' && parsed.hostname === ALLOWED_DOWNLOAD_HOST;
+    return parsed.protocol === 'https:' && parsed.hostname === updateCdnConfig().host;
   } catch {
     return false;
   }
@@ -195,7 +200,8 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       }
     }
 
-    const latestRes = await fetch(UPDATE_CHECK_URL, { cache: 'no-store' });
+    const { base } = updateCdnConfig();
+    const latestRes = await fetch(`${base}/latest.json`, { cache: 'no-store' });
     if (!latestRes.ok) return null;
 
     const latest = (await latestRes.json()) as LatestJson;
@@ -217,7 +223,7 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
       };
     }
 
-    const manifestRes = await fetch(MANIFEST_URL(latestVersion), { cache: 'no-store' });
+    const manifestRes = await fetch(`${base}/v${latestVersion}/manifest.json`, { cache: 'no-store' });
     if (!manifestRes.ok) return null;
 
     const manifest = (await manifestRes.json()) as ManifestJson;

@@ -40,7 +40,7 @@ describe('tauri-hub-probe', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => ({
-        ok: url === 'http://localhost:5004/api/health',
+        ok: url === 'http://localhost:5004/api/health/live',
       })),
     );
 
