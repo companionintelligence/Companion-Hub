@@ -17,6 +17,7 @@ type RocmInstallPhase = 'idle' | 'downloading' | 'installing' | 'reboot_required
 
 interface RocmInstallStatus {
   hostRocmAvailable: boolean;
+  hostRocmKfdAvailable?: boolean;
   runtimeRocmAvailable: boolean;
   installPhase: RocmInstallPhase;
   installMessage?: string;
@@ -67,8 +68,9 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
   }, [fetchStatus]);
 
   const hostRocmAvailable = status?.hostRocmAvailable ?? hardware.gpu.hostRocmAvailable ?? false;
+  const hostRocmKfdAvailable = status?.hostRocmKfdAvailable ?? hardware.gpu.hostRocmKfdAvailable ?? false;
   const runtimeRocmAvailable = status?.runtimeRocmAvailable ?? false;
-  const rocmReady = hostRocmAvailable || runtimeRocmAvailable;
+  const rocmReady = hostRocmKfdAvailable || runtimeRocmAvailable;
   const installPhase = status?.installPhase ?? 'idle';
   const installHintNotice = resolveAmdHostRocmNotice(hardware);
 

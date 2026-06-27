@@ -6978,16 +6978,20 @@ pub fn refresh_rocm_host_probe_cache(data_dir: &Path) {
                     let stdout = stdout_raw.trim();
                     if !stdout.is_empty() {
                         let payload = serde_json::json!({
-                            "available": true,
+                            "available": false,
                             "source": "host-rocm-smi",
                             "updatedAt": chrono::Utc::now().to_rfc3339(),
+                            "message": "ROCm drivers detected but /dev/kfd is not ready yet. Restart may be required.",
                         });
                         if let Ok(serialized) = serde_json::to_string_pretty(&payload) {
                             let _ = std::fs::write(&probe_path, format!("{}\n", serialized));
                             let _ = append_desktop_log_for(
                                 data_dir,
                                 "gpu.probe",
-                                &format!("Updated host ROCm probe cache at {}", probe_path.display()),
+                                &format!(
+                                    "Updated host ROCm probe cache at {} (drivers present, /dev/kfd missing)",
+                                    probe_path.display()
+                                ),
                             );
                         }
                         return;
