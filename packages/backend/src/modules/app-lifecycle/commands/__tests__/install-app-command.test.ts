@@ -16,6 +16,7 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
+import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 
 // Mock fs
@@ -37,6 +38,10 @@ vi.mock('node:fs', async () => ({
 vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   ...((await importOriginal()) as any),
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
+}));
+
+vi.mock('@/modules/inference/host-rocm-availability', () => ({
+  isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),
 }));
 
 describe('install progress helpers', () => {
@@ -69,6 +74,7 @@ describe('InstallAppCommand — pull policy', () => {
 
   beforeEach(() => {
     vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(true);
     vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
 
     composeArgs = [];
@@ -249,12 +255,27 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.settingsPath).toBe('/settings?tab=ai&section=rocm');
   });
 
+  it('SHOULD allow install when host ROCm probe reports /dev/kfd even if container lacks /dev/kfd', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(true);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(true);
+  });
+
   it('SHOULD fail fast before compose up when /dev/kfd is required but missing', async () => {
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
       overrides: [],
     } as any);
-    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
 
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
@@ -281,7 +302,7 @@ describe('InstallAppCommand — pull policy', () => {
         },
       ],
     } as any);
-    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
 
     const result = await command.execute('comfyui:store' as AppUrn, {});
 
@@ -310,7 +331,7 @@ describe('InstallAppCommand — pull policy', () => {
       content: 'services:\n  comfyui:\n    devices:\n      - /dev/kfd:/dev/kfd\n      - /dev/dri:/dev/dri',
       path: '/tmp/user-compose.yml',
     });
-    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
 
     const result = await command.execute('comfyui:store' as AppUrn, {});
 

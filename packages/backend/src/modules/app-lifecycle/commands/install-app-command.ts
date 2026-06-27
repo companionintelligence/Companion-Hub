@@ -19,6 +19,7 @@ import { createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } f
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'yaml';
@@ -116,9 +117,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       return;
     }
 
-    try {
-      await fs.promises.access('/dev/kfd', fs.constants.F_OK);
-    } catch {
+    if (!(await isRocmKfdPassthroughAvailable())) {
       throw createRocmKfdMissingError();
     }
   }

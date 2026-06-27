@@ -2,6 +2,7 @@ import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
+import { isHostRocmStackProbe, isRocmKfdPassthroughProbe } from '@/modules/inference/host-rocm-availability';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import os from 'node:os';
@@ -197,9 +198,17 @@ export class HardwareInspectorService implements OnModuleInit {
 
     if (gpu.vendor === 'amd') {
       const hostRocmProbe = await this.readRocmHostProbe();
-      gpu = { ...gpu, hostRocmAvailable: hostRocmProbe?.available ?? false };
-      if (gpu.hostRocmAvailable) {
-        this.logger.info('[HardwareInspector] AMD GPU detected and host ROCm is available.');
+      const runtimeRocmDevices = await this.detectRocmSupport();
+      const hostRocmKfdAvailable = isRocmKfdPassthroughProbe(hostRocmProbe) || runtimeRocmDevices;
+      gpu = {
+        ...gpu,
+        hostRocmAvailable: isHostRocmStackProbe(hostRocmProbe) || runtimeRocmDevices,
+        hostRocmKfdAvailable,
+      };
+      if (hostRocmKfdAvailable) {
+        this.logger.info('[HardwareInspector] AMD GPU detected and host ROCm /dev/kfd passthrough is available.');
+      } else if (gpu.hostRocmAvailable) {
+        this.logger.info('[HardwareInspector] AMD GPU detected with ROCm drivers present; /dev/kfd not ready yet.');
       } else if (gpu.available) {
         this.logger.info('[HardwareInspector] AMD GPU detected; host ROCm not detected (install on host for Ollama GPU acceleration).');
       }
@@ -602,13 +611,16 @@ export class HardwareInspectorService implements OnModuleInit {
     };
   }
 
-  private async readRocmHostProbe(): Promise<{ available: boolean } | null> {
+  private async readRocmHostProbe(): Promise<{ available: boolean; source?: string } | null> {
     try {
       const raw = await this.filesystem.readTextFile('/data/state/hardware/rocm.json');
       if (!raw) return null;
 
-      const parsed = JSON.parse(raw) as { available?: boolean };
-      return { available: parsed.available === true };
+      const parsed = JSON.parse(raw) as { available?: boolean; source?: string };
+      return {
+        available: parsed.available === true,
+        source: typeof parsed.source === 'string' ? parsed.source : undefined,
+      };
     } catch {
       return null;
     }

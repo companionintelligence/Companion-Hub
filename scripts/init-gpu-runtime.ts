@@ -153,7 +153,7 @@ function collectHostRocmProbeLinux(): RocmProbe {
 
   const smi = runCapture('sh', ['-lc', 'rocm-smi --version']);
   if (smi.ok && smi.stdout.trim().length > 0) {
-    return { available: true, source: 'host-rocm-smi', updatedAt: new Date().toISOString() };
+    return { available: false, source: 'host-rocm-smi', updatedAt: new Date().toISOString() };
   }
 
   return { available: false, source: 'host-dev-kfd', updatedAt: new Date().toISOString() };

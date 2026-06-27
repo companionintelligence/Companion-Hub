@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { rocmInstallPhaseSchema } from './inference.dto';
+import { isHostRocmStackAvailable, isRocmKfdPassthroughAvailable } from './host-rocm-availability';
 import type { z } from 'zod';
 
 export type RocmInstallPhase = z.infer<typeof rocmInstallPhaseSchema>;
@@ -13,6 +14,7 @@ export interface RocmInstallState {
 
 export interface RocmInstallStatus {
   hostRocmAvailable: boolean;
+  hostRocmKfdAvailable: boolean;
   runtimeRocmAvailable: boolean;
   installPhase: RocmInstallPhase;
   installMessage?: string;
@@ -22,21 +24,22 @@ export interface RocmInstallStatus {
 
 @Injectable()
 export class RocmInstallerService {
-  private readonly rocmProbePath = '/data/state/hardware/rocm.json';
   private readonly rocmInstallPath = '/data/state/hardware/rocm-install.json';
 
   constructor(private readonly filesystem: FilesystemService) {}
 
   async getStatus(): Promise<RocmInstallStatus> {
-    const [hostProbe, installState, runtimeAvailable, platformHint] = await Promise.all([
-      this.readHostRocmProbe(),
+    const [hostStackAvailable, hostKfdAvailable, installState, runtimeAvailable, platformHint] = await Promise.all([
+      isHostRocmStackAvailable(),
+      isRocmKfdPassthroughAvailable(),
       this.readInstallState(),
       this.detectRuntimeRocm(),
       this.resolvePlatformHint(),
     ]);
 
     return {
-      hostRocmAvailable: hostProbe,
+      hostRocmAvailable: hostStackAvailable,
+      hostRocmKfdAvailable: hostKfdAvailable,
       runtimeRocmAvailable: runtimeAvailable,
       installPhase: installState?.phase ?? 'idle',
       installMessage: installState?.message,
@@ -47,17 +50,6 @@ export class RocmInstallerService {
 
   async recordInstallState(state: RocmInstallState): Promise<void> {
     await this.filesystem.writeTextFile(this.rocmInstallPath, `${JSON.stringify(state, null, 2)}\n`);
-  }
-
-  private async readHostRocmProbe(): Promise<boolean> {
-    try {
-      const raw = await this.filesystem.readTextFile(this.rocmProbePath);
-      if (!raw) return false;
-      const parsed = JSON.parse(raw) as { available?: boolean };
-      return parsed.available === true;
-    } catch {
-      return false;
-    }
   }
 
   private async readInstallState(): Promise<RocmInstallState | null> {
