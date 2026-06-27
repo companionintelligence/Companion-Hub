@@ -708,6 +708,7 @@
   "HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE": "opcional no disponible",
   "HUB_STATUS_SERVICE_PENDING": "pendiente",
   "HUB_STATUS_SERVICE_READY": "Listo",
+  "HUB_STATUS_SERVICE_STARTING": "Iniciando",
   "HUB_STATUS_SERVICE_UNAVAILABLE": "No disponible",
   "HUB_STATUS_SERVICE_WAITING": "Esperando...",
   "HUB_STATUS_STARTING_ALMOST_THERE": "Casi listo - Algunos servicios están tardando más de lo habitual.",
