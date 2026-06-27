@@ -477,7 +477,7 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
     service.state === 'pending'
       ? t('HUB_STATUS_SERVICE_WAITING')
       : service.state === 'starting'
-        ? t('COMMON_STARTING')
+        ? t('HUB_STATUS_SERVICE_STARTING')
         : service.state === 'ready'
           ? t('HUB_STATUS_SERVICE_READY')
           : service.state === 'unavailable'
@@ -575,8 +575,8 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           {progress && (
             <div className="space-y-0.5">
               <div className="text-xs text-muted-foreground/70">
-                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('COMMON_STARTING')}, {serviceCounts.pending}{' '}
-                {t('HUB_STATUS_SERVICE_PENDING')}
+                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
+                {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
                 {serviceCounts.optionalUnavailable > 0
                   ? ` · ${serviceCounts.optionalUnavailable} ${t('HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE')}`

@@ -1408,6 +1408,7 @@
   "HUB_STATUS_DOCKER_ALT_ERROR": "Installation failed.",
   "HUB_STATUS_SERVICE_WAITING": "Waiting...",
   "HUB_STATUS_SERVICE_READY": "Ready",
+  "HUB_STATUS_SERVICE_STARTING": "Starting",
   "HUB_STATUS_SERVICE_UNAVAILABLE": "Not available",
   "HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE": "optional not available",
   "HUB_STATUS_FAILED_AUTO_START": "Failed to auto-start hub:",
