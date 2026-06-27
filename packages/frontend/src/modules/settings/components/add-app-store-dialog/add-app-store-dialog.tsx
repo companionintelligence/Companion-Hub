@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { useTranslation } from 'react-i18next';
 
+/** Manual app store URLs (Tipi-era) were removed; CI Hubs use the auto-configured CI Marketplace. */
 export const AddAppStoreDialog = () => {
   const { t } = useTranslation();
   const addAppStoreDisclosure = useDisclosure();
@@ -19,12 +20,6 @@ export const AddAppStoreDialog = () => {
             <DialogDescription>{t('APP_STORE_ADD_COMING_SOON')}</DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">{t('APP_STORE_ADD_COMING_SOON_DETAIL')}</p>
-          {/* Legacy git app store form (Tipi-era). CI Hubs use the auto-configured CI Marketplace store instead.
-          <form>
-            <Input label={t('APP_STORE_ADD_FORM_NAME')} ... />
-            <Input label={t('APP_STORE_ADD_FORM_URL')} ... />
-          </form>
-          */}
           <DialogFooter>
             <Button disabled intent="success">
               {t('APP_STORE_ADD_FORM_SUBMIT')}

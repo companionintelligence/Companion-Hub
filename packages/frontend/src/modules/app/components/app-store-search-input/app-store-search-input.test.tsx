@@ -8,7 +8,7 @@ describe('AppStoreSearchInput', () => {
     const onChange = vi.fn();
     render(<AppStoreSearchInput value="" onChange={onChange} />);
 
-    fireEvent.change(screen.getByPlaceholderText('Search apps...'), { target: { value: 'n8n' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search apps...' }), { target: { value: 'n8n' } });
 
     expect(onChange).toHaveBeenCalledWith('n8n');
   });
