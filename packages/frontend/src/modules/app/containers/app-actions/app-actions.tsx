@@ -1,4 +1,18 @@
-import { AlertTriangle, Ban, CheckCircle, Download, Edit, Eraser, ExternalLink, Pause, Play, RotateCw, Settings, Trash } from 'lucide-react';
+import {
+  AlertTriangle,
+  Ban,
+  CheckCircle,
+  Download,
+  Edit,
+  Eraser,
+  ExternalLink,
+  FolderOpen,
+  Pause,
+  Play,
+  RotateCw,
+  Settings,
+  Trash,
+} from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
@@ -26,6 +40,8 @@ import { useLocation, useNavigate, Link } from 'react-router';
 import type { AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
+import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 
 const openExternalUrl = (url: string) => openExternal(url);
@@ -34,6 +50,8 @@ interface IProps {
   app?: AppDetails | null;
   info: AppInfo;
   metadata: AppMetadata;
+  /** Absolute host path of the app's data folder (desktop "Open data folder" button). */
+  appDataHostPath?: string | null;
   localDomain?: string;
   sslPort?: number;
   runtimeHealth?: AppRuntimeHealth;
@@ -106,7 +124,7 @@ const MAX_POLL_MS = 5 * 60_000;
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
-export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'default' }: IProps) => {
+export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const forceStopDisclosure = useDisclosure();
@@ -545,6 +563,18 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
   const buttons: React.JSX.Element[] = [];
   const secondaryActions: React.JSX.Element[] = [];
 
+  // "Open data folder" is a desktop-only native action: it needs the Tauri
+  // runtime and a backend-resolved host path. Hidden in the web client.
+  const openDataFolderButton =
+    getTauriInvoke() && appDataHostPath ? (
+      <IconActionButton
+        key="open-data-folder"
+        icon={FolderOpen}
+        label={t('APP_ACTION_OPEN_DATA_FOLDER')}
+        onClick={() => openPathInFileExplorer(appDataHostPath)}
+      />
+    ) : null;
+
   switch (app?.status ?? 'missing') {
     case 'stopped':
       buttons.push(StartButton);
@@ -559,6 +589,7 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
           className="text-destructive hover:text-destructive"
         />,
       );
+      if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
       if (updateAvailable && !versionIsIgnored) {
         secondaryActions.push(
           <IconActionButton
@@ -593,6 +624,7 @@ export const AppActions = ({ app, info, metadata, runtimeHealth, layout = 'defau
         <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} onClick={restartDisclosure.open} />,
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
         <IconActionButton key="reset" icon={Eraser} label={t('APP_INSTALL_FORM_RESET')} onClick={resetAppDisclosure.open} />,
+        ...(openDataFolderButton ? [openDataFolderButton] : []),
         <IconActionButton
           key="remove"
           icon={Trash}

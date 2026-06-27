@@ -40,6 +40,9 @@ const getAppSchema = z.object({
   app: appSchema.nullable().optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
+  // Absolute host path of the app's data folder (…/app-data/{store}/{app}).
+  // Used by the desktop "Open data folder" button; null when it can't be resolved.
+  appDataHostPath: z.string().nullable().optional(),
 });
 
 const getRandomPortSchema = z.object({

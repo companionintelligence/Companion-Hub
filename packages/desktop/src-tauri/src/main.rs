@@ -207,15 +207,82 @@ async fn read_desktop_logs_command() -> String {
     hub_manager::read_desktop_logs(200)
 }
 
-/// Open the logs directory in the system file manager.
+/// Validate that `path` is an absolute, existing directory we can open in the
+/// OS file explorer. Returns a human-readable error string (surfaced to the user
+/// as a toast) otherwise. Pure and side-effect free so it can be unit tested.
+fn validate_open_path(path: &Path) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err("Path is empty".to_string());
+    }
+    if !path.is_absolute() {
+        return Err(format!("Path is not absolute: {}", path.display()));
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(format!("Path is not a directory: {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("Path does not exist: {}", path.display()))
+        }
+        // Other errors (permission denied, invalid path, ...) — report accurately
+        // rather than claiming the path is missing.
+        Err(err) => Err(format!("Cannot access path: {} ({err})", path.display())),
+    }
+}
+
+/// Shared logic behind every "open folder" button: optionally create the
+/// directory, validate it, log the attempt to desktop.log, then reveal it in the
+/// OS default file explorer. The single open/log/validate code path so the logs,
+/// per-app data, and root app-data buttons all behave identically.
+///
+/// `create_if_missing` is `true` for the logs folder (preserving its prior
+/// behavior) and `false` for data folders, so a wrong or remote path surfaces as
+/// an error instead of silently creating a stray directory.
+fn open_directory(app: &tauri::AppHandle, path: &Path, create_if_missing: bool) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    if create_if_missing {
+        let _ = std::fs::create_dir_all(path);
+    }
+
+    let data_dir = hub_manager::get_hub_data_dir();
+    if let Err(err) = validate_open_path(path) {
+        let _ = hub_manager::append_desktop_log_for(
+            &data_dir,
+            "open_folder",
+            &format!("refused to open {}: {err}", path.display()),
+        );
+        return Err(err);
+    }
+
+    let _ = hub_manager::append_desktop_log_for(&data_dir, "open_folder", &format!("opening {}", path.display()));
+
+    app.opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|err| {
+            let message = err.to_string();
+            let _ = hub_manager::append_desktop_log_for(
+                &data_dir,
+                "open_folder",
+                &format!("failed to open {}: {message}", path.display()),
+            );
+            message
+        })
+}
+
+/// Open the desktop logs directory in the system file manager.
 #[tauri::command]
 async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let logs_dir = hub_manager::logs_open_target();
-    let _ = std::fs::create_dir_all(&logs_dir);
-    app.opener()
-        .open_path(logs_dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_directory(&app, &logs_dir, true)
+}
+
+/// Open an absolute host directory in the OS default file explorer. The path is
+/// resolved by the backend (an app's data folder or the root app-data folder)
+/// and passed through here. The desktop app and the data must be on the same
+/// machine; a missing path returns an error so the UI can show a toast.
+#[tauri::command]
+async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    open_directory(&app, Path::new(&path), false)
 }
 
 #[tauri::command]
@@ -342,6 +409,7 @@ pub fn run() {
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
+            open_path_command,
             save_download_command,
             is_user_stopped_command,
             install_docker_command,
@@ -932,10 +1000,41 @@ mod tests {
     use super::{
         deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
         launch_mode_from_args, sanitize_download_filename, stack_dev_mode_enabled,
-        stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV,
-        STACK_DEV_ENV_PATH_ENV,
+        stack_dev_override_paths, validate_open_path, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
+        STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn validate_open_path_accepts_existing_dir() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        assert!(validate_open_path(tempdir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_open_path_rejects_empty() {
+        assert!(validate_open_path(Path::new("")).is_err());
+    }
+
+    #[test]
+    fn validate_open_path_rejects_relative() {
+        assert!(validate_open_path(Path::new("relative/dir")).is_err());
+    }
+
+    #[test]
+    fn validate_open_path_rejects_missing() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let missing = tempdir.path().join("does-not-exist");
+        assert!(validate_open_path(&missing).is_err());
+    }
+
+    #[test]
+    fn validate_open_path_rejects_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let file = tempdir.path().join("a-file.txt");
+        std::fs::write(&file, b"x").expect("write");
+        assert!(validate_open_path(&file).is_err());
+    }
 
     #[test]
     fn extract_pairing_code_from_query_param() {

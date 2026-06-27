@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import path from 'node:path';
+import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -15,15 +15,6 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
-
-/**
- * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
- * (\\server\share). The backend often runs in a Linux container, so use both
- * path.isAbsolute and path.win32.isAbsolute.
- */
-function isAbsoluteHostPath(value: string): boolean {
-  return path.isAbsolute(value) || path.win32.isAbsolute(value);
-}
 
 @Injectable()
 export class AppHelpers {
@@ -117,85 +108,30 @@ export class AppHelpers {
     envMap.set('APP_STORE_ID', appStoreId);
     envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
 
-    // APP_DATA_DIR must be the host absolute path for Docker volume mounts
-    // Docker Compose runs from inside the ci-os-hub container but connects to the host Docker daemon
-    // So it needs the host path, not the container path
-    // The volume is mounted as: ${CI_HUB_APP_DATA_PATH:-.internal}/app-data:/app-data
-    // We need to construct the absolute host path that matches this mount
-
-    // Get the base path (without /app-data suffix)
-    const baseAppDataPath = envMap.get('CI_HUB_APP_DATA_PATH') || userSettings.appDataPath || rootFolderHost;
+    // APP_DATA_DIR must be the host absolute path for Docker volume mounts.
+    // Docker Compose runs from inside the ci-os-hub container but connects to the
+    // host Docker daemon, so it needs the host path, not the in-container path.
+    // The volume is mounted as: ${CI_HUB_APP_DATA_PATH:-.internal}/app-data:/app-data.
+    //
+    // The resolution logic is shared with the desktop "Open data folder" button
+    // (see getAppDataHostPath) so the mount path and the opened folder are identical.
+    const ciHubAppDataPath = envMap.get('CI_HUB_APP_DATA_PATH');
+    const finalAppDataDir = getAppDataHostPath(appUrn, {
+      ciHubAppDataPath,
+      appDataPath: userSettings.appDataPath,
+      rootFolderHost,
+    });
 
     this.logger.debug(
       `Constructing APP_DATA_DIR for ${appUrn}: ` +
-        `CI_HUB_APP_DATA_PATH=${envMap.get('CI_HUB_APP_DATA_PATH')}, ` +
+        `CI_HUB_APP_DATA_PATH=${ciHubAppDataPath}, ` +
         `userSettings.appDataPath=${userSettings.appDataPath}, ` +
         `rootFolderHost=${rootFolderHost}, ` +
-        `baseAppDataPath=${baseAppDataPath}`,
+        `resolved=${finalAppDataDir}`,
     );
 
-    // Ensure absolute path - resolve relative paths
-    let appDataHostBase: string;
-    if (isAbsoluteHostPath(baseAppDataPath)) {
-      appDataHostBase = baseAppDataPath;
-      this.logger.debug(`Using absolute baseAppDataPath: ${appDataHostBase}`);
-    } else if (isAbsoluteHostPath(rootFolderHost)) {
-      // Resolve relative path - try multiple strategies
-      appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
-      this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
-    } else {
-      // Try environment variable
-      const envRoot = process.env.ROOT_FOLDER_HOST;
-      if (envRoot && isAbsoluteHostPath(envRoot)) {
-        appDataHostBase = path.resolve(envRoot, baseAppDataPath);
-        this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
-      } else {
-        // Both paths are relative - this is a problem
-        this.logger.error(
-          `Both ROOT_FOLDER_HOST (${rootFolderHost}) and CI_HUB_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
-            'APP_DATA_DIR will not resolve correctly. Please set ROOT_FOLDER_HOST to an absolute path.',
-        );
-        throw new Error(
-          'Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and CI_HUB_APP_DATA_PATH are relative paths. ' +
-            'ROOT_FOLDER_HOST must be an absolute path.',
-        );
-      }
-    }
-
-    // Ensure the base path doesn't already end with /app-data
-    // If CI_HUB_APP_DATA_PATH already includes /app-data, remove it
-    if (appDataHostBase.endsWith('/app-data') || appDataHostBase.endsWith('\\app-data')) {
-      appDataHostBase = appDataHostBase.slice(0, -9); // Remove '/app-data'
-      this.logger.debug(`Removed /app-data suffix from base path: ${appDataHostBase}`);
-    }
-
-    // Add /app-data suffix if not present
-    const appDataHostPath = path.join(appDataHostBase, 'app-data');
-
-    // Final path: {hostPath}/app-data/{appStoreId}/{appName}
-    // This will be used in the app's docker-compose.yml as ${APP_DATA_DIR}
-    const finalAppDataDir = path.join(appDataHostPath, appStoreId, appName);
-
-    // CRITICAL: Verify this is an absolute host path, not a container path
-    if (!isAbsoluteHostPath(finalAppDataDir)) {
-      this.logger.error(`APP_DATA_DIR is not absolute: ${finalAppDataDir}. This will cause Docker mount errors.`);
-      throw new Error(`APP_DATA_DIR must be an absolute path, got: ${finalAppDataDir}`);
-    }
-
-    if (finalAppDataDir.startsWith('/app-data') || finalAppDataDir.startsWith('/data/')) {
-      this.logger.error(
-        `APP_DATA_DIR appears to be a container path: ${finalAppDataDir}. ` +
-          'This will cause Docker mount errors. Using fallback path construction.',
-      );
-      // Fallback: construct path from ROOT_FOLDER_HOST
-      const fallbackBase = isAbsoluteHostPath(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
-      const fallbackPath = path.join(fallbackBase, 'app-data', appStoreId, appName);
-      envMap.set('APP_DATA_DIR', fallbackPath);
-      this.logger.warn(`Using fallback APP_DATA_DIR: ${fallbackPath}`);
-    } else {
-      envMap.set('APP_DATA_DIR', finalAppDataDir);
-      this.logger.info(`Set APP_DATA_DIR for ${appUrn}: ${finalAppDataDir}`);
-    }
+    envMap.set('APP_DATA_DIR', finalAppDataDir);
+    this.logger.info(`Set APP_DATA_DIR for ${appUrn}: ${finalAppDataDir}`);
     envMap.set('APP_IMAGE_TAG', config.version);
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);

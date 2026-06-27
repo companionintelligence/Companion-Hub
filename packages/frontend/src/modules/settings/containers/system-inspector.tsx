@@ -1,8 +1,12 @@
+import { useAppContext } from '@/context/app-context';
 import { apiFetch } from '@/lib/api-fetch';
+import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
   Cpu,
+  FolderOpen,
   HardDrive,
   Loader2,
   MemoryStick,
@@ -510,10 +514,52 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
   );
 };
 
+// ─── Storage Section ─────────────────────────────────────────────────────────
+
+/**
+ * Desktop-only section that reveals the root app-data folder (parent of every
+ * app's persistent data) in the OS file explorer. Hidden in the web client,
+ * where opening a host folder is not possible.
+ */
+const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }) => {
+  const { t } = useTranslation();
+
+  return (
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <HardDrive className="h-6 w-6 text-primary" />
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_STORAGE')}</h2>
+      </div>
+
+      <div className="flex flex-col gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{t('SETTINGS_OPEN_APP_DATA_FOLDER')}</div>
+          <div className="text-xs text-muted-foreground break-all" title={appDataRootHostPath}>
+            {appDataRootHostPath}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => openPathInFileExplorer(appDataRootHostPath)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+          data-testid="open-app-data-folder-btn"
+        >
+          <FolderOpen className="h-4 w-4" />
+          {t('SETTINGS_OPEN_APP_DATA_FOLDER')}
+        </button>
+      </div>
+    </section>
+  );
+};
+
 // ─── Main Container ──────────────────────────────────────────────────────────
 
 export const SystemInspectorContainer = () => {
   const { t } = useTranslation();
+  const { appDataRootHostPath } = useAppContext();
+  // Native open-folder action: only meaningful inside the desktop app on the
+  // same machine as the data.
+  const canOpenAppDataFolder = Boolean(getTauriInvoke()) && Boolean(appDataRootHostPath);
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery<InspectionData>({
     queryKey: ['system-inspector'],
     queryFn: async () => {
@@ -564,6 +610,7 @@ export const SystemInspectorContainer = () => {
         </div>
       </div>
 
+      {canOpenAppDataFolder && appDataRootHostPath && <StorageSection appDataRootHostPath={appDataRootHostPath} />}
       {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
       <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />
