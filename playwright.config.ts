@@ -56,6 +56,7 @@ export default defineConfig({
     '**/generated/**',
     '**/cross-domain/**',
     '**/platform/**',
+    '**/mcp-openclaw-integration.spec.ts',
     ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts']),
   ],
   fullyParallel: false,

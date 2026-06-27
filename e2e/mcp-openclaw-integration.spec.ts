@@ -17,14 +17,14 @@
  *   - PostgreSQL + RabbitMQ available
  *   - Docker daemon accessible (for full install tests)
  *
- * Run standalone:
- *   MCP_API_KEY=test-mcp-api-key-e2e npx playwright test e2e/future/mcp-openclaw-integration.spec.ts
+ * Run standalone (opt-in — excluded from default `test:e2e:ci`):
+ *   MCP_API_KEY=test-mcp-api-key-e2e npx playwright test --config=playwright.mcp.config.ts
  */
 
 import { test, expect } from '@playwright/test';
-import { db, deleteAppByName, seedOrganization } from '../helpers/db';
-import { testUser } from '../helpers/constants';
-import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
+import { db, deleteAppByName, seedOrganization } from './helpers/db';
+import { testUser } from './helpers/constants';
+import * as schema from '../packages/backend/src/core/database/drizzle/schema';
 
 const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
 const MCP_API_KEY = process.env.MCP_API_KEY || 'test-mcp-api-key-e2e';

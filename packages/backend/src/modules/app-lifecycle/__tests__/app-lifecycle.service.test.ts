@@ -120,7 +120,7 @@ describe('AppLifecycleService', () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('should subscribe to queue on init', () => {
