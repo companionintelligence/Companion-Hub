@@ -2,6 +2,7 @@ import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
+import { isHostRocmStackProbe, isRocmKfdPassthroughProbe } from '@/modules/inference/host-rocm-availability';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import os from 'node:os';
@@ -198,10 +199,10 @@ export class HardwareInspectorService implements OnModuleInit {
     if (gpu.vendor === 'amd') {
       const hostRocmProbe = await this.readRocmHostProbe();
       const runtimeRocmDevices = await this.detectRocmSupport();
-      const hostRocmKfdAvailable = (hostRocmProbe?.available === true && hostRocmProbe.source === 'host-dev-kfd') || runtimeRocmDevices;
+      const hostRocmKfdAvailable = isRocmKfdPassthroughProbe(hostRocmProbe) || runtimeRocmDevices;
       gpu = {
         ...gpu,
-        hostRocmAvailable: hostRocmProbe?.available ?? runtimeRocmDevices,
+        hostRocmAvailable: isHostRocmStackProbe(hostRocmProbe) || runtimeRocmDevices,
         hostRocmKfdAvailable,
       };
       if (hostRocmKfdAvailable) {

@@ -31,7 +31,7 @@ describe('host-rocm-availability', () => {
   });
 
   it('does not treat rocm-smi-only probe as passthrough-ready', async () => {
-    vi.mocked(fs.promises.readFile).mockResolvedValue(JSON.stringify({ available: true, source: 'host-rocm-smi' }) as unknown as Buffer);
+    vi.mocked(fs.promises.readFile).mockResolvedValue(JSON.stringify({ available: false, source: 'host-rocm-smi' }) as unknown as Buffer);
     vi.mocked(fs.promises.access).mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
     await expect(isRocmKfdPassthroughAvailable()).resolves.toBe(false);

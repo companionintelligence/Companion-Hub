@@ -499,6 +499,28 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.hostRocmAvailable).toBe(true);
+      expect(profile.gpu.hostRocmKfdAvailable).toBe(true);
+      expect(profile.gpu.runtimeAvailable).toBe(false);
+    });
+
+    it('should set hostRocmAvailable when drivers are present but /dev/kfd is not ready', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') {
+          return '{"available":false,"source":"host-rocm-smi"}';
+        }
+        return 'MemTotal: 67108864\nMemAvailable: 50331648';
+      });
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.hostRocmAvailable).toBe(true);
+      expect(profile.gpu.hostRocmKfdAvailable).toBe(false);
       expect(profile.gpu.runtimeAvailable).toBe(false);
     });
 

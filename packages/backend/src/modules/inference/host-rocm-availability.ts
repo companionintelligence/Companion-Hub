@@ -8,6 +8,18 @@ export type RocmHostProbe = {
   source?: string;
 };
 
+/** ROCm drivers detected on the host (rocm-smi or /dev/kfd); passthrough may still be pending. */
+export function isHostRocmStackProbe(probe: RocmHostProbe | null | undefined): boolean {
+  if (!probe) return false;
+  if (probe.available) return true;
+  return probe.source === 'host-rocm-smi';
+}
+
+/** Host has /dev/kfd passthrough ready (full probe success or runtime device nodes). */
+export function isRocmKfdPassthroughProbe(probe: RocmHostProbe | null | undefined): boolean {
+  return probe?.available === true && probe.source === 'host-dev-kfd';
+}
+
 export async function readRocmHostProbe(): Promise<RocmHostProbe | null> {
   const probePath = resolveContainerDataPath(ROCM_HOST_PROBE_PATH);
   try {
@@ -34,7 +46,7 @@ async function runtimeRocmDevicesPresent(): Promise<boolean> {
 /** Host ROCm stack is present (Ollama / driver install progress). */
 export async function isHostRocmStackAvailable(): Promise<boolean> {
   const probe = await readRocmHostProbe();
-  if (probe?.available) {
+  if (isHostRocmStackProbe(probe)) {
     return true;
   }
   return runtimeRocmDevicesPresent();
@@ -47,7 +59,7 @@ export async function isHostRocmStackAvailable(): Promise<boolean> {
  */
 export async function isRocmKfdPassthroughAvailable(): Promise<boolean> {
   const probe = await readRocmHostProbe();
-  if (probe?.available && probe.source === 'host-dev-kfd') {
+  if (isRocmKfdPassthroughProbe(probe)) {
     return true;
   }
   return runtimeRocmDevicesPresent();
