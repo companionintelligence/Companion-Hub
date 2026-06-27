@@ -92,7 +92,7 @@ export class RegistrationController {
     const host = req.get('host') || 'localhost:3000';
     const callbackUrl = `${protocol}://${host}/device-registration`;
 
-    // Build registration URL with callback parameter
+    // Build registration URL — Portal /device/register entry route (auth + Add Device flow).
     // Handle empty string as well as null/undefined
     const registrationUrl = ciCloudUrl?.trim()
       ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`

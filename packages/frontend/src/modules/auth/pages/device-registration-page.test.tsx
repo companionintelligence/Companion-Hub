@@ -97,7 +97,29 @@ describe('DeviceRegistrationPage', () => {
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
+    expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
+      'href',
+      'https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123',
+    );
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('uses the device-scoped registration URL for login when the backend provides one', async () => {
+    apiFetch.mockResolvedValueOnce(jsonResponse(makeStatus('unregistered'))).mockResolvedValueOnce(
+      jsonResponse({
+        device_id: 'device-123',
+        ci_cloud_url: 'https://portal.example.com/',
+        registration_url:
+          'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
+      }),
+    );
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute(
+      'href',
+      'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
+    );
   });
 
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {
