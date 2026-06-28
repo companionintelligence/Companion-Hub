@@ -288,6 +288,15 @@ async fn trigger_host_update_command() -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before WebView2 is created, drop a disk cache left corrupt by the previous
+    // version's update-time force-kill (surfaces as ERR_CACHE_READ_FAILURE / blank
+    // window on Windows). Runs at most once per version; no-op off Windows.
+    hub_manager::clear_stale_webview_cache_on_version_change(
+        option_env!("CI_HUB_BUILD_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .trim_start_matches('v'),
+    );
+
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
@@ -455,6 +464,17 @@ pub fn run() {
                 );
                 return Ok(());
             }
+
+            // Start the host update listener (127.0.0.1:17400) in desktop mode too,
+            // not just headless/detached. The Hub backend hands its token to
+            // authenticated browser/in-container Settings UIs, which POST to this
+            // listener to trigger a host update that controls the stack and repulls
+            // container images (see docs/DESKTOP-AUTO-UPDATE.md). Without this, that
+            // documented trigger path is dead whenever the Hub runs via the desktop
+            // app, and the backend never sees a listener token to hand out. The
+            // listener binds a fixed port, so a duplicate/leftover instance simply
+            // fails to bind and exits — spawning here is idempotent.
+            updater::spawn_update_listener_daemon();
 
             // Defer Docker probing and auto-start reconciliation until after setup returns
             // so the main window can appear quickly. These checks can take noticeable
