@@ -685,12 +685,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
           await this.appRepository.deleteAppById(app.id);
-          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
 
-          // Keep Portal's application list aligned with Hub (prunes uninstalled apps).
+          // Release Portal DNS/tunnel routes before telling the UI uninstall is done,
+          // so reinstalling the same hostname does not hit stale "domain in use" checks.
           await this.syncExposure().catch((err) => {
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
+
+          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.appRepository.updateAppById(app.id, { status: 'stopped' });
