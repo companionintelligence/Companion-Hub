@@ -57,6 +57,12 @@ describe('ConnectPage', () => {
     expect(screen.getByPlaceholderText('Password')).toBeInTheDocument();
   });
 
+  it('resolves every i18n key (no raw MOBILE_CONNECT_* leaks through)', () => {
+    const { container } = renderPage();
+    expect(screen.getByText('Connect to your Hub')).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/MOBILE_CONNECT_/);
+  });
+
   it('email sign-in loads the Hub list and disables unreachable Hubs', async () => {
     signInToPortal.mockResolvedValue({ token: 'tok', cookie: null });
     listHubDevices.mockResolvedValue(devices);

@@ -392,13 +392,13 @@ export const GeneralActionsContainer = () => {
           <CardHeader>
             <div className="flex items-center gap-2">
               <Smartphone className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-xl">Connected Hub</CardTitle>
+              <CardTitle className="text-xl">{t('MOBILE_CONNECT_CONNECTED_HUB')}</CardTitle>
             </div>
-            <CardDescription className="break-all">{getHubBaseUrlSync() ?? 'No Hub selected'}</CardDescription>
+            <CardDescription className="break-all">{getHubBaseUrlSync() ?? t('MOBILE_CONNECT_NO_HUB_SELECTED')}</CardDescription>
           </CardHeader>
           <CardContent>
             <Button variant="outline" data-testid="switch-hub-btn" onClick={() => setSwitchHubOpen(true)}>
-              Switch Hub
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
             </Button>
           </CardContent>
         </Card>
@@ -407,11 +407,9 @@ export const GeneralActionsContainer = () => {
       <Dialog open={switchHubOpen} onOpenChange={setSwitchHubOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>Switch Hub?</DialogTitle>
+            <DialogTitle>{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_TITLE')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="py-2">
-            This disconnects from the current Hub and returns to the connect screen. You'll need to choose a Hub and sign in again.
-          </DialogDescription>
+          <DialogDescription className="py-2">{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_DESC')}</DialogDescription>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setSwitchHubOpen(false)}>
               {t('COMMON_CANCEL')}
@@ -423,7 +421,7 @@ export const GeneralActionsContainer = () => {
                 window.location.href = '/connect';
               }}
             >
-              Switch Hub
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
             </Button>
           </DialogFooter>
         </DialogContent>
