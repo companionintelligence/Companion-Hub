@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
+import { HttpStatus, type ExecutionContext } from '@nestjs/common';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { RegistrationGuard } from '../registration.guard';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -54,7 +55,21 @@ describe('RegistrationGuard', () => {
       registered: false,
     });
 
-    await expect(guard.canActivate(createContext('/api/auth/login'))).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(guard.canActivate(createContext('/api/auth/login'))).rejects.toMatchObject({
+      getStatus: expect.any(Function),
+    });
+
+    try {
+      await guard.canActivate(createContext('/api/auth/login'));
+      expect.fail('expected guard to reject');
+    } catch (error) {
+      expect(error).toBeInstanceOf(TranslatableError);
+      expect((error as TranslatableError).getStatus()).toBe(HttpStatus.FORBIDDEN);
+      expect((error as TranslatableError).getResponse()).toMatchObject({
+        message: 'REGISTRATION_DEVICE_NOT_OPERATIONAL',
+        intlParams: { phase: 'unregistered' },
+      });
+    }
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('device not operational'));
   });
 });
