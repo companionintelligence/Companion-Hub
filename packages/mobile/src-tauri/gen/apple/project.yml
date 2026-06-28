@@ -56,6 +56,19 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: computer.ci.app.hub
             CFBundleURLSchemes: [cihub]
+        # iOS 26/27 hard-require UIScene lifecycle adoption; without this the app
+        # traps (EXC_BREAKPOINT) on launch. Minimal adoption (UIKit provides the
+        # default window scene) — Tauri's app delegate still drives the webview.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+        # Dev: `tauri ios dev` serves the frontend over http://127.0.0.1:PORT,
+        # which iOS ATS blocks (only `localhost` is auto-excepted). Release builds
+        # load embedded assets via tauri:// so this only affects local dev.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     entitlements:
       path: ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements
     scheme:

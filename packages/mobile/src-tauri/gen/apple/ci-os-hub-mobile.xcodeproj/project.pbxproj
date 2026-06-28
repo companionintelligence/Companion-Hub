@@ -17,6 +17,7 @@
 		59B13AB2444A52DD65A208D2 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */; };
 		6A4C459E688BEE5F125D0429 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7A4DB32945F336FC5CF023F7 /* Security.framework */; };
 		75318803EB8E93CF09E91A2F /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 250314429D9F32E2F8DF0F7A /* Metal.framework */; };
+		9B01794CB2E9CE7DCA39DB81 /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = CCF6BE04BA93622821A854EC /* libapp.a */; };
 		C016559BE676D88A8D67C74F /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 122EE36778473B804E1F00E9 /* QuartzCore.framework */; };
 		E83CCA3A60D765EEE68FD7D5 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */; };
 /* End PBXBuildFile section */
@@ -38,6 +39,7 @@
 		916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		B0383C943636A1376A38F184 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		CCF6BE04BA93622821A854EC /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		EE09F9A3AA7528C1D45D4DD7 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -87,6 +89,7 @@
 		2FF896ADA45FAB86D6F5CE8C /* Externals */ = {
 			isa = PBXGroup;
 			children = (
+				C07D5A2267745C3FC5EE1C7A /* arm64 */,
 			);
 			path = Externals;
 			sourceTree = "<group>";
@@ -104,6 +107,14 @@
 				1267B5F8B3E446CEAFE7940D /* Frameworks */,
 				8FCAED452492B3C7655E52CC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		5E3EB6D8D93F2DC47355B9D7 /* debug */ = {
+			isa = PBXGroup;
+			children = (
+				CCF6BE04BA93622821A854EC /* libapp.a */,
+			);
+			path = debug;
 			sourceTree = "<group>";
 		};
 		7A4C4DD1AF1266AC3769E9C4 /* ci-os-hub-mobile */ = {
@@ -148,6 +159,21 @@
 				EE09F9A3AA7528C1D45D4DD7 /* bindings.h */,
 			);
 			path = bindings;
+			sourceTree = "<group>";
+		};
+		C07D5A2267745C3FC5EE1C7A /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+				5E3EB6D8D93F2DC47355B9D7 /* debug */,
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
+		"TEMP_D3826279-4248-4357-9732-ADA025673E60" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -211,6 +237,7 @@
 				1D1F0190595E356E4524F7F3 /* Assets.xcassets in Resources */,
 				E83CCA3A60D765EEE68FD7D5 /* LaunchScreen.storyboard in Resources */,
 				18AB5F9B0C6AE434AFD3286C /* assets in Resources */,
+				9B01794CB2E9CE7DCA39DB81 /* libapp.a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
