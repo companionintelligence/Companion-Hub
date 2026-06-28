@@ -241,7 +241,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
         if (sessionStorage.getItem(RELOAD_GUARD_KEY)) return;
         sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
       } catch {
-        // sessionStorage unavailable (private mode / disabled) — reload once anyway.
+        // sessionStorage unavailable (private mode / disabled) — fall back to
+        // window.name, which also survives a same-window reload, so the recovery
+        // reload still happens at most once instead of looping forever.
+        const nameGuard = `|${RELOAD_GUARD_KEY}|`;
+        if (window.name.includes(nameGuard)) return;
+        window.name = `${window.name}${nameGuard}`;
       }
       window.location.reload();
     };

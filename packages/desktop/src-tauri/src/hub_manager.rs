@@ -2142,7 +2142,16 @@ pub fn clear_stale_webview_cache_on_version_change(current_version: &str) {
     #[cfg(target_os = "windows")]
     {
         let data_dir = get_hub_data_dir();
-        let marker = data_dir.join(WEBVIEW_CACHE_VERSION_MARKER);
+        // Track the marker next to the cache it describes (machine-local
+        // LocalAppData), not in the roaming hub data dir, so a roaming Windows
+        // profile cannot carry a "already cleared" marker to a machine whose
+        // local cache was never touched. Fall back to the hub data dir only if
+        // LocalAppData cannot be resolved.
+        let webview_dir = windows_webview_user_data_dir();
+        let marker = webview_dir
+            .clone()
+            .unwrap_or_else(|| data_dir.clone())
+            .join(WEBVIEW_CACHE_VERSION_MARKER);
         let last_version = std::fs::read_to_string(&marker)
             .ok()
             .map(|value| value.trim().to_string());
@@ -2151,7 +2160,7 @@ pub fn clear_stale_webview_cache_on_version_change(current_version: &str) {
             return;
         }
 
-        if let Some(base) = windows_webview_user_data_dir() {
+        if let Some(base) = webview_dir {
             let mut cleared = Vec::new();
             for sub in WEBVIEW_DISK_CACHE_SUBDIRS {
                 let target = base.join(sub);
