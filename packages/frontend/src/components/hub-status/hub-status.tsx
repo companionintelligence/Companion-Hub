@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
 import { isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
@@ -625,6 +626,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
   useDeepLinkPairCapture();
+  useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
