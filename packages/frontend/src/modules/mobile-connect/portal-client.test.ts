@@ -23,7 +23,7 @@ describe('signInToPortal', () => {
     const auth = await signInToPortal('you@example.com', 'pw');
 
     expect(auth.token).toBe('sess-123');
-    const [url, init] = httpFetch.mock.calls[0]!;
+    const [url, init] = httpFetch.mock.calls[0] ?? [];
     expect(url).toBe(`${DEFAULT_PORTAL_URL}/api/auth/sign-in/email`);
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ email: 'you@example.com', password: 'pw' });
@@ -39,7 +39,7 @@ describe('signInToPortal', () => {
   it('honors a custom portal URL', async () => {
     httpFetch.mockResolvedValue(json({ token: 't' }));
     await signInToPortal('a@b.c', 'pw', 'https://staging.example.com/');
-    expect(httpFetch.mock.calls[0]![0]).toBe('https://staging.example.com/api/auth/sign-in/email');
+    expect(httpFetch.mock.calls[0]?.[0]).toBe('https://staging.example.com/api/auth/sign-in/email');
   });
 
   it('throws the Portal error message on failure', async () => {
@@ -72,7 +72,7 @@ describe('listHubDevices', () => {
 
     const devices = await listHubDevices({ token: 'tok', cookie: 'ci_session=abc' });
 
-    const [, init] = httpFetch.mock.calls[0]!;
+    const [, init] = httpFetch.mock.calls[0] ?? [];
     expect(init.headers.Authorization).toBe('Bearer tok');
     expect(init.headers.Cookie).toBe('ci_session=abc');
 

@@ -35,7 +35,7 @@ async function fireCallback(code: string, stateOverride?: string) {
     expect(openUrl).toHaveBeenCalled();
     expect(deepLinkHandler).toBeTruthy();
   });
-  const authorizeUrl = new URL(openUrl.mock.calls[0]![0] as string);
+  const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
   const state = stateOverride ?? authorizeUrl.searchParams.get('state') ?? '';
   deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?code=${code}&state=${state}` });
   return authorizeUrl;
@@ -60,7 +60,7 @@ describe('loginWithPortalOidc', () => {
     expect(authorizeUrl.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{20,}$/);
 
     // token exchange posts the code + PKCE verifier
-    const [tokenUrl, init] = httpFetch.mock.calls[0]!;
+    const [tokenUrl, init] = httpFetch.mock.calls[0] ?? [];
     expect(tokenUrl).toBe(`${DEFAULT_PORTAL_URL}/api/auth/oauth2/token`);
     const body = new URLSearchParams(init.body);
     expect(body.get('grant_type')).toBe('authorization_code');
