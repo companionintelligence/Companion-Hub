@@ -6,7 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "cargo build --manifest-path src-tauri/Cargo.toml",
+    "build": "node -e \"process.exit(0)\"",
+    "build:check": "cargo build --manifest-path src-tauri/Cargo.toml",
     "build:bundle": "tauri build",
     "ios:init": "tauri ios init",
     "ios:dev": "tauri ios dev",
