@@ -4,7 +4,7 @@ The desktop release workflow keeps macOS signing/notarization as-is and now sign
 
 ## macOS signing identity
 
-After importing `APPLE_CERTIFICATE`, the workflow **resolves the codesigning identity from the keychain** (`security find-identity`). This avoids release failures when `APPLE_SIGNING_IDENTITY` is missing or does not exactly match the imported certificate name.
+After importing `APPLE_CERTIFICATE`, the workflow **resolves the codesigning identity from the keychain** (`security find-identity -v -p codesigning`, parsing the quoted name from each `NN) <hash> "…"` line). macOS runners use BSD `sed`, so the parser uses `sed -E` extended regex.
 
 - `APPLE_SIGNING_IDENTITY` (optional secret): if set and it matches an imported identity, that identity is used.
 - Otherwise the workflow prefers `Developer ID Application: …` from the import keychain, then falls back to the first valid identity.

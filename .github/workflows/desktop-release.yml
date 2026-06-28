@@ -244,7 +244,10 @@ jobs:
           identities=()
           while IFS= read -r line; do
             identities+=("$line")
-          done < <(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/^[[:space:]]*[0-9]\+) \(.*\)/\1/p')
+          done < <(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | sed -En 's/^[[:space:]]*[0-9]+\) [A-Fa-f0-9]{40} "(.*)"$/\1/p'
+          )
 
           if [ ${#identities[@]} -eq 0 ]; then
             echo "::error::No codesigning identities found in $KEYCHAIN_PATH"
