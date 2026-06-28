@@ -9,7 +9,14 @@ After importing `APPLE_CERTIFICATE`, the workflow **resolves the codesigning ide
 - `APPLE_SIGNING_IDENTITY` (optional secret): if set and it matches an imported identity, that identity is used.
 - Otherwise the workflow prefers `Developer ID Application: …` from the import keychain, then falls back to the first valid identity.
 
-Required macOS secrets for signed releases: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, plus notarization (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
+Required macOS secrets for signed releases: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`.
+
+Optional notarization (DMG stapling for Gatekeeper): `APPLE_ID`, `APPLE_PASSWORD` (app-specific password from [appleid.apple.com](https://appleid.apple.com)), `APPLE_TEAM_ID`.
+
+**Important:** Do not pass notarization credentials to `tauri build`. The workflow signs during the Tauri bundle step and notarizes the **DMG afterward** with `xcrun notarytool`. If `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` are exported during `tauri build`, the CLI notarizes the `.app` inline and the release fails when credentials are invalid.
+
+- **dev** environment: notarization is attempted when all three notarization secrets are set; failure is **non-fatal** (signed but unnotarized DMGs still upload).
+- **production** environment: notarization failure fails the release job.
 
 ## Where to store the secrets
 
