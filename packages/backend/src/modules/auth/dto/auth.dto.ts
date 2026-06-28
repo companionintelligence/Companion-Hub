@@ -102,12 +102,18 @@ const portalSessionHintResponseSchema = z.object({
   source: z.enum(['hub_operator', 'portal_session']).nullable(),
 });
 
+const sessionRefreshResponseSchema = z.object({
+  sessionId: z.string(),
+  issuedAt: z.number(),
+});
+
 // Login
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}
+export class SessionRefreshDto extends createZodDto(sessionRefreshResponseSchema) {}
 
 // Register
 export class RegisterBody extends createZodDto(credentialsSchema) {}
