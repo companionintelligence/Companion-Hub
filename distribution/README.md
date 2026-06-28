@@ -35,6 +35,19 @@ The update script downloads release assets, computes SHA256 hashes, and refreshe
 
 Production desktop releases run this automatically via `.github/workflows/publish-package-managers.yml`.
 
+#### CI secret: `CI_PACKAGE_MANAGERS_TOKEN`
+
+Store this in the **CI-Hub → Settings → Environments → production** environment (not repo-level).
+
+The token must be able to **push** to:
+
+- `companionintelligence/homebrew-tap`
+- `companionintelligence/scoop-bucket`
+
+Use a **machine/bot account** or dedicated fine-grained PAT with **Contents: Read and write** on both repos. Do not reuse a personal PAT unless that user is an admin on both repos. If the org enforces **SAML SSO**, authorize the PAT for the `companionintelligence` org after creating it.
+
+The publish script verifies push access before cloning and uses the PAT directly in git remote URLs (the default `GITHUB_TOKEN` only has access to CI-Hub itself).
+
 ### 2. SHA256 hashes (manual fallback)
 
 **Every manifest requires real SHA256 hashes before submission.** Placeholders are marked as:
