@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import messages from '@ci-hub/common/i18n/translations/en.json';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -307,7 +308,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       try {
         const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
         if (!result.success) {
-          throw new Error(result.message);
+          const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
+          const messageKey = (rawMessage in messages ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
+          throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
         }
       } catch (error) {
         this.sseService.emit('app', {
