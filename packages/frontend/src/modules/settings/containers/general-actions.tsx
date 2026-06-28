@@ -5,7 +5,8 @@ import { Input } from '@/components/ui/Input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useAppContext } from '@/context/app-context';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
@@ -384,6 +385,30 @@ export const GeneralActionsContainer = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {isTauriMobileSync() && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5 text-muted-foreground" />
+              <CardTitle className="text-xl">Connected Hub</CardTitle>
+            </div>
+            <CardDescription className="break-all">{getHubBaseUrlSync() ?? 'No Hub selected'}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              data-testid="switch-hub-btn"
+              onClick={async () => {
+                await clearHubConnection();
+                window.location.href = '/connect';
+              }}
+            >
+              Switch Hub
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

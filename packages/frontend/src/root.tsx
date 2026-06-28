@@ -14,6 +14,7 @@ import { I18nProvider } from './components/providers/i18n/i18n-provider';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { TranslatableError } from './types/error.types';
 import { getTauriSessionId } from './lib/api-fetch';
+import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from './lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -94,9 +95,15 @@ client.setConfig({
 });
 
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
-  ? probeHealthyHubApiPort().then((port) => {
+  ? (async () => {
+      // On mobile there is no local backend — the app is a thin client pointed at
+      // a remote Hub the user chose. initMobileConnection() applies any stored Hub
+      // baseUrl; when none is set, clientLoader routes the user to /connect.
+      const { isMobile } = await initMobileConnection();
+      if (isMobile) return;
+      const port = await probeHealthyHubApiPort();
       configureHubApiPort(port ?? 5002);
-    })
+    })()
   : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
@@ -126,6 +133,16 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   await tauriBaseUrlReady;
 
   const url = new URL(request.url);
+
+  // On mobile, nothing works until a remote Hub is chosen. Send the user to the
+  // connect screen; the connect route itself is exempt so it can render.
+  if (isTauriMobileSync() && !getHubBaseUrlSync()) {
+    if (url.pathname !== '/connect') {
+      return redirect('/connect');
+    }
+    return null;
+  }
+
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {

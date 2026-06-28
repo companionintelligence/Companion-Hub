@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Window } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 
 export function Titlebar() {
   const { t } = useTranslation(undefined, { useSuspense: false });
+  // Mobile has no OS window chrome — the desktop titlebar (and its window-control
+  // IPC like window.is_maximized) doesn't apply and isn't permitted there.
   const [isTauri, setIsTauri] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [appWindow, setAppWindow] = useState<Window | null>(null);
@@ -11,7 +14,7 @@ export function Titlebar() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return;
+    if (!('__TAURI_INTERNALS__' in window) || isTauriMobileSync()) return;
     setIsTauri(true);
 
     import('@tauri-apps/plugin-os')

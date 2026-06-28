@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { runtimeFetch } from './runtime-fetch';
 
 // Session ID storage for Tauri release mode (where cookies don't work cross-origin)
 let tauriSessionId: string | null = null;
@@ -37,5 +38,7 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // Origin), which browsers reject for any credentialed request — surfacing as a
   // bare "Load failed". The generated API client already uses this config value.
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
-  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers });
+  // runtimeFetch is window.fetch on web/desktop, and the native Tauri HTTP client
+  // on mobile (so a tauri://localhost webview can reach a remote https Hub).
+  return runtimeFetch(`${baseUrl}${path}`, { credentials, ...init, headers });
 }

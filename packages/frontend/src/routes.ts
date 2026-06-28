@@ -1,6 +1,9 @@
 import { type RouteConfig, index, layout, prefix, route } from '@react-router/dev/routes';
 
 export default [
+  // Mobile-only: choose a remote Hub before the rest of the app loads.
+  // Inert on web/desktop (its loader redirects away when not on a phone).
+  route('connect', './modules/mobile-connect/pages/connect-page.tsx', { id: 'mobile-connect' }),
   // Unauthenticated routes
   layout('./components/routes/unauthenticated-route.tsx', [
     route('login', './modules/auth/pages/login-page.tsx', { id: 'login' }),
