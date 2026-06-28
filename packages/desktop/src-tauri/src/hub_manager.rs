@@ -17,6 +17,26 @@ use crate::hub_env::{default_ci_cloud_url, default_hub_image, default_public_dom
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// Tauri bundle identifier (tauri.conf.json `identifier`). On Windows this names
+/// the WebView2 user-data folder: `%LOCALAPPDATA%\<identifier>\EBWebView`.
+#[cfg(target_os = "windows")]
+const WEBVIEW_IDENTIFIER: &str = "computer.ci.app.hub";
+/// Records the desktop version whose boot last reconciled the WebView2 cache, so
+/// the corrupt-cache cleanup runs once per update instead of on every launch.
+#[cfg(target_os = "windows")]
+const WEBVIEW_CACHE_VERSION_MARKER: &str = ".webview-cache-version";
+/// Regenerable WebView2 disk-cache directories cleared after an update. Excludes
+/// `Local Storage`, `Cookies`, `Network`, and `IndexedDB` so login/session and
+/// UI preferences survive the cleanup.
+#[cfg(target_os = "windows")]
+const WEBVIEW_DISK_CACHE_SUBDIRS: &[&str] = &[
+    "EBWebView\\Default\\Cache",
+    "EBWebView\\Default\\Code Cache",
+    "EBWebView\\Default\\GPUCache",
+    "EBWebView\\GrShaderCache",
+    "EBWebView\\ShaderCache",
+];
+
 /// Maximum number of start attempts (1 initial + 2 retries with exponential
 /// backoff of 2 s then 4 s).  `start_hub` / `start_hub_inner` are blocking
 /// functions — callers from async contexts should use `spawn_blocking`.
@@ -2085,6 +2105,91 @@ pub fn get_hub_status() -> HubStatus {
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("companion-hub")
+}
+
+/// Whether the WebView2 disk cache should be reconciled for `current_version`.
+/// True when no version was recorded yet (fresh install / first run with this
+/// logic) or when the recorded version differs from the running binary.
+#[cfg(any(test, target_os = "windows"))]
+fn webview_cache_clear_needed(last_version: Option<&str>, current_version: &str) -> bool {
+    match last_version {
+        Some(value) => value.trim() != current_version.trim(),
+        None => true,
+    }
+}
+
+/// Root of the WebView2 user-data folder on Windows.
+#[cfg(target_os = "windows")]
+fn windows_webview_user_data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join(WEBVIEW_IDENTIFIER))
+}
+
+/// Clear the WebView2 disk cache once after the desktop binary version changes.
+///
+/// An in-place update on Windows force-kills the running app (Restart Manager)
+/// while WebView2 may be mid-write to its on-disk cache. The next launch then
+/// fails every bundled asset with `net::ERR_CACHE_READ_FAILURE` (the cache index
+/// references content files that were never flushed) and shows a blank window.
+/// Microsoft's guidance is to clear the cache when this corruption is detected;
+/// because the corruption is introduced by the update, we proactively drop the
+/// regenerable cache directories the first time each new version boots. The
+/// bundled UI loads from local files, so a cold cache costs nothing here.
+///
+/// Best-effort and idempotent: errors are ignored, and the version marker is
+/// written even when the cache directory is absent so this runs at most once per
+/// version. No-op on non-Windows platforms (WebKitGTK/WKWebView were unaffected).
+pub fn clear_stale_webview_cache_on_version_change(current_version: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let data_dir = get_hub_data_dir();
+        // Track the marker next to the cache it describes (machine-local
+        // LocalAppData), not in the roaming hub data dir, so a roaming Windows
+        // profile cannot carry a "already cleared" marker to a machine whose
+        // local cache was never touched. Fall back to the hub data dir only if
+        // LocalAppData cannot be resolved.
+        let webview_dir = windows_webview_user_data_dir();
+        let marker = webview_dir
+            .clone()
+            .unwrap_or_else(|| data_dir.clone())
+            .join(WEBVIEW_CACHE_VERSION_MARKER);
+        let last_version = std::fs::read_to_string(&marker)
+            .ok()
+            .map(|value| value.trim().to_string());
+
+        if !webview_cache_clear_needed(last_version.as_deref(), current_version) {
+            return;
+        }
+
+        if let Some(base) = webview_dir {
+            let mut cleared = Vec::new();
+            for sub in WEBVIEW_DISK_CACHE_SUBDIRS {
+                let target = base.join(sub);
+                if target.exists() && std::fs::remove_dir_all(&target).is_ok() {
+                    cleared.push(*sub);
+                }
+            }
+            if !cleared.is_empty() {
+                let _ = append_desktop_log_for(
+                    &data_dir,
+                    "webview.cache",
+                    &format!(
+                        "Cleared stale WebView2 disk cache after version change to {} (removed: {}).",
+                        current_version,
+                        cleared.join(", ")
+                    ),
+                );
+            }
+        }
+
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker, current_version);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = current_version;
+    }
 }
 
 fn bundled_cli_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
@@ -7846,6 +7951,18 @@ pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn webview_cache_clear_needed_decision() {
+        // Fresh install / first run with this logic → clear.
+        assert!(super::webview_cache_clear_needed(None, "0.2.27"));
+        // Version changed (post-update first boot) → clear.
+        assert!(super::webview_cache_clear_needed(Some("0.2.26"), "0.2.27"));
+        // Same version (normal relaunch) → keep cache, no cleanup.
+        assert!(!super::webview_cache_clear_needed(Some("0.2.27"), "0.2.27"));
+        // Tolerate trailing whitespace/newline from the marker file.
+        assert!(!super::webview_cache_clear_needed(Some("0.2.27\n"), "0.2.27"));
+    }
+
     #[cfg(any(test, target_os = "macos"))]
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]

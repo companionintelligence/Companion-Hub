@@ -231,7 +231,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const RELOAD_GUARD_KEY = 'ci-hub-preload-error-reload';
     const handlePreloadError = () => {
+      // A failed asset preload is usually a stale chunk hash after an update or a
+      // corrupt WebView2 disk cache surfacing as ERR_CACHE_READ_FAILURE — a single
+      // reload recovers it. Guard with sessionStorage so a persistently
+      // unfetchable asset cannot trap the app in an infinite reload loop.
+      try {
+        if (sessionStorage.getItem(RELOAD_GUARD_KEY)) return;
+        sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
+      } catch {
+        // sessionStorage unavailable (private mode / disabled) — fall back to
+        // window.name, which also survives a same-window reload, so the recovery
+        // reload still happens at most once instead of looping forever.
+        const nameGuard = `|${RELOAD_GUARD_KEY}|`;
+        if (window.name.includes(nameGuard)) return;
+        window.name = `${window.name}${nameGuard}`;
+      }
       window.location.reload();
     };
     window.addEventListener('vite:preloadError', handlePreloadError);
@@ -315,7 +331,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
-        <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <Meta />
         <Links />
