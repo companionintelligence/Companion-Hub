@@ -2,6 +2,15 @@
 
 The desktop release workflow keeps macOS signing/notarization as-is and now signs Windows installers with **Azure Artifact Signing** using **GitHub OIDC** via `azure/login`.
 
+## macOS signing identity
+
+After importing `APPLE_CERTIFICATE`, the workflow **resolves the codesigning identity from the keychain** (`security find-identity`). This avoids release failures when `APPLE_SIGNING_IDENTITY` is missing or does not exactly match the imported certificate name.
+
+- `APPLE_SIGNING_IDENTITY` (optional secret): if set and it matches an imported identity, that identity is used.
+- Otherwise the workflow prefers `Developer ID Application: …` from the import keychain, then falls back to the first valid identity.
+
+Required macOS secrets for signed releases: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, plus notarization (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
+
 ## Where to store the secrets
 
 Add these as **GitHub Environment secrets** on the environment you run the release against:
