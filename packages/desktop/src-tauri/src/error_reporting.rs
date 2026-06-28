@@ -201,6 +201,17 @@ fn is_benign_hub_start_message(message: &str) -> bool {
     lower.contains("recreate was requested, but no existing traefik container was present")
         || ((lower.contains("no such container") || lower.contains("no such object"))
             && lower.contains("traefik"))
+        || is_benign_compose_optional_env_warning(&lower)
+}
+
+/// Docker Compose warns when optional VPN keys are unset even though the feature
+/// is intentionally disabled until the user configures Tailscale.
+fn is_benign_compose_optional_env_warning(lower: &str) -> bool {
+    if !lower.contains("defaulting to a blank string") {
+        return false;
+    }
+
+    lower.contains("tailscale_authkey") || lower.contains("headscale_preauth_key")
 }
 
 fn should_capture_log_event(operation: &str, message: &str) -> bool {
@@ -284,9 +295,9 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_log_level, is_benign_hub_start_message, normalize_portal_url, parse_dsn,
-        portal_environment_for_url, read_deployment_version, read_device_id, read_first_env_value,
-        read_portal_url,
+        classify_log_level, is_benign_compose_optional_env_warning, is_benign_hub_start_message,
+        normalize_portal_url, parse_dsn, portal_environment_for_url, read_deployment_version,
+        read_device_id, read_first_env_value, read_portal_url,
     };
 
     #[test]
@@ -401,6 +412,19 @@ mod tests {
         ));
         assert!(!is_benign_hub_start_message(
             "Failed to remove the existing Traefik container before recreate. permission denied"
+        ));
+    }
+
+    #[test]
+    fn suppresses_benign_tailscale_authkey_compose_warning_from_sentry_capture() {
+        assert!(is_benign_hub_start_message(
+            r#"docker compose up -d succeeded. time="2026-06-28T11:57:10+05:00" level=warning msg="The \"TAILSCALE_AUTHKEY\" variable is not set. Defaulting to a blank string.""#
+        ));
+        assert!(is_benign_compose_optional_env_warning(
+            r#"level=warning msg="the \"headscale_preauth_key\" variable is not set. defaulting to a blank string.""#
+        ));
+        assert!(!is_benign_compose_optional_env_warning(
+            r#"level=warning msg="the \"api_port\" variable is not set. defaulting to a blank string.""#
         ));
     }
 }
