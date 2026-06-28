@@ -2664,13 +2664,20 @@ pub(crate) fn tunnel_token_path_for(data_dir: &Path) -> PathBuf {
     tunnel_dir_for(data_dir).join("token")
 }
 
-/// Remove the Cloudflare tunnel token file (and its parent directory if empty).
+const TUNNEL_USER_CLEARED_MARKER: &str = ".user-cleared-token";
+
+pub(crate) fn tunnel_user_cleared_marker_path_for(data_dir: &Path) -> PathBuf {
+    tunnel_dir_for(data_dir).join(TUNNEL_USER_CLEARED_MARKER)
+}
+
+/// Remove the Cloudflare tunnel token file and record that the user intentionally cleared it.
 /// Returns a human-readable summary of what was removed for logging. Errors only
 /// when the filesystem refuses to delete an existing file — a missing token is a
 /// no-op success since the post-condition (no token on disk) is already satisfied.
 pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
     let token_path = tunnel_token_path_for(data_dir);
     let tunnel_dir = tunnel_dir_for(data_dir);
+    let marker_path = tunnel_user_cleared_marker_path_for(data_dir);
 
     let token_existed = token_path.exists();
     if token_existed {
@@ -2683,41 +2690,31 @@ pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
         })?;
     }
 
-    let mut removed_dir = false;
-    if tunnel_dir.exists() {
-        match std::fs::read_dir(&tunnel_dir) {
-            Ok(mut entries) => {
-                if entries.next().is_none() {
-                    if let Err(e) = std::fs::remove_dir(&tunnel_dir) {
-                        return Err(format!(
-                            "Removed tunnel token but failed to remove empty tunnel dir {}: {}",
-                            tunnel_dir.display(),
-                            e
-                        ));
-                    }
-                    removed_dir = true;
-                }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Removed tunnel token but failed to inspect {}: {}",
-                    tunnel_dir.display(),
-                    e
-                ));
-            }
-        }
-    }
+    std::fs::create_dir_all(&tunnel_dir).map_err(|e| {
+        format!(
+            "Failed to create tunnel dir at {}: {}",
+            tunnel_dir.display(),
+            e
+        )
+    })?;
+    std::fs::write(&marker_path, b"1").map_err(|e| {
+        format!(
+            "Failed to write tunnel user-cleared marker at {}: {}",
+            marker_path.display(),
+            e
+        )
+    })?;
 
-    let summary = match (token_existed, removed_dir) {
-        (true, true) => format!(
-            "Tunnel token cleared ({} removed) and empty tunnel dir removed.",
+    let summary = if token_existed {
+        format!(
+            "Tunnel token cleared ({} removed) and user-cleared marker written.",
             token_path.display()
-        ),
-        (true, false) => format!("Tunnel token cleared ({} removed).", token_path.display()),
-        (false, _) => format!(
-            "No tunnel token to clear at {} (already absent).",
+        )
+    } else {
+        format!(
+            "No tunnel token to clear at {} (already absent); user-cleared marker written.",
             token_path.display()
-        ),
+        )
     };
     Ok(summary)
 }
@@ -7998,7 +7995,7 @@ mod tests {
         parse_docker_socket_uid_gid, paths_match_by_components, prepare_traefik_runtime_state,
         private_vpn_enabled_from_map, seeded_traefik_config_contents,
         should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, ServiceState,
+        tunnel_dir_for, tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState,
         MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
         TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
@@ -8990,10 +8987,14 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             "missing token should report no-op, got: {summary}",
         );
         assert!(!tunnel_token_path_for(tempdir.path()).exists());
+        assert!(
+            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            "user-cleared marker should be written even when token was absent",
+        );
     }
 
     #[test]
-    fn clear_tunnel_token_removes_token_and_empty_dir() {
+    fn clear_tunnel_token_removes_token_and_writes_marker() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let token_path = tunnel_token_path_for(tempdir.path());
         std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
@@ -9003,8 +9004,8 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         assert!(!token_path.exists(), "token file should be removed");
         assert!(
-            !tunnel_dir_for(tempdir.path()).exists(),
-            "empty tunnel dir should be removed",
+            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            "user-cleared marker should be written",
         );
         assert!(
             summary.contains("removed"),

@@ -5,7 +5,7 @@ import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, In
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
+import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
@@ -315,6 +315,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    */
   private async recoverTunnelTokenFromDb(): Promise<boolean> {
     try {
+      if (await this.isTunnelTokenUserCleared()) {
+        this.logger.info('Tunnel token was cleared by the user — skipping recovery from database');
+        return false;
+      }
+
       const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
       if (!hasOrg) return false;
 
@@ -762,6 +767,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       const stat = fs.statSync(tokenPath);
       return stat.isFile() && stat.size > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isTunnelTokenUserCleared(): Promise<boolean> {
+    try {
+      await fs.promises.access(tunnelUserClearedMarkerPath());
+      return true;
     } catch {
       return false;
     }

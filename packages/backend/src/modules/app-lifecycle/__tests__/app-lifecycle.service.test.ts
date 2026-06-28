@@ -892,6 +892,10 @@ describe('AppLifecycleService', () => {
       // Default: commands succeed
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
 
+      vi.spyOn(service as any, 'syncExposure').mockImplementation(async () => {
+        callOrder.push('sync_exposure');
+      });
+
       // Default config for install
       configService.getConfig.mockReturnValue({
         isProduction: false,
@@ -1039,14 +1043,16 @@ describe('AppLifecycleService', () => {
     });
 
     // ── uninstallApp ─────────────────────────────────────────────────────
-    it('uninstallApp success: DB delete committed before SSE', async () => {
+    it('uninstallApp success: syncs exposure before uninstall_success SSE', async () => {
       await service.uninstallApp({ appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       const delIdx = callOrder.indexOf('db_delete');
+      const syncIdx = callOrder.indexOf('sync_exposure');
       const sseIdx = callOrder.indexOf('sse:uninstall_success');
       expect(delIdx).toBeGreaterThanOrEqual(0);
-      expect(sseIdx).toBeGreaterThan(delIdx);
+      expect(syncIdx).toBeGreaterThan(delIdx);
+      expect(sseIdx).toBeGreaterThan(syncIdx);
       expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: true }));
     });

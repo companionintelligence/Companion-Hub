@@ -4,7 +4,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { BadRequestException, Body, Controller, Delete, Get, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpStatus, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -31,6 +31,7 @@ import {
   RegisterDto,
   ResetPasswordBody,
   ResetPasswordDto,
+  SessionRefreshDto,
   SetupTotpBody,
   VerifyTotpBody,
 } from './dto/auth.dto';
@@ -143,6 +144,26 @@ export class AuthController {
     }
 
     return res.status(204).send();
+  }
+
+  /**
+   * Rotate the current session to a new ID with a fresh server-side TTL.
+   * Desktop clients should call this before the 7-day expiry (e.g. around day 5)
+   * and persist the returned sessionId.
+   */
+  @Post('/session/refresh')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: SessionRefreshDto })
+  async refreshSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    if (!sessionId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const nextSessionId = await this.authService.refreshSession(sessionId);
+    await this.setSessionCookie(res, nextSessionId, req);
+
+    return SessionRefreshDto.parse({ sessionId: nextSessionId, issuedAt: Date.now() }, { reportOnly: true });
   }
 
   /**

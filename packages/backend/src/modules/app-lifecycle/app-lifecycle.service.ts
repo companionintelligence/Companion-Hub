@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import messages from '@ci-hub/common/i18n/translations/en.json';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -307,7 +308,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       try {
         const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
         if (!result.success) {
-          throw new Error(result.message);
+          const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
+          const messageKey = (Object.hasOwn(messages, rawMessage) ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
+          throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
         }
       } catch (error) {
         this.sseService.emit('app', {
@@ -682,12 +685,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
           await this.appRepository.deleteAppById(app.id);
-          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
 
-          // Keep Portal's application list aligned with Hub (prunes uninstalled apps).
+          // Release Portal DNS/tunnel routes before telling the UI uninstall is done,
+          // so reinstalling the same hostname does not hit stale "domain in use" checks.
           await this.syncExposure().catch((err) => {
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
+
+          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.appRepository.updateAppById(app.id, { status: 'stopped' });
