@@ -229,12 +229,62 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm certificate.p12
-      - name: Sign bundled macOS CLI resource
+          echo "APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+      - name: Resolve Apple signing identity
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         shell: bash
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${APPLE_KEYCHAIN_PATH:-$RUNNER_TEMP/app-signing.keychain-db}"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          identities=()
+          while IFS= read -r line; do
+            identities+=("$line")
+          done < <(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/^[[:space:]]*[0-9]\+) \(.*\)/\1/p')
+
+          if [ ${#identities[@]} -eq 0 ]; then
+            echo "::error::No codesigning identities found in $KEYCHAIN_PATH"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          chosen=""
+          if [ -n "${APPLE_SIGNING_IDENTITY_SECRET:-}" ]; then
+            for id in "${identities[@]}"; do
+              if [ "$id" = "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+                chosen="$id"
+                break
+              fi
+            done
+            if [ -z "$chosen" ]; then
+              echo "::warning::APPLE_SIGNING_IDENTITY secret does not match any imported identity; using best match from keychain"
+            fi
+          fi
+
+          if [ -z "$chosen" ]; then
+            for id in "${identities[@]}"; do
+              if [[ "$id" == Developer\ ID\ Application:* ]]; then
+                chosen="$id"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$chosen" ]; then
+            chosen="${identities[0]}"
+          fi
+
+          echo "Using Apple signing identity: $chosen"
+          echo "APPLE_SIGNING_IDENTITY=$chosen" >> "$GITHUB_ENV"
+      - name: Sign bundled macOS CLI resource
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        run: |
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$APPLE_KEYCHAIN_PATH"
           CLI_OUT="packages/desktop/src-tauri/resources/cihub"
           chmod 755 "$CLI_OUT"
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
@@ -251,7 +301,7 @@ jobs:
           # Do not set TAURI_BUNDLER_DMG_IGNORE_CI — it forces custom layout and
           # AppleEvent timeouts on current macos-latest images (tauri-action#1091).
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
