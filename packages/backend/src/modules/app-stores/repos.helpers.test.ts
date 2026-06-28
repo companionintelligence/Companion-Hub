@@ -414,7 +414,7 @@ describe('ReposHelpers', () => {
 
       const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Payment Required');
+      expect(result.message).toBe('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED');
     });
 
     it('should map portal 401 to a translatable install error key', async () => {

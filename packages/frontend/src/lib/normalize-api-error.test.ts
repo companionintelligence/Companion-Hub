@@ -10,7 +10,11 @@ describe('normalizeApiErrorMessage', () => {
     expect(normalizeApiErrorMessage('Unauthorized', 401)).toBe('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
   });
 
-  it('falls back to status-based keys when message is missing', () => {
-    expect(normalizeApiErrorMessage(undefined, 403)).toBe('REGISTRATION_DEVICE_NOT_OPERATIONAL');
+  it('falls back to a generic forbidden key when message is missing', () => {
+    expect(normalizeApiErrorMessage(undefined, 403)).toBe('SYSTEM_ERROR_FORBIDDEN');
+  });
+
+  it('maps legacy Forbidden text via the 403 status fallback', () => {
+    expect(normalizeApiErrorMessage('Forbidden', 403)).toBe('SYSTEM_ERROR_FORBIDDEN');
   });
 });

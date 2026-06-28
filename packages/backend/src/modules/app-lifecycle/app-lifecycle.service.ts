@@ -309,7 +309,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
         if (!result.success) {
           const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
-          const messageKey = (rawMessage in messages ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
+          const messageKey = (Object.hasOwn(messages, rawMessage) ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
           throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
         }
       } catch (error) {

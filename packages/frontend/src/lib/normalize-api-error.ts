@@ -1,12 +1,11 @@
 /** Map generic HTTP status text to i18n keys when the API returns no translation key. */
 const LITERAL_MESSAGE_ALIASES: Record<string, string> = {
   Unauthorized: 'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
-  Forbidden: 'REGISTRATION_DEVICE_NOT_OPERATIONAL',
 };
 
 const STATUS_FALLBACK_KEYS: Partial<Record<number, string>> = {
   401: 'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
-  403: 'REGISTRATION_DEVICE_NOT_OPERATIONAL',
+  403: 'SYSTEM_ERROR_FORBIDDEN',
 };
 
 /** Returns an i18n key (or passthrough message) suitable for `t()`. */
