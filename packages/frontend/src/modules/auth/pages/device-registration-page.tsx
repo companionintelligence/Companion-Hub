@@ -535,8 +535,13 @@ export default function DeviceRegistrationPage() {
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
-  // Prefer the device-scoped registration URL so Portal can route into Add Device pairing.
-  const loginUrl = registrationUrl ?? portalUrl;
+  // When restoring an existing device, the user already has a device in Portal
+  // and just needs to grab/regenerate its pairing code — so send them straight
+  // to their Portal home instead of the device-scoped registration (Add Device)
+  // intent URL, which kicks off the "create a new device" flow. For a fresh or
+  // brand-new device, prefer the device-scoped registration URL so Portal can
+  // route into Add Device pairing.
+  const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
 

@@ -248,4 +248,50 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
+
+  it('points the login button at Portal home (not the Add Device intent URL) after choosing restore', async () => {
+    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/registration/status') {
+        return jsonResponse(makeStatus('unregistered'));
+      }
+      if (url === '/api/registration/device-id') {
+        return jsonResponse({
+          device_id: 'device-123',
+          ci_cloud_url: 'https://portal.example.com/',
+          // Even with an Add Device intent URL available, restore should bypass it.
+          registration_url:
+            'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
+        });
+      }
+      if (url === '/api/registration/state-drift') {
+        return jsonResponse({
+          detected: true,
+          hardwareDeviceId: 'device-123',
+          localRegistered: false,
+          portalDeviceActive: true,
+          staleAppEnvDeviceIds: ['old-device-id'],
+          hasStaleTunnelToken: false,
+          signals: [{ reason: 'local_unregistered_portal_active' }],
+        });
+      }
+      if (url === '/api/registration/mark-restore-intent' && init?.method === 'POST') {
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({});
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    // The drift dialog opens first (it makes the page behind it inert/aria-hidden,
+    // so the login link is only queryable once a choice closes the dialog).
+    fireEvent.click(await screen.findByTestId('drift-restore'));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/api/registration/mark-restore-intent', expect.objectContaining({ method: 'POST' }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com/home');
+    });
+  });
 });
