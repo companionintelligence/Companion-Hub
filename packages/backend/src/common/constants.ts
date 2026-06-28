@@ -16,11 +16,15 @@ function resolveDataDir(): string {
 export const DATA_DIR = resolveDataDir();
 export const APP_DATA_DIR = process.env.CI_HUB_APP_DATA_DIR || '/app-data';
 export const TUNNEL_DIR = process.env.CI_HUB_TUNNEL_DIR || path.join(APP_DIR, 'tunnel');
+/** Written when the user clears the tunnel token (tray / settings). Blocks DB auto-recovery until re-paired. */
+export const TUNNEL_USER_CLEARED_MARKER = '.user-cleared-token';
+export const tunnelUserClearedMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_USER_CLEARED_MARKER);
 /** Shared secret for the desktop host update listener (written by companion-hub desktop). */
 export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
-export const SESSION_COOKIE_MAX_AGE = 1000 * 60 * 60 * 24;
+/** Match server-side session TTL (7 days) so browser cookies stay valid for the full session. */
+export const SESSION_COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 7;
 
 export const ARCHITECTURES = ['arm64', 'amd64'] as const;
 export type Architecture = (typeof ARCHITECTURES)[number];

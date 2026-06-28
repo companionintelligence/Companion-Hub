@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -122,6 +122,11 @@ export class CloudflareClientService {
 
       // Write the token to a file that cloudflared will read (configured in docker-compose)
       await writeHealableTextFile(path.join(tunnelDir, 'token'), token, 0o644);
+      try {
+        await fs.unlink(tunnelUserClearedMarkerPath());
+      } catch {
+        // User-cleared marker may not exist.
+      }
       this.logger.log('Wrote tunnel token to file');
     } catch (e) {
       this.logger.error(`Failed to write tunnel files: ${e}`);
