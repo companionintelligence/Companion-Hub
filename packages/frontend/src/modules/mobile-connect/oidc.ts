@@ -57,16 +57,39 @@ async function openInSystemBrowser(url: string): Promise<void> {
   await openUrl(url);
 }
 
+/** Thrown when the user cancels the OIDC sign-in (so the UI can stay quiet). */
+export class OidcCancelledError extends Error {
+  constructor() {
+    super('Sign-in cancelled');
+    this.name = 'OidcCancelledError';
+  }
+}
+
 /**
  * Wait for the `cihub://auth/callback?code=…&state=…` deep link.
  * Listens on the deep-link plugin's raw `deep-link://new-url` event (the same
  * event the Rust shell forwards), so no extra native command is required.
+ * Rejects with {@link OidcCancelledError} if `signal` aborts (user pressed Cancel).
  */
-function awaitOidcCallback(expectedState: string, timeoutMs = 300_000): Promise<{ code: string }> {
+function awaitOidcCallback(expectedState: string, signal?: AbortSignal, timeoutMs = 300_000): Promise<{ code: string }> {
   return new Promise((resolve, reject) => {
     let unlisten: (() => void) | undefined;
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timer);
       unlisten?.();
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new OidcCancelledError());
+    };
+    if (signal?.aborted) {
+      reject(new OidcCancelledError());
+      return;
+    }
+    signal?.addEventListener('abort', onAbort);
+    const timer = setTimeout(() => {
+      cleanup();
       reject(new Error('Timed out waiting for sign-in to complete.'));
     }, timeoutMs);
 
@@ -76,8 +99,7 @@ function awaitOidcCallback(expectedState: string, timeoutMs = 300_000): Promise<
       const params = new URLSearchParams(query);
       const error = params.get('error');
       if (error) {
-        clearTimeout(timer);
-        unlisten?.();
+        cleanup();
         reject(new Error(params.get('error_description') || error));
         return;
       }
@@ -85,13 +107,11 @@ function awaitOidcCallback(expectedState: string, timeoutMs = 300_000): Promise<
       const state = params.get('state');
       if (!code) return;
       if (state !== expectedState) {
-        clearTimeout(timer);
-        unlisten?.();
+        cleanup();
         reject(new Error('Sign-in state mismatch — please try again.'));
         return;
       }
-      clearTimeout(timer);
-      unlisten?.();
+      cleanup();
       resolve({ code });
     };
 
@@ -101,6 +121,8 @@ function awaitOidcCallback(expectedState: string, timeoutMs = 300_000): Promise<
         const urls = Array.isArray(event.payload) ? event.payload : [event.payload];
         for (const u of urls) handle(u);
       });
+      // If we were aborted while the async listener was being registered, drop it.
+      if (signal?.aborted) unlisten?.();
     })();
   });
 }
@@ -118,6 +140,8 @@ async function exchangeCode(portal: string, code: string, codeVerifier: string):
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
+    // Don't hang forever on a slow/unreachable Portal.
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
     let message = `Token exchange failed (${res.status})`;
@@ -148,7 +172,7 @@ async function exchangeCode(portal: string, code: string, codeVerifier: string):
  * resolves once the user finishes and the `cihub://auth/callback` deep link is
  * captured and exchanged for tokens.
  */
-export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL): Promise<OidcTokens> {
+export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, options: { signal?: AbortSignal } = {}): Promise<OidcTokens> {
   const portal = normalizePortalUrl(portalUrl);
   const codeVerifier = randomString();
   const codeChallenge = await sha256Challenge(codeVerifier);
@@ -164,7 +188,7 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL): Promi
   authorizeUrl.searchParams.set('state', state);
 
   // Start listening BEFORE opening the browser so we never miss the redirect.
-  const callback = awaitOidcCallback(state);
+  const callback = awaitOidcCallback(state, options.signal);
   await openInSystemBrowser(authorizeUrl.toString());
   const { code } = await callback;
   return exchangeCode(portal, code, codeVerifier);
