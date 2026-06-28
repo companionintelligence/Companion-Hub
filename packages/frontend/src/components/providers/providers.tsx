@@ -4,6 +4,7 @@ import { type PropsWithChildren, Suspense, useEffect } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
+import { HubSessionRefresh } from './hub-session-refresh';
 import { DebugPanel } from '../debug-panel/debug-panel';
 import { openExternal } from '@/lib/helpers/open-external';
 import { recoverFromChunkLoadError } from '@/lib/chunk-load-error';
@@ -66,6 +67,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
           >
             <Suspense fallback={<PageSuspense />}>
               <UserContextProvider>
+                <HubSessionRefresh />
                 <AutoThemeProvider>{children}</AutoThemeProvider>
               </UserContextProvider>
             </Suspense>

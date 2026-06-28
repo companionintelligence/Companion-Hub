@@ -1,22 +1,137 @@
 import { client } from '@/api-client/client.gen';
+import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 import { runtimeFetch } from './runtime-fetch';
+
+export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
+export const HUB_SESSION_ISSUED_AT_KEY = 'ci-hub-session-issued-at';
+
+/** Rotate hub sessions after 5 days so the 7-day server TTL never lapses for active users. */
+export const HUB_SESSION_REFRESH_AFTER_MS = 5 * 24 * 60 * 60 * 1000;
 
 // Session ID storage for Tauri release mode (where cookies don't work cross-origin)
 let tauriSessionId: string | null = null;
 
-export function setTauriSessionId(id: string | null) {
+/** Desktop release builds must survive full app quit/relaunch — sessionStorage does not. */
+function usesPersistentSessionStorage(): boolean {
+  return isTauriReleaseBuild();
+}
+
+function readStoredSessionId(): string | null {
+  if (usesPersistentSessionStorage()) {
+    try {
+      const fromLocal = localStorage.getItem(TAURI_SESSION_STORAGE_KEY);
+      if (fromLocal) {
+        return fromLocal;
+      }
+    } catch {
+      // localStorage unavailable — fall through to sessionStorage.
+    }
+  }
+
+  try {
+    return sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSessionId(id: string): void {
+  if (usesPersistentSessionStorage()) {
+    try {
+      localStorage.setItem(TAURI_SESSION_STORAGE_KEY, id);
+    } catch {
+      // Fall back to sessionStorage only for this runtime.
+    }
+  }
+
+  try {
+    sessionStorage.setItem(TAURI_SESSION_STORAGE_KEY, id);
+  } catch {
+    // Storage unavailable in some embedded contexts.
+  }
+}
+
+function removeStoredSessionId(): void {
+  try {
+    localStorage.removeItem(TAURI_SESSION_STORAGE_KEY);
+    localStorage.removeItem(HUB_SESSION_ISSUED_AT_KEY);
+  } catch {
+    // ignore
+  }
+
+  try {
+    sessionStorage.removeItem(TAURI_SESSION_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function getHubSessionIssuedAt(): number | null {
+  try {
+    const raw = localStorage.getItem(HUB_SESSION_ISSUED_AT_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function markHubSessionIssuedAt(issuedAt = Date.now()): void {
+  try {
+    localStorage.setItem(HUB_SESSION_ISSUED_AT_KEY, String(issuedAt));
+  } catch {
+    // Storage unavailable in some embedded contexts.
+  }
+}
+
+/** Migrate a session saved in sessionStorage before we switched to localStorage. */
+function migrateSessionToPersistentStorage(id: string): void {
+  if (!usesPersistentSessionStorage()) {
+    return;
+  }
+
+  try {
+    if (!localStorage.getItem(TAURI_SESSION_STORAGE_KEY)) {
+      localStorage.setItem(TAURI_SESSION_STORAGE_KEY, id);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function setTauriSessionId(id: string | null, issuedAt?: number) {
   tauriSessionId = id;
   if (id) {
-    sessionStorage.setItem('ci-hub-session', id);
+    writeStoredSessionId(id);
+    migrateSessionToPersistentStorage(id);
+    markHubSessionIssuedAt(issuedAt ?? Date.now());
   } else {
-    sessionStorage.removeItem('ci-hub-session');
+    removeStoredSessionId();
   }
 }
 
 export function getTauriSessionId(): string | null {
-  if (tauriSessionId) return tauriSessionId;
-  tauriSessionId = sessionStorage.getItem('ci-hub-session');
+  if (tauriSessionId) {
+    return tauriSessionId;
+  }
+
+  tauriSessionId = readStoredSessionId();
+  if (tauriSessionId) {
+    migrateSessionToPersistentStorage(tauriSessionId);
+  }
+
   return tauriSessionId;
+}
+
+/** Drop a client session that the Hub no longer recognizes (expired, hub reset, etc.). */
+export function clearStaleTauriSession(): void {
+  if (!getTauriSessionId()) {
+    return;
+  }
+  setTauriSessionId(null);
 }
 
 /**

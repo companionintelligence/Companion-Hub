@@ -12,11 +12,12 @@ import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { I18nProvider } from './components/providers/i18n/i18n-provider';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
+import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
-import { getTauriSessionId } from './lib/api-fetch';
+import { clearStaleTauriSession, getTauriSessionId } from './lib/api-fetch';
 import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from './lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
-import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
+import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
 import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
@@ -74,8 +75,12 @@ client.interceptors.response.use(async (res) => {
       data = { message: res.statusText || fallbackMessage };
     }
 
-    const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
+    const error = new TranslatableError(normalizeApiErrorMessage(data.message, res.status));
     error.intlParams = data.intlParams ?? {};
+
+    if (res.status === 401 && getTauriSessionId()) {
+      clearStaleTauriSession();
+    }
 
     throw error;
   }
@@ -154,7 +159,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     }
   }
 
-  if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
+  if (registration.kind === 'ok' && (requiresDeviceRegistration(registration.status) || requiresPortalRePairing(registration.status))) {
     if (url.pathname === '/login') {
       return null;
     }
@@ -164,7 +169,12 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return null;
   }
 
-  if (registration.kind === 'ok' && isRegistrationOperational(registration.status) && url.pathname === '/device-registration') {
+  if (
+    registration.kind === 'ok' &&
+    isRegistrationOperational(registration.status) &&
+    !requiresPortalRePairing(registration.status) &&
+    url.pathname === '/device-registration'
+  ) {
     return redirect('/');
   }
 
@@ -174,6 +184,9 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
   try {
     userResult = await userContext();
+    if (!userResult.data?.isLoggedIn && getTauriSessionId()) {
+      clearStaleTauriSession();
+    }
   } catch {
     // Tauri opens at `/` with no matching child route. Never leave the user on a
     // blank outlet — send them somewhere that renders UI while the backend wakes up.

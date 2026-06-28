@@ -340,6 +340,18 @@ export class AuthService {
   };
 
   /**
+   * Rotate the current session to a new ID with a fresh TTL for long-lived desktop use.
+   */
+  public refreshSession = async (sessionId: string) => {
+    const nextSessionId = await this.sessionManager.rotateSession(sessionId);
+    if (!nextSessionId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    return nextSessionId;
+  };
+
+  /**
    * Change the username of the currently logged in user.
    */
   public changeUsername = async (params: { password: string; userId: number; newUsername: string }) => {

@@ -83,6 +83,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           formFields={info.form_fields}
           info={info}
           formId={formId}
+          editingAppUrn={info.urn}
           onValidityChange={handleValidityChange}
           scrollable
         />

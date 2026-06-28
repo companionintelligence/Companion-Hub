@@ -123,6 +123,29 @@ describe('AuthController', () => {
     });
   });
 
+  describe('refreshSession', () => {
+    it('rotates the current session and returns a new id', async () => {
+      authService.refreshSession.mockResolvedValue('session-next');
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+      const req = {
+        cookies: {},
+        get: vi.fn((header: string) => (header === 'x-ci-hub-session' ? 'session-old' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        cookie: vi.fn(),
+      } as unknown as Response;
+
+      const result = await authController.refreshSession(req, res);
+
+      expect(authService.refreshSession).toHaveBeenCalledWith('session-old');
+      expect(res.cookie).toHaveBeenCalled();
+      expect(result.sessionId).toBe('session-next');
+      expect(result.issuedAt).toEqual(expect.any(Number));
+    });
+  });
+
   describe('portalCallback', () => {
     it('redirects desktop flows to the cihub error deep link instead of returning JSON', async () => {
       cache.get.mockReturnValue(

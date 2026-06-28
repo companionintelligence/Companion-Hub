@@ -1,6 +1,7 @@
 import type { SSE, Topic } from '@ci-hub/common/schemas';
 import { useEffect, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
+import { getTauriSessionId } from '@/lib/api-fetch';
 
 type Props<T> = {
   topic: T;
@@ -27,7 +28,7 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
 
     // EventSource doesn't support custom headers, so pass session ID as query param for Tauri
     if (isTauri) {
-      const sid = sessionStorage.getItem('ci-hub-session');
+      const sid = getTauriSessionId();
       if (sid) {
         url.searchParams.set('session_id', sid);
       }

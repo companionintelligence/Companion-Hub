@@ -15,3 +15,8 @@ export function isRegistrationPending(status: RegistrationStatus): boolean {
 export function requiresDeviceRegistration(status: RegistrationStatus): boolean {
   return status.phase === 'unregistered' || isRegistrationPending(status);
 }
+
+/** Portal tunnel was intentionally cleared or is missing — user must re-pair the device. */
+export function requiresPortalRePairing(status: RegistrationStatus): boolean {
+  return status.phase === 'degraded' && status.degradedReasons.includes('tunnel_token_missing');
+}

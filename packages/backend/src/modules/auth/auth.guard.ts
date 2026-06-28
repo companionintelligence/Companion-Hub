@@ -1,5 +1,6 @@
+import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
-import { type CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { type CanActivate, type ExecutionContext, HttpStatus, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 
 const SENSITIVE_BODY_KEYS = new Set(['password', 'currentPassword', 'newPassword', 'token', 'api_key', 'apiKey', 'secret']);
@@ -25,7 +26,7 @@ export class AuthGuard implements CanActivate {
     this.logger.debug('HTTP request', request.method, request.url, redactRequestBody(request.body));
 
     if (!request.user) {
-      throw new UnauthorizedException();
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
     return true;

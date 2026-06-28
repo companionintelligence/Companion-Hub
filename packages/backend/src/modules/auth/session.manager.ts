@@ -2,10 +2,14 @@ import crypto from 'node:crypto';
 import { CacheService } from '@/core/cache/cache.service';
 import { Injectable } from '@nestjs/common';
 
+/** Hub session lifetime in seconds (stored in SQLite cache). */
+export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+/** Clients should rotate sessions after this many seconds to stay ahead of expiry. */
+export const SESSION_REFRESH_AFTER_SECONDS = 60 * 60 * 24 * 5;
+
 @Injectable()
 export class SessionManager {
-  private COOKIE_MAX_AGE = 60 * 60 * 24; // 1 day
-
   constructor(private cache: CacheService) {}
 
   /**
@@ -17,8 +21,8 @@ export class SessionManager {
     const sessionId = crypto.randomUUID();
     const sessionKey = `session:${sessionId}`;
 
-    this.cache.set(sessionKey, userId.toString(), this.COOKIE_MAX_AGE * 7);
-    this.cache.set(`session:${userId}:${sessionId}`, sessionKey, this.COOKIE_MAX_AGE * 7);
+    this.cache.set(sessionKey, userId.toString(), SESSION_TTL_SECONDS);
+    this.cache.set(`session:${userId}:${sessionId}`, sessionKey, SESSION_TTL_SECONDS);
 
     return sessionId;
   }
@@ -39,6 +43,21 @@ export class SessionManager {
     if (userId) {
       this.cache.del(`session:${userId}:${sessionId}`);
     }
+  }
+
+  /**
+   * Replace a valid session with a new ID and a fresh TTL for the same user.
+   * Returns null when the current session is missing or expired.
+   */
+  public async rotateSession(sessionId: string): Promise<string | null> {
+    const sessionKey = `session:${sessionId}`;
+    const userId = this.cache.get(sessionKey);
+    if (!userId || Number.isNaN(Number(userId))) {
+      return null;
+    }
+
+    await this.deleteSession(sessionId);
+    return this.createSession(Number(userId));
   }
 
   /**

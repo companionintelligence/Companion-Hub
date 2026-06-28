@@ -384,7 +384,13 @@ export class ReposHelpers {
       });
       if (response.status < 200 || response.status >= 300) {
         if (response.status === 402) {
-          return { success: false, message: 'Payment Required' };
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' };
+        }
+        if (response.status === 401) {
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED' };
+        }
+        if (response.status === 403) {
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN' };
         }
         throw new Error(`Failed to fetch app files: ${response.status} ${response.statusText}`);
       }
