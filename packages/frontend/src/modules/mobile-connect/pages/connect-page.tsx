@@ -5,6 +5,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
 import { type FormEvent, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { redirect, useNavigate } from 'react-router';
 import { loginWithPortalOidc, OidcCancelledError } from '../oidc';
@@ -36,6 +37,7 @@ type Step = 'sign-in' | 'pick';
 const TOUCH = 'min-h-[44px]';
 
 export default function ConnectPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>('sign-in');
   const [email, setEmail] = useState('');
@@ -66,7 +68,7 @@ export default function ConnectPage() {
     try {
       await loadDevices(await signInToPortal(email, password, portalUrl));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Sign-in failed');
+      toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED'));
     } finally {
       setBusy(false);
     }
@@ -82,7 +84,7 @@ export default function ConnectPage() {
       await loadDevices({ token: tokens.accessToken, cookie: null });
     } catch (err) {
       if (!(err instanceof OidcCancelledError)) {
-        toast.error(err instanceof Error ? err.message : 'Sign-in failed');
+        toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED'));
       }
     } finally {
       setBusy(false);
@@ -96,7 +98,7 @@ export default function ConnectPage() {
     try {
       setDevices(await listHubDevices(auth, portalUrl));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not refresh');
+      toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_REFRESH_FAILED'));
     } finally {
       setBusy(false);
     }
@@ -110,7 +112,7 @@ export default function ConnectPage() {
       // Hand off to the existing Hub login (portal SSO / password) for this Hub.
       navigate('/login');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not connect');
+      toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_CONNECT_FAILED'));
       setConnectingId(null);
     }
   };
@@ -122,23 +124,19 @@ export default function ConnectPage() {
     <div className="safe-area-inset flex min-h-dvh flex-col items-stretch justify-start overflow-y-auto sm:items-center sm:justify-center">
       <Card className="mx-auto w-full max-w-md shrink-0">
         <CardHeader>
-          <CardTitle>{step === 'sign-in' ? 'Connect to your Hub' : 'Choose a Hub'}</CardTitle>
-          <CardDescription>
-            {step === 'sign-in'
-              ? 'Sign in to your Companion Intelligence account to find the Hubs you own.'
-              : 'Pick the Hub appliance you want to use on this device.'}
-          </CardDescription>
+          <CardTitle>{step === 'sign-in' ? t('MOBILE_CONNECT_TITLE') : t('MOBILE_CONNECT_PICK_TITLE')}</CardTitle>
+          <CardDescription>{step === 'sign-in' ? t('MOBILE_CONNECT_DESC') : t('MOBILE_CONNECT_PICK_DESC')}</CardDescription>
         </CardHeader>
         <CardContent>
           {step === 'sign-in' ? (
             <div className="flex flex-col gap-4">
               <Button type="button" className={TOUCH} onClick={handleOidcLogin} loading={busy} disabled={busy} data-testid="oidc-login-btn">
-                Sign in with Companion Intelligence
+                {t('MOBILE_CONNECT_OIDC_BUTTON')}
               </Button>
 
               {oidcController ? (
                 <div className="flex flex-col items-center gap-2 rounded-md bg-muted/40 p-3 text-center text-xs text-muted-foreground">
-                  <span>Finish signing in in your browser, then come back to the app.</span>
+                  <span>{t('MOBILE_CONNECT_OIDC_HINT')}</span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -147,14 +145,14 @@ export default function ConnectPage() {
                     onClick={() => oidcController.abort()}
                     data-testid="cancel-oidc-btn"
                   >
-                    Cancel
+                    {t('MOBILE_CONNECT_CANCEL')}
                   </Button>
                 </div>
               ) : (
                 <>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <span className="h-px flex-1 bg-border" />
-                    or use email
+                    {t('MOBILE_CONNECT_OR_EMAIL')}
                     <span className="h-px flex-1 bg-border" />
                   </div>
                   <form onSubmit={handleSignIn} className="flex flex-col gap-4">
@@ -170,7 +168,7 @@ export default function ConnectPage() {
                     />
                     <PasswordInput
                       className={TOUCH}
-                      placeholder="Password"
+                      placeholder={t('MOBILE_CONNECT_PASSWORD')}
                       autoComplete="current-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -180,18 +178,18 @@ export default function ConnectPage() {
                       <Input
                         type="url"
                         className={TOUCH}
-                        placeholder="Portal URL"
+                        placeholder={t('MOBILE_CONNECT_PORTAL_URL')}
                         inputMode="url"
                         value={portalUrl}
                         onChange={(e) => setPortalUrl(e.target.value)}
                       />
                     ) : (
                       <button type="button" className="self-start py-2 text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
-                        Advanced
+                        {t('MOBILE_CONNECT_ADVANCED')}
                       </button>
                     )}
                     <Button type="submit" variant="outline" className={TOUCH} loading={busy} disabled={busy || !email || !password}>
-                      Sign in with email
+                      {t('MOBILE_CONNECT_EMAIL_BUTTON')}
                     </Button>
                   </form>
                 </>
@@ -200,7 +198,7 @@ export default function ConnectPage() {
           ) : (
             <div className="flex flex-col gap-3">
               {devices.length === 0 ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">No Hubs found on this account yet.</p>
+                <p className="py-6 text-center text-sm text-muted-foreground">{t('MOBILE_CONNECT_NO_HUBS')}</p>
               ) : (
                 devices.map((device) => {
                   const reachable = Boolean(device.hubUrl);
@@ -216,7 +214,7 @@ export default function ConnectPage() {
                     >
                       <div className="min-w-0">
                         <div className="truncate font-medium">{device.name}</div>
-                        <div className="truncate text-xs text-muted-foreground">{device.hubUrl ?? 'No address yet'}</div>
+                        <div className="truncate text-xs text-muted-foreground">{device.hubUrl ?? t('MOBILE_CONNECT_NO_ADDRESS')}</div>
                       </div>
                       {connectingId === device.id ? (
                         <LoadingSpinner className="size-4 shrink-0" />
@@ -224,7 +222,7 @@ export default function ConnectPage() {
                         <span
                           className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${active ? 'bg-green-500/15 text-green-600 dark:text-green-400' : 'bg-muted text-muted-foreground'}`}
                         >
-                          {reachable ? device.status : 'unreachable'}
+                          {reachable ? device.status : t('MOBILE_CONNECT_UNREACHABLE')}
                         </span>
                       )}
                     </button>
@@ -233,7 +231,7 @@ export default function ConnectPage() {
               )}
               <div className="mt-2 flex items-center justify-between">
                 <Button variant="ghost" size="sm" className={TOUCH} onClick={() => setStep('sign-in')} disabled={connectingId !== null}>
-                  Back
+                  {t('MOBILE_CONNECT_BACK')}
                 </Button>
                 <Button
                   variant="outline"
@@ -244,7 +242,7 @@ export default function ConnectPage() {
                   disabled={busy || connectingId !== null}
                   data-testid="refresh-hubs-btn"
                 >
-                  Refresh
+                  {t('MOBILE_CONNECT_REFRESH')}
                 </Button>
               </div>
             </div>
