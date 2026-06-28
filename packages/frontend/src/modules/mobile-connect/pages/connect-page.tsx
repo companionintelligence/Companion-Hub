@@ -7,6 +7,7 @@ import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync, setHubConne
 import { type FormEvent, useState } from 'react';
 import toast from 'react-hot-toast';
 import { redirect, useNavigate } from 'react-router';
+import { loginWithPortalOidc } from '../oidc';
 import { DEFAULT_PORTAL_URL, type HubDevice, listHubDevices, type PortalAuth, signInToPortal } from '../portal-client';
 
 /**
@@ -64,6 +65,23 @@ export default function ConnectPage() {
     }
   };
 
+  const handleOidcLogin = async () => {
+    setBusy(true);
+    try {
+      // OIDC (PKCE) login to the Portal via the system browser + cihub:// callback.
+      const tokens = await loginWithPortalOidc(portalUrl);
+      const portalAuth: PortalAuth = { token: tokens.accessToken, cookie: null };
+      setAuth(portalAuth);
+      const list = await listHubDevices(portalAuth, portalUrl);
+      setDevices(list);
+      setStep('pick');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Sign-in failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRefresh = async () => {
     if (!auth) return;
     setBusy(true);
@@ -105,33 +123,43 @@ export default function ConnectPage() {
         </CardHeader>
         <CardContent>
           {step === 'sign-in' ? (
-            <form onSubmit={handleSignIn} className="flex flex-col gap-4">
-              <Input
-                type="email"
-                placeholder="you@example.com"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-              <PasswordInput
-                placeholder="Password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-              {showAdvanced ? (
-                <Input type="url" placeholder="Portal URL" value={portalUrl} onChange={(e) => setPortalUrl(e.target.value)} />
-              ) : (
-                <button type="button" className="self-start text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
-                  Advanced
-                </button>
-              )}
-              <Button type="submit" loading={busy} disabled={busy || !email || !password}>
-                Sign in
+            <div className="flex flex-col gap-4">
+              <Button type="button" onClick={handleOidcLogin} loading={busy} disabled={busy} data-testid="oidc-login-btn">
+                Sign in with Companion Intelligence
               </Button>
-            </form>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or use email
+                <span className="h-px flex-1 bg-border" />
+              </div>
+              <form onSubmit={handleSignIn} className="flex flex-col gap-4">
+                <Input
+                  type="email"
+                  placeholder="you@example.com"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+                <PasswordInput
+                  placeholder="Password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                {showAdvanced ? (
+                  <Input type="url" placeholder="Portal URL" value={portalUrl} onChange={(e) => setPortalUrl(e.target.value)} />
+                ) : (
+                  <button type="button" className="self-start text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
+                    Advanced
+                  </button>
+                )}
+                <Button type="submit" variant="outline" loading={busy} disabled={busy || !email || !password}>
+                  Sign in with email
+                </Button>
+              </form>
+            </div>
           ) : (
             <div className="flex flex-col gap-3">
               {devices.length === 0 ? (
