@@ -58,6 +58,7 @@ export async function signInToPortal(email: string, password: string, portalUrl 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {
@@ -103,7 +104,7 @@ export async function listHubDevices(auth: PortalAuth, portalUrl = DEFAULT_PORTA
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
   if (auth.cookie) headers.Cookie = auth.cookie;
 
-  const res = await doFetch(`${portal}/api/devices`, { method: 'GET', headers });
+  const res = await doFetch(`${portal}/api/devices`, { method: 'GET', headers, signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
     throw new Error(`Could not load your Hubs (${res.status}).`);
   }

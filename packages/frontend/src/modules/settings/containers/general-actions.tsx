@@ -40,6 +40,7 @@ export const GeneralActionsContainer = () => {
   const [factoryResetting, setFactoryResetting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
+  const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
 
@@ -396,9 +397,27 @@ export const GeneralActionsContainer = () => {
             <CardDescription className="break-all">{getHubBaseUrlSync() ?? 'No Hub selected'}</CardDescription>
           </CardHeader>
           <CardContent>
+            <Button variant="outline" data-testid="switch-hub-btn" onClick={() => setSwitchHubOpen(true)}>
+              Switch Hub
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={switchHubOpen} onOpenChange={setSwitchHubOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>Switch Hub?</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="py-2">
+            This disconnects from the current Hub and returns to the connect screen. You'll need to choose a Hub and sign in again.
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSwitchHubOpen(false)}>
+              {t('COMMON_CANCEL')}
+            </Button>
             <Button
-              variant="outline"
-              data-testid="switch-hub-btn"
+              data-testid="switch-hub-confirm-btn"
               onClick={async () => {
                 await clearHubConnection();
                 window.location.href = '/connect';
@@ -406,9 +425,9 @@ export const GeneralActionsContainer = () => {
             >
               Switch Hub
             </Button>
-          </CardContent>
-        </Card>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

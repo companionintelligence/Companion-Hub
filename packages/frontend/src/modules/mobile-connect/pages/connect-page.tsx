@@ -7,7 +7,7 @@ import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync, setHubConne
 import { type FormEvent, useState } from 'react';
 import toast from 'react-hot-toast';
 import { redirect, useNavigate } from 'react-router';
-import { loginWithPortalOidc } from '../oidc';
+import { loginWithPortalOidc, OidcCancelledError } from '../oidc';
 import { DEFAULT_PORTAL_URL, type HubDevice, listHubDevices, type PortalAuth, signInToPortal } from '../portal-client';
 
 /**
@@ -31,6 +31,10 @@ export async function clientLoader() {
 
 type Step = 'sign-in' | 'pick';
 
+// 44px minimum touch target (WCAG 2.5.5 / iOS HIG) — the shared Button/Input
+// default to 36px, too small for thumbs, so we bump them on this screen.
+const TOUCH = 'min-h-[44px]';
+
 export default function ConnectPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>('sign-in');
@@ -41,6 +45,7 @@ export default function ConnectPage() {
   const [auth, setAuth] = useState<PortalAuth | null>(null);
   const [devices, setDevices] = useState<HubDevice[]>([]);
   const [busy, setBusy] = useState(false);
+  const [oidcController, setOidcController] = useState<AbortController | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
 
   // Render nothing meaningful off-mobile; the loader already redirects.
@@ -48,16 +53,18 @@ export default function ConnectPage() {
     return null;
   }
 
+  const loadDevices = async (portalAuth: PortalAuth) => {
+    setAuth(portalAuth);
+    setDevices(await listHubDevices(portalAuth, portalUrl));
+    setStep('pick');
+  };
+
   const handleSignIn = async (e: FormEvent) => {
     e.preventDefault();
     if (!email || !password) return;
     setBusy(true);
     try {
-      const portalAuth = await signInToPortal(email, password, portalUrl);
-      setAuth(portalAuth);
-      const list = await listHubDevices(portalAuth, portalUrl);
-      setDevices(list);
-      setStep('pick');
+      await loadDevices(await signInToPortal(email, password, portalUrl));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Sign-in failed');
     } finally {
@@ -66,19 +73,20 @@ export default function ConnectPage() {
   };
 
   const handleOidcLogin = async () => {
+    const controller = new AbortController();
+    setOidcController(controller);
     setBusy(true);
     try {
       // OIDC (PKCE) login to the Portal via the system browser + cihub:// callback.
-      const tokens = await loginWithPortalOidc(portalUrl);
-      const portalAuth: PortalAuth = { token: tokens.accessToken, cookie: null };
-      setAuth(portalAuth);
-      const list = await listHubDevices(portalAuth, portalUrl);
-      setDevices(list);
-      setStep('pick');
+      const tokens = await loginWithPortalOidc(portalUrl, { signal: controller.signal });
+      await loadDevices({ token: tokens.accessToken, cookie: null });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Sign-in failed');
+      if (!(err instanceof OidcCancelledError)) {
+        toast.error(err instanceof Error ? err.message : 'Sign-in failed');
+      }
     } finally {
       setBusy(false);
+      setOidcController(null);
     }
   };
 
@@ -95,10 +103,7 @@ export default function ConnectPage() {
   };
 
   const handleConnect = async (device: HubDevice) => {
-    if (!device.hubUrl) {
-      toast.error('This Hub has no reachable address yet.');
-      return;
-    }
+    if (!device.hubUrl) return; // unreachable rows are disabled; guard anyway
     setConnectingId(device.id);
     try {
       await setHubConnection(device.hubUrl);
@@ -111,54 +116,86 @@ export default function ConnectPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-full max-w-md">
+    // Top-aligned + scrollable so the on-screen keyboard never hides the inputs;
+    // centered on larger screens. `safe-area-inset` keeps content clear of the
+    // notch / status bar / home indicator (see globals.css).
+    <div className="safe-area-inset flex min-h-dvh flex-col items-stretch justify-start overflow-y-auto sm:items-center sm:justify-center">
+      <Card className="mx-auto w-full max-w-md shrink-0">
         <CardHeader>
           <CardTitle>{step === 'sign-in' ? 'Connect to your Hub' : 'Choose a Hub'}</CardTitle>
           <CardDescription>
             {step === 'sign-in'
-              ? 'Sign in to Companion Intelligence to find the Hubs you own.'
+              ? 'Sign in to your Companion Intelligence account to find the Hubs you own.'
               : 'Pick the Hub appliance you want to use on this device.'}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {step === 'sign-in' ? (
             <div className="flex flex-col gap-4">
-              <Button type="button" onClick={handleOidcLogin} loading={busy} disabled={busy} data-testid="oidc-login-btn">
+              <Button type="button" className={TOUCH} onClick={handleOidcLogin} loading={busy} disabled={busy} data-testid="oidc-login-btn">
                 Sign in with Companion Intelligence
               </Button>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
-                or use email
-                <span className="h-px flex-1 bg-border" />
-              </div>
-              <form onSubmit={handleSignIn} className="flex flex-col gap-4">
-                <Input
-                  type="email"
-                  placeholder="you@example.com"
-                  autoComplete="username"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-                <PasswordInput
-                  placeholder="Password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-                {showAdvanced ? (
-                  <Input type="url" placeholder="Portal URL" value={portalUrl} onChange={(e) => setPortalUrl(e.target.value)} />
-                ) : (
-                  <button type="button" className="self-start text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
-                    Advanced
-                  </button>
-                )}
-                <Button type="submit" variant="outline" loading={busy} disabled={busy || !email || !password}>
-                  Sign in with email
-                </Button>
-              </form>
+
+              {oidcController ? (
+                <div className="flex flex-col items-center gap-2 rounded-md bg-muted/40 p-3 text-center text-xs text-muted-foreground">
+                  <span>Finish signing in in your browser, then come back to the app.</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={TOUCH}
+                    onClick={() => oidcController.abort()}
+                    data-testid="cancel-oidc-btn"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className="h-px flex-1 bg-border" />
+                    or use email
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                  <form onSubmit={handleSignIn} className="flex flex-col gap-4">
+                    <Input
+                      type="email"
+                      className={TOUCH}
+                      placeholder="you@example.com"
+                      autoComplete="username"
+                      inputMode="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                    />
+                    <PasswordInput
+                      className={TOUCH}
+                      placeholder="Password"
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                    {showAdvanced ? (
+                      <Input
+                        type="url"
+                        className={TOUCH}
+                        placeholder="Portal URL"
+                        inputMode="url"
+                        value={portalUrl}
+                        onChange={(e) => setPortalUrl(e.target.value)}
+                      />
+                    ) : (
+                      <button type="button" className="self-start py-2 text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
+                        Advanced
+                      </button>
+                    )}
+                    <Button type="submit" variant="outline" className={TOUCH} loading={busy} disabled={busy || !email || !password}>
+                      Sign in with email
+                    </Button>
+                  </form>
+                </>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-3">
@@ -166,26 +203,28 @@ export default function ConnectPage() {
                 <p className="py-6 text-center text-sm text-muted-foreground">No Hubs found on this account yet.</p>
               ) : (
                 devices.map((device) => {
-                  const reachable = Boolean(device.hubUrl) && device.status === 'active';
+                  const reachable = Boolean(device.hubUrl);
+                  const active = reachable && device.status === 'active';
                   return (
                     <button
                       key={device.id}
                       type="button"
-                      disabled={connectingId !== null}
+                      disabled={connectingId !== null || !reachable}
                       onClick={() => handleConnect(device)}
-                      className="flex items-center justify-between rounded-md border border-input p-3 text-left transition-colors hover:bg-accent disabled:opacity-60"
+                      data-testid={`hub-row-${device.id}`}
+                      className="flex min-h-[56px] items-center justify-between gap-3 rounded-md border border-input p-4 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <div className="min-w-0">
                         <div className="truncate font-medium">{device.name}</div>
-                        <div className="truncate text-xs text-muted-foreground">{device.hubUrl ?? 'No address'}</div>
+                        <div className="truncate text-xs text-muted-foreground">{device.hubUrl ?? 'No address yet'}</div>
                       </div>
                       {connectingId === device.id ? (
                         <LoadingSpinner className="size-4 shrink-0" />
                       ) : (
                         <span
-                          className={`ml-3 shrink-0 rounded-full px-2 py-0.5 text-xs ${reachable ? 'bg-green-500/15 text-green-600' : 'bg-muted text-muted-foreground'}`}
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${active ? 'bg-green-500/15 text-green-600 dark:text-green-400' : 'bg-muted text-muted-foreground'}`}
                         >
-                          {device.status}
+                          {reachable ? device.status : 'unreachable'}
                         </span>
                       )}
                     </button>
@@ -193,10 +232,18 @@ export default function ConnectPage() {
                 })
               )}
               <div className="mt-2 flex items-center justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setStep('sign-in')} disabled={connectingId !== null}>
+                <Button variant="ghost" size="sm" className={TOUCH} onClick={() => setStep('sign-in')} disabled={connectingId !== null}>
                   Back
                 </Button>
-                <Button variant="outline" size="sm" onClick={handleRefresh} loading={busy} disabled={busy || connectingId !== null}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={TOUCH}
+                  onClick={handleRefresh}
+                  loading={busy}
+                  disabled={busy || connectingId !== null}
+                  data-testid="refresh-hubs-btn"
+                >
                   Refresh
                 </Button>
               </div>

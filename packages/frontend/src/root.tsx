@@ -26,14 +26,19 @@ import i18next from 'i18next';
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
 
 function DesktopStartupFallback() {
+  // Mobile is a thin client connecting to a *remote* Hub — there's no local API,
+  // so the desktop copy would be misleading.
+  const message = isTauriMobileSync()
+    ? safeI18nText('ROOT_CONNECTING', 'Connecting…')
+    : safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...');
   return (
     <main
       id="root"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      className="safe-area-inset flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground"
       role="status"
       aria-busy="true"
     >
-      {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+      {message}
     </main>
   );
 }
@@ -361,7 +366,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
         <Meta />
         <Links />
       </head>
