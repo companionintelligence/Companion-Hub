@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle,
+  CircleStop,
   Download,
   Edit,
   Eraser,
@@ -23,7 +24,7 @@ import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
-import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
+import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
@@ -124,6 +125,19 @@ const MAX_POLL_MS = 5 * 60_000;
 
 const INSTALL_FINALIZING_PROGRESS = 99;
 
+// In-progress statuses that render the LoadingButton, mapped to their status label key.
+const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
+  installing: 'APP_STATUS_INSTALLING',
+  uninstalling: 'APP_STATUS_UNINSTALLING',
+  starting: 'APP_STATUS_STARTING',
+  stopping: 'APP_STATUS_STOPPING',
+  restarting: 'APP_STATUS_RESTARTING',
+  updating: 'APP_STATUS_UPDATING',
+  resetting: 'APP_STATUS_RESETTING',
+  backing_up: 'APP_STATUS_BACKING_UP',
+  restoring: 'APP_STATUS_RESTORING',
+};
+
 export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -185,6 +199,8 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     const progress = app?.status === 'installing' ? installationProgress : null;
     const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
 
+    const statusLabel = t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
+
     let stageText = t('APP_ACTION_PREPARING');
     if (progress !== null) {
       if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
@@ -194,11 +210,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
     return (
       <div key="loading" className="installation-progress-shell">
-        <ActionButton disabled variant="outline" title={t('COMMON_INSTALLING')} className="installation-progress-button" />
+        <ActionButton disabled variant="outline" title={statusLabel} className="installation-progress-button" />
         <div
           className="installation-progress-track"
           role="progressbar"
-          aria-label={t('COMMON_INSTALLING')}
+          aria-label={statusLabel}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress ?? undefined}
@@ -679,6 +695,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       break;
     }
     case 'installing':
+      // Aborting an in-progress install removes the partially-installed app, so the
+      // cancel affordance maps to uninstall. There is no backend cancel/abort, so we
+      // only offer this for installs — see the other transient statuses below.
+      buttons.push(LoadingButton);
+      secondaryActions.push(<IconActionButton key="cancel" icon={CircleStop} label={t('COMMON_CANCEL')} onClick={uninstallDisclosure.open} />);
+      break;
     case 'uninstalling':
     case 'starting':
     case 'stopping':
@@ -687,8 +709,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     case 'resetting':
     case 'backing_up':
     case 'restoring':
+      // Short-lived transitions on an already-installed app. There is no way to cancel
+      // them, and the only available action (uninstall) would destroy the app + data,
+      // so show just the disabled progress button until the operation completes.
       buttons.push(LoadingButton);
-      secondaryActions.push(<IconActionButton key="cancel" icon={Pause} label={t('COMMON_CANCEL')} onClick={uninstallDisclosure.open} />);
       break;
     case 'install_failed':
       buttons.push(RetryInstallButton);

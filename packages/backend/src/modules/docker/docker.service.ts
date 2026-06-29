@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -27,6 +28,10 @@ export type ManagedAppContainerVerification = {
 
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
+const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
+const DOCKER_STATS_TIMEOUT_MS = 5_000;
+/** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
+const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
 
 interface DockerCpuStatsSnapshot {
   cpu_usage?: {
@@ -113,6 +118,10 @@ export class DockerService {
    */
   private getComposeProjectName(appUrn: AppUrn): string {
     return appUrn.replace(':', '_');
+  }
+
+  private shouldSkipDockerStats(containerState: string): boolean {
+    return SKIP_DOCKER_STATS_STATES.has(containerState.toLowerCase());
   }
 
   private calculateCpuPercent(stats: DockerStatsSnapshot): number {
@@ -203,8 +212,22 @@ export class DockerService {
       containers.map((container) =>
         (async () => {
           const dockerContainer = this.docker.getContainer(container.Id);
-          const inspect = await dockerContainer.inspect();
-          const stats = inspect.State?.Running ? ((await dockerContainer.stats({ stream: false })) as DockerStatsSnapshot) : null;
+          const inspect = await withTimeout(dockerContainer.inspect(), DOCKER_INSPECT_TIMEOUT_MS, `Docker inspect timed out for ${container.Id}`);
+
+          let stats: DockerStatsSnapshot | null = null;
+          const skipStats = this.shouldSkipDockerStats(container.State) || !inspect.State?.Running;
+          if (!skipStats) {
+            try {
+              stats = (await withTimeout(
+                dockerContainer.stats({ stream: false }),
+                DOCKER_STATS_TIMEOUT_MS,
+                `Docker stats timed out for ${container.Id}`,
+              )) as DockerStatsSnapshot;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              this.logger.warn(`Skipping runtime stats for container ${container.Id} (${logLabel}): ${message}`);
+            }
+          }
 
           const usage = stats?.memory_stats?.usage ?? 0;
           const cache = stats?.memory_stats?.stats?.cache ?? 0;
@@ -222,6 +245,12 @@ export class DockerService {
         })().catch((error) => {
           if (this.isResourceMissingError(error)) {
             this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${logLabel}): ${error}`);
+            return null;
+          }
+
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('timed out')) {
+            this.logger.warn(`Skipping runtime stats for container ${container.Id} (${logLabel}): ${message}`);
             return null;
           }
 

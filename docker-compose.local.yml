@@ -63,7 +63,7 @@ services:
     restart: unless-stopped
     healthcheck:
       start_period: 30s
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health/live"]
       interval: 10s
       timeout: 5s
       retries: 10

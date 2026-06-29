@@ -71,6 +71,10 @@ jobs:
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      # Notarization is a separate post-build step (notarytool on the DMG). Do not pass
+      # APPLE_ID/PASSWORD/TEAM_ID to `tauri build` — Tauri would notarize inline and
+      # fail the whole bundle when credentials are wrong or for dev prereleases.
+      APPLE_NOTARIZATION_CONFIGURED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && 'true' || '' }}
       # Sentry symbol/sourcemap upload runs only when SENTRY_AUTH_TOKEN is set, and
       # also needs repo/org variables SENTRY_ORG, SENTRY_FRONTEND_PROJECT and
       # SENTRY_DESKTOP_PROJECT. Uploads are best-effort (continue-on-error) and
@@ -229,12 +233,65 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm certificate.p12
-      - name: Sign bundled macOS CLI resource
+          echo "APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+      - name: Resolve Apple signing identity
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         shell: bash
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${APPLE_KEYCHAIN_PATH:-$RUNNER_TEMP/app-signing.keychain-db}"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          identities=()
+          while IFS= read -r line; do
+            identities+=("$line")
+          done < <(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | sed -En 's/^[[:space:]]*[0-9]+\) [A-Fa-f0-9]{40} "(.*)"$/\1/p'
+          )
+
+          if [ ${#identities[@]} -eq 0 ]; then
+            echo "::error::No codesigning identities found in $KEYCHAIN_PATH"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          chosen=""
+          if [ -n "${APPLE_SIGNING_IDENTITY_SECRET:-}" ]; then
+            for id in "${identities[@]}"; do
+              if [ "$id" = "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+                chosen="$id"
+                break
+              fi
+            done
+            if [ -z "$chosen" ]; then
+              echo "::warning::APPLE_SIGNING_IDENTITY secret does not match any imported identity; using best match from keychain"
+            fi
+          fi
+
+          if [ -z "$chosen" ]; then
+            for id in "${identities[@]}"; do
+              if [[ "$id" == Developer\ ID\ Application:* ]]; then
+                chosen="$id"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$chosen" ]; then
+            chosen="${identities[0]}"
+          fi
+
+          echo "Using Apple signing identity: $chosen"
+          echo "APPLE_SIGNING_IDENTITY=$chosen" >> "$GITHUB_ENV"
+      - name: Sign bundled macOS CLI resource
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        run: |
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$APPLE_KEYCHAIN_PATH"
           CLI_OUT="packages/desktop/src-tauri/resources/cihub"
           chmod 755 "$CLI_OUT"
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
@@ -250,11 +307,9 @@ jobs:
           # CI=true skips Finder AppleScript DMG layout (reliable on GitHub runners).
           # Do not set TAURI_BUNDLER_DMG_IGNORE_CI — it forces custom layout and
           # AppleEvent timeouts on current macos-latest images (tauri-action#1091).
-          # macOS signing — Tauri reads these automatically (only meaningful on macOS)
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS codesign only — Tauri reads APPLE_SIGNING_IDENTITY automatically.
+          # Notarization runs later via notarytool on the DMG (see Notarize macOS DMG).
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
         shell: bash
         run: |
@@ -325,7 +380,8 @@ jobs:
           fi
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
-        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_NOTARIZATION_CONFIGURED
+        continue-on-error: ${{ inputs.environment == 'dev' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -335,13 +391,18 @@ jobs:
           DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
           if [ -n "$DMG_PATH" ]; then
             echo "Notarizing $DMG_PATH..."
-            xcrun notarytool submit "$DMG_PATH" \
+            if ! xcrun notarytool submit "$DMG_PATH" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 600
+              --wait --timeout 600; then
+              echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID for this environment)"
+              exit 1
+            fi
             xcrun stapler staple "$DMG_PATH"
             echo "✅ Notarization complete"
+          else
+            echo "::warning::No DMG found to notarize"
           fi
       # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
       # See docs/DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and

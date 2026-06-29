@@ -155,5 +155,33 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
   // runtimeFetch is window.fetch on web/desktop, and the native Tauri HTTP client
   // on mobile (so a tauri://localhost webview can reach a remote https Hub).
-  return runtimeFetch(`${baseUrl}${path}`, { credentials, ...init, headers });
+  return runtimeFetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
+    if (
+      response.status === 401 &&
+      !path.startsWith('/api/auth/login') &&
+      !path.startsWith('/api/auth/logout') &&
+      !path.startsWith('/api/auth/session/refresh')
+    ) {
+      void import('@/lib/session-expired')
+        .then(({ handleSessionExpired }) => handleSessionExpired())
+        .catch(() => {
+          // Non-fatal when the expiry handler chunk fails to load.
+        });
+    }
+    return response;
+  });
+}
+
+/** Best-effort server logout to clear stale httpOnly session cookies in the browser. */
+export async function clearStaleServerSession(): Promise<void> {
+  clearStaleTauriSession();
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl ?? '';
+  const credentials: RequestCredentials = config.credentials ?? 'include';
+  try {
+    // runtimeFetch so the logout reaches a remote Hub on mobile too.
+    await runtimeFetch(`${baseUrl}/api/auth/logout`, { method: 'POST', credentials });
+  } catch {
+    // Non-fatal when the API is down or the session is already gone.
+  }
 }
