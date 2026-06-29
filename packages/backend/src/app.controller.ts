@@ -7,7 +7,6 @@ import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto
 import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
-import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -25,7 +24,6 @@ export class AppController {
     private readonly userRepository: UserRepository,
     private readonly configuration: ConfigurationService,
     private readonly appsService: AppsService,
-    private readonly marketplaceService: MarketplaceService,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
