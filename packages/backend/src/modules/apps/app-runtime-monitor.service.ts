@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -13,6 +14,8 @@ const HIGH_CPU_SAMPLE_COUNT = 3;
 const MONITOR_INTERVAL_MS = 60_000;
 const MONITOR_HISTORY_LIMIT = 24;
 const SNAPSHOT_CACHE_TTL_MS = 30_000;
+const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
+const PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
 
@@ -115,11 +118,37 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     return this.collectRuntimeMonitorSnapshot();
   }
 
+  private emptySnapshot(): AppRuntimeMonitorSnapshot {
+    return {
+      sampledAt: new Date().toISOString(),
+      apps: [],
+      history: [...this.history],
+    };
+  }
+
   private async collectRuntimeMonitorSnapshot(force = false): Promise<AppRuntimeMonitorSnapshot> {
     if (!force && this.latestSnapshot && Date.now() - this.latestSnapshotAtMs < SNAPSHOT_CACHE_TTL_MS) {
       return this.latestSnapshot;
     }
 
+    try {
+      return await withTimeout(
+        this.collectRuntimeMonitorSnapshotInner(),
+        SNAPSHOT_COLLECTION_DEADLINE_MS,
+        'App runtime monitor snapshot collection timed out',
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`App runtime monitor snapshot failed: ${message}`);
+      if (this.latestSnapshot) {
+        this.latestSnapshotAtMs = Date.now();
+        return this.latestSnapshot;
+      }
+      return this.emptySnapshot();
+    }
+  }
+
+  private async collectRuntimeMonitorSnapshotInner(): Promise<AppRuntimeMonitorSnapshot> {
     const sampledAt = new Date().toISOString();
     const apps = await this.appsRepository.getApps();
     const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
@@ -156,7 +185,14 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       const hubContainers = await this.dockerService.getHubRuntimeStats();
       const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
         ? null
-        : await si.processes().then((processList) => processList.list.find((entry) => entry.pid === process.pid));
+        : await withTimeout(
+            si.processes().then((processList) => processList.list.find((entry) => entry.pid === process.pid)),
+            PROCESS_SCAN_TIMEOUT_MS,
+            'Process scan timed out',
+          ).catch((error) => {
+            this.logger.warn(`Skipping backend process metrics: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+          });
       if (!backendProcess && hubContainers.length === 0) {
         return null;
       }
