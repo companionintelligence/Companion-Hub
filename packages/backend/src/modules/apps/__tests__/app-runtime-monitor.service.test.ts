@@ -293,46 +293,55 @@ describe('AppRuntimeMonitorService', () => {
 
   it('returns the last good snapshot when collection times out', async () => {
     vi.useFakeTimers();
-    appsRepository.getApps.mockResolvedValue([
-      {
-        id: 1,
-        appName: 'test-app',
-        appStoreSlug: 'store',
-        status: 'running',
-        config: {},
-        updatedAt: new Date().toISOString(),
-      } as any,
-    ]);
-    dockerService.getAppRuntimeStats.mockResolvedValue([
-      {
-        containerId: 'abc',
-        name: 'svc',
-        state: 'running',
-        status: 'Up',
-        health: 'healthy',
-        exitCode: null,
-        cpuPercent: 12,
-        memoryUsageBytes: 100,
-        memoryLimitBytes: 1000,
-      },
-    ]);
+    try {
+      appsRepository.getApps.mockResolvedValue([
+        {
+          id: 1,
+          appName: 'test-app',
+          appStoreSlug: 'store',
+          status: 'running',
+          config: {},
+          updatedAt: new Date().toISOString(),
+        } as any,
+      ]);
+      dockerService.getAppRuntimeStats.mockResolvedValue([
+        {
+          containerId: 'abc',
+          name: 'svc',
+          state: 'running',
+          status: 'Up',
+          health: 'healthy',
+          exitCode: null,
+          cpuPercent: 12,
+          memoryUsageBytes: 100,
+          memoryLimitBytes: 1000,
+        },
+      ]);
 
-    const first = await service.getRuntimeMonitorSnapshot();
-    await vi.advanceTimersByTimeAsync(31_000);
+      const first = await service.getRuntimeMonitorSnapshot();
+      await vi.advanceTimersByTimeAsync(31_000);
 
-    dockerService.getAppRuntimeStats.mockImplementation(
-      () =>
-        new Promise(() => {
-          /* hang */
-        }),
-    );
+      dockerService.getAppRuntimeStats.mockImplementation(
+        () =>
+          new Promise(() => {
+            /* hang */
+          }),
+      );
 
-    const secondPromise = service.getRuntimeMonitorSnapshot();
-    await vi.advanceTimersByTimeAsync(30_100);
-    const second = await secondPromise;
+      const secondPromise = service.getRuntimeMonitorSnapshot();
+      await vi.advanceTimersByTimeAsync(30_100);
+      const second = await secondPromise;
 
-    expect(first.apps.some((app) => app.appUrn === 'test-app:store')).toBe(true);
-    expect(second).toBe(first);
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      expect(first.apps.some((app) => app.appUrn === 'test-app:store')).toBe(true);
+      expect(second).toBe(first);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+
+      dockerService.getAppRuntimeStats.mockClear();
+      const third = await service.getRuntimeMonitorSnapshot();
+      expect(third).toBe(first);
+      expect(dockerService.getAppRuntimeStats).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

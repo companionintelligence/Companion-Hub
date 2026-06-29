@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -119,22 +120,6 @@ export class DockerService {
     return appUrn.replace(':', '_');
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
-      timer.unref?.();
-    });
-
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) {
-        globalThis.clearTimeout(timer);
-      }
-    }
-  }
-
   private shouldSkipDockerStats(containerState: string): boolean {
     return SKIP_DOCKER_STATS_STATES.has(containerState.toLowerCase());
   }
@@ -227,17 +212,13 @@ export class DockerService {
       containers.map((container) =>
         (async () => {
           const dockerContainer = this.docker.getContainer(container.Id);
-          const inspect = await this.withTimeout(
-            dockerContainer.inspect(),
-            DOCKER_INSPECT_TIMEOUT_MS,
-            `Docker inspect timed out for ${container.Id}`,
-          );
+          const inspect = await withTimeout(dockerContainer.inspect(), DOCKER_INSPECT_TIMEOUT_MS, `Docker inspect timed out for ${container.Id}`);
 
           let stats: DockerStatsSnapshot | null = null;
           const skipStats = this.shouldSkipDockerStats(container.State) || !inspect.State?.Running;
           if (!skipStats) {
             try {
-              stats = (await this.withTimeout(
+              stats = (await withTimeout(
                 dockerContainer.stats({ stream: false }),
                 DOCKER_STATS_TIMEOUT_MS,
                 `Docker stats timed out for ${container.Id}`,

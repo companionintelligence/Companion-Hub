@@ -456,28 +456,55 @@ describe('DockerService', () => {
       expect(result[0]?.cpuPercent).toBe(0);
     });
 
-    it('should skip container when docker stats times out', async () => {
+    it('should zero container metrics when docker stats times out', async () => {
       vi.useFakeTimers();
-      dockerode.listContainers.mockResolvedValue([{ Id: 'slow', Names: ['/slow'], State: 'running', Status: 'Up' }] as any);
-      dockerode.getContainer.mockReturnValue({
-        inspect: vi.fn().mockResolvedValue({
-          State: { Running: true, Health: null },
-        }),
-        stats: vi.fn(
-          () =>
-            new Promise(() => {
-              /* never resolves */
-            }),
-        ),
-      } as any);
+      try {
+        dockerode.listContainers.mockResolvedValue([{ Id: 'slow', Names: ['/slow'], State: 'running', Status: 'Up' }] as any);
+        dockerode.getContainer.mockReturnValue({
+          inspect: vi.fn().mockResolvedValue({
+            State: { Running: true, Health: null },
+          }),
+          stats: vi.fn(
+            () =>
+              new Promise(() => {
+                /* never resolves */
+              }),
+          ),
+        } as any);
 
-      const resultPromise = service.getAppRuntimeStats('test:store' as any);
-      await vi.advanceTimersByTimeAsync(5_100);
-      const result = await resultPromise;
-      expect(result).toHaveLength(1);
-      expect(result[0]?.cpuPercent).toBe(0);
-      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
-      vi.useRealTimers();
+        const resultPromise = service.getAppRuntimeStats('test:store' as any);
+        await vi.advanceTimersByTimeAsync(5_100);
+        const result = await resultPromise;
+        expect(result).toHaveLength(1);
+        expect(result[0]?.cpuPercent).toBe(0);
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should skip container when docker inspect times out', async () => {
+      vi.useFakeTimers();
+      try {
+        dockerode.listContainers.mockResolvedValue([{ Id: 'stuck', Names: ['/stuck'], State: 'running', Status: 'Up' }] as any);
+        dockerode.getContainer.mockReturnValue({
+          inspect: vi.fn(
+            () =>
+              new Promise(() => {
+                /* never resolves */
+              }),
+          ),
+          stats: vi.fn(),
+        } as any);
+
+        const resultPromise = service.getAppRuntimeStats('test:store' as any);
+        await vi.advanceTimersByTimeAsync(5_100);
+        const result = await resultPromise;
+        expect(result).toEqual([]);
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

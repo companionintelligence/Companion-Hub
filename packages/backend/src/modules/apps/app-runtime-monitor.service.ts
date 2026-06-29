@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -117,22 +118,6 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     return this.collectRuntimeMonitorSnapshot();
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
-      timer.unref?.();
-    });
-
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) {
-        globalThis.clearTimeout(timer);
-      }
-    }
-  }
-
   private emptySnapshot(): AppRuntimeMonitorSnapshot {
     return {
       sampledAt: new Date().toISOString(),
@@ -147,7 +132,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      return await this.withTimeout(
+      return await withTimeout(
         this.collectRuntimeMonitorSnapshotInner(),
         SNAPSHOT_COLLECTION_DEADLINE_MS,
         'App runtime monitor snapshot collection timed out',
@@ -156,6 +141,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`App runtime monitor snapshot failed: ${message}`);
       if (this.latestSnapshot) {
+        this.latestSnapshotAtMs = Date.now();
         return this.latestSnapshot;
       }
       return this.emptySnapshot();
@@ -199,7 +185,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       const hubContainers = await this.dockerService.getHubRuntimeStats();
       const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
         ? null
-        : await this.withTimeout(
+        : await withTimeout(
             si.processes().then((processList) => processList.list.find((entry) => entry.pid === process.pid)),
             PROCESS_SCAN_TIMEOUT_MS,
             'Process scan timed out',
