@@ -327,8 +327,12 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let start_ref = Arc::clone(&start_item);
     let stop_ref = Arc::clone(&stop_item);
     let env_path_for_health = crate::hub_manager::hub_env_path();
+    let data_dir_for_watchdog = crate::hub_manager::get_hub_data_dir();
+    let compose_path_for_watchdog = data_dir_for_watchdog.join(crate::hub_manager::HUB_COMPOSE_FILENAME);
     tauri::async_runtime::spawn(async move {
         let mut last_ok: Option<bool> = None;
+        let mut consecutive_failures: u32 = 0;
+        let mut last_watchdog_start: Option<std::time::Instant> = None;
         loop {
             let api_port = crate::port_manager::read_api_port(&env_path_for_health);
             // Try resolved port first, then local source-dev port
@@ -378,10 +382,37 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if ok {
+                consecutive_failures = 0;
                 let _ = status_ref.set_text("Status: Connected ✓");
                 let _ = start_ref.set_enabled(false);
                 let _ = stop_ref.set_enabled(true);
             } else {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let cooldown_secs = last_watchdog_start.map(|t| t.elapsed().as_secs());
+                if crate::hub_manager::should_trigger_hub_watchdog(
+                    consecutive_failures,
+                    cooldown_secs,
+                    crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
+                ) {
+                    let _ = crate::hub_manager::append_desktop_log(
+                        "tray.watchdog",
+                        &format!(
+                            "Hub API unreachable for {} consecutive checks — auto-starting hub.",
+                            consecutive_failures
+                        ),
+                    );
+                    last_watchdog_start = Some(std::time::Instant::now());
+                    consecutive_failures = 0;
+                    let compose = compose_path_for_watchdog.clone();
+                    let env = env_path_for_health.clone();
+                    let data = data_dir_for_watchdog.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::hub_manager::start_hub(&compose, &env, &data)
+                        })
+                        .await;
+                    });
+                }
                 let _ = status_ref.set_text("Status: Disconnected ✗");
                 let _ = start_ref.set_enabled(true);
                 let _ = stop_ref.set_enabled(false);
