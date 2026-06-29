@@ -12,7 +12,7 @@ export const useRegistrationStatus = () => {
       }
       return res.json();
     },
-    refetchInterval: 5000,
+    refetchInterval: (query) => (query.state.data?.phase === 'locally_ready' ? 30_000 : 5_000),
     retry: 2,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });

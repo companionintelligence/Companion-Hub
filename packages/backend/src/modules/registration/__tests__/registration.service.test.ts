@@ -121,10 +121,37 @@ describe('RegistrationService', () => {
       } as any);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
-      const status = await service.getLiveRegistrationStatus();
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      const status = service.getRegistrationStatus();
 
       expect(status.phase).toBe('locally_ready');
       expect(status.registered).toBe(true);
+    });
+
+    it('returns cached phase immediately and refreshes from sources in the background', async () => {
+      const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockResolvedValue(undefined);
+
+      const status = await service.getLiveRegistrationStatus();
+      expect(status.phase).toBe('unregistered');
+      expect(refreshSpy).toHaveBeenCalledOnce();
+
+      refreshSpy.mockClear();
+      (service as any).phaseReadCachedAt = Date.now();
+      await service.getLiveRegistrationStatus();
+      expect(refreshSpy).not.toHaveBeenCalled();
+    });
+
+    it('throttles background refresh retries after a failed refresh', async () => {
+      const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockRejectedValue(new Error('db unavailable'));
+
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      expect(refreshSpy).toHaveBeenCalledOnce();
+
+      refreshSpy.mockClear();
+      await service.getLiveRegistrationStatus();
+      expect(refreshSpy).not.toHaveBeenCalled();
     });
 
     it('resets stale operational cache to unregistered when DB row and tunnel token are both missing', async () => {
@@ -136,8 +163,11 @@ describe('RegistrationService', () => {
 
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+      (service as any).phaseReadCachedAt = 0;
 
-      const status = await service.getLiveRegistrationStatus();
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      const status = service.getRegistrationStatus();
 
       expect(status.phase).toBe('unregistered');
       expect(status.registered).toBe(false);

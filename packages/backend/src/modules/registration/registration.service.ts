@@ -35,6 +35,7 @@ import si from 'systeminformation';
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
+const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -45,6 +46,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private consecutiveValidationFailures = 0;
   private lastCloudValidationAt = 0;
   private cloudValidationInFlight: Promise<void> | null = null;
+  private phaseReadCachedAt = 0;
+  private phaseRefreshInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -210,6 +213,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.warn('Failed to persist provisioning phase', e);
       });
     }
+
+    this.phaseReadCachedAt = Date.now();
   }
 
   /** Return the current in-memory registration status snapshot. */
@@ -218,13 +223,36 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Refresh registration state from the durable sources of truth (DB + disk)
-   * before returning the current status snapshot.
+   * Return the current in-memory registration status snapshot.
+   * Schedules a background refresh from durable sources (DB + disk) when the
+   * read cache is stale; callers get the cached phase immediately.
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
-    await this.refreshPhaseFromSources();
+    this.schedulePhaseRefreshFromSources();
     await this.maybeValidateWithCloud();
     return this.getRegistrationStatus();
+  }
+
+  /** Refresh phase from DB/disk in the background when the read cache is stale. */
+  private schedulePhaseRefreshFromSources(): void {
+    const now = Date.now();
+    if (this.phaseReadCachedAt > 0 && now - this.phaseReadCachedAt < PHASE_READ_CACHE_TTL_MS) {
+      return;
+    }
+
+    if (this.phaseRefreshInFlight) {
+      return;
+    }
+
+    this.phaseRefreshInFlight = this.refreshPhaseFromSources()
+      .catch((error) => {
+        this.logger.debug('Background registration phase refresh failed', error);
+      })
+      .finally(() => {
+        // Throttle retries even when refresh fails so status polls don't hammer DB/disk.
+        this.phaseReadCachedAt = Date.now();
+        this.phaseRefreshInFlight = null;
+      });
   }
 
   /**
