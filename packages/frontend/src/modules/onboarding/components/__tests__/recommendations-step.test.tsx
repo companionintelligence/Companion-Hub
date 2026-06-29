@@ -1,16 +1,29 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { OnboardingApp } from '../../helpers/types';
 import { RecommendationsStep } from '../recommendations-step';
 
-vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
-  useMarketplaceCatalogApps: () => ({
-    apps: [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }],
+const { mockCatalogState } = vi.hoisted(() => ({
+  mockCatalogState: {
     isLoading: false,
     isError: false,
+  },
+}));
+
+vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
+    apps: mockCatalogState.isError ? [] : [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }],
+    isLoading: mockCatalogState.isLoading,
+    isError: mockCatalogState.isError,
     refetch: vi.fn(),
+  }),
+}));
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => key,
   }),
 }));
 
@@ -48,6 +61,11 @@ function Harness({ onEmit }: { onEmit: (apps: OnboardingApp[]) => void }) {
 }
 
 describe('RecommendationsStep (embedded emit)', () => {
+  beforeEach(() => {
+    mockCatalogState.isLoading = false;
+    mockCatalogState.isError = false;
+  });
+
   it('emits the selection once and does not loop on unchanged selections', () => {
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
@@ -71,5 +89,14 @@ describe('RecommendationsStep (embedded emit)', () => {
     await user.click(screen.getByTestId('recommended-app'));
     expect(onEmit).toHaveBeenCalledTimes(1);
     expect(onEmit).toHaveBeenLastCalledWith([]);
+  });
+
+  it('does not show the empty-state message when the catalog query fails', () => {
+    mockCatalogState.isError = true;
+
+    render(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'COMMON_RETRY' })).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
   });
 });

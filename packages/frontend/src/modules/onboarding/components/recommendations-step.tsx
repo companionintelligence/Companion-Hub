@@ -210,9 +210,13 @@ export const RecommendationsStep = ({
             ))}
           </div>
         )}
-        {!isCatalogLoading && !isAltsLoading && !isAltsError && flatApps.length === 0 && altsData && Object.keys(altsData).length > 0 && (
-          <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
-        )}
+        {!isCatalogLoading &&
+          !isCatalogError &&
+          !isAltsLoading &&
+          !isAltsError &&
+          flatApps.length === 0 &&
+          altsData &&
+          Object.keys(altsData).length > 0 && <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>}
         {!isCatalogLoading && !isAltsLoading && flatApps.length > 0 && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {flatApps.map((app) => {
