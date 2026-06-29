@@ -79,8 +79,11 @@ client.interceptors.response.use(async (res) => {
     const error = new TranslatableError(normalizeApiErrorMessage(data.message, res.status));
     error.intlParams = data.intlParams ?? {};
 
-    if (res.status === 401 && getTauriSessionId()) {
-      await handleSessionExpired();
+    if (res.status === 401) {
+      const url = res.url ?? '';
+      if (!url.includes('/api/auth/login') && !url.includes('/api/auth/logout') && !url.includes('/api/auth/session/refresh')) {
+        await handleSessionExpired();
+      }
     }
 
     throw error;

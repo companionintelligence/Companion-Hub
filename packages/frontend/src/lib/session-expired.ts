@@ -19,7 +19,7 @@ export async function handleSessionExpired(): Promise<void> {
   try {
     clearStaleTauriSession();
     if (queryClientRef) {
-      await queryClientRef.invalidateQueries({ queryKey: userContextQueryKey() });
+      await queryClientRef.cancelQueries({ queryKey: userContextQueryKey() });
       queryClientRef.setQueryData(userContextQueryKey(), (current: { isLoggedIn?: boolean } | undefined) =>
         current ? { ...current, isLoggedIn: false } : current,
       );

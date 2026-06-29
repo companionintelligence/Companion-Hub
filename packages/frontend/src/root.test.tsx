@@ -171,6 +171,44 @@ describe('root clientLoader registration gating', () => {
   });
 });
 
+describe('root clientLoader session continuity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    apiFetch.mockResolvedValue(jsonResponse(makeStatus('locally_ready', true)));
+  });
+
+  it('refreshes hub session when user is logged in', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/app-store') } as never);
+
+    expect(refreshHubSessionIfDue).toHaveBeenCalledOnce();
+    expect(clearStaleServerSession).not.toHaveBeenCalled();
+  });
+
+  it('clears stale server session when user is logged out', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: false,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/app-store') } as never);
+
+    expect(clearStaleServerSession).toHaveBeenCalledOnce();
+    expect(refreshHubSessionIfDue).not.toHaveBeenCalled();
+  });
+});
+
 describe('root ErrorBoundary Sentry capture', () => {
   const env = import.meta.env as { DEV: boolean };
   let originalDev: boolean;

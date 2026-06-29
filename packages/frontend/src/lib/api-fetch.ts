@@ -159,7 +159,11 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
       !path.startsWith('/api/auth/logout') &&
       !path.startsWith('/api/auth/session/refresh')
     ) {
-      void import('@/lib/session-expired').then(({ handleSessionExpired }) => handleSessionExpired());
+      void import('@/lib/session-expired')
+        .then(({ handleSessionExpired }) => handleSessionExpired())
+        .catch(() => {
+          // Non-fatal when the expiry handler chunk fails to load.
+        });
     }
     return response;
   });
