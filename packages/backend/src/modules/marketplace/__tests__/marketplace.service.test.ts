@@ -31,6 +31,7 @@ describe('MarketplaceService', () => {
     spies = {
       getAvailableAppUrns: vi.fn(),
       getAppInfoFromAppStore: vi.fn(),
+      getAppInfoFromAppStoreLite: vi.fn(),
       getAppImage: vi.fn(),
       getAppUpdateInfo: vi.fn(),
       copyAppFromRepoToInstalled: vi.fn(),
@@ -47,6 +48,7 @@ describe('MarketplaceService', () => {
         storeConfig: config,
         getAvailableAppUrns: config.slug === 'store-1' ? spies.getAvailableAppUrns : vi.fn().mockResolvedValue([]),
         getAppInfoFromAppStore: spies.getAppInfoFromAppStore,
+        getAppInfoFromAppStoreLite: spies.getAppInfoFromAppStoreLite,
         getAppImage: spies.getAppImage,
         getAppUpdateInfo: spies.getAppUpdateInfo,
         copyAppFromRepoToInstalled: spies.copyAppFromRepoToInstalled,
@@ -91,7 +93,7 @@ describe('MarketplaceService', () => {
       await service.initialize();
 
       spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
-      spies.getAppInfoFromAppStore.mockResolvedValue({
+      spies.getAppInfoFromAppStoreLite.mockResolvedValue({
         urn: 'app-1:store-1' as any,
         supported_architectures: ['amd64'],
         name: 'App 1',
@@ -102,14 +104,14 @@ describe('MarketplaceService', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.urn).toBe('app-1:store-1' as any);
-      expect(spies.getAppInfoFromAppStore).toHaveBeenCalledWith('app-1:store-1' as any);
+      expect(spies.getAppInfoFromAppStoreLite).toHaveBeenCalledWith('app-1:store-1' as any);
     });
 
     it('should filter out incompatible architectures', async () => {
       await service.initialize();
 
       spies.getAvailableAppUrns.mockResolvedValue(['app-arm:store-1']);
-      spies.getAppInfoFromAppStore.mockResolvedValue({
+      spies.getAppInfoFromAppStoreLite.mockResolvedValue({
         urn: 'app-arm:store-1',
         supported_architectures: ['arm64'], // Config is amd64
         name: 'App ARM',
@@ -126,7 +128,7 @@ describe('MarketplaceService', () => {
       await service.initialize();
 
       spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
-      spies.getAppInfoFromAppStore.mockResolvedValue({
+      spies.getAppInfoFromAppStoreLite.mockResolvedValue({
         urn: 'app-1:store-1' as any,
         supported_architectures: ['amd64'],
         name: 'Search Me',

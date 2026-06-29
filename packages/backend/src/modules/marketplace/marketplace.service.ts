@@ -124,7 +124,7 @@ export class MarketplaceService {
         return limit(async () => {
           const { store } = this.getStoreFromUrn(appUrn);
           if (!store) return null;
-          return store.getAppInfoFromAppStore(appUrn);
+          return store.getAppInfoFromAppStoreLite(appUrn);
         });
       }),
     );
@@ -145,7 +145,7 @@ export class MarketplaceService {
   /**
    * Invalidate the cache
    */
-  private invalidateCache() {
+  public invalidateCache() {
     this.appsAvailable = null;
     if (this.miniSearch) {
       this.miniSearch.removeAll();

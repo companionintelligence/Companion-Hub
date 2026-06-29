@@ -5,6 +5,7 @@ import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { AppStoreRepository } from '../app-store.repository';
 import { ReposHelpers } from '../repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -15,6 +16,7 @@ describe('AppStoreService', () => {
   let repoHelpers: MockProxy<ReposHelpers>;
   let configService: MockProxy<ConfigurationService>;
   let appStoreRepository: MockProxy<AppStoreRepository>;
+  let marketplaceService: MockProxy<MarketplaceService>;
   let capturedQueueCallback: any;
 
   beforeEach(async () => {
@@ -23,6 +25,7 @@ describe('AppStoreService', () => {
     repoHelpers = mock<ReposHelpers>();
     configService = mock<ConfigurationService>();
     appStoreRepository = mock<AppStoreRepository>();
+    marketplaceService = mock<MarketplaceService>();
 
     repoQueue.onEvent.mockImplementation((cb) => {
       capturedQueueCallback = cb;
@@ -39,6 +42,7 @@ describe('AppStoreService', () => {
         { provide: ReposHelpers, useValue: repoHelpers },
         { provide: ConfigurationService, useValue: configService },
         { provide: AppStoreRepository, useValue: appStoreRepository },
+        { provide: MarketplaceService, useValue: marketplaceService },
       ],
     }).compile();
 
@@ -53,6 +57,7 @@ describe('AppStoreService', () => {
     appStoreRepository.getEnabledAppStores.mockResolvedValue([{ id: 1, name: 'Main', url: 'http://test', slug: 'main', enabled: true } as any]);
     await service.pullRepositories();
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
+    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
   });
 
   it('should register cloud app store if configured', async () => {
@@ -80,6 +85,7 @@ describe('AppStoreService', () => {
     await capturedQueueCallback({ command: 'update_all' }, reply);
 
     expect(repoHelpers.pullRepo).toHaveBeenCalled();
+    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith({ success: true, message: 'All repos updated' });
   });
 
