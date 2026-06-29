@@ -14,6 +14,11 @@ vi.mock('@/context/app-context', () => ({
     tailscaleAvailable: true,
     setAppContext: vi.fn(),
     refreshAppContext: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
+vi.mock('../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
     apps: [
       {
         id: 'ci-openclaw',
@@ -38,6 +43,7 @@ vi.mock('@/context/app-context', () => ({
         supported_architectures: [],
       },
     ],
+    isLoading: false,
   }),
 }));
 

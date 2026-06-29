@@ -5,9 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { OnboardingApp } from '../../helpers/types';
 import { RecommendationsStep } from '../recommendations-step';
 
-vi.mock('@/context/app-context', () => ({
-  useAppContext: () => ({
+vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
     apps: [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }],
+    isLoading: false,
   }),
 }));
 

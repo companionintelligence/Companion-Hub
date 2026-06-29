@@ -1,6 +1,5 @@
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
-import { useAppContext } from '@/context/app-context';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
@@ -9,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
+import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import { SelectIndicator } from './ai-setup/primitives';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
@@ -35,7 +35,7 @@ export const RecommendationsStep = ({
   pinnedSlugs = [],
 }: RecommendationsStepProps) => {
   const { t } = useTranslation();
-  const { apps: storeApps } = useAppContext();
+  const { apps: storeApps } = useMarketplaceCatalogApps();
   // Memoized so the `recommendations` memo below keeps a stable identity across re-renders
   // (an unstable detectedNames array would invalidate it every render and re-fire the emit effect).
   const detectedNames = useMemo(() => detectedServices.map((s) => s.friendlyName), [detectedServices]);

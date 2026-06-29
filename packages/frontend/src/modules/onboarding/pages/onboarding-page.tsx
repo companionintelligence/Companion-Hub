@@ -13,6 +13,7 @@ import { InstallStep } from '../components/install-step';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
+import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
@@ -91,7 +92,8 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 
 function OnboardingWizard() {
   const { t } = useTranslation();
-  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const { user, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const { apps: storeApps } = useMarketplaceCatalogApps();
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');

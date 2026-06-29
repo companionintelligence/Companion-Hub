@@ -225,10 +225,9 @@ export class AppController {
     }
 
     // Parallelize all independent async calls
-    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
+    const [version, org, installedApps, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
-      this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
       this.tailscaleService.getStatus().catch(() => ({
         installed: false,
@@ -263,7 +262,7 @@ export class AppController {
         userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
         appDataRootHostPath,
         user: req.user as UserDto,
-        apps,
+        apps: [],
         updatesAvailable: updatesAvailable.length,
         isProduction,
         cloudflareAvailable,
