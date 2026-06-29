@@ -9,11 +9,17 @@ import {
   takePendingIntent,
 } from './app-intents';
 
-const mc = vi.hoisted(() => ({ isMobile: true, baseUrl: null as string | null, setHub: vi.fn(async (..._a: unknown[]) => {}) }));
+const mc = vi.hoisted(() => ({
+  isMobile: true,
+  baseUrl: null as string | null,
+  setHub: vi.fn(async (..._a: unknown[]) => {}),
+  clearHub: vi.fn(async () => {}),
+}));
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => mc.isMobile,
   getHubBaseUrlSync: () => mc.baseUrl,
   setHubConnection: (...a: unknown[]) => mc.setHub(...(a as [string])),
+  clearHubConnection: () => mc.clearHub(),
 }));
 
 const store = vi.hoisted(() => ({ data: {} as Record<string, unknown>, set: vi.fn(), save: vi.fn() }));
@@ -41,6 +47,7 @@ beforeEach(() => {
   mc.isMobile = true;
   mc.baseUrl = null;
   mc.setHub.mockClear();
+  mc.clearHub.mockClear();
   store.data = {};
   store.set.mockClear();
   store.save.mockClear();
@@ -89,12 +96,17 @@ describe('matchHubByName', () => {
 });
 
 describe('resolveIntentNavigation', () => {
-  it('maps the simple actions without side effects', async () => {
+  it('maps home/settings without side effects', async () => {
     expect(await resolveIntentNavigation({ kind: 'home' }, HUBS)).toEqual({ path: '/', reload: false });
-    expect(await resolveIntentNavigation({ kind: 'connect' }, HUBS)).toEqual({ path: '/connect', reload: false });
-    expect(await resolveIntentNavigation({ kind: 'switch' }, HUBS)).toEqual({ path: '/connect', reload: false });
     expect(await resolveIntentNavigation({ kind: 'settings' }, HUBS)).toEqual({ path: '/settings', reload: false });
     expect(mc.setHub).not.toHaveBeenCalled();
+    expect(mc.clearHub).not.toHaveBeenCalled();
+  });
+
+  it('connect/switch clear the active connection so the picker actually shows', async () => {
+    expect(await resolveIntentNavigation({ kind: 'connect' }, HUBS)).toEqual({ path: '/connect', reload: true });
+    expect(await resolveIntentNavigation({ kind: 'switch' }, HUBS)).toEqual({ path: '/connect', reload: true });
+    expect(mc.clearHub).toHaveBeenCalledTimes(2);
   });
 
   it('opens a different reachable Hub: re-points the client and reloads', async () => {

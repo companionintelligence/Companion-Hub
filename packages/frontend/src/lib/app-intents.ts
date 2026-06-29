@@ -15,7 +15,7 @@
  *
  * Everything is inert off mobile (`isTauriMobileSync()` stays false).
  */
-import { getHubBaseUrlSync, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
+import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
 
 const STORE_FILE = 'app-intents.json';
 const KNOWN_HUBS_KEY = 'knownHubs';
@@ -120,10 +120,12 @@ export async function resolveIntentNavigation(action: IntentAction, knownHubs: K
     case 'home':
       return { path: '/', reload: false };
     case 'connect':
-      return { path: '/connect', reload: false };
     case 'switch':
-      // Re-pick a Hub. The connect screen's loader handles the rest.
-      return { path: '/connect', reload: false };
+      // Re-pick a Hub. Clear the active connection first, otherwise the
+      // `/connect` loader sees a chosen Hub and immediately redirects back to
+      // `/`, making the intent a no-op. Reload so the API client re-inits.
+      await clearHubConnection();
+      return { path: '/connect', reload: true };
     case 'settings':
       return { path: '/settings', reload: false };
     case 'open': {

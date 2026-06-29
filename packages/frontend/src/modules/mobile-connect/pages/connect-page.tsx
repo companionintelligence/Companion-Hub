@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/Input';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { publishHubsToIntents } from '@/lib/app-intents';
-import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
+import { initMobileConnection, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
 import { type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -51,8 +51,10 @@ export default function ConnectPage() {
   const [oidcController, setOidcController] = useState<AbortController | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
 
-  // Render nothing meaningful off-mobile; the loader already redirects.
-  if (!isTauriMobileSync() && getHubBaseUrlSync()) {
+  // Never render the picker on web/desktop. The loader already redirects
+  // off-mobile; this is the belt-and-suspenders guard if the route is reached
+  // directly.
+  if (!isTauriMobileSync()) {
     return null;
   }
 
