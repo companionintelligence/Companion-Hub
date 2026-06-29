@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
+import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import { AppStoreRepository } from './app-store.repository';
 import { ReposHelpers } from './repos.helpers';
@@ -28,6 +29,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     @Inject(forwardRef(() => ReposHelpers)) private readonly repoHelpers: ReposHelpers,
     private readonly config: ConfigurationService,
     private readonly appStoreRepository: AppStoreRepository,
+    @Inject(forwardRef(() => MarketplaceService)) private readonly marketplaceService: MarketplaceService,
   ) {
     this.repoQueue.onEvent(async (data, reply) => {
       switch (data.command) {
@@ -42,6 +44,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
               this.logger.warn(`Skipped invalid repo ${stores[index]?.slug}: ${result.value.message}`);
             }
           });
+          this.marketplaceService.invalidateCache();
           await reply({ success: true, message: 'All repos updated' });
           break;
         }
@@ -99,6 +102,8 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       this.logger.debug(`Pulling repo ${repo.url}`);
       await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git');
     }
+
+    this.marketplaceService.invalidateCache();
 
     return { success: true };
   }

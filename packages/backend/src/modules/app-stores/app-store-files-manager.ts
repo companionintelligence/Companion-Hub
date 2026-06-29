@@ -40,6 +40,36 @@ export class AppStoreFilesManager {
   }
 
   /**
+   * Get the app info from the app store (config.json only — no description.md).
+   */
+  public async getAppInfoFromAppStoreLite(appUrn: AppUrn) {
+    try {
+      const { appRepoDir } = this.getAppPaths(appUrn);
+
+      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+        const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
+
+        const config = JSON.parse(configFile ?? '{}');
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+
+        if (!parsedConfig.success) {
+          this.logger.debug(`App ${appUrn} config error:`);
+          this.logger.debug(parsedConfig.error.message);
+          return null;
+        }
+
+        if (parsedConfig.data.available) {
+          return parsedConfig.data;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error getting lite app info from app store for ${appUrn}:`, error);
+    }
+
+    return null;
+  }
+
+  /**
    * Get the app info from the app store
    * @param appUrn - The app id
    */
@@ -69,7 +99,7 @@ export class AppStoreFilesManager {
           return { ...parsedConfig.data, description };
         }
       } else {
-        this.logger.warn(`[DEBUG] config.json not found for ${appUrn} at ${appRepoDir}`);
+        this.logger.debug(`config.json not found for ${appUrn} at ${appRepoDir}`);
       }
     } catch (error) {
       this.logger.error(`Error getting app info from app store for ${appUrn}:`, error);
@@ -210,10 +240,6 @@ export class AppStoreFilesManager {
    */
   public async getAvailableAppUrns() {
     const appsRepoFolder = this.getAppStoreFolder();
-    this.logger.warn(`[DEBUG] Checking if apps repo folder exists: "${appsRepoFolder}"`);
-    const config = this.configuration.getConfig();
-    this.logger.warn(`[DEBUG] Data dir: "${config.directories.dataDir}"`);
-    this.logger.warn(`[DEBUG] Store slug: "${this.storeConfig.slug}"`);
 
     if (!(await this.filesystem.pathExists(appsRepoFolder))) {
       this.logger.error(`Apps repo ${this.storeConfig.slug} not found. Make sure your repo is configured correctly.`);
@@ -223,9 +249,7 @@ export class AppStoreFilesManager {
     const appsDir = await this.filesystem.listFiles(appsRepoFolder);
     const skippedFiles = ['__tests__', 'docker-compose.common.yml', 'schema.json', '.DS_Store'];
 
-    const urns = appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
-    this.logger.warn(`[DEBUG] Found ${urns.length} apps in ${this.storeConfig.slug}`);
-    return urns;
+    return appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
   }
 
   /**
