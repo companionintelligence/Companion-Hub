@@ -109,6 +109,7 @@ if (process.env.MCP_ENABLED !== 'false') {
   imports,
   providers: [
     AppService,
+    AuthMiddleware,
     {
       provide: APP_PIPE,
       useClass: ZodValidationPipe,

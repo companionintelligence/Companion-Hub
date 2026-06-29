@@ -108,6 +108,8 @@ const userContextDto = z.object({
   localDomain: z.string(),
   domain: z.string(),
   sslPort: z.number(),
+  sessionExpiresAt: z.number().optional(),
+  sessionRefreshRecommendedAt: z.number().optional(),
 });
 
 export class UserContextDto extends createZodDto(userContextDto) {}

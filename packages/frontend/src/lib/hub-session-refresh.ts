@@ -12,9 +12,22 @@ import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 export const HUB_SESSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let refreshInFlight: Promise<boolean> | null = null;
+let serverSessionRefreshRecommendedAt: number | null = null;
+
+/** Prefer authoritative server hints from `/api/user-context` when available. */
+export function setServerSessionRefreshRecommendedAt(recommendedAt: number | null): void {
+  serverSessionRefreshRecommendedAt = recommendedAt ?? null;
+}
 
 export function isHubSessionRefreshDue(): boolean {
   const issuedAt = getHubSessionIssuedAt();
+
+  if (serverSessionRefreshRecommendedAt && Date.now() >= serverSessionRefreshRecommendedAt) {
+    if (!issuedAt || issuedAt <= serverSessionRefreshRecommendedAt) {
+      return true;
+    }
+  }
+
   if (!issuedAt) {
     // Legacy sessions created before we tracked issue time — refresh once.
     return true;
