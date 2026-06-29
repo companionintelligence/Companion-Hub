@@ -199,6 +199,7 @@
   "APP_STATUS_DEGRADED": "Necesita atención",
   "APP_STATUS_INITIALIZING": "Inicializando",
   "APP_STATUS_INSTALL_FAILED": "Error en la instalación",
+  "APP_STATUS_INSTALLING": "Instalando",
   "APP_STATUS_MISSING": "Falta",
   "APP_STATUS_PENDING_RESTART": "Reinicio pendiente",
   "APP_STATUS_RESETTING": "Restableciendo",
