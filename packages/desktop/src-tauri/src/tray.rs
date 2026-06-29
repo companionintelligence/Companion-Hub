@@ -333,13 +333,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             let api_port = crate::port_manager::read_api_port(&env_path_for_health);
             // Try resolved port first, then local source-dev port
             let ok = client
-                .get(format!("http://localhost:{}/api/health", api_port))
+                .get(format!("http://localhost:{}/api/health/live", api_port))
                 .send()
                 .await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
                 || client
-                    .get("http://localhost:5004/api/health")
+                    .get("http://localhost:5004/api/health/live")
                     .send()
                     .await
                     .map(|r| r.status().is_success())

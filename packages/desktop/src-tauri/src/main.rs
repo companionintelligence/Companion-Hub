@@ -91,7 +91,7 @@ async fn check_hub_status(url: String) -> Result<bool, String> {
         .build()
         .map_err(|error| error.to_string())?;
 
-    match client.get(format!("{}/api/health", url)).send().await {
+    match client.get(format!("{}/api/health/live", url)).send().await {
         Ok(resp) => Ok(resp.status().is_success()),
         Err(_) => Ok(false),
     }

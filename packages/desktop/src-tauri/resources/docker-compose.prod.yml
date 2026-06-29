@@ -65,7 +65,7 @@ services:
       - "${API_PORT:-5002}:5002"
     healthcheck:
       start_period: 90s
-      test: ["CMD", "curl", "-f", "http://localhost:5002/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5002/api/health/live"]
       interval: 10s
       timeout: 5s
       retries: 15
