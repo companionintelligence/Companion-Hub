@@ -407,10 +407,30 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     let env = env_path_for_health.clone();
                     let data = data_dir_for_watchdog.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = tokio::task::spawn_blocking(move || {
+                        match tokio::task::spawn_blocking(move || {
                             crate::hub_manager::start_hub(&compose, &env, &data)
                         })
-                        .await;
+                        .await
+                        {
+                            Ok(Ok(summary)) => {
+                                let _ = crate::hub_manager::append_desktop_log(
+                                    "tray.watchdog",
+                                    &format!("Watchdog start_hub succeeded: {summary}"),
+                                );
+                            }
+                            Ok(Err(err)) => {
+                                let _ = crate::hub_manager::append_desktop_log(
+                                    "tray.watchdog",
+                                    &format!("Watchdog start_hub failed: {err}"),
+                                );
+                            }
+                            Err(join_err) => {
+                                let _ = crate::hub_manager::append_desktop_log(
+                                    "tray.watchdog",
+                                    &format!("Watchdog start_hub task panicked: {join_err}"),
+                                );
+                            }
+                        }
                     });
                 }
                 let _ = status_ref.set_text("Status: Disconnected ✗");
