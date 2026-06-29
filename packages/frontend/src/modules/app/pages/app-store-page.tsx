@@ -68,12 +68,22 @@ export default () => {
 
   const queryClient = useQueryClient();
 
+  const isAlternativesView = category === ALTERNATIVES_VIEW;
+  const isFeaturedView = category === 'featured';
+  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
+  const catalogSearchQuery = useMemo(() => ({ search, category: effectiveCategory, pageSize: 24, storeId }), [search, effectiveCategory, storeId]);
+  const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
+
   useEffect(() => {
+    if (!catalogSearchEnabled) {
+      return;
+    }
+
     void queryClient.prefetchInfiniteQuery({
-      ...searchAppsInfiniteOptions({ query: { pageSize: 24 } }),
+      ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
       staleTime: MARKETPLACE_SEARCH_STALE_MS,
     });
-  }, [queryClient]);
+  }, [queryClient, catalogSearchEnabled, catalogSearchQuery]);
 
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
@@ -86,9 +96,6 @@ export default () => {
       });
     },
   });
-
-  const isAlternativesView = category === ALTERNATIVES_VIEW;
-  const isFeaturedView = category === 'featured';
 
   const {
     data: alternativesData,
@@ -188,17 +195,15 @@ export default () => {
     [setSearch],
   );
 
-  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
-
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
-    ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
+    ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
     staleTime: MARKETPLACE_SEARCH_STALE_MS,
-    enabled: !isAlternativesView && !isFeaturedView,
+    enabled: catalogSearchEnabled,
   });
 
-  const isLoading = !isAlternativesView && !isFeaturedView && !data;
+  const isLoading = catalogSearchEnabled && !data;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   const { lastElementRef } = useInfiniteScroll({
