@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from './lib/registration-status';
 
-const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubException, loadHubSentryDeviceId } = vi.hoisted(() => ({
+const {
+  apiFetch,
+  userContext,
+  requestUse,
+  responseUse,
+  setConfig,
+  captureHubException,
+  loadHubSentryDeviceId,
+  refreshHubSessionIfDue,
+  clearStaleServerSession,
+} = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   userContext: vi.fn(),
   requestUse: vi.fn(),
@@ -9,6 +19,8 @@ const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubExc
   setConfig: vi.fn(),
   captureHubException: vi.fn(),
   loadHubSentryDeviceId: vi.fn(),
+  refreshHubSessionIfDue: vi.fn().mockResolvedValue(false),
+  clearStaleServerSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('./lib/sentry', () => ({
@@ -19,6 +31,11 @@ vi.mock('./lib/sentry', () => ({
 vi.mock('./lib/api-fetch', () => ({
   apiFetch,
   getTauriSessionId: vi.fn(() => null),
+  clearStaleServerSession,
+}));
+
+vi.mock('./lib/hub-session-refresh', () => ({
+  refreshHubSessionIfDue,
 }));
 
 vi.mock('./api-client', () => ({

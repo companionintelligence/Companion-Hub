@@ -14,7 +14,9 @@ import { I18nProvider } from './components/providers/i18n/i18n-provider';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
-import { clearStaleTauriSession, getTauriSessionId } from './lib/api-fetch';
+import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
+import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
+import { handleSessionExpired } from '@/lib/session-expired';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -78,7 +80,7 @@ client.interceptors.response.use(async (res) => {
     error.intlParams = data.intlParams ?? {};
 
     if (res.status === 401 && getTauriSessionId()) {
-      clearStaleTauriSession();
+      await handleSessionExpired();
     }
 
     throw error;
@@ -167,8 +169,10 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
   try {
     userResult = await userContext();
-    if (!userResult.data?.isLoggedIn && getTauriSessionId()) {
-      clearStaleTauriSession();
+    if (userResult.data?.isLoggedIn) {
+      await refreshHubSessionIfDue();
+    } else {
+      await clearStaleServerSession();
     }
   } catch {
     // Tauri opens at `/` with no matching child route. Never leave the user on a

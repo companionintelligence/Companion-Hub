@@ -152,5 +152,28 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // Origin), which browsers reject for any credentialed request — surfacing as a
   // bare "Load failed". The generated API client already uses this config value.
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
-  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers });
+  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
+    if (
+      response.status === 401 &&
+      !path.startsWith('/api/auth/login') &&
+      !path.startsWith('/api/auth/logout') &&
+      !path.startsWith('/api/auth/session/refresh')
+    ) {
+      void import('@/lib/session-expired').then(({ handleSessionExpired }) => handleSessionExpired());
+    }
+    return response;
+  });
+}
+
+/** Best-effort server logout to clear stale httpOnly session cookies in the browser. */
+export async function clearStaleServerSession(): Promise<void> {
+  clearStaleTauriSession();
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl ?? '';
+  const credentials: RequestCredentials = config.credentials ?? 'include';
+  try {
+    await fetch(`${baseUrl}/api/auth/logout`, { method: 'POST', credentials });
+  } catch {
+    // Non-fatal when the API is down or the session is already gone.
+  }
 }
