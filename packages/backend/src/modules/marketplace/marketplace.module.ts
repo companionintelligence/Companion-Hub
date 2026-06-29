@@ -6,7 +6,7 @@ import { MarketplaceController } from './marketplace.controller';
 import { MarketplaceService } from './marketplace.service';
 
 @Module({
-  imports: [AppStoreModule, forwardRef(() => RegistrationModule)],
+  imports: [forwardRef(() => AppStoreModule), forwardRef(() => RegistrationModule)],
   controllers: [MarketplaceController],
   providers: [MarketplaceService, ImageSizeService],
   exports: [MarketplaceService, ImageSizeService],

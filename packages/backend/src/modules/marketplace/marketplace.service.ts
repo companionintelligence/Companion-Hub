@@ -4,7 +4,7 @@ import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import MiniSearch from 'minisearch';
 import { AppStoreFilesManager } from '../app-stores/app-store-files-manager';
@@ -39,7 +39,7 @@ export class MarketplaceService {
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly logger: LoggerService,
-    private readonly appStoreService: AppStoreService,
+    @Inject(forwardRef(() => AppStoreService)) private readonly appStoreService: AppStoreService,
   ) {}
 
   async initialize() {

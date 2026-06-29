@@ -65,6 +65,8 @@ export class AppStoreFilesManager {
     } catch (error) {
       this.logger.error(`Error getting lite app info from app store for ${appUrn}:`, error);
     }
+
+    return null;
   }
 
   /**
