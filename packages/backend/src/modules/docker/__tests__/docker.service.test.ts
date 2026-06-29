@@ -437,6 +437,48 @@ describe('DockerService', () => {
       await expect(service.getAppRuntimeStats('test:store' as any)).resolves.toEqual([]);
       expect(loggerService.warn).toHaveBeenCalled();
     });
+
+    it('should skip docker stats for restarting containers', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'loop', Names: ['/loop'], State: 'restarting', Status: 'Restarting (1)' }] as any);
+      const stats = vi.fn();
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          State: { Running: false, ExitCode: 1, Health: null },
+        }),
+        stats,
+      } as any);
+
+      const result = await service.getAppRuntimeStats('test:store' as any);
+
+      expect(stats).not.toHaveBeenCalled();
+      expect(result).toHaveLength(1);
+      expect(result[0]?.state).toBe('restarting');
+      expect(result[0]?.cpuPercent).toBe(0);
+    });
+
+    it('should skip container when docker stats times out', async () => {
+      vi.useFakeTimers();
+      dockerode.listContainers.mockResolvedValue([{ Id: 'slow', Names: ['/slow'], State: 'running', Status: 'Up' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockResolvedValue({
+          State: { Running: true, Health: null },
+        }),
+        stats: vi.fn(
+          () =>
+            new Promise(() => {
+              /* never resolves */
+            }),
+        ),
+      } as any);
+
+      const resultPromise = service.getAppRuntimeStats('test:store' as any);
+      await vi.advanceTimersByTimeAsync(5_100);
+      const result = await resultPromise;
+      expect(result).toHaveLength(1);
+      expect(result[0]?.cpuPercent).toBe(0);
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+      vi.useRealTimers();
+    });
   });
 
   describe('forceStopApp', () => {
