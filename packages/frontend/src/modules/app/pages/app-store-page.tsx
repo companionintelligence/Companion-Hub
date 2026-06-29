@@ -36,6 +36,7 @@ interface AltItem {
   alternatives: AltEntry[];
 }
 
+const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
