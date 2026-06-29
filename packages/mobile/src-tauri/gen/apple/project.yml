@@ -1,8 +1,11 @@
 name: ci-os-hub-mobile
 options:
   bundleIdPrefix: computer.ci.app.hub
+  # iOS 16 is the minimum for App Intents (Siri/Shortcuts/Spotlight/Action
+  # Button). `import AppIntents` autolinks the framework; with a 16.0 target it
+  # links cleanly (no weak-linking needed). See Sources/AppIntents/.
   deploymentTarget:
-    iOS: 15.0
+    iOS: 16.0
 fileGroups: [../../src]
 configs:
   debug: debug

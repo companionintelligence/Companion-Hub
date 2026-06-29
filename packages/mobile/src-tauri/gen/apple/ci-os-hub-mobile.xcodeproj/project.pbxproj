@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */; };
 		089F337E3D45B7F886583B8D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4BBEBC74C5D46FA449BD8DC8 /* UIKit.framework */; };
 		12E01263B2CA8E8B5FCC61BE /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19504980A96F1EB169B60D7E /* WebKit.framework */; };
 		1693E3D5B4349EB4110852BE /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6D392AFB5EB613D062CB37FF /* libapp.a */; };
@@ -36,6 +37,7 @@
 		5339289DD699732B41FDB951 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		6D392AFB5EB613D062CB37FF /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		7A4DB32945F336FC5CF023F7 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionHubAppIntents.swift; sourceTree = "<group>"; };
 		916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		B0383C943636A1376A38F184 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
@@ -81,6 +83,7 @@
 		27CA3D1555F94FD0520F6055 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				A42A14BE22AD4E5C5CEC26F1 /* AppIntents */,
 				7A4C4DD1AF1266AC3769E9C4 /* ci-os-hub-mobile */,
 			);
 			path = Sources;
@@ -153,6 +156,14 @@
 			path = "ci-os-hub-mobile_iOS";
 			sourceTree = "<group>";
 		};
+		A42A14BE22AD4E5C5CEC26F1 /* AppIntents */ = {
+			isa = PBXGroup;
+			children = (
+				8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */,
+			);
+			path = AppIntents;
+			sourceTree = "<group>";
+		};
 		AE4A1731E57D44841DF72374 /* bindings */ = {
 			isa = PBXGroup;
 			children = (
@@ -169,7 +180,7 @@
 			path = arm64;
 			sourceTree = "<group>";
 		};
-		"TEMP_D3826279-4248-4357-9732-ADA025673E60" /* x86_64 */ = {
+		"TEMP_0FF4EE8B-3A5A-40EA-9141-EBDA16180905" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
@@ -272,6 +283,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */,
 				4C9E7FA103D2E689913F12C9 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -324,7 +336,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -448,7 +460,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

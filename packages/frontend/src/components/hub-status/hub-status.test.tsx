@@ -9,6 +9,13 @@ vi.mock('@/lib/theme/theme', () => ({
   getLogo: () => '/logo.svg',
 }));
 
+// HubStatus mounts useAppIntentDeepLinks(), which calls useNavigate(); these
+// tests render it without a Router, so stub navigation (unused off-mobile).
+vi.mock('react-router', async (orig) => ({
+  ...(await orig<typeof import('react-router')>()),
+  useNavigate: () => vi.fn(),
+}));
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',

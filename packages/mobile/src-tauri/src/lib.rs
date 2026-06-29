@@ -11,6 +11,12 @@
 //! pairing flows use `cihub://pair?code=…`. We capture those, stash them, and
 //! emit the same `deep-link-auth` / `deep-link-pair` events the frontend
 //! already listens for, so the existing login/pairing code works unchanged.
+//!
+//! **App Intents** (iOS Siri/Shortcuts/Spotlight/Action Button) reuse the very
+//! same channel: the Swift `AppIntent`s open `cihub://intent/<action>` URLs
+//! (e.g. `cihub://intent/connect`, `cihub://intent/open?hub=Apple%20Hub`). We
+//! capture those, stash the action, and emit a `deep-link-intent` event the
+//! frontend routes to the right screen — so an intent needs no extra IPC.
 
 use std::sync::Mutex;
 
@@ -22,6 +28,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 struct PendingPairingCode(Mutex<Option<String>>);
 /// A Portal SSO token captured from a `cihub://auth` deep link before the UI mounted.
 struct PendingPortalAuth(Mutex<Option<PortalAuthPayload>>);
+/// An App Intent action captured from a `cihub://intent/<action>` deep link
+/// (Siri/Shortcuts/Spotlight) before the UI mounted.
+struct PendingIntent(Mutex<Option<String>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -43,11 +52,19 @@ fn consume_pending_portal_auth(
     state.0.lock().ok()?.take()
 }
 
+/// Returns an App Intent action from a deep link that arrived before the UI was
+/// ready (e.g. the app was cold-started by Siri/Shortcuts).
+#[tauri::command]
+fn consume_pending_intent(state: tauri::State<'_, PendingIntent>) -> Option<String> {
+    state.0.lock().ok()?.take()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
+        .manage(PendingIntent(Mutex::new(None)))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -57,6 +74,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             consume_pending_pairing_code,
             consume_pending_portal_auth,
+            consume_pending_intent,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -103,6 +121,15 @@ fn queue_portal_auth(app: &tauri::AppHandle, payload: PortalAuthPayload) {
     let _ = app.emit("deep-link-auth", payload);
 }
 
+fn queue_intent(app: &tauri::AppHandle, action: &str) {
+    if let Some(state) = app.try_state::<PendingIntent>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(action.to_string());
+        }
+    }
+    let _ = app.emit("deep-link-intent", action);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         queue_pairing_code(app, &code);
@@ -111,6 +138,11 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
 
     if let Some(payload) = extract_portal_auth(url) {
         queue_portal_auth(app, payload);
+        return;
+    }
+
+    if let Some(action) = extract_intent(url) {
+        queue_intent(app, &action);
     }
 }
 
@@ -184,9 +216,49 @@ fn extract_portal_auth(url: &str) -> Option<PortalAuthPayload> {
     None
 }
 
+/// Pulls the action out of an App Intent deep link.
+///
+/// Accepts both the canonical path form `cihub://intent/<action>` (optionally
+/// with a query, e.g. `cihub://intent/open?hub=Apple%20Hub`) and the legacy
+/// host form `cihub://intent?action=<action>`. The returned string is the raw
+/// action plus any query (`open?hub=Apple%20Hub`); the frontend parses it
+/// further. URL-decoding of parameter values is left to the frontend.
+fn extract_intent(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+
+    if let Some(rest) = trimmed.strip_prefix("cihub://intent/") {
+        let rest = rest.trim();
+        // Strip a trailing slash on the bare-action form ("connect/").
+        let normalized = if rest.contains('?') {
+            rest.to_string()
+        } else {
+            rest.trim_end_matches('/').to_string()
+        };
+        if normalized.is_empty() {
+            return None;
+        }
+        return Some(normalized);
+    }
+
+    // Host form: cihub://intent?action=connect
+    if let Some(rest) = trimmed.strip_prefix("cihub://intent") {
+        let query = rest.strip_prefix('?')?;
+        for param in query.split('&') {
+            if let Some(action) = param.strip_prefix("action=") {
+                let action = action.trim();
+                if !action.is_empty() {
+                    return Some(action.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{extract_pairing_code, extract_portal_auth, PortalAuthPayload};
+    use super::{extract_intent, extract_pairing_code, extract_portal_auth, PortalAuthPayload};
 
     #[test]
     fn extract_pairing_code_from_query_param() {
@@ -217,5 +289,40 @@ mod tests {
     #[test]
     fn ignore_non_auth_deep_links_for_portal_auth() {
         assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn extract_intent_bare_action() {
+        assert_eq!(
+            extract_intent("cihub://intent/connect"),
+            Some("connect".to_string())
+        );
+        assert_eq!(
+            extract_intent("cihub://intent/switch/"),
+            Some("switch".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_intent_keeps_query_for_parameterized_actions() {
+        assert_eq!(
+            extract_intent("cihub://intent/open?hub=Apple%20Hub"),
+            Some("open?hub=Apple%20Hub".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_intent_host_form() {
+        assert_eq!(
+            extract_intent("cihub://intent?action=settings"),
+            Some("settings".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_intent_rejects_empty_and_other_schemes() {
+        assert_eq!(extract_intent("cihub://intent/"), None);
+        assert_eq!(extract_intent("cihub://auth?token=x"), None);
+        assert_eq!(extract_intent("cihub://pair?code=abc123"), None);
     }
 }

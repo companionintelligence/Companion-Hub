@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/Input';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { publishHubsToIntents } from '@/lib/app-intents';
 import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
 import { type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -57,7 +58,10 @@ export default function ConnectPage() {
 
   const loadDevices = async (portalAuth: PortalAuth) => {
     setAuth(portalAuth);
-    setDevices(await listHubDevices(portalAuth, portalUrl));
+    const hubs = await listHubDevices(portalAuth, portalUrl);
+    setDevices(hubs);
+    // Make these Hubs resolvable by the "open <name>" App Intent (Siri/Shortcuts).
+    void publishHubsToIntents(hubs.map((d) => ({ id: d.id, name: d.name, hubUrl: d.hubUrl })));
     setStep('pick');
   };
 
