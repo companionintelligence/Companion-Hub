@@ -1,4 +1,5 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
+import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
@@ -7,6 +8,7 @@ import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto
 import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
+import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -29,7 +31,29 @@ export class AppController {
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly tailscaleService: TailscaleService,
     private readonly appStoreService: AppStoreService,
+    private readonly sessionManager: SessionManager,
   ) {}
+
+  private getSessionMetadata(req: Request): { sessionExpiresAt?: number; sessionRefreshRecommendedAt?: number } {
+    if (!req.user) {
+      return {};
+    }
+
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    if (!sessionId) {
+      return {};
+    }
+
+    const sessionExpiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
+    if (!sessionExpiresAt) {
+      return {};
+    }
+
+    return {
+      sessionExpiresAt,
+      sessionRefreshRecommendedAt: sessionExpiresAt - (SESSION_TTL_SECONDS - SESSION_REFRESH_AFTER_SECONDS) * 1000,
+    };
+  }
 
   @Get('/user-context')
   @ApiResponse({ type: UserContextDto })
@@ -118,6 +142,7 @@ export class AppController {
         localDomain,
         domain,
         sslPort,
+        ...this.getSessionMetadata(req),
       };
 
       // Try to parse with validation, but don't fail if it doesn't match
@@ -168,6 +193,7 @@ export class AppController {
         localDomain: defaultSettings?.localDomain?.trim() || configuredLocalDomain,
         domain: defaultSettings?.domain?.trim() || configuredDomain,
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
+        ...this.getSessionMetadata(req),
       };
 
       // Try to parse, but return raw data if parsing fails

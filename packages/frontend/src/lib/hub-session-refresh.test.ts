@@ -1,13 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HUB_SESSION_REFRESH_AFTER_MS, getHubSessionIssuedAt, markHubSessionIssuedAt, setTauriSessionId } from './api-fetch';
-import { HUB_SESSION_CHECK_INTERVAL_MS, isHubSessionRefreshDue, refreshHubSessionIfDue } from './hub-session-refresh';
+import {
+  HUB_SESSION_CHECK_INTERVAL_MS,
+  isHubSessionRefreshDue,
+  refreshHubSessionIfDue,
+  setServerSessionRefreshRecommendedAt,
+} from './hub-session-refresh';
 
-const { isTauriReleaseBuild } = vi.hoisted(() => ({
+const { isTauriReleaseBuild, handleSessionExpired } = vi.hoisted(() => ({
   isTauriReleaseBuild: vi.fn(() => true),
+  handleSessionExpired: vi.fn(),
 }));
 
 vi.mock('@/lib/tauri-hub-probe', () => ({
   isTauriReleaseBuild,
+}));
+
+vi.mock('@/lib/session-expired', () => ({
+  handleSessionExpired,
 }));
 
 describe('hub-session-refresh', () => {
@@ -16,6 +26,8 @@ describe('hub-session-refresh', () => {
     sessionStorage.clear();
     isTauriReleaseBuild.mockReturnValue(true);
     setTauriSessionId(null);
+    setServerSessionRefreshRecommendedAt(null);
+    handleSessionExpired.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -30,6 +42,21 @@ describe('hub-session-refresh', () => {
 
   it('does not refresh before the 5-day threshold', () => {
     setTauriSessionId('session-1', Date.now());
+    expect(isHubSessionRefreshDue()).toBe(false);
+  });
+
+  it('prefers server refresh hints when local issue time predates the hint', () => {
+    const hintAt = Date.now() - 1_000;
+    setTauriSessionId('session-1', hintAt - 10_000);
+    setServerSessionRefreshRecommendedAt(hintAt);
+
+    expect(isHubSessionRefreshDue()).toBe(true);
+  });
+
+  it('ignores stale server refresh hints after a local session rotation', () => {
+    setServerSessionRefreshRecommendedAt(Date.now() - 1_000);
+    setTauriSessionId('session-1', Date.now());
+
     expect(isHubSessionRefreshDue()).toBe(false);
   });
 
@@ -60,5 +87,14 @@ describe('hub-session-refresh', () => {
     await expect(refreshHubSessionIfDue()).resolves.toBe(true);
     expect(getHubSessionIssuedAt()).toBe(1_700_000_111_000);
     expect(localStorage.getItem('ci-hub-session')).toBeNull();
+  });
+
+  it('handles expired sessions on refresh 401', async () => {
+    setTauriSessionId('session-old', Date.now() - HUB_SESSION_REFRESH_AFTER_MS - 1_000);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 401 }));
+
+    await expect(refreshHubSessionIfDue()).resolves.toBe(false);
+    expect(handleSessionExpired).toHaveBeenCalledOnce();
   });
 });

@@ -2614,6 +2614,45 @@ pub fn is_user_stopped(data_dir: &Path) -> bool {
     user_stopped_marker_path(data_dir).exists()
 }
 
+/// Consecutive failed tray health probes before auto-restart is attempted.
+pub const HUB_WATCHDOG_FAILURE_THRESHOLD: u32 = 3;
+/// Minimum time between watchdog-triggered `start_hub` attempts.
+pub const HUB_WATCHDOG_COOLDOWN_SECS: u64 = 300;
+
+/// Pure decision helper for the tray watchdog (unit-tested).
+pub fn should_trigger_hub_watchdog(
+    consecutive_health_failures: u32,
+    cooldown_elapsed_secs: Option<u64>,
+    user_stopped: bool,
+) -> bool {
+    if user_stopped {
+        return false;
+    }
+    if consecutive_health_failures < HUB_WATCHDOG_FAILURE_THRESHOLD {
+        return false;
+    }
+    if let Some(elapsed) = cooldown_elapsed_secs {
+        if elapsed < HUB_WATCHDOG_COOLDOWN_SECS {
+            return false;
+        }
+    }
+    true
+}
+
+/// Containers exist but the hub API is not running/starting — needs `start_hub`.
+pub fn hub_needs_runtime_recovery() -> bool {
+    if START_IN_PROGRESS.load(Ordering::SeqCst) {
+        return false;
+    }
+    if !is_docker_available() {
+        return false;
+    }
+    if !hub_containers_exist() {
+        return false;
+    }
+    !matches!(get_hub_status(), HubStatus::Running | HubStatus::Starting)
+}
+
 // ─── Desktop log reader ───────────────────────────────────────────────────────
 
 /// Read the desktop log file (last `max_lines` lines) for in-app diagnostics.
@@ -7958,6 +7997,15 @@ mod tests {
         assert!(!super::webview_cache_clear_needed(Some("0.2.27"), "0.2.27"));
         // Tolerate trailing whitespace/newline from the marker file.
         assert!(!super::webview_cache_clear_needed(Some("0.2.27\n"), "0.2.27"));
+    }
+
+    #[test]
+    fn hub_watchdog_decision() {
+        assert!(!super::should_trigger_hub_watchdog(2, None, false));
+        assert!(super::should_trigger_hub_watchdog(3, None, false));
+        assert!(!super::should_trigger_hub_watchdog(3, None, true));
+        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false));
+        assert!(super::should_trigger_hub_watchdog(3, Some(301), false));
     }
 
     #[cfg(any(test, target_os = "macos"))]

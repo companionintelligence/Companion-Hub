@@ -1,7 +1,7 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
-import { setTauriSessionId } from '@/lib/api-fetch';
+import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { apiFetch } from '@/lib/api-fetch';
 import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
@@ -161,6 +161,8 @@ export default () => {
         // Store session ID for Tauri release mode (cross-origin cookie fallback)
         if ((data as Record<string, unknown>)?.sessionId) {
           setTauriSessionId((data as Record<string, unknown>).sessionId as string);
+        } else {
+          markHubSessionIssuedAt();
         }
         setUserContext({ isLoggedIn: true });
         refreshUserContext();
@@ -185,6 +187,8 @@ export default () => {
     onSuccess: (data) => {
       if ((data as Record<string, unknown>)?.sessionId) {
         setTauriSessionId((data as Record<string, unknown>).sessionId as string);
+      } else {
+        markHubSessionIssuedAt();
       }
       setUserContext({ isLoggedIn: true });
       refreshUserContext();

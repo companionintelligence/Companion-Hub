@@ -11,5 +11,6 @@ import { SessionManager } from './session.manager';
   imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule],
   controllers: [AuthController],
   providers: [AuthService, SessionManager],
+  exports: [SessionManager],
 })
 export class AuthModule {}

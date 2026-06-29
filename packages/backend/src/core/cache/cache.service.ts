@@ -58,6 +58,29 @@ export class CacheService implements OnApplicationShutdown {
     return value;
   }
 
+  /** Returns the absolute expiry timestamp (ms) for a key, or null when missing/expired. */
+  public getExpirationAt(key: string): number | null {
+    const query = this.db.prepare('SELECT * FROM keyv WHERE key = ?');
+    const row = query.get(key) as { value: string } | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    try {
+      const { expiration = 0 } = JSON.parse(row.value) as { value: string; expiration: number };
+      if (expiration < Date.now()) {
+        this.del(key);
+        return null;
+      }
+
+      return expiration;
+    } catch {
+      this.del(key);
+      return null;
+    }
+  }
+
   public del(key: string) {
     const stmt = this.db.prepare('DELETE FROM keyv WHERE key = ?');
     stmt.run(key);
