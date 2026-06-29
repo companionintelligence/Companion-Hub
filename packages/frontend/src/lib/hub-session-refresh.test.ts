@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HUB_SESSION_REFRESH_AFTER_MS, getHubSessionIssuedAt, markHubSessionIssuedAt, setTauriSessionId } from './api-fetch';
-import { HUB_SESSION_CHECK_INTERVAL_MS, isHubSessionRefreshDue, refreshHubSessionIfDue } from './hub-session-refresh';
+import {
+  HUB_SESSION_CHECK_INTERVAL_MS,
+  isHubSessionRefreshDue,
+  refreshHubSessionIfDue,
+  setServerSessionRefreshRecommendedAt,
+} from './hub-session-refresh';
 
 const { isTauriReleaseBuild } = vi.hoisted(() => ({
   isTauriReleaseBuild: vi.fn(() => true),
@@ -16,6 +21,7 @@ describe('hub-session-refresh', () => {
     sessionStorage.clear();
     isTauriReleaseBuild.mockReturnValue(true);
     setTauriSessionId(null);
+    setServerSessionRefreshRecommendedAt(null);
     vi.restoreAllMocks();
   });
 
@@ -31,6 +37,13 @@ describe('hub-session-refresh', () => {
   it('does not refresh before the 5-day threshold', () => {
     setTauriSessionId('session-1', Date.now());
     expect(isHubSessionRefreshDue()).toBe(false);
+  });
+
+  it('prefers server refresh hints over local issue time', () => {
+    setTauriSessionId('session-1', Date.now());
+    setServerSessionRefreshRecommendedAt(Date.now() - 1_000);
+
+    expect(isHubSessionRefreshDue()).toBe(true);
   });
 
   it('refreshes due sessions and stores the rotated session id', async () => {

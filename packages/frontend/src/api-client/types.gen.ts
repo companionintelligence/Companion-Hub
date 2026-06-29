@@ -16,6 +16,8 @@ export type UserContextDto = {
     sslPort: number;
     themeBase: string;
     themeColor: string;
+    sessionExpiresAt?: number;
+    sessionRefreshRecommendedAt?: number;
     version: {
         body: string;
         current: string;

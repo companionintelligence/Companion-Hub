@@ -1,10 +1,14 @@
 import { useUserContext } from '@/context/user-context';
-import { HUB_SESSION_CHECK_INTERVAL_MS, refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
+import { HUB_SESSION_CHECK_INTERVAL_MS, refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { useEffect } from 'react';
 
 /** Keeps long-lived hub sessions fresh by rotating them before the 7-day TTL expires. */
 export function HubSessionRefresh() {
-  const { isLoggedIn } = useUserContext();
+  const { isLoggedIn, sessionRefreshRecommendedAt } = useUserContext();
+
+  useEffect(() => {
+    setServerSessionRefreshRecommendedAt(sessionRefreshRecommendedAt ?? null);
+  }, [sessionRefreshRecommendedAt]);
 
   useEffect(() => {
     if (!isLoggedIn) {
