@@ -9,7 +9,6 @@ import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
-import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -27,7 +26,6 @@ export class AppController {
     private readonly userRepository: UserRepository,
     private readonly configuration: ConfigurationService,
     private readonly appsService: AppsService,
-    private readonly marketplaceService: MarketplaceService,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
@@ -251,10 +249,9 @@ export class AppController {
     }
 
     // Parallelize all independent async calls
-    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
+    const [version, org, installedApps, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
-      this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
       this.tailscaleService.getStatus().catch(() => ({
         installed: false,
@@ -289,7 +286,7 @@ export class AppController {
         userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
         appDataRootHostPath,
         user: req.user as UserDto,
-        apps,
+        apps: [],
         updatesAvailable: updatesAvailable.length,
         isProduction,
         cloudflareAvailable,

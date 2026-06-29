@@ -13,6 +13,7 @@ import { InstallStep } from '../components/install-step';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
+import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
@@ -91,7 +92,8 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 
 function OnboardingWizard() {
   const { t } = useTranslation();
-  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const { user, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const { apps: storeApps, isLoading: isCatalogLoading, isError: isCatalogError, refetch: refetchCatalog } = useMarketplaceCatalogApps();
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
@@ -116,7 +118,8 @@ function OnboardingWizard() {
     };
   }, []);
 
-  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
+  const catalogReady = !isCatalogLoading && !isCatalogError;
+  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && catalogReady;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
 
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
@@ -183,11 +186,22 @@ function OnboardingWizard() {
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE'))}
+            {isCatalogLoading
+              ? t('COMMON_LOADING')
+              : isCatalogError
+                ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
+                : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
           </p>
-          <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
-            {t('ONBOARDING_INSTALL_AND_FINISH')}
-          </Button>
+          <div className="flex gap-2 sm:justify-end">
+            {isCatalogError && (
+              <Button variant="outline" size="lg" onClick={() => void refetchCatalog()}>
+                {t('COMMON_RETRY')}
+              </Button>
+            )}
+            <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
+              {t('ONBOARDING_INSTALL_AND_FINISH')}
+            </Button>
+          </div>
         </div>
       </div>
     </Shell>
