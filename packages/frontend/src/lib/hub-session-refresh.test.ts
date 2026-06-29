@@ -39,11 +39,19 @@ describe('hub-session-refresh', () => {
     expect(isHubSessionRefreshDue()).toBe(false);
   });
 
-  it('prefers server refresh hints over local issue time', () => {
-    setTauriSessionId('session-1', Date.now());
-    setServerSessionRefreshRecommendedAt(Date.now() - 1_000);
+  it('prefers server refresh hints when local issue time predates the hint', () => {
+    const hintAt = Date.now() - 1_000;
+    setTauriSessionId('session-1', hintAt - 10_000);
+    setServerSessionRefreshRecommendedAt(hintAt);
 
     expect(isHubSessionRefreshDue()).toBe(true);
+  });
+
+  it('ignores stale server refresh hints after a local session rotation', () => {
+    setServerSessionRefreshRecommendedAt(Date.now() - 1_000);
+    setTauriSessionId('session-1', Date.now());
+
+    expect(isHubSessionRefreshDue()).toBe(false);
   });
 
   it('refreshes due sessions and stores the rotated session id', async () => {

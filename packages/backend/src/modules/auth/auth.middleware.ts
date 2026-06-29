@@ -6,6 +6,25 @@ import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 
+function resolveSessionId(req: Request): string | undefined {
+  const cookieSession = req.cookies[SESSION_COOKIE_NAME];
+  if (typeof cookieSession === 'string' && cookieSession) {
+    return cookieSession;
+  }
+
+  const headerSession = req.get('x-ci-hub-session');
+  if (headerSession) {
+    return headerSession;
+  }
+
+  const querySession = req.query.session_id;
+  if (typeof querySession === 'string' && querySession) {
+    return querySession;
+  }
+
+  return undefined;
+}
+
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   constructor(
@@ -15,7 +34,7 @@ export class AuthMiddleware implements NestMiddleware {
   ) {}
 
   async use(req: Request, _: Response, next: NextFunction) {
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string) || (req.query.session_id as string);
+    const sessionId = resolveSessionId(req);
     const bearerToken = req.headers.authorization;
 
     if (sessionId) {

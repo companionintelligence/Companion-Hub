@@ -67,13 +67,18 @@ export class CacheService implements OnApplicationShutdown {
       return null;
     }
 
-    const { expiration = 0 } = JSON.parse(row.value) as { value: string; expiration: number };
-    if (expiration < Date.now()) {
+    try {
+      const { expiration = 0 } = JSON.parse(row.value) as { value: string; expiration: number };
+      if (expiration < Date.now()) {
+        this.del(key);
+        return null;
+      }
+
+      return expiration;
+    } catch {
       this.del(key);
       return null;
     }
-
-    return expiration;
   }
 
   public del(key: string) {

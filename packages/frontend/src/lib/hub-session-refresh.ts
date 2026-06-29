@@ -19,11 +19,14 @@ export function setServerSessionRefreshRecommendedAt(recommendedAt: number | nul
 }
 
 export function isHubSessionRefreshDue(): boolean {
+  const issuedAt = getHubSessionIssuedAt();
+
   if (serverSessionRefreshRecommendedAt && Date.now() >= serverSessionRefreshRecommendedAt) {
-    return true;
+    if (!issuedAt || issuedAt <= serverSessionRefreshRecommendedAt) {
+      return true;
+    }
   }
 
-  const issuedAt = getHubSessionIssuedAt();
   if (!issuedAt) {
     // Legacy sessions created before we tracked issue time — refresh once.
     return true;
