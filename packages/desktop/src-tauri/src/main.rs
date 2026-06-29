@@ -602,10 +602,13 @@ pub fn run() {
                         // "Stop Hub" last time, don't auto-restart on the next launch until they
                         // explicitly click "Start Hub" again.
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
+                        let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
 
                         let should_start = if user_stopped {
                             false
                         } else if !containers_exist {
+                            true
+                        } else if needs_runtime_recovery {
                             true
                         } else if traefik_recreate_required {
                             true
@@ -620,6 +623,9 @@ pub fn run() {
                                 .to_string()
                         } else if !containers_exist {
                             "containers are missing".to_string()
+                        } else if needs_runtime_recovery {
+                            "containers exist but hub API is not healthy — attempting recovery"
+                                .to_string()
                         } else if traefik_recreate_required {
                             "Traefik runtime preflight changed mounted state and requires container recreation"
                                 .to_string()
