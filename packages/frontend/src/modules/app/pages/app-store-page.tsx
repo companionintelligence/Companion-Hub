@@ -37,6 +37,7 @@ interface AltItem {
 }
 
 const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
+const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
 
@@ -66,6 +67,24 @@ export default () => {
   }, [search]);
 
   const queryClient = useQueryClient();
+
+  const isAlternativesView = category === ALTERNATIVES_VIEW;
+  const isFeaturedView = category === 'featured';
+  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
+  const catalogSearchQuery = useMemo(() => ({ search, category: effectiveCategory, pageSize: 24, storeId }), [search, effectiveCategory, storeId]);
+  const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
+
+  useEffect(() => {
+    if (!catalogSearchEnabled) {
+      return;
+    }
+
+    void queryClient.prefetchInfiniteQuery({
+      ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
+      staleTime: MARKETPLACE_SEARCH_STALE_MS,
+    });
+  }, [queryClient, catalogSearchEnabled, catalogSearchQuery]);
+
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
     onSuccess: () => {
@@ -77,9 +96,6 @@ export default () => {
       });
     },
   });
-
-  const isAlternativesView = category === ALTERNATIVES_VIEW;
-  const isFeaturedView = category === 'featured';
 
   const {
     data: alternativesData,
@@ -179,16 +195,15 @@ export default () => {
     [setSearch],
   );
 
-  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
-
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
-    ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
+    ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
-    enabled: !isAlternativesView && !isFeaturedView,
+    staleTime: MARKETPLACE_SEARCH_STALE_MS,
+    enabled: catalogSearchEnabled,
   });
 
-  const isLoading = !isAlternativesView && !isFeaturedView && !data;
+  const isLoading = catalogSearchEnabled && !data;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   const { lastElementRef } = useInfiniteScroll({

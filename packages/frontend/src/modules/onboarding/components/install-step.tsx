@@ -2,7 +2,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
 import { OnboardingAppIcon } from './onboarding-app-icon';
@@ -376,6 +376,7 @@ export const InstallStep = ({
             setStates([...finalStates]);
             try {
               queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+              queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
             } catch (_e) {
               // ignore
             }
@@ -388,6 +389,7 @@ export const InstallStep = ({
             setStates([...finalStates]);
             try {
               queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+              queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
             } catch (_e) {
               // ignore
             }
@@ -408,6 +410,7 @@ export const InstallStep = ({
           setStates([...finalStates]);
           try {
             await queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+            await queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
           } catch (_e) {
             // ignore
           }

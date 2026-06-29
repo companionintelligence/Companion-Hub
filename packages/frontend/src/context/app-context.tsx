@@ -1,5 +1,5 @@
 import type { AppContextDto } from '@/api-client';
-import { appContextOptions, appContextQueryKey, searchAppsInfiniteOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { appContextOptions, appContextQueryKey, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
@@ -28,7 +28,6 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
 
 // Optimistically prefetch pages that are likely to be visited
 const prefetch = async (queryClient: QueryClient) => {
-  queryClient.ensureInfiniteQueryData(searchAppsInfiniteOptions());
   queryClient.ensureQueryData(systemLoadOptions());
 };
 
