@@ -2,20 +2,28 @@ import type { SSE, Topic } from '@ci-hub/common/schemas';
 import { useEffect, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId } from '@/lib/api-fetch';
+import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
 
 type Props<T> = {
   topic: T;
   onEvent: (event: Extract<SSE, { topic: T }>['data']) => void;
   onError?: (error: Event) => void;
   onOpen?: () => void;
+  onReconnecting?: (attempt: number, delayMs: number) => void;
   params?: URLSearchParams;
 };
 
-export const useSSE = <T extends Topic>(props: Props<T>) => {
-  const { topic, onEvent, onError, onOpen } = props;
-  const eventSourceRef = useRef<EventSource | null>(null);
+export const MAX_SSE_RETRY_DELAY_MS = 60_000;
 
+export function getSseRetryDelayMs(attempt: number): number {
+  return Math.min(2 ** attempt * 1000, MAX_SSE_RETRY_DELAY_MS);
+}
+
+export const useSSE = <T extends Topic>(props: Props<T>) => {
+  const { topic, onEvent, onError, onOpen, onReconnecting } = props;
+  const eventSourceRef = useRef<EventSource | null>(null);
   const retries = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
 
   const initializeSSE = () => {
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
@@ -60,19 +68,20 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
       eventSource.close();
       eventSourceRef.current = null;
 
-      // Exponential backoff retry
-      if (retries.current < 5) {
-        retries.current++;
-        setTimeout(
-          () => {
-            console.info('Retrying SSE connection after error');
-            initializeSSE();
-          },
-          2 ** retries.current * 1000,
-        );
-      } else {
-        console.error('Max retries reached, refresh the page to reconnect');
+      retries.current += 1;
+      const delayMs = getSseRetryDelayMs(retries.current);
+      onReconnecting?.(retries.current, delayMs);
+
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
       }
+
+      reconnectTimerRef.current = window.setTimeout(() => {
+        void refreshHubSessionIfDue().finally(() => {
+          console.info(`Retrying SSE connection after error (attempt ${retries.current})`);
+          initializeSSE();
+        });
+      }, delayMs);
     };
 
     eventSourceRef.current = eventSource;
@@ -80,21 +89,31 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: This hook should only run once on mount
   useEffect(() => {
+    const reconnectIfClosed = () => {
+      if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
+        void refreshHubSessionIfDue().finally(() => {
+          initializeSSE();
+        });
+      }
+    };
+
     // Only initialize if not already connected
     if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
       initializeSSE();
     }
 
-    const handleFocus = () => {
-      if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
-        initializeSSE();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
+    window.addEventListener('focus', reconnectIfClosed);
+    window.addEventListener('pageshow', reconnectIfClosed);
+    window.addEventListener('online', reconnectIfClosed);
 
     return () => {
-      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('focus', reconnectIfClosed);
+      window.removeEventListener('pageshow', reconnectIfClosed);
+      window.removeEventListener('online', reconnectIfClosed);
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;

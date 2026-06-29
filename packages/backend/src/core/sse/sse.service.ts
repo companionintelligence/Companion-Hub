@@ -3,7 +3,8 @@ import { colorizeLogs } from '@/modules/docker/helpers/colorize-logs';
 import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
 import type { SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { Observable, Subject, type Subscription, interval } from 'rxjs';
+import { Observable, Subject, type Subscription, interval, merge } from 'rxjs';
+import { map } from 'rxjs/operators';
 import { LoggerService } from '../logger/logger.service';
 
 @Injectable()
@@ -75,7 +76,9 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    return currentTopic.asObservable();
+    const heartbeat = interval(30_000).pipe(map(() => new MessageEvent('heartbeat', { data: 'ping' })));
+
+    return merge(currentTopic.asObservable(), heartbeat);
   }
 
   /**
