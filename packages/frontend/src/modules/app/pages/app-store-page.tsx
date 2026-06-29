@@ -36,7 +36,7 @@ interface AltItem {
   alternatives: AltEntry[];
 }
 
-const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
+const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
 
@@ -66,6 +66,14 @@ export default () => {
   }, [search]);
 
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    void queryClient.prefetchInfiniteQuery({
+      ...searchAppsInfiniteOptions({ query: { pageSize: 24 } }),
+      staleTime: MARKETPLACE_SEARCH_STALE_MS,
+    });
+  }, [queryClient]);
+
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
     onSuccess: () => {
@@ -185,6 +193,7 @@ export default () => {
     ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
+    staleTime: MARKETPLACE_SEARCH_STALE_MS,
     enabled: !isAlternativesView && !isFeaturedView,
   });
 
