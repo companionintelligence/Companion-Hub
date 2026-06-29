@@ -142,6 +142,18 @@ describe('RegistrationService', () => {
       expect(refreshSpy).not.toHaveBeenCalled();
     });
 
+    it('throttles background refresh retries after a failed refresh', async () => {
+      const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockRejectedValue(new Error('db unavailable'));
+
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      expect(refreshSpy).toHaveBeenCalledOnce();
+
+      refreshSpy.mockClear();
+      await service.getLiveRegistrationStatus();
+      expect(refreshSpy).not.toHaveBeenCalled();
+    });
+
     it('resets stale operational cache to unregistered when DB row and tunnel token are both missing', async () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
       deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);

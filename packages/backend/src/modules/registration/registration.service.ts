@@ -223,8 +223,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Refresh registration state from the durable sources of truth (DB + disk)
-   * before returning the current status snapshot.
+   * Return the current in-memory registration status snapshot.
+   * Schedules a background refresh from durable sources (DB + disk) when the
+   * read cache is stale; callers get the cached phase immediately.
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
     this.schedulePhaseRefreshFromSources();
@@ -244,13 +245,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     this.phaseRefreshInFlight = this.refreshPhaseFromSources()
-      .then(() => {
-        this.phaseReadCachedAt = Date.now();
-      })
       .catch((error) => {
         this.logger.debug('Background registration phase refresh failed', error);
       })
       .finally(() => {
+        // Throttle retries even when refresh fails so status polls don't hammer DB/disk.
+        this.phaseReadCachedAt = Date.now();
         this.phaseRefreshInFlight = null;
       });
   }
