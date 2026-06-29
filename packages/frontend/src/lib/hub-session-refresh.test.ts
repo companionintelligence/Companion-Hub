@@ -7,12 +7,17 @@ import {
   setServerSessionRefreshRecommendedAt,
 } from './hub-session-refresh';
 
-const { isTauriReleaseBuild } = vi.hoisted(() => ({
+const { isTauriReleaseBuild, handleSessionExpired } = vi.hoisted(() => ({
   isTauriReleaseBuild: vi.fn(() => true),
+  handleSessionExpired: vi.fn(),
 }));
 
 vi.mock('@/lib/tauri-hub-probe', () => ({
   isTauriReleaseBuild,
+}));
+
+vi.mock('@/lib/session-expired', () => ({
+  handleSessionExpired,
 }));
 
 describe('hub-session-refresh', () => {
@@ -22,6 +27,7 @@ describe('hub-session-refresh', () => {
     isTauriReleaseBuild.mockReturnValue(true);
     setTauriSessionId(null);
     setServerSessionRefreshRecommendedAt(null);
+    handleSessionExpired.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -81,5 +87,14 @@ describe('hub-session-refresh', () => {
     await expect(refreshHubSessionIfDue()).resolves.toBe(true);
     expect(getHubSessionIssuedAt()).toBe(1_700_000_111_000);
     expect(localStorage.getItem('ci-hub-session')).toBeNull();
+  });
+
+  it('handles expired sessions on refresh 401', async () => {
+    setTauriSessionId('session-old', Date.now() - HUB_SESSION_REFRESH_AFTER_MS - 1_000);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 401 }));
+
+    await expect(refreshHubSessionIfDue()).resolves.toBe(false);
+    expect(handleSessionExpired).toHaveBeenCalledOnce();
   });
 });

@@ -6,6 +6,7 @@ import {
   markHubSessionIssuedAt,
   setTauriSessionId,
 } from '@/lib/api-fetch';
+import { handleSessionExpired } from '@/lib/session-expired';
 import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 
 export const HUB_SESSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -60,6 +61,10 @@ export async function refreshHubSessionIfDue(): Promise<boolean> {
   refreshInFlight = (async () => {
     try {
       const res = await apiFetch('/api/auth/session/refresh', { method: 'POST' });
+      if (res.status === 401) {
+        await handleSessionExpired();
+        return false;
+      }
       if (!res.ok) {
         return false;
       }
