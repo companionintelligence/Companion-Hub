@@ -24,7 +24,7 @@ import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
-import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
+import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
@@ -126,7 +126,7 @@ const MAX_POLL_MS = 5 * 60_000;
 const INSTALL_FINALIZING_PROGRESS = 99;
 
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
-const LOADING_STATUS_LABEL_KEYS: Record<string, string> = {
+const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   installing: 'APP_STATUS_INSTALLING',
   uninstalling: 'APP_STATUS_UNINSTALLING',
   starting: 'APP_STATUS_STARTING',
@@ -199,7 +199,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     const progress = app?.status === 'installing' ? installationProgress : null;
     const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
 
-    const statusLabel = t(LOADING_STATUS_LABEL_KEYS[app?.status ?? ''] ?? 'COMMON_INSTALLING');
+    const statusLabel = t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
 
     let stageText = t('APP_ACTION_PREPARING');
     if (progress !== null) {
