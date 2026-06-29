@@ -35,7 +35,7 @@ export const RecommendationsStep = ({
   pinnedSlugs = [],
 }: RecommendationsStepProps) => {
   const { t } = useTranslation();
-  const { apps: storeApps } = useMarketplaceCatalogApps();
+  const { apps: storeApps, isLoading: isCatalogLoading, isError: isCatalogError, refetch: refetchCatalog } = useMarketplaceCatalogApps();
   // Memoized so the `recommendations` memo below keeps a stable identity across re-renders
   // (an unstable detectedNames array would invalidate it every render and re-fire the emit effect).
   const detectedNames = useMemo(() => detectedServices.map((s) => s.friendlyName), [detectedServices]);
@@ -172,6 +172,15 @@ export const RecommendationsStep = ({
 
   const content = (
     <>
+      {isCatalogError && (
+        <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}.{' '}
+          <button type="button" className="font-medium underline" onClick={() => void refetchCatalog()}>
+            {t('COMMON_RETRY')}
+          </button>
+        </div>
+      )}
+
       {isAltsError && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
@@ -193,7 +202,7 @@ export const RecommendationsStep = ({
       )}
 
       <div className="max-h-[420px] overflow-y-auto pr-1">
-        {isAltsLoading && (
+        {(isCatalogLoading || isAltsLoading) && (
           <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
             {Array.from({ length: 6 }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
@@ -201,10 +210,10 @@ export const RecommendationsStep = ({
             ))}
           </div>
         )}
-        {!isAltsLoading && !isAltsError && flatApps.length === 0 && altsData && Object.keys(altsData).length > 0 && (
+        {!isCatalogLoading && !isAltsLoading && !isAltsError && flatApps.length === 0 && altsData && Object.keys(altsData).length > 0 && (
           <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
         )}
-        {flatApps.length > 0 && (
+        {!isCatalogLoading && !isAltsLoading && flatApps.length > 0 && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {flatApps.map((app) => {
               const isSelected = selected.has(app.slug);

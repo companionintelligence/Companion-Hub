@@ -9,6 +9,8 @@ vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
   useMarketplaceCatalogApps: () => ({
     apps: [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }],
     isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
   }),
 }));
 

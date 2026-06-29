@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 
 /** On-demand marketplace catalog for onboarding — avoids loading the full catalog via app-context. */
 export function useMarketplaceCatalogApps() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     ...searchAppsOptions({ query: { pageSize: 500 } }),
     staleTime: 5 * 60_000,
   });
@@ -11,5 +11,8 @@ export function useMarketplaceCatalogApps() {
   return {
     apps: data?.data ?? [],
     isLoading,
+    isError,
+    error,
+    refetch,
   };
 }

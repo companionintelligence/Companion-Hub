@@ -2,9 +2,16 @@ import { render, screen } from '@/tests/test-utils';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
+
+const { mockCatalogState } = vi.hoisted(() => ({
+  mockCatalogState: {
+    isLoading: false,
+    isError: false,
+  },
+}));
 
 vi.mock('@/context/app-context', () => ({
   AppContextProvider: ({ children }: { children: ReactNode }) => children,
@@ -19,31 +26,35 @@ vi.mock('@/context/app-context', () => ({
 
 vi.mock('../helpers/use-marketplace-catalog-apps', () => ({
   useMarketplaceCatalogApps: () => ({
-    apps: [
-      {
-        id: 'ci-openclaw',
-        name: 'OpenClaw',
-        urn: 'urn:store:ci-openclaw',
-        short_desc: 'Agent',
-        available: true,
-        deprecated: false,
-        categories: [],
-        created_at: 0,
-        supported_architectures: [],
-      },
-      {
-        id: 'ci-hermes',
-        name: 'Hermes',
-        urn: 'urn:store:ci-hermes',
-        short_desc: 'Agent',
-        available: true,
-        deprecated: false,
-        categories: [],
-        created_at: 0,
-        supported_architectures: [],
-      },
-    ],
-    isLoading: false,
+    apps: mockCatalogState.isLoading
+      ? []
+      : [
+          {
+            id: 'ci-openclaw',
+            name: 'OpenClaw',
+            urn: 'urn:store:ci-openclaw',
+            short_desc: 'Agent',
+            available: true,
+            deprecated: false,
+            categories: [],
+            created_at: 0,
+            supported_architectures: [],
+          },
+          {
+            id: 'ci-hermes',
+            name: 'Hermes',
+            urn: 'urn:store:ci-hermes',
+            short_desc: 'Agent',
+            available: true,
+            deprecated: false,
+            categories: [],
+            created_at: 0,
+            supported_architectures: [],
+          },
+        ],
+    isLoading: mockCatalogState.isLoading,
+    isError: mockCatalogState.isError,
+    refetch: vi.fn(),
   }),
 }));
 
@@ -192,6 +203,11 @@ const renderPage = () =>
   );
 
 describe('OnboardingPage (single vertical form)', () => {
+  beforeEach(() => {
+    mockCatalogState.isLoading = false;
+    mockCatalogState.isError = false;
+  });
+
   it('renders config sections and step 4 (app picker) on the same page', () => {
     renderPage();
     // AiSetupStep owns steps 1-3 + 5 and renders children (step 4) inline.
@@ -202,6 +218,15 @@ describe('OnboardingPage (single vertical form)', () => {
 
   it('keeps Install & Finish disabled until AI config is provided', () => {
     renderPage();
+    expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
+  });
+
+  it('keeps Install & Finish disabled while the marketplace catalog is loading', async () => {
+    mockCatalogState.isLoading = true;
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
   });
 
