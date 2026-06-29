@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from './lib/registration-status';
 
-const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubException, loadHubSentryDeviceId } = vi.hoisted(() => ({
+const {
+  apiFetch,
+  userContext,
+  requestUse,
+  responseUse,
+  setConfig,
+  captureHubException,
+  loadHubSentryDeviceId,
+  refreshHubSessionIfDue,
+  clearStaleServerSession,
+} = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   userContext: vi.fn(),
   requestUse: vi.fn(),
@@ -9,6 +19,8 @@ const { apiFetch, userContext, requestUse, responseUse, setConfig, captureHubExc
   setConfig: vi.fn(),
   captureHubException: vi.fn(),
   loadHubSentryDeviceId: vi.fn(),
+  refreshHubSessionIfDue: vi.fn().mockResolvedValue(false),
+  clearStaleServerSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('./lib/sentry', () => ({
@@ -19,6 +31,11 @@ vi.mock('./lib/sentry', () => ({
 vi.mock('./lib/api-fetch', () => ({
   apiFetch,
   getTauriSessionId: vi.fn(() => null),
+  clearStaleServerSession,
+}));
+
+vi.mock('./lib/hub-session-refresh', () => ({
+  refreshHubSessionIfDue,
 }));
 
 vi.mock('./api-client', () => ({
@@ -151,6 +168,44 @@ describe('root clientLoader registration gating', () => {
     expect(result.status).toBe(302);
     expect(result.headers.get('Location')).toBe('/');
     expect(sessionStorage.getItem('device-registered')).toBe('true');
+  });
+});
+
+describe('root clientLoader session continuity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    apiFetch.mockResolvedValue(jsonResponse(makeStatus('locally_ready', true)));
+  });
+
+  it('refreshes hub session when user is logged in', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/app-store') } as never);
+
+    expect(refreshHubSessionIfDue).toHaveBeenCalledOnce();
+    expect(clearStaleServerSession).not.toHaveBeenCalled();
+  });
+
+  it('clears stale server session when user is logged out', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: false,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/app-store') } as never);
+
+    expect(clearStaleServerSession).toHaveBeenCalledOnce();
+    expect(refreshHubSessionIfDue).not.toHaveBeenCalled();
   });
 });
 
