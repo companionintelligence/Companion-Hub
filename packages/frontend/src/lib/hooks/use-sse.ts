@@ -24,8 +24,33 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
   const eventSourceRef = useRef<EventSource | null>(null);
   const retries = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const isMountedRef = useRef(true);
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const reconnectAfterSessionRefresh = () => {
+    if (!isMountedRef.current) {
+      return;
+    }
+
+    void refreshHubSessionIfDue().finally(() => {
+      if (!isMountedRef.current) {
+        return;
+      }
+      initializeSSE();
+    });
+  };
 
   const initializeSSE = () => {
+    if (!isMountedRef.current) {
+      return;
+    }
+
     const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
     const baseUrl = isTauri ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
     const url = new URL(`${baseUrl}/api/sse/${topic}`);
@@ -72,12 +97,18 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
       const delayMs = getSseRetryDelayMs(retries.current);
       onReconnecting?.(retries.current, delayMs);
 
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-      }
+      clearReconnectTimer();
 
       reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!isMountedRef.current) {
+          return;
+        }
+
         void refreshHubSessionIfDue().finally(() => {
+          if (!isMountedRef.current) {
+            return;
+          }
           console.info(`Retrying SSE connection after error (attempt ${retries.current})`);
           initializeSSE();
         });
@@ -89,11 +120,16 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: This hook should only run once on mount
   useEffect(() => {
+    isMountedRef.current = true;
+
     const reconnectIfClosed = () => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
       if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
-        void refreshHubSessionIfDue().finally(() => {
-          initializeSSE();
-        });
+        clearReconnectTimer();
+        reconnectAfterSessionRefresh();
       }
     };
 
@@ -107,13 +143,11 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
     window.addEventListener('online', reconnectIfClosed);
 
     return () => {
+      isMountedRef.current = false;
       window.removeEventListener('focus', reconnectIfClosed);
       window.removeEventListener('pageshow', reconnectIfClosed);
       window.removeEventListener('online', reconnectIfClosed);
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
+      clearReconnectTimer();
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;

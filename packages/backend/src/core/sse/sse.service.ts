@@ -53,7 +53,7 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    const event = new MessageEvent('message', { data: JSON.stringify(data) });
+    const event: MessageEvent = { type: 'message', data: JSON.stringify(data) };
 
     currentTopic.next(event);
   }
@@ -76,7 +76,7 @@ export class SSEService implements OnApplicationShutdown {
       this.topics.set(formattedTopic, currentTopic);
     }
 
-    const heartbeat = interval(30_000).pipe(map(() => new MessageEvent('heartbeat', { data: 'ping' })));
+    const heartbeat = interval(30_000).pipe(map(() => ({ type: 'heartbeat', data: 'ping' }) satisfies MessageEvent));
 
     return merge(currentTopic.asObservable(), heartbeat);
   }
