@@ -771,7 +771,9 @@ export class DockerService {
     signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
+      // `code` is null when the process is terminated by a signal — keep it nullable rather than
+      // coercing, so a signal-kill is treated as a non-zero (failed) exit below, not a success.
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
         cmd.on('error', (error: NodeJS.ErrnoException) => {
           // `spawn({ signal })` emits an AbortError 'error' as soon as the signal fires. Don't reject
           // here — let the 'close' handler settle once the process really exits (the SIGKILL timer
@@ -795,7 +797,7 @@ export class DockerService {
         });
         cmd.on('close', (code: number | null) => {
           closed = true;
-          resolve(code as number);
+          resolve(code);
         });
       });
 
@@ -809,8 +811,10 @@ export class DockerService {
         if (isCustomConfig) {
           this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
         }
-        const error = stderr.pop();
-        throw new Error(error);
+        // stderr can be empty (signal terminations, stdout-only tools) — fall back to a message that
+        // still identifies the command and exit code instead of throwing `new Error(undefined)`.
+        const stderrMessage = stderr.pop();
+        throw new Error(stderrMessage || `${command.join(' ')} exited with code ${exitCode}`);
       }
 
       return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };

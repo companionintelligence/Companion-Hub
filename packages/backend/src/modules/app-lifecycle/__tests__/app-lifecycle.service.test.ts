@@ -1384,7 +1384,7 @@ describe('AppLifecycleService', () => {
 
       expect(execute).toHaveBeenCalled();
       expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
-      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appStatus: 'uninstalled' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appStatus: 'missing' }));
       // A cancellation must not be reported as a failure or a success.
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));

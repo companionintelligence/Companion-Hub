@@ -27,12 +27,22 @@ export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart }: IP
 
   const cancelMutation = useMutation({
     ...cancelOperationMutation(),
+    onMutate: () => {
+      // Close the confirm dialog immediately; the optimistic "Cancelling…" state is only entered
+      // once the server confirms it actually accepted the cancel (onSuccess), so a refused/failed
+      // request never leaves the UI stuck.
+      onClose();
+    },
+    onSuccess: (data) => {
+      if (data?.outcome === 'cancelling' || data?.outcome === 'cancelled_queued') {
+        onCancelStart?.();
+      } else {
+        // refused / not_found — the install is past the point of no return or already finished.
+        toast.error(t('APP_ERROR_CANNOT_CANCEL'));
+      }
+    },
     onError: (error: TranslatableError) => {
       toast.error(t(error.message, error.intlParams));
-    },
-    onMutate: () => {
-      onCancelStart?.();
-      onClose();
     },
   });
 
