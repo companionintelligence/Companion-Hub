@@ -1395,6 +1395,7 @@ describe('AppLifecycleService', () => {
       const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed', errorCode: 'x' });
       commandFactory.createCommand.mockReturnValue({ execute } as any);
       const reply = vi.fn();
+      const queueSpy = vi.spyOn(service as any, 'emitInstallQueueUpdate');
 
       await service.invokeCommand(data, reply);
 
@@ -1403,6 +1404,10 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error', appStatus: 'install_failed' }));
       // A failure must not be treated as a cancellation (record kept, not deleted).
       expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+      // invokeCommand emits the install-queue update exactly twice — when it marks the pipeline active
+      // (start) and in its finally after clearing it. finalizeFailedInstall must NOT add a third,
+      // stale one (which would briefly show the just-failed app as the active install).
+      expect(queueSpy).toHaveBeenCalledTimes(2);
     });
 
     it('does not double-finalize a failure once the app has left installing', async () => {

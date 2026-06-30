@@ -335,7 +335,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return;
     }
     const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
-    await this.finalizeFailedInstall(app, appUrn, result);
+    // Worker path: invokeCommand's finally emits the install-queue update AFTER clearing the pipeline
+    // tracker, so suppress it here to avoid a duplicate (and stale, pre-clear) install_queue event.
+    await this.finalizeFailedInstall(app, appUrn, result, { emitQueueUpdate: false });
   }
 
   /**
@@ -344,11 +346,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * ({@link handleFailedResult}) and the publisher-side fallback (when the publish never reached a
    * worker) without ever double-finalizing. The status write is guarded so a missing enum migration
    * still surfaces the failure over SSE instead of crashing the process.
+   *
+   * @param emitQueueUpdate - Whether to emit an install-queue SSE update. The worker path passes
+   *   `false` because invokeCommand's `finally` emits it after clearing the pipeline tracker (emitting
+   *   here would produce a duplicate, stale event still showing the failed app as active); the
+   *   publisher-side fallback passes `true` since it has no such `finally`.
    */
   private async finalizeFailedInstall(
     app: { id: number; status: string } | null | undefined,
     appUrn: AppUrn,
     result: z.output<typeof appEventResultSchema>,
+    { emitQueueUpdate }: { emitQueueUpdate: boolean },
   ) {
     if (!app || app.status !== 'installing') {
       return;
@@ -370,7 +378,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorDetail: result.errorDetail,
       settingsPath: result.settingsPath,
     });
-    void this.emitInstallQueueUpdate();
+    if (emitQueueUpdate) {
+      void this.emitInstallQueueUpdate();
+    }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
     this.reportAppFailure(appUrn, 'install', result.message);
   }
@@ -700,7 +710,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // guarded on status, so it's a no-op if the worker already finalized.
           this.operationRegistry.clear(appUrn, requestId);
           const latest = await this.appRepository.getAppById(appId).catch(() => null);
-          await this.finalizeFailedInstall(latest, appUrn, raw as z.output<typeof appEventResultSchema>);
+          // Publisher fallback: no invokeCommand `finally` ran, so emit the install-queue update here.
+          await this.finalizeFailedInstall(latest, appUrn, raw as z.output<typeof appEventResultSchema>, { emitQueueUpdate: true });
         }
       })
       .catch((err) => {
