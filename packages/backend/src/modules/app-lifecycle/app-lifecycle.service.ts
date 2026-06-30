@@ -264,14 +264,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         typeof appEventResultSchema
       >;
 
-      // Finalize a cancellation worker-side (delete record + emit *_cancelled) so it does not depend
-      // on the RPC reply being delivered (the publisher may have already timed out).
+      // Finalize the outcome worker-side so it does not depend on the RPC reply being delivered (the
+      // publisher may have already timed out). Success is finalized inside the command
+      // (markInstallSucceeded); here we cover cancellation and — crucially — failure, so an install
+      // that fails AFTER its RPC timed out still reaches 'install_failed' instead of being stranded
+      // in 'installing'.
       if (result.cancelled) {
         await this.handleCancelledResult(data.command, data.appUrn, result);
       } else if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
+      } else {
+        await this.handleFailedResult(data.command, data.appUrn, result);
       }
 
       await reply(result);
@@ -315,6 +320,59 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
     this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Worker-side finalization for a FAILED operation. The install completion handler keeps the app in
+   * 'installing' across an RPC timeout (image pulls can outlast the RPC) and trusts the worker to
+   * finish — but the worker must then write the terminal status itself, otherwise a failure after the
+   * timeout strands the app in 'installing' forever. Wired for `install` (the op with that
+   * keep-installing-on-timeout behaviour); a no-op for other commands, which are finalized by their
+   * own completion handlers. Idempotent via the status guard in {@link finalizeFailedInstall}.
+   */
+  private async handleFailedResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+    if (command !== 'install') {
+      return;
+    }
+    const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+    await this.finalizeFailedInstall(app, appUrn, result);
+  }
+
+  /**
+   * Transition a failed install to `install_failed` and emit `install_error`, but ONLY while the app
+   * is still `installing`. The status guard makes this safe to call from both the worker side
+   * ({@link handleFailedResult}) and the publisher-side fallback (when the publish never reached a
+   * worker) without ever double-finalizing. The status write is guarded so a missing enum migration
+   * still surfaces the failure over SSE instead of crashing the process.
+   */
+  private async finalizeFailedInstall(
+    app: { id: number; status: string } | null | undefined,
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+  ) {
+    if (!app || app.status !== 'installing') {
+      return;
+    }
+    this.logger.error(`Failed to install app ${appUrn}: ${result.message}`);
+    try {
+      await this.appRepository.updateAppById(app.id, { status: 'install_failed' });
+    } catch (statusError) {
+      this.logger.error(
+        `Failed to persist 'install_failed' status for ${appUrn} (continuing without crashing): ${statusError instanceof Error ? statusError.message : String(statusError)}`,
+      );
+    }
+    this.sseService.emit('app', {
+      event: 'install_error',
+      appUrn,
+      appStatus: 'install_failed',
+      error: result.message,
+      errorCode: result.errorCode,
+      errorDetail: result.errorDetail,
+      settingsPath: result.settingsPath,
+    });
+    void this.emitInstallQueueUpdate();
+    this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
+    this.reportAppFailure(appUrn, 'install', result.message);
   }
 
   /**
@@ -608,7 +666,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, cancelled } = raw as z.output<typeof appEventResultSchema>;
         // Cancellation is finalized worker-side in invokeCommand (record deleted + install_cancelled
         // emitted), independent of this RPC reply. Nothing to do here — avoids a double delete/SSE/toast.
         if (cancelled) {
@@ -629,39 +687,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         } else {
           const isRpcTimeout = /timed out|RPC_TIMEOUT/i.test(message);
           if (isRpcTimeout) {
+            // The image pull/compose can outlast the RPC. Keep 'installing' and let the worker finalize
+            // the terminal status itself (markInstallSucceeded on success, handleFailedResult on failure).
             this.logger.warn(
-              `Install RPC timed out for ${appUrn}; the worker may still be pulling images or starting containers. Keeping the app in 'installing' until the worker finishes.`,
+              `Install RPC timed out for ${appUrn}; the worker is still finishing and will finalize the result. Keeping the app in 'installing' for now.`,
             );
             return;
           }
 
-          this.logger.error(`Failed to install app ${appUrn}: ${message}`);
-          // Defensively clear the registry entry (requestId-matched, so it's a no-op when invokeCommand
-          // already cleared it). This covers the case where the publish never reached a worker
-          // (queue unavailable / overflow), so invokeCommand's finally never ran.
+          // Publish failed without the command running (queue unavailable/overflow/invalid event), so
+          // the worker never finalized — clear the registry and finalize here. finalizeFailedInstall is
+          // guarded on status, so it's a no-op if the worker already finalized.
           this.operationRegistry.clear(appUrn, requestId);
-          // Guard the status write specifically: if the DB rejects the
-          // 'install_failed' enum (e.g. a migration hasn't applied yet), we must
-          // still surface the failure over SSE instead of crashing the process.
-          try {
-            await this.appRepository.updateAppById(appId, { status: 'install_failed' });
-          } catch (statusError) {
-            this.logger.error(
-              `Failed to persist 'install_failed' status for ${appUrn} (continuing without crashing): ${statusError instanceof Error ? statusError.message : String(statusError)}`,
-            );
-          }
-          this.sseService.emit('app', {
-            event: 'install_error',
-            appUrn,
-            appStatus: 'install_failed',
-            error: message,
-            errorCode,
-            errorDetail,
-            settingsPath,
-          });
-          void this.emitInstallQueueUpdate();
-          this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'install', message);
+          const latest = await this.appRepository.getAppById(appId).catch(() => null);
+          await this.finalizeFailedInstall(latest, appUrn, raw as z.output<typeof appEventResultSchema>);
         }
       })
       .catch((err) => {
