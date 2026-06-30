@@ -60,8 +60,19 @@ function launchTauriDesktop(mode: LaunchMode): number {
     args.push('--config', 'src-tauri/tauri.stack-dev.json');
   }
 
+  // This launcher only ever runs dev builds, so the Hub must target the dev portal
+  // (hub.companionintelligence.com), never production (hub.ci.computer). The Rust binary
+  // resolves portal URL / public domain / image tag from the compile-time CI_HUB_ENVIRONMENT
+  // (see hub_env.rs: any non-"production" value → dev), and it bakes that same value into the
+  // runtime .env it generates. Without this, a stray CI_HUB_ENVIRONMENT=production in the shell
+  // would compile a dev desktop that points at the production portal. Honor an explicit
+  // non-production override (e.g. "staging"), otherwise force "development".
+  const requestedEnv = process.env.CI_HUB_ENVIRONMENT?.trim().toLowerCase();
+  const ciHubEnvironment = requestedEnv && requestedEnv !== 'production' ? requestedEnv : 'development';
+
   const tauriEnv = {
     ...buildTauriProcessEnv(guiEnv),
+    CI_HUB_ENVIRONMENT: ciHubEnvironment,
     ...(mode === 'stack-dev'
       ? {
           CI_HUB_STACK_DEV: '1',
