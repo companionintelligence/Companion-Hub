@@ -100,7 +100,7 @@ describe('handleAppSseEvent', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'install_cancelled',
       appUrn: 'plane:ci-marketplace',
-      appStatus: 'uninstalled',
+      appStatus: 'missing',
     });
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', null);

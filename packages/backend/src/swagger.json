@@ -3933,11 +3933,36 @@
       },
       "CancelOperationBody": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
       },
       "CancelOperationResponseDto": {
         "type": "object",
-        "properties": {}
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "cancelling",
+              "cancelled_queued",
+              "refused",
+              "force_reset",
+              "not_found"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
       },
       "BackupRequestDto": {
         "type": "object",

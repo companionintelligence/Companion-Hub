@@ -35,6 +35,16 @@ describe('AppOperationRegistry', () => {
     expect(() => registry.markPhase('nope:store' as any, 'composing')).not.toThrow();
   });
 
+  it('markPhase() with a mismatched requestId does not mutate a replacement op', () => {
+    registry.register(APP, { requestId: REQ, command: 'install', tier: 'safe' });
+    // A stale message (requestId 'old') must not change the phase of the current entry.
+    registry.markPhase(APP, 'composing', 'old-request-id');
+    expect(registry.get(APP)?.phase).toBe('queued');
+    // The owning requestId still works.
+    registry.markPhase(APP, 'composing', REQ);
+    expect(registry.get(APP)?.phase).toBe('composing');
+  });
+
   it('abort() aborts the controller and flags a queued op', () => {
     registry.register(APP, { requestId: REQ, command: 'install', tier: 'safe' });
     const aborted = registry.abort(APP);

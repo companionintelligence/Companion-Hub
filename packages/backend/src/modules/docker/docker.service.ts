@@ -754,8 +754,14 @@ export class DockerService {
     // Tracks actual process termination (the 'close' event). `cmd.killed` only reflects that a signal
     // was *sent* (it is true right after Node's `{ signal }` SIGTERM), so it cannot gate the escalation.
     let closed = false;
+    let abortHandled = false;
     let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => {
+      // Idempotent: may be invoked by the 'abort' event or by the immediate post-registration check.
+      if (abortHandled) {
+        return;
+      }
+      abortHandled = true;
       // Node's `{ signal }` already sent SIGTERM. Escalate to SIGKILL if the process tree (the compose
       // plugin can outlive a SIGTERM to the wrapper) hasn't actually exited within the grace period.
       this.logger.warn(
@@ -769,6 +775,11 @@ export class DockerService {
       }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
+    // Cover the race where the signal aborts between spawn() and listener registration: the 'abort'
+    // event has already fired, so schedule the escalation now instead of missing it.
+    if (signal?.aborted) {
+      onAbort();
+    }
 
     try {
       // `code` is null when the process is terminated by a signal — keep it nullable rather than

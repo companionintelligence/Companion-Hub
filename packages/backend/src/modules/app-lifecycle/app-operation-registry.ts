@@ -82,10 +82,17 @@ export class AppOperationRegistry {
     return this.ops.get(appUrn);
   }
 
-  /** Update the execution phase of an app's active operation. No-op if there is no entry. */
-  markPhase(appUrn: AppUrn, phase: OperationPhase): void {
+  /**
+   * Update the execution phase of an app's active operation. No-op if there is no entry, or — when a
+   * `requestId` is supplied — if the active entry belongs to a different op (so a stale/dequeued
+   * message can never mutate the phase of a newer op that replaced it).
+   */
+  markPhase(appUrn: AppUrn, phase: OperationPhase, requestId?: string): void {
     const entry = this.ops.get(appUrn);
     if (!entry) {
+      return;
+    }
+    if (requestId && entry.requestId !== requestId) {
       return;
     }
     entry.phase = phase;

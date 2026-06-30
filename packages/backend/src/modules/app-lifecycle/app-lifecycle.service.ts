@@ -227,11 +227,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const release = await this.mutex.acquire(data.appUrn);
 
     try {
-      const entry = this.operationRegistry.get(data.appUrn);
+      // Only treat the registry entry as ours when its requestId matches this message. A stale queued
+      // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
+      // into this command or mutate the newer entry's phase.
+      const registered = this.operationRegistry.get(data.appUrn);
+      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
 
       // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
       // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
-      if (entry && entry.requestId === data.requestId && (entry.cancelRequestedWhileQueued || entry.abortController.signal.aborted)) {
+      if (entry && (entry.cancelRequestedWhileQueued || entry.abortController.signal.aborted)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued; skipping execution`);
         await this.handleCancelledResult(data.command, data.appUrn, {
           success: false,
@@ -242,13 +246,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         return;
       }
 
-      // Build the cancellation context from the live registry entry so the cancel endpoint's
-      // abort() reaches the running command and its docker spawns/pulls.
-      this.operationRegistry.markPhase(data.appUrn, 'preparing');
+      // Build the cancellation context from our own registry entry so the cancel endpoint's abort()
+      // reaches the running command and its docker spawns/pulls. Phase updates are requestId-gated.
+      if (entry) {
+        this.operationRegistry.markPhase(data.appUrn, 'preparing', data.requestId);
+      }
       const ctx: CommandExecutionContext | undefined = entry
         ? {
             signal: entry.abortController.signal,
-            setPhase: (phase) => this.operationRegistry.markPhase(data.appUrn, phase),
+            setPhase: (phase) => this.operationRegistry.markPhase(data.appUrn, phase, data.requestId),
           }
         : undefined;
 
