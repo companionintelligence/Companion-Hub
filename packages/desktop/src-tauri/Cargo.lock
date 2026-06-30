@@ -546,7 +546,7 @@ dependencies = [
 
 [[package]]
 name = "ci-os-hub-desktop"
-version = "0.2.27"
+version = "0.2.36"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
