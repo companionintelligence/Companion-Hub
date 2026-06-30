@@ -25,10 +25,11 @@ interface IProps {
 export const CancelInstallDialog = ({ info, isOpen, onClose, onCancelStart }: IProps) => {
   const { t } = useTranslation();
 
-  // The dialog stays open while the request is in flight (the confirm button shows a loading state
-  // and is disabled, preventing duplicate cancels) and closes once it settles. The optimistic
-  // "Cancelling…" state is only entered when the server confirms it accepted the cancel, so a
-  // refused/failed request never leaves the UI stuck.
+  // While the request is in flight the confirm button shows a loading state and is disabled, which
+  // prevents duplicate cancels (the dialog can still be dismissed via its close button/overlay). The
+  // dialog auto-closes once the request settles, and the optimistic "Cancelling…" state is only
+  // entered when the server confirms it accepted the cancel, so a refused/failed request never
+  // leaves the UI stuck.
   const cancelMutation = useMutation({
     ...cancelOperationMutation(),
     onSuccess: (data) => {

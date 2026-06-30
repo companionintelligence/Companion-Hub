@@ -350,12 +350,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return { outcome: 'refused', message: 'Operation is finalizing and can no longer be cancelled.' };
     }
 
-    const wasQueued = entry.phase === 'queued';
+    // Derive the outcome and logging from the entry returned by abort() (its phase at abort time),
+    // not from the earlier read, so the result reflects the op's actual state when it was aborted.
     const aborted = this.operationRegistry.abort(appUrn, requestId);
     if (!aborted) {
       return { outcome: 'not_found', message: 'Operation already completed or replaced' };
     }
-    this.logger.info(`[lifecycle] cancel requested for ${entry.command} ${appUrn} (phase=${entry.phase})`);
+    const wasQueued = aborted.phase === 'queued';
+    this.logger.info(`[lifecycle] cancel requested for ${aborted.command} ${appUrn} (phase=${aborted.phase})`);
     return wasQueued
       ? { outcome: 'cancelled_queued', message: 'Operation cancelled before it started' }
       : { outcome: 'cancelling', message: 'Cancellation requested' };
