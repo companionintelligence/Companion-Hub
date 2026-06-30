@@ -662,7 +662,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.reportAppFailure(appUrn, 'install', message);
         }
       })
-      .catch((err) => this.logLifecycleHandlerError('install', appUrn, err));
+      .catch((err) => {
+        // A publish rejection (invalid event data, etc.) or a throw inside the completion handler
+        // means invokeCommand never ran (or didn't finish) for this op — clear the registry entry so
+        // a stale 'queued' operation can't linger and keep /cancel returning 'cancelled_queued'.
+        this.operationRegistry.clear(appUrn, requestId);
+        this.logLifecycleHandlerError('install', appUrn, err);
+      });
 
     return { requestId };
   }

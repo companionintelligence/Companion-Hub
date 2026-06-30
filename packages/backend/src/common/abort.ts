@@ -19,11 +19,16 @@ export function abortError(message = 'Aborted'): Error {
 
 /**
  * Type guard: true when an unknown error represents an abort (cancellation), not a failure.
- * Matches by `name` so it recognises both `DOMException` aborts and Node's own `AbortError`
- * (e.g. the error `spawn({ signal })` emits), regardless of the concrete error class.
+ * Matches on `name`/`code` rather than the concrete class, so it recognises a `DOMException` named
+ * `AbortError`, our plain-Error fallback, and Node's own `AbortError` (`code: 'ABORT_ERR'`, e.g. the
+ * error `spawn({ signal })` emits) — `DOMException` is not guaranteed to extend `Error` everywhere.
  */
 export function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'AbortError';
+  if (typeof err !== 'object' || err === null) {
+    return false;
+  }
+  const e = err as { name?: unknown; code?: unknown };
+  return e.name === 'AbortError' || e.code === 'ABORT_ERR';
 }
 
 /** Throw the canonical abort error if the signal is already aborted; otherwise do nothing. */

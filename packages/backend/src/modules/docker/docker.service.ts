@@ -786,10 +786,12 @@ export class DockerService {
       // coercing, so a signal-kill is treated as a non-zero (failed) exit below, not a success.
       const exitCode = await new Promise<number | null>((resolve, reject) => {
         cmd.on('error', (error: NodeJS.ErrnoException) => {
-          // `spawn({ signal })` emits an AbortError 'error' as soon as the signal fires. Don't reject
-          // here — let the 'close' handler settle once the process really exits (the SIGKILL timer
-          // guarantees it will), otherwise the `finally` would cancel the escalation prematurely.
-          if (signal?.aborted) {
+          // Ignore ONLY the AbortError that `spawn({ signal })` emits on cancel — the 'close' handler
+          // then settles the promise (with the SIGKILL backstop), and rejecting here would let the
+          // `finally` cancel the escalation prematurely. Any other error (ENOENT/ENOEXEC/…) must still
+          // reject, even during an abort: if the process never started there is no 'close' event, so
+          // swallowing it would leave the promise pending forever.
+          if (isAbortError(error)) {
             return;
           }
           this.logger.error(`Failed to spawn ${command[0]}: ${error.message}`);
