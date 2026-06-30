@@ -206,7 +206,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       IconComponent={Play}
       onClick={() => startMutation.mutate({ path: { urn: info.urn } })}
       title={t('APP_ACTION_START')}
-      intent="success"
+      variant="default"
+      size="lg"
+      className="launch-action-button"
     />
   );
   const LoadingButton = (() => {
