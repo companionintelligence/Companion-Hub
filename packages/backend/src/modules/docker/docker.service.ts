@@ -483,13 +483,12 @@ export class DockerService {
   };
 
   /**
-   * Helpers to execute docker compose commands
-   * @param {string} appUrn - App name
-   * @param {string} command - Command to execute
-   */
-  /**
    * Run a `docker compose` subcommand for an app. When `signal` is provided, an abort kills the
    * spawned compose process (SIGTERM then SIGKILL) and rejects with an `AbortError`.
+   *
+   * @param appUrn - App URN
+   * @param command - The compose subcommand to execute (e.g. `up --detach`, `down --remove-orphans`)
+   * @param signal - Optional abort signal to cancel the running compose process
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
