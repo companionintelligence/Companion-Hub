@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -28,6 +29,9 @@ export type ManagedAppContainerVerification = {
 
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
+
+/** Grace period after SIGTERM before a cancelled `docker compose` child is force-killed with SIGKILL. */
+const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
 const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
 const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
@@ -483,7 +487,11 @@ export class DockerService {
    * @param {string} appUrn - App name
    * @param {string} command - Command to execute
    */
-  public async composeApp(appUrn: AppUrn, command: string) {
+  /**
+   * Run a `docker compose` subcommand for an app. When `signal` is provided, an abort kills the
+   * spawned compose process (SIGTERM then SIGKILL) and rejects with an `AbortError`.
+   */
+  public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
@@ -502,11 +510,18 @@ export class DockerService {
 
       this.logger.debug('docker compose plugin is available, using it');
       // Use docker compose plugin (docker-cli is installed in the container)
-      return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
+      return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig, signal);
     } catch (_error) {
+      // A cancellation during the plugin probe must not be swallowed by the binary fallback.
+      if (isAbortError(_error)) {
+        throw _error;
+      }
       // Fallback to docker-compose binary if docker compose plugin is not available
       this.logger.warn('docker compose plugin not available, falling back to docker-compose binary');
-      return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch((fallbackError: unknown) => {
+      return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig, signal).catch((fallbackError: unknown) => {
+        if (isAbortError(fallbackError)) {
+          throw fallbackError;
+        }
         const err = fallbackError as Error & { code?: string };
         throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
       });
@@ -563,13 +578,18 @@ export class DockerService {
     options: {
       forcePull?: boolean;
       onProgress?: (event: DockerPullProgressEvent) => void;
+      signal?: AbortSignal;
     } = {},
   ): Promise<void> {
+    const { signal } = options;
     const uniqueImages = [...new Set(imageRefs.map((image) => image.trim()).filter(Boolean))];
 
     if (uniqueImages.length === 0) {
       return;
     }
+
+    // Bail out before starting any pull if the operation was already cancelled.
+    throwIfAborted(signal);
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
@@ -592,6 +612,9 @@ export class DockerService {
 
     await Promise.all(
       uniqueImages.map(async (image) => {
+        // Skip remaining images once the operation is cancelled.
+        throwIfAborted(signal);
+
         if (!options.forcePull && (await this.imageExistsLocally(image))) {
           completedImages.add(image);
           emitProgress(image, 'complete');
@@ -610,6 +633,20 @@ export class DockerService {
               return;
             }
 
+            // Destroying the pull stream drops the HTTP connection to the daemon, which cancels the
+            // server-side pull. Reject with an AbortError so the caller treats it as a cancellation.
+            const onAbort = () => {
+              this.logger.warn(`[pull-cancel] destroying pull stream for ${image}`);
+              (stream as NodeJS.ReadableStream & { destroy?: (err?: Error) => void }).destroy?.(abortError());
+              reject(abortError());
+            };
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            signal?.addEventListener('abort', onAbort, { once: true });
+            const cleanupAbort = () => signal?.removeEventListener('abort', onAbort);
+
             const modem = (
               this.docker as Dockerode & {
                 modem?: {
@@ -623,6 +660,7 @@ export class DockerService {
             ).modem;
 
             if (!modem?.followProgress) {
+              cleanupAbort();
               reject(new Error('Docker pull progress tracking is unavailable'));
               return;
             }
@@ -630,6 +668,7 @@ export class DockerService {
             modem.followProgress(
               stream,
               (followError) => {
+                cleanupAbort();
                 if (followError) {
                   reject(followError);
                   return;
@@ -656,6 +695,10 @@ export class DockerService {
             );
           });
         }).catch((error) => {
+          // Preserve cancellations so callers can run compensation instead of reporting a failure.
+          if (isAbortError(error)) {
+            throw error;
+          }
           throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
         });
       }),
@@ -687,7 +730,7 @@ export class DockerService {
     return this.composePluginAvailable;
   }
 
-  private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {
+  private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean, signal?: AbortSignal) {
     // Log the full command for debugging
     this.logger.debug(`Executing: ${command[0]} ${command.slice(1).join(' ')}`);
 
@@ -695,41 +738,88 @@ export class DockerService {
       throw new Error('Command is empty');
     }
 
+    // Bail out before spawning if the operation was already cancelled.
+    throwIfAborted(signal);
+
+    // Passing `signal` makes Node send SIGTERM to the child on abort. `docker compose` can spawn its
+    // own child (the compose plugin) that survives a SIGTERM to the wrapper, so we layer an explicit
+    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel.
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
+      signal,
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      cmd.on('error', (error: NodeJS.ErrnoException) => {
-        this.logger.error(`Failed to spawn ${command[0]}: ${error.message}`);
-        if (error.code === 'ENOEXEC') {
-          this.logger.error(`${command[0]} binary cannot be executed. This usually means the binary is corrupted or for the wrong architecture.`);
+    // Tracks actual process termination (the 'close' event). `cmd.killed` only reflects that a signal
+    // was *sent* (it is true right after Node's `{ signal }` SIGTERM), so it cannot gate the escalation.
+    let closed = false;
+    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      // Node's `{ signal }` already sent SIGTERM. Escalate to SIGKILL if the process tree (the compose
+      // plugin can outlive a SIGTERM to the wrapper) hasn't actually exited within the grace period.
+      this.logger.warn(
+        `[compose-cancel] aborting '${command.join(' ')}' (pid=${cmd.pid}); SIGTERM sent, escalating to SIGKILL in ${COMPOSE_CANCEL_SIGKILL_GRACE_MS}ms if needed`,
+      );
+      sigkillTimer = setTimeout(() => {
+        if (!closed) {
+          this.logger.warn(`[compose-cancel] SIGKILL '${command.join(' ')}' (pid=${cmd.pid})`);
+          cmd.kill('SIGKILL');
         }
-        reject(error);
-      });
-      cmd.stdout.on('data', (data: Buffer | string) => {
-        this.logger.debug(`${command[0]}: ${String(data).trim()}`);
-        stdout.push(String(data).trim());
-      });
-      cmd.stderr.on('data', (data: Buffer | string) => {
-        this.logger.debug(`${command[0]}: ${String(data).trim()}`);
-        stderr.push(String(data).trim());
-      });
-      cmd.on('close', resolve);
-    });
+      }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
-    if (exitCode !== 0) {
-      this.logger.info(`${command[0]} exited with code ${exitCode}`);
-      if (isCustomConfig) {
-        this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
+    try {
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        cmd.on('error', (error: NodeJS.ErrnoException) => {
+          // `spawn({ signal })` emits an AbortError 'error' as soon as the signal fires. Don't reject
+          // here — let the 'close' handler settle once the process really exits (the SIGKILL timer
+          // guarantees it will), otherwise the `finally` would cancel the escalation prematurely.
+          if (signal?.aborted) {
+            return;
+          }
+          this.logger.error(`Failed to spawn ${command[0]}: ${error.message}`);
+          if (error.code === 'ENOEXEC') {
+            this.logger.error(`${command[0]} binary cannot be executed. This usually means the binary is corrupted or for the wrong architecture.`);
+          }
+          reject(error);
+        });
+        cmd.stdout.on('data', (data: Buffer | string) => {
+          this.logger.debug(`${command[0]}: ${String(data).trim()}`);
+          stdout.push(String(data).trim());
+        });
+        cmd.stderr.on('data', (data: Buffer | string) => {
+          this.logger.debug(`${command[0]}: ${String(data).trim()}`);
+          stderr.push(String(data).trim());
+        });
+        cmd.on('close', (code: number | null) => {
+          closed = true;
+          resolve(code as number);
+        });
+      });
+
+      // A non-zero exit caused by our own SIGTERM/SIGKILL is a cancellation, not a config failure.
+      if (signal?.aborted) {
+        throw abortError();
       }
-      const error = stderr.pop();
-      throw new Error(error);
-    }
 
-    return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };
+      if (exitCode !== 0) {
+        this.logger.info(`${command[0]} exited with code ${exitCode}`);
+        if (isCustomConfig) {
+          this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
+        }
+        const error = stderr.pop();
+        throw new Error(error);
+      }
+
+      return { success: true, stdout: stdout.join(''), stderr: stderr.join('') };
+    } finally {
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+      }
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   public getLogsStream = async (maxLines: number, appUrn?: AppUrn) => {

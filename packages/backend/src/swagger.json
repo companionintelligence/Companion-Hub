@@ -2464,6 +2464,46 @@
         ]
       }
     },
+    "/api/app-lifecycle/{urn}/cancel": {
+      "post": {
+        "operationId": "cancelOperation",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelOperationBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOperationResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
     "/api/app-lifecycle/{urn}/update-config": {
       "patch": {
         "operationId": "updateAppConfig",
@@ -3888,6 +3928,14 @@
         "properties": {}
       },
       "UpdateAppBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "CancelOperationBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "CancelOperationResponseDto": {
         "type": "object",
         "properties": {}
       },
