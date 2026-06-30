@@ -23,6 +23,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -183,6 +184,7 @@ describe('App lifecycle', () => {
           useValue: appRuntimeMonitorService,
         },
         InstallPipelineTracker,
+        AppOperationRegistry,
         {
           provide: SubnetManagerService,
           useFactory: (appsRepository: AppsRepository, loggerService: LoggerService, docker: typeof DOCKERODE) =>
