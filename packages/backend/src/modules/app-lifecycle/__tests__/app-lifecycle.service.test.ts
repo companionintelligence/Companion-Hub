@@ -1389,5 +1389,38 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));
     });
+
+    it('finalizes a FAILED install worker-side so a post-RPC-timeout failure is not stranded in installing', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed', errorCode: 'x' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+      const queueSpy = vi.spyOn(service as any, 'emitInstallQueueUpdate');
+
+      await service.invokeCommand(data, reply);
+
+      // Worker writes the terminal status + emits install_error, independent of the RPC reply.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error', appStatus: 'install_failed' }));
+      // A failure must not be treated as a cancellation (record kept, not deleted).
+      expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+      // invokeCommand emits the install-queue update exactly twice — when it marks the pipeline active
+      // (start) and in its finally after clearing it. finalizeFailedInstall must NOT add a third,
+      // stale one (which would briefly show the just-failed app as the active install).
+      expect(queueSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not double-finalize a failure once the app has left installing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'install_failed' } as any);
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(data, vi.fn());
+
+      // Status guard: already install_failed → no second status write / SSE.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+    });
   });
 });
