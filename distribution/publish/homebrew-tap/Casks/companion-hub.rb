@@ -6,12 +6,12 @@ cask "companion-hub" do
 
   on_intel do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
-    sha256 "e6814f3b5223c80ef58f84ca81a815cdefeb52e578f715210dbdb9b3a9d9dd75"
+    sha256 "fbd537dc77cfeb6c3537d7d09c28d0ca3c0ac256ab06770482eab200789dd428"
   end
 
   on_arm do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
-    sha256 "c6c68e3e5dba2f6e505d8a85a5dfbdffaf3f8346532f81f2879583321b398e66"
+    sha256 "b4839c6ce077da5c99b5b8bfb36703098fd15a865981ae6b8ca5b276d6df6fd1"
   end
 
   name "Companion Hub"

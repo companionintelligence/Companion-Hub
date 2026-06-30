@@ -4,7 +4,7 @@
   "homepage": "https://ci.computer/hub",
   "license": "CI-Commercial-1.0",
   "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.36/Companion.Hub_0.2.36_x64-setup.exe",
-  "hash": "481b6da16236e107fd461e62d69970c827e8f648f5c874387e6ea4e0df33312b",
+  "hash": "aaaeb2f300b533449bd34ac670b565a2f77ce164f984d5a79793747ce0c70d42",
   "installer": {
     "script": "& \"$dir\\Companion.Hub_$version_x64-setup.exe\" /S"
   },
