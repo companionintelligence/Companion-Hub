@@ -7,7 +7,8 @@ export type OperationCommand = 'install' | 'start' | 'stop' | 'restart' | 'updat
 
 /**
  * Coarse cancellability tier, derived from the command when the op is registered.
- * - `safe`: can be aborted and cleanly compensated at any in-flight phase (e.g. install).
+ * - `safe`: can be aborted and cleanly compensated while in flight, up to the point of no return
+ *   (`AppLifecycleService.cancelOperation` still refuses once the phase reaches `finalizing`/`committed`).
  * - `before_ponr`: cancellable only until a point-of-no-return phase is reached.
  * - `non_cancellable`: destructive with no safe midpoint; only a force-reset escape hatch applies.
  */

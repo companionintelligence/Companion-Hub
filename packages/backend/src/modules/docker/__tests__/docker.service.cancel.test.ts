@@ -11,6 +11,10 @@ function makeService(dockerMock: unknown): DockerService {
   return new DockerService(mock(), mock(), mock(), mock(), mock(), dockerMock as never);
 }
 
+// A self-contained, cross-platform long-running process (no reliance on an external `sleep` binary):
+// spawn this Node runtime with a one-liner that idles until SIGTERM/SIGKILL.
+const LONG_RUNNING_CMD = [process.execPath, '-e', 'setTimeout(() => {}, 30000)'];
+
 describe('DockerService.runDockerCompose — cancellation (real spawn)', () => {
   it('throws AbortError immediately when the signal is already aborted', async () => {
     const svc = makeService({});
@@ -19,7 +23,7 @@ describe('DockerService.runDockerCompose — cancellation (real spawn)', () => {
 
     await expect(
       (svc as unknown as { runDockerCompose: (...a: unknown[]) => Promise<unknown> }).runDockerCompose(
-        ['sleep', '30'],
+        LONG_RUNNING_CMD,
         process.cwd(),
         false,
         ac.signal,
@@ -34,7 +38,7 @@ describe('DockerService.runDockerCompose — cancellation (real spawn)', () => {
     const ac = new AbortController();
 
     const promise = (svc as unknown as { runDockerCompose: (...a: unknown[]) => Promise<unknown> }).runDockerCompose(
-      ['sleep', '30'],
+      LONG_RUNNING_CMD,
       process.cwd(),
       false,
       ac.signal,
