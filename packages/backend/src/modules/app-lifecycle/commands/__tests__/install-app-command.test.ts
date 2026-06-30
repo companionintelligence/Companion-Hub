@@ -91,6 +91,9 @@ describe('InstallAppCommand — pull policy', () => {
         message: 'All containers are running',
       }),
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
+      // Used by install-cancel compensation.
+      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      removeAppImages: vi.fn().mockResolvedValue(undefined),
     };
 
     const logger = mockDeep<LoggerService>();
@@ -118,6 +121,8 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
+    appFilesManager.deleteAppFolder.mockResolvedValue();
+    appFilesManager.deleteAppDataDir.mockResolvedValue();
 
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
@@ -385,5 +390,69 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain('exited after install');
     expect(result.errorDetail).toContain('bootstrap failed');
+  });
+
+  // ── cancellation ──────────────────────────────────────────────────────────
+  it('aborting during the image pull cancels and runs compensation (no compose up)', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'app', image: 'ghcr.io/example/app:latest' }],
+      overrides: [],
+    } as any);
+
+    const ac = new AbortController();
+    // Simulate the real pullImages aborting once the signal fires.
+    dockerService.pullImages = vi.fn(async () => {
+      ac.abort();
+      throw new DOMException('Aborted', 'AbortError');
+    });
+
+    const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+    expect(result.success).toBe(false);
+    expect((result as any).cancelled).toBe(true);
+    // Compose up must never have run...
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+    // ...and compensation must have torn everything down (keeping pulled images via --rmi local).
+    expect(composeArgs.some((a) => a.includes('down') && a.includes('--rmi local'))).toBe(true);
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    expect(afm.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    const pm = (command as any).moduleRef.get(PortManagerService);
+    expect(pm.releaseAll).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('aborting during compose up cancels and runs compensation', async () => {
+    const ac = new AbortController();
+    dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+      composeArgs.push(args);
+      if (args.includes('up --detach')) {
+        ac.abort();
+        throw new DOMException('Aborted', 'AbortError');
+      }
+    });
+
+    const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+    expect(result.success).toBe(false);
+    expect((result as any).cancelled).toBe(true);
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    expect(afm.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('returns cancelled (before compose up) when the signal is already aborted', async () => {
+    const ac = new AbortController();
+    ac.abort();
+
+    const result = await command.execute(appUrn, {}, { signal: ac.signal, setPhase: vi.fn() });
+
+    expect(result.success).toBe(false);
+    expect((result as any).cancelled).toBe(true);
+    // The cooperative checkpoint aborts before compose up runs.
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+  });
+
+  it('still succeeds when called without a cancellation context (backward compatible)', async () => {
+    const result = await command.execute(appUrn, {});
+    expect(result.success).toBe(true);
   });
 });

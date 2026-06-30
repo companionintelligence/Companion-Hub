@@ -95,4 +95,19 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
   });
+
+  it('clears caches and progress on install_cancelled (like uninstall)', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'install_cancelled',
+      appUrn: 'plane:ci-marketplace',
+      appStatus: 'missing',
+    });
+
+    expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', null);
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
+    // App record is cleared (set to { app: null }) just like an uninstall.
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
+    expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
+  });
 });

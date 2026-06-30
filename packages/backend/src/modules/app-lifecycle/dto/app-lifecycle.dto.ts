@@ -45,6 +45,20 @@ const lifecycleRequestSchema = z.object({
   requestId: z.string().uuid(),
 });
 
+const cancelOperationBodySchema = z.object({
+  // Optional guard so a stale client never cancels a newer operation for the same app.
+  requestId: z.string().uuid().optional(),
+});
+
+const cancelOperationResponseSchema = z.object({
+  // `cancelling`: in-flight abort requested; `cancelled_queued`: was still queued; `refused`: not
+  // cancellable / past point-of-no-return; `force_reset`: reserved for stuck-op recovery (Phase 4);
+  // `not_found`: no active op for this app (or requestId mismatch).
+  outcome: z.enum(['cancelling', 'cancelled_queued', 'refused', 'force_reset', 'not_found']),
+  status: z.string().optional(),
+  message: z.string().optional(),
+});
+
 export class AppFormBody extends createZodDto(appFormSchema) {}
 
 export class UninstallAppBody extends createZodDto(uninstallAppBodySchema) {}
@@ -52,3 +66,7 @@ export class UninstallAppBody extends createZodDto(uninstallAppBodySchema) {}
 export class UpdateAppBody extends createZodDto(updateAppBodySchema) {}
 
 export class LifecycleRequestDto extends createZodDto(lifecycleRequestSchema) {}
+
+export class CancelOperationBody extends createZodDto(cancelOperationBodySchema) {}
+
+export class CancelOperationResponseDto extends createZodDto(cancelOperationResponseSchema) {}

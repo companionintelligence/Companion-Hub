@@ -17,6 +17,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { AppOperationRegistry } from '../app-operation-registry';
 import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -44,6 +45,7 @@ describe('AppLifecycleService', () => {
   let appStoreService: MockProxy<AppStoreService>;
   let mutex: any;
   let installPipelineTracker: InstallPipelineTracker;
+  let operationRegistry: AppOperationRegistry;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -69,6 +71,7 @@ describe('AppLifecycleService', () => {
       acquire: vi.fn().mockResolvedValue(release),
     };
     installPipelineTracker = new InstallPipelineTracker();
+    operationRegistry = new AppOperationRegistry(logger);
     appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -93,6 +96,7 @@ describe('AppLifecycleService', () => {
         { provide: AppStoreService, useValue: appStoreService },
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
+        { provide: AppOperationRegistry, useValue: operationRegistry },
       ],
     }).compile();
 
@@ -1288,6 +1292,102 @@ describe('AppLifecycleService', () => {
       const successIdx = callOrder.indexOf('sse:install_success');
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+  });
+
+  describe('cancelOperation', () => {
+    const appUrn = 'cancelme:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000abc';
+
+    it('returns not_found when no operation is active', async () => {
+      const res = await service.cancelOperation(appUrn);
+      expect(res.outcome).toBe('not_found');
+    });
+
+    it('returns cancelled_queued and aborts when the op is still queued', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('cancelled_queued');
+      expect(abortSpy).toHaveBeenCalledWith(appUrn, undefined);
+      expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+    });
+
+    it('returns cancelling and aborts when the op is in flight', async () => {
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.markPhase(appUrn, 'pulling');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('cancelling');
+      expect(entry.abortController.signal.aborted).toBe(true);
+    });
+
+    it('refuses once a safe op reaches the finalizing (post-PONR) phase', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.markPhase(appUrn, 'finalizing');
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('refused');
+      expect(abortSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns not_found and does not abort when the requestId does not match', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn, '11111111-1111-4111-8111-111111111111');
+
+      expect(res.outcome).toBe('not_found');
+      expect(abortSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invokeCommand — cancellation finalization', () => {
+    const appUrn = 'cancelme:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000abc';
+    const data = { appUrn, command: 'install', requestId, form: {} } as any;
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'installing' } as any);
+      appsRepository.deleteAppById.mockResolvedValue(undefined as any);
+      appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
+    });
+
+    it('skips execution and finalizes when cancelled while queued (tier-A)', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.abort(appUrn); // cancelled before the worker dequeued it
+      const execute = vi.fn();
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(data, reply);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
+      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared in finally
+    });
+
+    it('finalizes a cancelled result returned by the command (in-flight abort)', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, message: 'cancelled and cleaned up' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(data, reply);
+
+      expect(execute).toHaveBeenCalled();
+      expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appStatus: 'missing' }));
+      // A cancellation must not be reported as a failure or a success.
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));
     });
   });
 });

@@ -98,6 +98,9 @@ vi.mock('@/lib/helpers/open-external', () => ({
 vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
   InstallDialog: () => null,
 }));
+vi.mock('../../components/dialogs/cancel-install-dialog/cancel-install-dialog', () => ({
+  CancelInstallDialog: () => null,
+}));
 vi.mock('../../components/dialogs/stop-dialog/stop-dialog', () => ({
   StopDialog: () => null,
 }));
@@ -251,5 +254,24 @@ describe('AppActions', () => {
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('APP_ERROR_ROCM_KFD_MISSING');
     expect(screen.getByRole('link', { name: 'APP_ERROR_OPEN_AI_SETTINGS' })).toHaveAttribute('href', '/settings?tab=ai&section=rocm');
+  });
+
+  it('shows the Cancel button only while installing (not for other transient states)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppActions app={makeApp({ status: 'installing' })} metadata={metadata} info={info} />
+      </MemoryRouter>,
+    );
+    // IconActionButton testid derives from the (mocked) label COMMON_CANCEL.
+    expect(screen.getByTestId('icon-action-common_cancel')).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter>
+        <AppActions app={makeApp({ status: 'uninstalling' })} metadata={metadata} info={info} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('icon-action-common_cancel')).not.toBeInTheDocument();
   });
 });

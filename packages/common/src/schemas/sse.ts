@@ -37,6 +37,7 @@ const appScopedEventSchema = z.object({
     'status_change',
     'install_success',
     'install_error',
+    'install_cancelled',
     'uninstall_success',
     'uninstall_error',
     'reset_success',

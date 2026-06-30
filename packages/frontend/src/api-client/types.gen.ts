@@ -551,6 +551,16 @@ export type UpdateAppBody = {
     performBackup: boolean;
 };
 
+export type CancelOperationBody = {
+    requestId?: string;
+};
+
+export type CancelOperationResponseDto = {
+    outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found';
+    status?: string;
+    message?: string;
+};
+
 export type BackupRequestDto = {
     /**
      * a UUID
@@ -1652,6 +1662,21 @@ export type ResetAppResponses = {
 };
 
 export type ResetAppResponse = ResetAppResponses[keyof ResetAppResponses];
+
+export type CancelOperationData = {
+    body: CancelOperationBody;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/cancel';
+};
+
+export type CancelOperationResponses = {
+    default: CancelOperationResponseDto;
+};
+
+export type CancelOperationResponse = CancelOperationResponses[keyof CancelOperationResponses];
 
 export type UpdateAppData = {
     body: UpdateAppBody;

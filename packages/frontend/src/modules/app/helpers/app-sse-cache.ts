@@ -170,6 +170,16 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     return;
   }
 
+  // A cancelled install removes the partial app record — treat it like an uninstall so the UI
+  // returns to the not-installed (store) state instead of leaving a stale "installing" card.
+  if (event === 'install_cancelled') {
+    queryClient.setQueryData(['app-install-error', urn], null);
+    updateInstallationProgress(urn, null);
+    clearUninstalledAppCaches(queryClient, appUrn);
+    invalidateAppQueries(queryClient, appUrn);
+    return;
+  }
+
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     invalidateAppQueries(queryClient, appUrn);

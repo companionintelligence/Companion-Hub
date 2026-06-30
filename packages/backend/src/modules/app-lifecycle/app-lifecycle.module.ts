@@ -16,6 +16,7 @@ import { AppRehydrationService } from './app-rehydration.service';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
+import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 
 @Module({
@@ -34,8 +35,8 @@ import { AppStatusSyncService } from './app-status-sync.service';
     UserModule,
     NetworkModule,
   ],
-  providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService, AppRehydrationService],
+  providers: [AppLifecycleService, AppLifecycleCommandFactory, AppOperationRegistry, AppStatusSyncService, AppRehydrationService],
   controllers: [AppLifecycleController],
-  exports: [AppLifecycleService, AppStatusSyncService, AppRehydrationService],
+  exports: [AppLifecycleService, AppOperationRegistry, AppStatusSyncService, AppRehydrationService],
 })
 export class AppLifecycleModule {}

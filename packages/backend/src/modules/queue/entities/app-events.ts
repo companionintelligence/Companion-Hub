@@ -85,6 +85,12 @@ export const appEventResultSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  // Set by a command when it stopped because the operation was cancelled (vs. failed). The service's
+  // completion handling branches on this to finalize a cancel rather than a success/error.
+  cancelled: z.boolean().optional(),
+  // Resting status a before-PONR cancel reverted to (e.g. 'stopped'). Unused by install (which removes
+  // the record); reserved so Phase 2-4 ops can report where they landed.
+  cancelledStatus: z.string().optional(),
 });
 
 export type AppEventFormInput = z.input<typeof commonAppCommandSchema>['form'];

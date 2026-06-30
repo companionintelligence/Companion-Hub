@@ -24,7 +24,9 @@ import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
+import { AppOperationRegistry, type OperationCommand } from './app-operation-registry';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
+import type { CommandExecutionContext } from './commands/command';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
@@ -106,6 +108,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
     private readonly installPipelineTracker: InstallPipelineTracker,
+    private readonly operationRegistry: AppOperationRegistry,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {
@@ -224,10 +227,48 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const release = await this.mutex.acquire(data.appUrn);
 
     try {
-      const command = this.commandFactory.createCommand(data);
-      const result = await command.execute(data.appUrn, data.form);
+      // Only treat the registry entry as ours when its requestId matches this message. A stale queued
+      // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
+      // into this command or mutate the newer entry's phase.
+      const registered = this.operationRegistry.get(data.appUrn);
+      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
 
-      if (result.success) {
+      // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
+      // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
+      if (entry && (entry.cancelRequestedWhileQueued || entry.abortController.signal.aborted)) {
+        this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued; skipping execution`);
+        await this.handleCancelledResult(data.command, data.appUrn, {
+          success: false,
+          cancelled: true,
+          message: 'Operation cancelled before it started',
+        });
+        await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        return;
+      }
+
+      // Build the cancellation context from our own registry entry so the cancel endpoint's abort()
+      // reaches the running command and its docker spawns/pulls. Phase updates are requestId-gated.
+      if (entry) {
+        this.operationRegistry.markPhase(data.appUrn, 'preparing', data.requestId);
+      }
+      const ctx: CommandExecutionContext | undefined = entry
+        ? {
+            signal: entry.abortController.signal,
+            setPhase: (phase) => this.operationRegistry.markPhase(data.appUrn, phase, data.requestId),
+          }
+        : undefined;
+
+      const command = this.commandFactory.createCommand(data);
+      // Only pass the context when there is one, so commands without cancellation see the original 2-arg call.
+      const result = (await (ctx ? command.execute(data.appUrn, data.form, ctx) : command.execute(data.appUrn, data.form))) as z.output<
+        typeof appEventResultSchema
+      >;
+
+      // Finalize a cancellation worker-side (delete record + emit *_cancelled) so it does not depend
+      // on the RPC reply being delivered (the publisher may have already timed out).
+      if (result.cancelled) {
+        await this.handleCancelledResult(data.command, data.appUrn, result);
+      } else if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
@@ -238,6 +279,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.error('Error invoking command:', err);
       await reply(toAppCommandFailureResult(err));
     } finally {
+      // Clear the registry entry for this op (requestId-matched so a replacement op is preserved).
+      this.operationRegistry.clear(data.appUrn, data.requestId);
       release();
       if (isInstall) {
         this.installPipelineTracker.setActive(null);
@@ -245,6 +288,79 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         void this.emitInstallQueueUpdate();
       }
     }
+  }
+
+  /**
+   * Single authoritative finalization point for a cancelled operation. Runs worker-side from
+   * {@link invokeCommand}. For `install` it removes the partially-created app record and emits an
+   * `install_cancelled` SSE event so the UI returns to the not-installed (store) state. Other
+   * commands are wired in later phases; until then this is a safe no-op for them.
+   */
+  private async handleCancelledResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+    if (command === 'install') {
+      const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+      if (app) {
+        try {
+          await this.appRepository.deleteAppById(app.id);
+        } catch (e) {
+          this.logger.error(`Failed to delete cancelled install record for ${appUrn}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      this.logger.info(`[lifecycle] install of ${appUrn} cancelled${result.message ? `: ${result.message}` : ''}`);
+      // Use 'missing' (not 'uninstalled') to match uninstall_success — both delete the app record.
+      this.sseService.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'missing' });
+      void this.emitInstallQueueUpdate();
+      return;
+    }
+
+    // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
+    this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Request cancellation of the in-flight (or queued) operation for an app.
+   *
+   * Looks up the live registry entry and decides the outcome by cancellability tier and phase:
+   * - no entry / stale requestId → `not_found`
+   * - non-cancellable, or past the point of no return → `refused`
+   * - otherwise abort the controller → `cancelled_queued` (was still queued) or `cancelling` (in flight)
+   *
+   * Returns immediately; the actual `*_cancelled` SSE event arrives once the worker finishes
+   * compensation. In Phase 1 only `install` registers, so other ops return `not_found`.
+   */
+  async cancelOperation(
+    appUrn: AppUrn,
+    requestId?: string,
+  ): Promise<{ outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found'; status?: string; message?: string }> {
+    const entry = this.operationRegistry.get(appUrn);
+    if (!entry) {
+      return { outcome: 'not_found', message: 'No operation in progress for this app' };
+    }
+    if (requestId && entry.requestId !== requestId) {
+      return { outcome: 'not_found', message: 'Operation already completed or replaced' };
+    }
+
+    if (entry.tier === 'non_cancellable') {
+      return { outcome: 'refused', message: 'This operation cannot be cancelled.' };
+    }
+    if (entry.tier === 'before_ponr' && (entry.phase === 'finalizing' || entry.phase === 'committed')) {
+      return { outcome: 'refused', message: 'Operation has passed the point of no return.' };
+    }
+    if (entry.tier === 'safe' && (entry.phase === 'finalizing' || entry.phase === 'committed')) {
+      return { outcome: 'refused', message: 'Operation is finalizing and can no longer be cancelled.' };
+    }
+
+    // Derive the outcome and logging from the entry returned by abort() (its phase at abort time),
+    // not from the earlier read, so the result reflects the op's actual state when it was aborted.
+    const aborted = this.operationRegistry.abort(appUrn, requestId);
+    if (!aborted) {
+      return { outcome: 'not_found', message: 'Operation already completed or replaced' };
+    }
+    const wasQueued = aborted.phase === 'queued';
+    this.logger.info(`[lifecycle] cancel requested for ${aborted.command} ${appUrn} (phase=${aborted.phase})`);
+    return wasQueued
+      ? { outcome: 'cancelled_queued', message: 'Operation cancelled before it started' }
+      : { outcome: 'cancelling', message: 'Cancellation requested' };
   }
 
   /**
@@ -485,10 +601,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const appId = installRecord.id;
     const recordExposedLocal = exposedLocal ?? existingApp?.exposedLocal ?? !!appInfo.exposable;
 
+    // Register the operation BEFORE publishing so a cancel arriving during the publish->dequeue
+    // window (tier-A) can be honoured. Cleared in invokeCommand's finally.
+    this.operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, errorCode, errorDetail, settingsPath, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        // Cancellation is finalized worker-side in invokeCommand (record deleted + install_cancelled
+        // emitted), independent of this RPC reply. Nothing to do here — avoids a double delete/SSE/toast.
+        if (cancelled) {
+          return;
+        }
         if (success) {
           this.logger.info(`App ${appUrn} installed successfully`);
           const latest = await this.appRepository.getAppById(appId);
@@ -511,6 +636,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
 
           this.logger.error(`Failed to install app ${appUrn}: ${message}`);
+          // Defensively clear the registry entry (requestId-matched, so it's a no-op when invokeCommand
+          // already cleared it). This covers the case where the publish never reached a worker
+          // (queue unavailable / overflow), so invokeCommand's finally never ran.
+          this.operationRegistry.clear(appUrn, requestId);
           // Guard the status write specifically: if the DB rejects the
           // 'install_failed' enum (e.g. a migration hasn't applied yet), we must
           // still surface the failure over SSE instead of crashing the process.
@@ -535,7 +664,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.reportAppFailure(appUrn, 'install', message);
         }
       })
-      .catch((err) => this.logLifecycleHandlerError('install', appUrn, err));
+      .catch((err) => {
+        // A publish rejection (invalid event data, etc.) or a throw inside the completion handler
+        // means invokeCommand never ran (or didn't finish) for this op — clear the registry entry so
+        // a stale 'queued' operation can't linger and keep /cancel returning 'cancelled_queued'.
+        this.operationRegistry.clear(appUrn, requestId);
+        this.logLifecycleHandlerError('install', appUrn, err);
+      });
 
     return { requestId };
   }
