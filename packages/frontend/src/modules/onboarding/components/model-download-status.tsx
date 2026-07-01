@@ -1,7 +1,7 @@
 import { Download, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { WizardCard, WizardHeader } from './wizard-ui';
-import type { ModelPullOrchestratorResult } from '../helpers/use-model-pull-orchestrator';
+import type { ModelPullOrchestratorResult } from '@/lib/hooks/use-model-pull-orchestrator';
 
 interface ModelDownloadStatusProps {
   selectedModelIds: string[];

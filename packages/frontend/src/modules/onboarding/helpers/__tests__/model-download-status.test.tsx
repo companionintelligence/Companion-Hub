@@ -1,7 +1,7 @@
 import { render, screen } from '@/tests/test-utils';
 import { describe, expect, it } from 'vitest';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../../components/model-download-status';
-import type { ModelPullOrchestratorResult } from '../use-model-pull-orchestrator';
+import type { ModelPullOrchestratorResult } from '@/lib/hooks/use-model-pull-orchestrator';
 
 const basePullState: ModelPullOrchestratorResult = {
   progressById: {},

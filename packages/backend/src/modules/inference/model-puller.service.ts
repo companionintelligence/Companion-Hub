@@ -143,16 +143,20 @@ export class ModelPullerService {
     };
   }
 
+  private markAlreadyInstalled(catalogId: string): void {
+    if (!this.modelRegistry.getTrackedModel(catalogId)) {
+      this.modelRegistry.trackModel(catalogId, 'pulled');
+    } else if (this.modelRegistry.getTrackedModel(catalogId)?.state === 'error') {
+      this.modelRegistry.updateModelState(catalogId, 'pulled');
+    }
+  }
+
   /** Enqueue a model pull and return immediately. One Ollama pull runs at a time. */
   async startPull(catalogId: string, options?: { bestEffort?: boolean; tier?: HardwareTier }): Promise<PullStartResult> {
     const evaluation = await this.evaluatePull(catalogId, options?.tier);
 
     if (evaluation.alreadyInstalled) {
-      if (!this.modelRegistry.getTrackedModel(catalogId)) {
-        this.modelRegistry.trackModel(catalogId, 'pulled');
-      } else if (this.modelRegistry.getTrackedModel(catalogId)?.state === 'error') {
-        this.modelRegistry.updateModelState(catalogId, 'pulled');
-      }
+      this.markAlreadyInstalled(catalogId);
       return { catalogId, status: 'already_installed' };
     }
 
@@ -201,17 +205,64 @@ export class ModelPullerService {
     return this.pullWorkerPromise;
   }
 
-  /** Pull a model by catalog ID — enforces preflight checks. */
+  /** Wait until a queued or in-flight pull reaches a terminal tracked state. */
+  async waitForPullCompletion(catalogId: string, timeoutMs = 600_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const tracked = this.modelRegistry.getTrackedModel(catalogId);
+      if (tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned') {
+        return;
+      }
+      if (tracked?.state === 'error') {
+        throw new Error(tracked.errorMessage ?? `Pull failed for ${catalogId}`);
+      }
+
+      const pending = this.pullActiveIds.has(catalogId) || this.pullQueue.includes(catalogId);
+      if (!pending && !tracked) {
+        const evaluation = await this.evaluatePull(catalogId);
+        if (evaluation.alreadyInstalled) {
+          this.markAlreadyInstalled(catalogId);
+          return;
+        }
+        throw new Error(`Pull not started for ${catalogId}`);
+      }
+
+      if (this.pullWorkerPromise) {
+        await Promise.race([this.pullWorkerPromise, new Promise((resolve) => setTimeout(resolve, 500))]);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+
+    throw new Error(`Pull timed out for ${catalogId}`);
+  }
+
+  /** Enqueue a pull and block until it completes (uses the serial queue). */
+  async pullAndWait(catalogId: string, options?: { bestEffort?: boolean; tier?: HardwareTier }): Promise<void> {
+    const result = await this.startPull(catalogId, options);
+    if (result.status === 'already_installed') {
+      return;
+    }
+    if (result.status === 'skipped') {
+      if (options?.bestEffort) {
+        return;
+      }
+      throw new Error(result.reason ?? `Pull skipped for ${catalogId}`);
+    }
+    if (result.status === 'error') {
+      throw new Error(result.reason ?? `Pull blocked for ${catalogId}`);
+    }
+    await this.waitForPullCompletion(catalogId);
+  }
+
+  /** Pull a model by catalog ID — queue worker only; use startPull or pullAndWait externally. */
   async pullModel(catalogId: string, onProgress?: (progress: PullProgress) => void, tier?: HardwareTier): Promise<void> {
     try {
       const evaluation = await this.evaluatePull(catalogId, tier);
 
       if (evaluation.alreadyInstalled) {
-        if (!this.modelRegistry.getTrackedModel(catalogId)) {
-          this.modelRegistry.trackModel(catalogId, 'pulled');
-        } else if (this.modelRegistry.getTrackedModel(catalogId)?.state === 'error') {
-          this.modelRegistry.updateModelState(catalogId, 'pulled');
-        }
+        this.markAlreadyInstalled(catalogId);
         this.logger.info(`[ModelPuller] ${catalogId} already installed in Ollama — skipping download`);
         return;
       }
@@ -317,7 +368,7 @@ export class ModelPullerService {
 
   /** Pull and load a model, optionally pinning it */
   async pullAndLoad(catalogId: string, pin = false): Promise<void> {
-    await this.pullModel(catalogId);
+    await this.pullAndWait(catalogId);
     await this.loadModel(catalogId);
     if (pin) {
       this.modelRegistry.pinModel(catalogId);

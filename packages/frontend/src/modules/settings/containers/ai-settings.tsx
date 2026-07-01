@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
@@ -263,36 +264,36 @@ export const AiSettingsContainer = () => {
 
       const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const modelOperationErrors: string[] = [];
+      const modelsToPull = compatibleSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
-      // Pull and pin newly selected models
-      for (const modelId of compatibleSelectedModelIds) {
-        if (compatiblePinnedModelIds.includes(modelId)) {
-          continue;
+      if (modelsToPull.length > 0) {
+        await ensurePullsStarted(modelsToPull, false);
+
+        const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
+        for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
+          modelOperationErrors.push(`Failed to pull ${modelId}: ${message}`);
         }
 
-        try {
-          const pullRes = await apiFetch('/api/inference/models/pull', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId }),
-          });
-
-          if (!pullRes.ok) {
-            modelOperationErrors.push(`Failed to pull ${modelId}: HTTP ${pullRes.status}`);
+        for (const modelId of modelsToPull) {
+          if (pullResult.errorsById[modelId]) continue;
+          if (!pullResult.pulledIds.has(modelId) && pullResult.progressById[modelId] !== 100) {
+            modelOperationErrors.push(`Failed to pull ${modelId}: timed out`);
             continue;
           }
 
-          const pinRes = await apiFetch('/api/inference/models/pin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId }),
-          });
+          try {
+            const pinRes = await apiFetch('/api/inference/models/pin', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modelId }),
+            });
 
-          if (!pinRes.ok) {
-            modelOperationErrors.push(`Failed to pin ${modelId}: HTTP ${pinRes.status}`);
+            if (!pinRes.ok) {
+              modelOperationErrors.push(`Failed to pin ${modelId}: HTTP ${pinRes.status}`);
+            }
+          } catch (e) {
+            modelOperationErrors.push(`Failed to pin ${modelId}: ${(e as Error).message}`);
           }
-        } catch (e) {
-          modelOperationErrors.push(`Failed to pull/pin ${modelId}: ${(e as Error).message}`);
         }
       }
 

@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { fetchTrackedModels, parsePullProgress } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -143,74 +144,40 @@ export const InstallStep = ({
           const modelErrors: Record<string, string> = {};
           const modelProgress: Record<string, number> = {};
 
-          const pollPullProgress = async (): Promise<{
-            allDone: boolean;
-            tracked: Array<{ catalogId: string; state: string; pullProgress?: number; error?: string }>;
-          }> => {
-            try {
-              const res = await apiFetch('/api/inference/models/tracked');
-              if (!res.ok) return { allDone: false, tracked: [] };
-              const tracked = (await res.json()) as Array<{
-                catalogId: string;
-                state: string;
-                pullProgress?: number;
-                error?: string;
-                errorMessage?: string;
-              }>;
-              let allDone = true;
-              for (const modelId of modelsToPull) {
-                const model = tracked.find((m) => m.catalogId === modelId);
-                if (!model) {
-                  allDone = false;
-                  continue;
-                }
-                modelProgress[modelId] =
-                  model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
-                if (model.state === 'error') {
-                  modelErrors[modelId] = model.errorMessage ?? model.error ?? modelErrors[modelId] ?? t('ONBOARDING_INSTALL_DOWNLOAD_FAILED');
-                }
-                if (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned') {
-                  availablePreferenceModelIds.add(modelId);
-                }
-                if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
-                  allDone = false;
-                }
-              }
-              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
-              return { allDone, tracked };
-            } catch {
-              return { allDone: false, tracked: [] };
-            }
-          };
-
           if (modelsToPull.length > 0) {
             setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
-
-            for (const modelId of modelsToPull) {
-              try {
-                await apiFetch('/api/inference/models/pull/start', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ modelId, bestEffort: true }),
-                });
-              } catch {
-                modelErrors[modelId] = modelErrors[modelId] ?? t('ONBOARDING_INSTALL_DOWNLOAD_FAILED');
-              }
-            }
 
             const pullWaitMs = 60_000;
             const pullWaitStart = Date.now();
             while (Date.now() - pullWaitStart < pullWaitMs) {
-              const { allDone } = await pollPullProgress();
-              if (allDone) break;
+              const tracked = await fetchTrackedModels();
+              const parsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], tracked);
+              Object.assign(modelProgress, parsed.progressById);
+              for (const [id, msg] of Object.entries(parsed.errorsById)) {
+                modelErrors[id] = msg;
+              }
+              for (const id of parsed.pulledIds) {
+                availablePreferenceModelIds.add(id);
+              }
+              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+              if (parsed.allDone) break;
               await minDelay(1000);
             }
 
-            await pollPullProgress();
+            const finalTracked = await fetchTrackedModels();
+            const finalParsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], finalTracked);
+            Object.assign(modelProgress, finalParsed.progressById);
+            for (const [id, msg] of Object.entries(finalParsed.errorsById)) {
+              modelErrors[id] = msg;
+            }
+            for (const id of finalParsed.pulledIds) {
+              availablePreferenceModelIds.add(id);
+            }
 
             if (Object.keys(modelErrors).length > 0) {
               setAiPhase((prev) => ({
                 ...prev,
+                modelProgress: { ...modelProgress },
                 modelErrors: { ...modelErrors },
                 error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: Object.keys(modelErrors).length }),
               }));
@@ -218,7 +185,7 @@ export const InstallStep = ({
           }
 
           setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
-          const { tracked: pinTracked } = await pollPullProgress();
+          const pinTracked = await fetchTrackedModels();
           const pinableIds = new Set(
             pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
           );

@@ -1102,29 +1102,6 @@
         ]
       }
     },
-    "/api/inference/models/pull-preflight": {
-      "get": {
-        "operationId": "pullPreflight",
-        "parameters": [
-          {
-            "name": "modelId",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
     "/api/inference/models/pull": {
       "post": {
         "operationId": "pullModel",

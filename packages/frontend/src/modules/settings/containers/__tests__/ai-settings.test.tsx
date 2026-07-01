@@ -374,7 +374,7 @@ describe('AiSettingsContainer', () => {
     });
 
     expect(mockApiFetch).not.toHaveBeenCalledWith(
-      '/api/inference/models/pull',
+      '/api/inference/models/pull/start',
       expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
     );
   });

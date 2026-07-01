@@ -209,15 +209,6 @@ export class InferenceController {
   }
 
   @UseGuards(AuthGuard)
-  @Get('models/pull-preflight')
-  async pullPreflight(@Query('modelId') modelId: string) {
-    if (!modelId?.trim()) {
-      return { canPull: false, reason: 'modelId is required' };
-    }
-    return this.modelPuller.evaluatePull(modelId.trim());
-  }
-
-  @UseGuards(AuthGuard)
   @Post('models/pull/start')
   async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     if (!body.modelId?.trim()) {
@@ -229,16 +220,19 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
-    const evaluation = await this.modelPuller.evaluatePull(body.modelId);
-    if (!evaluation.canPull && !evaluation.alreadyInstalled) {
-      if (body.bestEffort) {
-        return { success: false, skipped: true, message: evaluation.reason ?? `Pull blocked for ${body.modelId}` };
-      }
-      throw new ConflictException(evaluation.reason ?? `Pull blocked for ${body.modelId}`);
+    const result = await this.modelPuller.startPull(body.modelId, { bestEffort: body.bestEffort });
+    if (result.status === 'already_installed') {
+      return { success: true, message: `Model ${body.modelId} already installed` };
+    }
+    if (result.status === 'skipped') {
+      return { success: false, skipped: true, message: result.reason ?? `Pull blocked for ${body.modelId}` };
+    }
+    if (result.status === 'error') {
+      throw new ConflictException(result.reason ?? `Pull blocked for ${body.modelId}`);
     }
 
     try {
-      await this.modelPuller.pullModel(body.modelId);
+      await this.modelPuller.waitForPullCompletion(body.modelId);
       return { success: true, message: `Model ${body.modelId} pulled` };
     } catch (err) {
       const curated = this.modelRegistry.getCuratedModel(body.modelId);

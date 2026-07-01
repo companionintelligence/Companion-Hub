@@ -17,7 +17,7 @@ import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-ap
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
-import { useModelPullOrchestrator } from '../helpers/use-model-pull-orchestrator';
+import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [

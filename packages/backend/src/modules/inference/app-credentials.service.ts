@@ -316,24 +316,7 @@ export class AppCredentialsService {
     return isCatalogModelInstalled(curated, modelsLoaded);
   }
 
-  private async maybeFirePrePull(catalogId: string): Promise<void> {
-    try {
-      const evaluation = await this.modelPuller.evaluatePull(catalogId);
-      if (evaluation.alreadyInstalled) {
-        return;
-      }
-      if (!evaluation.canPull) {
-        this.logger.warn(`[AppCredentials] pre-pull skipped ${catalogId}: ${evaluation.reason ?? 'blocked'}`);
-        return;
-      }
-      this.firePrePull(catalogId);
-    } catch (err) {
-      this.logger.warn(`[AppCredentials] pre-pull evaluation failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  /** Kick off an async model pull without awaiting. Deduped via ModelPullerService queue. */
-  private firePrePull(catalogId: string): void {
+  private maybeFirePrePull(catalogId: string): void {
     void this.modelPuller
       .startPull(catalogId, { bestEffort: true })
       .then((result) => {
@@ -343,6 +326,8 @@ export class AppCredentialsService {
           this.logger.info(`[AppCredentials] pre-pull already in progress ${catalogId}`);
         } else if (result.status === 'already_installed') {
           this.logger.info(`[AppCredentials] pre-pull skipped ${catalogId}: already installed`);
+        } else if (result.status === 'skipped') {
+          this.logger.warn(`[AppCredentials] pre-pull skipped ${catalogId}: ${result.reason ?? 'blocked'}`);
         }
       })
       .catch((err) => {

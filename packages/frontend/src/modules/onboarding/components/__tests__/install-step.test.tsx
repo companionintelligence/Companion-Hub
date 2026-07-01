@@ -196,10 +196,7 @@ describe('InstallStep', () => {
   });
 
   it('persists the preferred model alongside the backend during AI setup', async () => {
-    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull/start')) {
-        return { ok: true, json: async () => ({ status: 'queued', catalogId: JSON.parse(String(init?.body ?? '{}')).modelId }) };
-      }
+    mockApiFetch.mockImplementation(async (url: string) => {
       if (url.includes('/api/inference/models/tracked')) {
         return {
           ok: true,
@@ -232,51 +229,31 @@ describe('InstallStep', () => {
     await waitFor(
       () => {
         expect(mockApiFetch).toHaveBeenCalledWith(
-          '/api/inference/models/pull/start',
+          '/api/inference/preferences',
           expect.objectContaining({
-            body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
+            method: 'PATCH',
+            body: JSON.stringify({
+              backend: 'ollama',
+              model: 'llama3-3-70b',
+              embeddingModel: null,
+              visionModel: null,
+            }),
           }),
         );
       },
       { timeout: 5000 },
     );
 
-    expect(mockApiFetch).not.toHaveBeenCalledWith(
-      '/api/inference/models/pull',
-      expect.objectContaining({
-        body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
-      }),
-    );
-
-    // App install should still proceed after a model pull failure
     await waitFor(
       () => {
         expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/app-lifecycle/'), expect.anything());
       },
       { timeout: 10000 },
     );
-
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/preferences',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({
-            backend: 'ollama',
-            model: 'llama3-3-70b',
-            embeddingModel: null,
-            visionModel: null,
-          }),
-        }),
-      );
-    });
   });
 
   it('persists embedding and vision defaults only when those models are installed or pulled successfully', async () => {
     mockApiFetch.mockImplementation(async (url: string) => {
-      if (url.includes('/api/inference/models/pull/start')) {
-        return { ok: true, json: async () => ({ status: 'queued' }) };
-      }
       if (url.includes('/api/inference/models/tracked')) {
         return {
           ok: true,
@@ -328,13 +305,47 @@ describe('InstallStep', () => {
     );
   });
 
+  it('polls tracked models without restarting pulls started on the form page', async () => {
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/inference/models/tracked')) {
+        return {
+          ok: true,
+          json: async () => [{ catalogId: 'llama3-3-70b', state: 'pulled' }],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/models/pin', expect.anything());
+      },
+      { timeout: 5000 },
+    );
+
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/inference/models/pull/start', expect.anything());
+  });
+
   it('only pins models that finished pulling', async () => {
     vi.useFakeTimers();
 
     mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull/start')) {
-        return { ok: true, json: async () => ({ status: 'in_progress' }) };
-      }
       if (url.includes('/api/inference/models/pin')) {
         return { ok: true, json: async () => ({}) };
       }

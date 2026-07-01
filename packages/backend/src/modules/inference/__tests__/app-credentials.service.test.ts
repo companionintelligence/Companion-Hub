@@ -132,7 +132,7 @@ describe('AppCredentialsService', () => {
       if (id === 'nomic-embed-text') return makeEmbedding('nomic-embed-text', 'nomic-embed-text');
       return undefined;
     });
-    modelPuller.pullModel.mockResolvedValue(undefined);
+    modelPuller.startPull.mockResolvedValue({ catalogId: 'hermes4-70b', status: 'queued' });
     cloudFallback.getEnabledProviders.mockReturnValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -260,7 +260,7 @@ describe('AppCredentialsService', () => {
 
       expect(config.embeddingsModelId).toBe('nomic-embed-text');
       expect(config.env.EMBEDDINGS_MODEL).toBe('nomic-embed-text');
-      expect(modelPuller.pullModel).toHaveBeenCalledWith('nomic-embed-text');
+      expect(modelPuller.startPull).toHaveBeenCalledWith('nomic-embed-text', { bestEffort: true });
     });
 
     it('picks the first (biggest) recommended model and uses its native id', async () => {
@@ -448,7 +448,7 @@ describe('AppCredentialsService', () => {
     it('fires an async pull for the recommended chat model when Ollama is reachable and not yet pulled', async () => {
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.pullModel).toHaveBeenCalledWith('hermes4-70b');
+      expect(modelPuller.startPull).toHaveBeenCalledWith('hermes4-70b', { bestEffort: true });
     });
 
     it('does not pull when Ollama endpoint is unreachable', async () => {
@@ -456,7 +456,7 @@ describe('AppCredentialsService', () => {
       service.invalidateCache();
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
     it('does not pull when the model is already loaded in Ollama (modelsLoaded includes backendModelId)', async () => {
@@ -465,7 +465,7 @@ describe('AppCredentialsService', () => {
       const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(config.chatModelReady).toBe(true);
-      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
     it('does not pull when registry reports state=pulled for the catalog id', async () => {
@@ -474,22 +474,18 @@ describe('AppCredentialsService', () => {
       const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(config.chatModelReady).toBe(true);
-      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
     });
 
-    it('de-dupes concurrent pre-pull requests for the same model', async () => {
-      let resolvePull: () => void = () => {};
-      modelPuller.pullModel.mockReturnValueOnce(
-        new Promise<void>((r) => {
-          resolvePull = r;
-        }),
-      );
+    it('de-dupes concurrent pre-pull requests for the same model via startPull in_progress', async () => {
+      modelPuller.startPull
+        .mockResolvedValueOnce({ catalogId: 'hermes4-70b', status: 'queued' })
+        .mockResolvedValueOnce({ catalogId: 'hermes4-70b', status: 'in_progress' });
       await service.getCredentials('openclaw');
       service.invalidateCache();
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.pullModel).toHaveBeenCalledTimes(1);
-      resolvePull();
+      expect(modelPuller.startPull).toHaveBeenCalledTimes(2);
     });
 
     it('does not pre-pull chat models when a cloud provider is enabled', async () => {
@@ -499,24 +495,19 @@ describe('AppCredentialsService', () => {
       service.invalidateCache();
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.pullModel).not.toHaveBeenCalledWith('hermes4-70b');
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('hermes4-70b', expect.anything());
     });
 
-    it('skips pre-pull when evaluatePull blocks the download', async () => {
-      modelPuller.evaluatePull.mockResolvedValueOnce({
+    it('skips pre-pull when startPull reports blocked download', async () => {
+      modelPuller.startPull.mockResolvedValueOnce({
         catalogId: 'hermes4-70b',
-        alreadyInstalled: false,
-        canPull: false,
+        status: 'skipped',
         reason: 'Not enough disk',
-        requiredDiskMb: 50000,
-        requiredMemoryMb: 4096,
-        availableDiskMb: 100,
-        availableMemoryMb: 8000,
       });
       service.invalidateCache();
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+      expect(modelPuller.startPull).toHaveBeenCalledWith('hermes4-70b', { bestEffort: true });
     });
   });
 });
