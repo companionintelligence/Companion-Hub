@@ -51,6 +51,8 @@ interface AiSetupStepProps {
   onConfigChange?: (config: AiSetupConfig) => void;
   /** Extra sections rendered between VPN (step 3) and Advanced (step 5) — used for step 4 on the one-page form. */
   children?: React.ReactNode;
+  /** Rendered immediately below the agent harness card (step 1). */
+  afterHarness?: React.ReactNode;
 }
 
 interface OllamaStatus {
@@ -84,6 +86,7 @@ export const AiSetupStep = ({
   embedded = false,
   onConfigChange,
   children,
+  afterHarness,
 }: AiSetupStepProps) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -348,6 +351,8 @@ export const AiSetupStep = ({
             cloudflareAvailable={cloudflareAvailable}
             tailscaleAvailable={tailscaleAvailable}
           />
+
+          {afterHarness}
 
           {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 

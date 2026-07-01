@@ -420,6 +420,49 @@ describe('InstallStep', () => {
     });
   });
 
+  it('uses per-app exposureMode override when set on the app', async () => {
+    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: true, json: async () => ({ requestId: '1' }) };
+      }
+      if (url === '/api/apps/installed') {
+        return {
+          ok: true,
+          json: async () => ({
+            installed: [
+              {
+                info: { urn: 'ci-memory:store1', name: 'Companion Memory' },
+                app: { status: 'running' },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const app: OnboardingApp = {
+      ...makeApp('ci-memory', 'Companion Memory', 'ci-memory:store1'),
+      exposureMode: 'cloudflare',
+    };
+
+    render(<InstallStep apps={[app]} defaultExposureMode="tailscale" onComplete={onComplete} />);
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/app-lifecycle/ci-memory%3Astore1/install',
+        expect.objectContaining({
+          body: JSON.stringify({
+            localSubdomain: 'ci-memory',
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+          }),
+        }),
+      );
+    });
+  });
+
   it('does not inject Hermes defaults for other apps', async () => {
     mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
       if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {

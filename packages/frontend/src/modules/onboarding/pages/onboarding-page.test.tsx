@@ -70,9 +70,18 @@ vi.mock('@/lib/api-fetch', () => ({
 
 // The config sections are exercised in their own suites; here we mock them to drive the page flow.
 vi.mock('../components/ai-setup-step', () => ({
-  AiSetupStep: ({ onConfigChange, children }: { onConfigChange?: (c: unknown) => void; children?: ReactNode }) => (
+  AiSetupStep: ({
+    onConfigChange,
+    children,
+    afterHarness,
+  }: {
+    onConfigChange?: (c: unknown) => void;
+    children?: ReactNode;
+    afterHarness?: ReactNode;
+  }) => (
     <div data-testid="ai-setup-step">
       AI Setup
+      {afterHarness}
       {children}
       <button
         type="button"
@@ -146,6 +155,42 @@ vi.mock('../components/ai-setup-step', () => ({
   ),
 }));
 
+vi.mock('../components/ai-setup/companion-apps-card', () => ({
+  CompanionAppsCard: ({ onChange }: { onChange?: (apps: unknown[]) => void }) => (
+    <div data-testid="companion-apps-card">
+      <button
+        type="button"
+        onClick={() =>
+          onChange?.([
+            {
+              appSlug: 'ci-memory',
+              name: 'Companion Memory',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-memory',
+              localSubdomain: 'ci-memory',
+              exposureMode: 'tailscale',
+            },
+            {
+              appSlug: 'ci-import-tools',
+              name: 'Import Tools',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-import-tools',
+              localSubdomain: 'ci-import-tools',
+              exposureMode: 'tailscale',
+            },
+          ])
+        }
+      >
+        emit-companion-apps
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock('../components/recommendations-step', () => ({
   RecommendationsStep: ({ onChange }: { onChange?: (a: unknown[]) => void }) => (
     <div data-testid="recommendations-step">
@@ -212,6 +257,7 @@ describe('OnboardingPage (single vertical form)', () => {
     renderPage();
     // AiSetupStep owns steps 1-3 + 5 and renders children (step 4) inline.
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-apps-card')).toBeInTheDocument();
     // RecommendationsStep is now embedded as step 4 on the form page.
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
@@ -282,6 +328,17 @@ describe('OnboardingPage (single vertical form)', () => {
     // emit-ai-config-cloud provides a cloud provider; verify the form accepts it.
     await user.click(screen.getByRole('button', { name: 'emit-ai-config-cloud' }));
     expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
+  });
+
+  it('includes companion apps in the install list when selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    await user.click(screen.getByRole('button', { name: 'emit-companion-apps' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory,ci-import-tools');
   });
 
   it('deduplicates Hermes when selected via agent framework and legacy app slug', async () => {

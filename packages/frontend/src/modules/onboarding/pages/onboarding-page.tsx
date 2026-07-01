@@ -15,6 +15,7 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
+import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
@@ -98,6 +99,7 @@ function OnboardingWizard() {
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
+  const [companionApps, setCompanionApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
 
@@ -121,6 +123,7 @@ function OnboardingWizard() {
   const catalogReady = !isCatalogLoading && !isCatalogError;
   const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && catalogReady;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+  const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
 
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
   const agentApps = useMemo(
@@ -129,8 +132,8 @@ function OnboardingWizard() {
   );
   const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
   const installApps = useMemo(() => {
-    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...selectedApps]);
-  }, [includedAgentApps, selectedApps]);
+    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...companionApps, ...selectedApps]);
+  }, [includedAgentApps, companionApps, selectedApps]);
 
   if (user.hasCompletedOnboarding) {
     return <Navigate to="/home" replace />;
@@ -176,6 +179,7 @@ function OnboardingWizard() {
           onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
           cloudflareAvailable={cloudflareAvailable}
           tailscaleAvailable={tailscaleAvailable}
+          afterHarness={<CompanionAppsCard publicExposureMode={publicExposureMode} onChange={setCompanionApps} />}
         >
           <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
             <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />

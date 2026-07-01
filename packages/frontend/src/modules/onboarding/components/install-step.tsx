@@ -79,11 +79,12 @@ export const InstallStep = ({
   const queryClient = useQueryClient();
 
   const buildInstallBody = (app: OnboardingApp) => {
+    const mode = app.exposureMode ?? defaultExposureMode;
     const body: Record<string, unknown> = {
       localSubdomain: app.localSubdomain || app.appSlug,
-      exposureMode: defaultExposureMode,
-      exposedLocal: defaultExposureMode === 'cloudflare',
-      openPort: defaultExposureMode === 'local',
+      exposureMode: mode,
+      exposedLocal: mode === 'cloudflare',
+      openPort: mode === 'local',
     };
 
     if (app.appSlug === 'ci-hermes' && operatorUsername?.trim()) {
