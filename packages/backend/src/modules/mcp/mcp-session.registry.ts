@@ -98,9 +98,6 @@ export class McpSessionRegistry implements OnModuleDestroy {
   private buildTransport(): StreamableHTTPServerTransport {
     const dnsProtection = process.env.MCP_DNS_REBINDING_PROTECTION === 'true';
     const allowedHosts = dnsProtection ? this.resolveAllowedHosts() : undefined;
-    if (dnsProtection && allowedHosts && allowedHosts.length === 0) {
-      this.logger.warn('MCP_DNS_REBINDING_PROTECTION is on but no allowed hosts resolved; requests may be rejected');
-    }
     return new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableDnsRebindingProtection: dnsProtection,
@@ -112,7 +109,11 @@ export class McpSessionRegistry implements OnModuleDestroy {
     });
   }
 
-  /** Allowed Host header values when DNS-rebinding protection is enabled. */
+  /** Allowed Host header values when DNS-rebinding protection is enabled. Always includes localhost
+   *  and container defaults, so the set is never empty; operator-configured domains/hosts are added
+   *  on top. Warns when protection is on but no operator hosts were configured, since only the
+   *  localhost/container defaults will then be accepted (the appliance's public domain would be
+   *  rejected). */
   private resolveAllowedHosts(): string[] {
     const port = process.env.API_PORT || '3000';
     const hosts = new Set<string>();
@@ -120,17 +121,26 @@ export class McpSessionRegistry implements OnModuleDestroy {
       hosts.add(base);
       hosts.add(`${base}:${port}`);
     }
+    let operatorHostConfigured = false;
     for (const domain of [process.env.DOMAIN, process.env.LOCAL_DOMAIN]) {
       const trimmed = domain?.trim();
       if (trimmed) {
         hosts.add(trimmed);
+        operatorHostConfigured = true;
       }
     }
     for (const extra of (process.env.MCP_ALLOWED_HOSTS ?? '').split(',')) {
       const trimmed = extra.trim();
       if (trimmed) {
         hosts.add(trimmed);
+        operatorHostConfigured = true;
       }
+    }
+    if (!operatorHostConfigured) {
+      this.logger.warn(
+        'MCP_DNS_REBINDING_PROTECTION is on but no DOMAIN/LOCAL_DOMAIN/MCP_ALLOWED_HOSTS is configured; ' +
+          'only localhost/container defaults will be accepted',
+      );
     }
     return [...hosts];
   }

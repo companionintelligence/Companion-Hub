@@ -92,6 +92,30 @@ describe('McpClient (Streamable HTTP)', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('MCP connection failed'));
   });
 
+  it('fires the scheduled reconnect after the backoff delay when not disconnected', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    await client.connect(); // fails → schedules a reconnect at 1000ms
+    const afterFirst = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1100);
+    // The reconnect timer fired and attempted another connect (another initialize POST).
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(afterFirst);
+  });
+
+  it('disconnect() cancels a pending reconnect so the client is not revived', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    await client.connect(); // fails → schedules a reconnect
+    const afterFirst = fetchMock.mock.calls.length;
+    await client.disconnect(); // sessionId is null (never connected) → no fetch; must cancel the timer
+    await vi.advanceTimersByTimeAsync(65_000); // past maxBackoff
+    // No reconnect attempt fired: the fetch count is unchanged after disconnect.
+    expect(fetchMock.mock.calls.length).toBe(afterFirst);
+    expect(client.isConnected()).toBe(false);
+  });
+
   it('lists tools when connected', async () => {
     const tools = [{ name: 'hub_system_load', description: 'load', inputSchema: {} }];
     vi.stubGlobal('fetch', mockHub({ initialize: { serverInfo: {} }, 'tools/list': { tools } }));

@@ -22,6 +22,10 @@ export class McpClient {
   private requestId = 0;
   private backoffMs = 1000;
   private readonly maxBackoffMs = 60_000;
+  // Pending reconnect timer + a disposed flag so disconnect() can cancel the backoff loop instead of
+  // reconnecting after an intentional teardown (a fired timer would otherwise revive the connection).
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
   private log: OpenClawPluginApi['log'];
 
   constructor(hubUrl: string, apiKey: string, log: OpenClawPluginApi['log']) {
@@ -35,6 +39,8 @@ export class McpClient {
   }
 
   async connect(): Promise<void> {
+    // An explicit connect re-arms the client after a prior disconnect() disposed it.
+    this.disposed = false;
     try {
       this.log.info('Connecting to Hub MCP endpoint...');
       const { response, body } = await this.post('initialize', {
@@ -59,6 +65,12 @@ export class McpClient {
   }
 
   async disconnect(): Promise<void> {
+    // Stop the backoff loop and cancel any pending reconnect so we don't revive the connection.
+    this.disposed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.sessionId) {
       try {
         await fetch(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(this.sessionId) });
@@ -162,9 +174,20 @@ export class McpClient {
   }
 
   private scheduleReconnect(): void {
+    // Don't reconnect after an intentional disconnect, and don't stack overlapping timers (a live
+    // session's request failure and a prior failed connect could both land here).
+    if (this.disposed || this.reconnectTimer) {
+      return;
+    }
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
     this.log.info(`Reconnecting to Hub MCP in ${delay}ms...`);
-    setTimeout(() => this.connect(), delay);
+    const timer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delay);
+    // Never let a pending reconnect keep the host process alive (no-op where unref is unavailable).
+    (timer as { unref?: () => void }).unref?.();
+    this.reconnectTimer = timer;
   }
 }

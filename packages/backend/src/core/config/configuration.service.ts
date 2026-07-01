@@ -241,10 +241,22 @@ export class ConfigurationService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    try {
-      await this.mergeSettingsToDisk(settings);
+    // SECURITY (ISSUE-MCP-2 / ENH-MCP-4): mcpApiKey and mcpAllowDestructive are MCP admin-managed
+    // secrets with a dedicated, admin-only path ({@link persistMcpSettings} + McpAdminService). They
+    // live in settingsSchema ONLY so that general settings writes preserve them on disk (the merge
+    // below spreads the existing on-disk values). They must never be settable or readable through
+    // this general endpoint: accepting them here would let any authenticated caller overwrite the
+    // agent-facing API key on disk, or leak it into the in-memory userSettings that GET /app-context
+    // returns to every browser session. Strip them before both the disk write and the in-memory merge.
+    const { mcpApiKey, mcpAllowDestructive, ...safeSettings } = settings;
+    if (mcpApiKey !== undefined || mcpAllowDestructive !== undefined) {
+      this.logger.warn('Ignoring mcpApiKey/mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
+    }
 
-      this.config.userSettings = { ...this.config.userSettings, ...settings };
+    try {
+      await this.mergeSettingsToDisk(safeSettings);
+
+      this.config.userSettings = { ...this.config.userSettings, ...safeSettings };
 
       // Update in-memory config for runtime changes
       if (settings.ciHubApiKey) {
