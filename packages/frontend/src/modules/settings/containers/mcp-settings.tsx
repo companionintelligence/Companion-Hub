@@ -145,7 +145,14 @@ export const McpSettingsContainer = () => {
     if (!runTool) return;
     let parsedArgs: Record<string, unknown>;
     try {
-      parsedArgs = runArgs.trim() ? (JSON.parse(runArgs) as Record<string, unknown>) : {};
+      // JSON.parse happily yields arrays/null/primitives; the backend McpToolCallBody DTO requires
+      // an object record, so guard here to surface a clear message instead of a confusing 400.
+      const parsed: unknown = runArgs.trim() ? JSON.parse(runArgs) : {};
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        toast.error(t('MCP_SETTINGS_RUN_ARGS_NOT_OBJECT'));
+        return;
+      }
+      parsedArgs = parsed as Record<string, unknown>;
     } catch {
       toast.error(t('MCP_SETTINGS_RUN_INVALID_JSON'));
       return;

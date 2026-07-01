@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import toast from 'react-hot-toast';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { McpSettingsContainer } from '../mcp-settings';
 
@@ -7,7 +8,12 @@ import { McpSettingsContainer } from '../mcp-settings';
 
 const mockApiFetch = vi.fn();
 vi.mock('@/lib/api-fetch', () => ({ apiFetch: (...args: unknown[]) => mockApiFetch(...args) }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+// Return a referentially STABLE t (like the real hook) so useCallback/useEffect deps on `t`
+// don't thrash and re-fire the data load on every render.
+vi.mock('react-i18next', () => {
+  const t = (key: string) => key;
+  return { useTranslation: () => ({ t }) };
+});
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 // Minimal UI-primitive stubs so the test focuses on data flow, not Radix internals.
@@ -133,6 +139,23 @@ describe('McpSettingsContainer', () => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/mcp-admin/tools/hub_list_installed_apps/call', expect.objectContaining({ method: 'POST' })),
     );
     await waitFor(() => expect(screen.getByTestId('mcp-run-result').textContent).toContain('5'));
+  });
+
+  it('rejects non-object JSON arguments before calling the backend', async () => {
+    const user = userEvent.setup();
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    const listRow = screen.getByText('hub_list_installed_apps').closest('li') as HTMLElement;
+    await user.click(within(listRow).getByRole('button', { name: 'MCP_SETTINGS_RUN' }));
+    await waitFor(() => expect(screen.getByTestId('mcp-run-submit')).toBeTruthy());
+
+    // A JSON array is valid JSON but not an object record — must be blocked client-side.
+    fireEvent.change(screen.getByTestId('mcp-run-args'), { target: { value: '[1,2,3]' } });
+    await user.click(screen.getByTestId('mcp-run-submit'));
+
+    expect(toast.error).toHaveBeenCalledWith('MCP_SETTINGS_RUN_ARGS_NOT_OBJECT');
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/mcp-admin/tools/hub_list_installed_apps/call', expect.anything());
   });
 
   it('gates a destructive tool run behind an explicit confirmation checkbox', async () => {

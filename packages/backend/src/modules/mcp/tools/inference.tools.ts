@@ -307,6 +307,8 @@ export class InferenceTools implements OnModuleInit {
   }> {
     const backend = this.backendFor(backendType);
     const health = await backend.healthCheck();
+    // Naive `${action}ed` mis-conjugates "stop" → "stoped"; map to the correct past tense.
+    const actionPastTense = action === 'stop' ? 'stopped' : 'started';
     return {
       supported: false,
       backend: backendType,
@@ -315,7 +317,7 @@ export class InferenceTools implements OnModuleInit {
       healthy: health.healthy,
       baseUrl: backend.getBaseUrl(),
       message:
-        `Inference backends are managed by the Hub runtime (compose stack / host services), not ${action}ed on demand via MCP. ` +
+        `Inference backends are managed by the Hub runtime (compose stack / host services), not ${actionPastTense} on demand via MCP. ` +
         `Backend "${backendType}" is currently ${health.running ? 'running' : 'not running'}. ` +
         'Use the Hub AI settings to change backend or model configuration.',
     };
