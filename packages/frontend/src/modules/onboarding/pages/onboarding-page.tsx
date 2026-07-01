@@ -16,6 +16,8 @@ import { identifyServices, type DetectedService } from '../helpers/service-detec
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
+import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
+import { useModelPullOrchestrator } from '../helpers/use-model-pull-orchestrator';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
@@ -140,6 +142,14 @@ function OnboardingWizard() {
     return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...companionApps, ...selectedApps]);
   }, [includedAgentApps, companionApps, selectedApps]);
 
+  const modelPullEnabled = aiSetupConfig !== undefined && !aiSetupConfig.skipped;
+  const modelPullState = useModelPullOrchestrator({
+    selectedModelIds: aiSetupConfig?.selectedModels ?? [],
+    installedCatalogIds: aiSetupConfig?.installedCatalogIds ?? [],
+    enabled: modelPullEnabled,
+    bestEffort: true,
+  });
+
   if (user.hasCompletedOnboarding) {
     return <Navigate to="/home" replace />;
   }
@@ -191,16 +201,27 @@ function OnboardingWizard() {
           </StepSection>
         </AiSetupStep>
 
+        {modelPullEnabled && (
+          <ModelDownloadStatus
+            selectedModelIds={aiSetupConfig.selectedModels}
+            installedCatalogIds={aiSetupConfig.installedCatalogIds}
+            pullState={modelPullState}
+          />
+        )}
+
         <div aria-hidden className="h-2" />
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {isCatalogLoading
-              ? t('COMMON_LOADING')
-              : isCatalogError
-                ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
-                : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
-          </p>
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <ModelDownloadFooterSummary pullState={modelPullState} />
+            <p className="text-sm text-muted-foreground">
+              {isCatalogLoading
+                ? t('COMMON_LOADING')
+                : isCatalogError
+                  ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
+                  : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
+            </p>
+          </div>
           <div className="flex gap-2 sm:justify-end">
             {isCatalogError && (
               <Button variant="outline" size="lg" onClick={() => void refetchCatalog()}>

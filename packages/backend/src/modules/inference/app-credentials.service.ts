@@ -76,8 +76,6 @@ interface CacheEntry {
 export class AppCredentialsService {
   /** In-memory credentials cache keyed by `${slug}:${apiVersion}`. */
   private cache = new Map<string, CacheEntry>();
-  /** Catalog IDs currently pulling so we don't fire duplicate background pulls. */
-  private pullsInFlight = new Set<string>();
 
   constructor(
     private readonly logger: LoggerService,
@@ -319,9 +317,6 @@ export class AppCredentialsService {
   }
 
   private async maybeFirePrePull(catalogId: string): Promise<void> {
-    if (this.pullsInFlight.has(catalogId)) {
-      return;
-    }
     try {
       const evaluation = await this.modelPuller.evaluatePull(catalogId);
       if (evaluation.alreadyInstalled) {
@@ -337,27 +332,21 @@ export class AppCredentialsService {
     }
   }
 
-  /**
-   * Kick off an async model pull without awaiting. Subsequent calls for the same
-   * model are ignored until the in-flight pull resolves (or errors).
-   */
+  /** Kick off an async model pull without awaiting. Deduped via ModelPullerService queue. */
   private firePrePull(catalogId: string): void {
-    if (this.pullsInFlight.has(catalogId)) {
-      return;
-    }
-    this.pullsInFlight.add(catalogId);
-    this.logger.info(`[AppCredentials] pre-pull start ${catalogId}`);
     void this.modelPuller
-      .pullModel(catalogId)
-      .then(() => {
-        this.logger.info(`[AppCredentials] pre-pull complete ${catalogId}`);
+      .startPull(catalogId, { bestEffort: true })
+      .then((result) => {
+        if (result.status === 'queued') {
+          this.logger.info(`[AppCredentials] pre-pull queued ${catalogId}`);
+        } else if (result.status === 'in_progress') {
+          this.logger.info(`[AppCredentials] pre-pull already in progress ${catalogId}`);
+        } else if (result.status === 'already_installed') {
+          this.logger.info(`[AppCredentials] pre-pull skipped ${catalogId}: already installed`);
+        }
       })
       .catch((err) => {
-        this.logger.error(`[AppCredentials] pre-pull failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
-      })
-      .finally(() => {
-        this.pullsInFlight.delete(catalogId);
-        this.invalidateCache();
+        this.logger.warn(`[AppCredentials] pre-pull start failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
       });
   }
 

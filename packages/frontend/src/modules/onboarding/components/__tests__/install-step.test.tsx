@@ -197,22 +197,15 @@ describe('InstallStep', () => {
 
   it('persists the preferred model alongside the backend during AI setup', async () => {
     mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull-preflight')) {
-        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
-      }
-      if (url.includes('/api/inference/models/pull')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
-        if (body.modelId === 'bad-model') {
-          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'connect ECONNREFUSED' }) };
-        }
-        return { ok: true, json: async () => ({ success: true }) };
+      if (url.includes('/api/inference/models/pull/start')) {
+        return { ok: true, json: async () => ({ status: 'queued', catalogId: JSON.parse(String(init?.body ?? '{}')).modelId }) };
       }
       if (url.includes('/api/inference/models/tracked')) {
         return {
           ok: true,
           json: async () => [
             { catalogId: 'llama3-3-70b', state: 'pulled' },
-            { catalogId: 'bad-model', state: 'error', error: 'connect ECONNREFUSED' },
+            { catalogId: 'bad-model', state: 'error', errorMessage: 'connect ECONNREFUSED' },
           ],
         };
       }
@@ -239,13 +232,20 @@ describe('InstallStep', () => {
     await waitFor(
       () => {
         expect(mockApiFetch).toHaveBeenCalledWith(
-          '/api/inference/models/pull',
+          '/api/inference/models/pull/start',
           expect.objectContaining({
             body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
           }),
         );
       },
       { timeout: 5000 },
+    );
+
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/inference/models/pull',
+      expect.objectContaining({
+        body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
+      }),
     );
 
     // App install should still proceed after a model pull failure
@@ -273,16 +273,9 @@ describe('InstallStep', () => {
   });
 
   it('persists embedding and vision defaults only when those models are installed or pulled successfully', async () => {
-    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull-preflight')) {
-        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
-      }
-      if (url.includes('/api/inference/models/pull')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
-        if (body.modelId === 'vision-model') {
-          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'download failed' }) };
-        }
-        return { ok: true, json: async () => ({ success: true }) };
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/inference/models/pull/start')) {
+        return { ok: true, json: async () => ({ status: 'queued' }) };
       }
       if (url.includes('/api/inference/models/tracked')) {
         return {
@@ -290,7 +283,7 @@ describe('InstallStep', () => {
           json: async () => [
             { catalogId: 'chat-model', state: 'pulled' },
             { catalogId: 'embedding-model', state: 'pulled' },
-            { catalogId: 'vision-model', state: 'error', error: 'download failed' },
+            { catalogId: 'vision-model', state: 'error', errorMessage: 'download failed' },
           ],
         };
       }
@@ -332,6 +325,70 @@ describe('InstallStep', () => {
         );
       },
       { timeout: 5000 },
+    );
+  });
+
+  it('only pins models that finished pulling', async () => {
+    vi.useFakeTimers();
+
+    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/inference/models/pull/start')) {
+        return { ok: true, json: async () => ({ status: 'in_progress' }) };
+      }
+      if (url.includes('/api/inference/models/pin')) {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (url.includes('/api/inference/models/tracked')) {
+        return {
+          ok: true,
+          json: async () => [
+            { catalogId: 'llama3-3-70b', state: 'pulled' },
+            { catalogId: 'still-pulling', state: 'pulling', pullProgress: 50 },
+          ],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b', 'still-pulling'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    vi.useRealTimers();
+
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/api/inference/models/pin',
+          expect.objectContaining({
+            body: JSON.stringify({ modelId: 'llama3-3-70b' }),
+          }),
+        );
+      },
+      { timeout: 5000 },
+    );
+
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/inference/models/pin',
+      expect.objectContaining({
+        body: JSON.stringify({ modelId: 'still-pulling' }),
+      }),
     );
   });
 

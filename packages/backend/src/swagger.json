@@ -1139,6 +1139,20 @@
         ]
       }
     },
+    "/api/inference/models/pull/start": {
+      "post": {
+        "operationId": "startPullModel",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/models/load": {
       "post": {
         "operationId": "loadModel",

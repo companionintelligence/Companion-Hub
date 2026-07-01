@@ -10,10 +10,14 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled } from './model-availability.util';
-import type { PullEvaluation } from './pull-evaluation.types';
+import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 
 @Injectable()
 export class ModelPullerService {
+  private readonly pullQueue: string[] = [];
+  private readonly pullActiveIds = new Set<string>();
+  private pullWorkerPromise: Promise<void> | null = null;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly modelRegistry: ModelRegistryService,
@@ -139,9 +143,9 @@ export class ModelPullerService {
     };
   }
 
-  /** Pull a model by catalog ID — enforces preflight checks. */
-  async pullModel(catalogId: string, onProgress?: (progress: PullProgress) => void, tier?: HardwareTier): Promise<void> {
-    const evaluation = await this.evaluatePull(catalogId, tier);
+  /** Enqueue a model pull and return immediately. One Ollama pull runs at a time. */
+  async startPull(catalogId: string, options?: { bestEffort?: boolean; tier?: HardwareTier }): Promise<PullStartResult> {
+    const evaluation = await this.evaluatePull(catalogId, options?.tier);
 
     if (evaluation.alreadyInstalled) {
       if (!this.modelRegistry.getTrackedModel(catalogId)) {
@@ -149,39 +153,96 @@ export class ModelPullerService {
       } else if (this.modelRegistry.getTrackedModel(catalogId)?.state === 'error') {
         this.modelRegistry.updateModelState(catalogId, 'pulled');
       }
-      this.logger.info(`[ModelPuller] ${catalogId} already installed in Ollama — skipping download`);
-      return;
+      return { catalogId, status: 'already_installed' };
     }
 
     if (!evaluation.canPull) {
-      throw new Error(evaluation.reason ?? `Pull blocked for ${catalogId}`);
+      const reason = evaluation.reason ?? `Pull blocked for ${catalogId}`;
+      if (options?.bestEffort) {
+        this.logger.warn(`[ModelPuller] Pull skipped ${catalogId}: ${reason}`);
+        return { catalogId, status: 'skipped', reason };
+      }
+      return { catalogId, status: 'error', reason };
     }
 
-    const curated = this.modelRegistry.getCuratedModel(catalogId);
-    if (!curated) {
-      throw new Error(`Model ${catalogId} not found in catalog`);
+    const tracked = this.modelRegistry.getTrackedModel(catalogId);
+    if (tracked?.state === 'pulling' || this.pullActiveIds.has(catalogId)) {
+      return { catalogId, status: 'in_progress' };
     }
-    const backend = this.getBackend(curated.backend);
-    let lastLoggedPercent = -1;
-    let lastLoggedStatus = '';
 
-    this.modelRegistry.trackModel(catalogId, 'pulling');
-    this.logger.info(`[ModelPuller] Pulling ${catalogId} via ${curated.backend} (backendId: ${curated.backendModelId})`);
+    this.pullActiveIds.add(catalogId);
+    this.pullQueue.push(catalogId);
+    void this.drainPullQueue();
+    return { catalogId, status: 'queued' };
+  }
 
+  private drainPullQueue(): Promise<void> {
+    if (this.pullWorkerPromise) {
+      return this.pullWorkerPromise;
+    }
+
+    this.pullWorkerPromise = (async () => {
+      while (this.pullQueue.length > 0) {
+        const nextId = this.pullQueue.shift();
+        if (!nextId) continue;
+        try {
+          await this.pullModel(nextId);
+        } catch {
+          // pullModel logs and updates tracked state on failure
+        }
+      }
+    })().finally(() => {
+      this.pullWorkerPromise = null;
+      if (this.pullQueue.length > 0) {
+        void this.drainPullQueue();
+      }
+    });
+
+    return this.pullWorkerPromise;
+  }
+
+  /** Pull a model by catalog ID — enforces preflight checks. */
+  async pullModel(catalogId: string, onProgress?: (progress: PullProgress) => void, tier?: HardwareTier): Promise<void> {
     try {
+      const evaluation = await this.evaluatePull(catalogId, tier);
+
+      if (evaluation.alreadyInstalled) {
+        if (!this.modelRegistry.getTrackedModel(catalogId)) {
+          this.modelRegistry.trackModel(catalogId, 'pulled');
+        } else if (this.modelRegistry.getTrackedModel(catalogId)?.state === 'error') {
+          this.modelRegistry.updateModelState(catalogId, 'pulled');
+        }
+        this.logger.info(`[ModelPuller] ${catalogId} already installed in Ollama — skipping download`);
+        return;
+      }
+
+      if (!evaluation.canPull) {
+        throw new Error(evaluation.reason ?? `Pull blocked for ${catalogId}`);
+      }
+
+      const curated = this.modelRegistry.getCuratedModel(catalogId);
+      if (!curated) {
+        throw new Error(`Model ${catalogId} not found in catalog`);
+      }
+      const backend = this.getBackend(curated.backend);
+      let lastLoggedPercent = -1;
+      let lastLoggedStatus = '';
+
+      this.modelRegistry.trackModel(catalogId, 'pulling');
+      this.logger.info(`[ModelPuller] Pulling ${catalogId} via ${curated.backend} (backendId: ${curated.backendModelId})`);
+
       await backend.pullModel(curated.backendModelId, (progress) => {
         this.modelRegistry.updatePullProgress(catalogId, progress.percent);
         const rawPercent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, Math.round(progress.percent))) : null;
-        const percentBucket = rawPercent === null ? null : Math.floor(rawPercent / 10) * 10;
         const status = progress.status?.trim() || 'pulling';
-        const shouldLogProgress = status !== lastLoggedStatus || (percentBucket !== null && percentBucket > lastLoggedPercent) || rawPercent === 100;
+        const shouldLogProgress = status !== lastLoggedStatus || (rawPercent !== null && rawPercent > lastLoggedPercent) || rawPercent === 100;
 
         if (shouldLogProgress) {
           const progressLabel = rawPercent === null ? status : `${rawPercent}% ${status}`;
           this.logger.info(`[ModelPuller] Pull progress ${catalogId}: ${progressLabel}`);
           lastLoggedStatus = status;
-          if (percentBucket !== null) {
-            lastLoggedPercent = percentBucket;
+          if (rawPercent !== null) {
+            lastLoggedPercent = rawPercent;
           }
         }
 
@@ -191,10 +252,17 @@ export class ModelPullerService {
       this.modelRegistry.updateModelState(catalogId, 'pulled');
       this.logger.info(`[ModelPuller] Successfully pulled ${catalogId}`);
     } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Pull blocked')) {
+        throw err;
+      }
       const msg = err instanceof Error ? err.message : String(err);
-      this.modelRegistry.updateModelState(catalogId, 'error', msg);
+      if (this.modelRegistry.getTrackedModel(catalogId)) {
+        this.modelRegistry.updateModelState(catalogId, 'error', msg);
+      }
       this.logger.error(`[ModelPuller] Failed to pull ${catalogId}: ${msg}`);
       throw err;
+    } finally {
+      this.pullActiveIds.delete(catalogId);
     }
   }
 

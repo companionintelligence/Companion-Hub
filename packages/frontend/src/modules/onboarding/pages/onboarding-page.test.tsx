@@ -138,6 +138,23 @@ vi.mock('../components/ai-setup-step', () => ({
         type="button"
         onClick={() =>
           onConfigChange?.({
+            agentFrameworks: ['openclaw'],
+            selectedModels: ['llama3-3-70b'],
+            installedCatalogIds: [],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+            installBlocked: false,
+          })
+        }
+      >
+        emit-ai-config-needs-download
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onConfigChange?.({
             agentFrameworks: ['openclaw', 'hermes'],
             selectedModels: ['phi-4-mini'],
             installedCatalogIds: ['phi-4-mini'],
@@ -350,5 +367,34 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByTestId('finish-setup-btn'));
 
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-hermes');
+  });
+
+  it('keeps Install & Finish enabled while model downloads are in progress', async () => {
+    const { apiFetch } = await import('@/lib/api-fetch');
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url === '/api/system/detect-services') {
+        return { ok: true, json: async () => ({ services: [] }) };
+      }
+      if (url === '/api/inference/ollama/status') {
+        return { ok: true, json: async () => ({ ready: true, running: true }) };
+      }
+      if (url === '/api/inference/models/pull/start') {
+        return { ok: true, json: async () => ({ status: 'queued' }) };
+      }
+      if (url === '/api/inference/models/tracked') {
+        return { ok: true, json: async () => [{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 34 }] };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    // Override with a model that still needs download
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-needs-download' }));
+
+    expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
+    expect(await screen.findByTestId('model-download-status')).toBeInTheDocument();
   });
 });

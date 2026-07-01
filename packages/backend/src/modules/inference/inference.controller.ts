@@ -1,4 +1,4 @@
-import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards, BadRequestException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
 import { InferenceRouterService } from './inference-router.service';
@@ -215,6 +215,15 @@ export class InferenceController {
       return { canPull: false, reason: 'modelId is required' };
     }
     return this.modelPuller.evaluatePull(modelId.trim());
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('models/pull/start')
+  async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
+    if (!body.modelId?.trim()) {
+      throw new BadRequestException('modelId is required');
+    }
+    return this.modelPuller.startPull(body.modelId.trim(), { bestEffort: body.bestEffort });
   }
 
   @UseGuards(AuthGuard)
