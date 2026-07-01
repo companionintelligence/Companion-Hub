@@ -125,6 +125,11 @@ function OnboardingWizard() {
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
   const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
 
+  const agentSlugs = useMemo(
+    () => (aiSetupConfig?.agentFrameworks ?? []).map((framework) => AGENT_APP_SLUG[framework]),
+    [aiSetupConfig?.agentFrameworks],
+  );
+
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
   const agentApps = useMemo(
     () => agentFrameworks.map((framework) => ({ framework, app: buildAgentApp(framework, storeApps) })),
@@ -182,7 +187,7 @@ function OnboardingWizard() {
           afterHarness={<CompanionAppsCard publicExposureMode={publicExposureMode} onChange={setCompanionApps} />}
         >
           <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
-            <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
+            <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
 

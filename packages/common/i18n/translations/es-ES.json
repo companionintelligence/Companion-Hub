@@ -1001,6 +1001,8 @@
   "ONBOARDING_RECOMMENDED_MODELS_DESC": "Los modelos ya en Ollama están preseleccionados. Marca cualquier modelo adicional que desees descargar - los modelos sin marcar no se instalarán.",
   "ONBOARDING_REMOTE_ACCESS": "Acceso remoto",
   "ONBOARDING_REMOTE_ACCESS_HINT": "Elige una o más opciones de acceso remoto, o mantén tus agentes solo en este dispositivo por ahora.",
+  "ONBOARDING_REMOTE_ACCESS_REQUIRES_AGENT": "Select an agent above to configure remote access for it.",
+  "ONBOARDING_INSTALL_STATUS_DOWNLOADING": "Downloading...",
   "ONBOARDING_REMOTE_SET_UP_LATER_SUFFIX": "- configurar más tarde",
   "ONBOARDING_REMOTE_TRANSPORT_CLOUDFLARE": "Cloudflare",
   "ONBOARDING_REMOTE_TRANSPORT_TAILSCALE": "Tailscale",

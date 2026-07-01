@@ -162,26 +162,6 @@ export const InstallStep = ({
 
           if (pullableModels.length > 0) {
             setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
-            for (const modelId of pullableModels) {
-              try {
-                const res = await apiFetch('/api/inference/models/pull', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ modelId, bestEffort: true }),
-                });
-                const data = (await res.json().catch(() => ({}))) as { success?: boolean; skipped?: boolean; message?: string };
-                if (!res.ok || data.skipped || data.success === false) {
-                  modelErrors[modelId] = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
-                  setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
-                } else {
-                  availablePreferenceModelIds.add(modelId);
-                }
-              } catch {
-                modelErrors[modelId] = `Failed to pull model ${modelId}.`;
-                setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
-              }
-            }
-
             const modelProgress: Record<string, number> = {};
 
             const pollPullProgress = async (): Promise<boolean> => {
@@ -216,32 +196,59 @@ export const InstallStep = ({
               }
             };
 
-            const pullTimeout = 600_000;
-            const pullStart = Date.now();
-            let pullsComplete = false;
-            while (Date.now() - pullStart < pullTimeout) {
-              await minDelay(2000);
-              if (await pollPullProgress()) {
-                pullsComplete = true;
-                break;
+            const waitForPull = async (modelId: string) => {
+              let settled = false;
+              let pullOk = false;
+              let pullMessage: string | undefined;
+
+              const pullPromise = apiFetch('/api/inference/models/pull', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ modelId, bestEffort: true }),
+              })
+                .then(async (res) => {
+                  const data = (await res.json().catch(() => ({}))) as { success?: boolean; skipped?: boolean; message?: string };
+                  pullOk = res.ok && !data.skipped && data.success !== false;
+                  if (!pullOk) {
+                    pullMessage = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
+                  }
+                })
+                .catch(() => {
+                  pullMessage = `Failed to pull model ${modelId}.`;
+                })
+                .finally(() => {
+                  settled = true;
+                });
+
+              modelProgress[modelId] = modelProgress[modelId] ?? 0;
+              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+
+              const pullTimeout = 600_000;
+              const pullStart = Date.now();
+              while (!settled && Date.now() - pullStart < pullTimeout) {
+                await minDelay(1000);
+                await pollPullProgress();
               }
+
+              await pullPromise;
+
+              if (pullOk) {
+                availablePreferenceModelIds.add(modelId);
+                modelProgress[modelId] = 100;
+              } else if (pullMessage) {
+                modelErrors[modelId] = pullMessage;
+              } else if (!settled) {
+                modelErrors[modelId] = t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_TIMED_OUT');
+              }
+
+              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+            };
+
+            for (const modelId of pullableModels) {
+              await waitForPull(modelId);
             }
 
-            if (!pullsComplete) {
-              for (const modelId of pullableModels) {
-                if (!modelErrors[modelId] && (modelProgress[modelId] ?? 0) < 100) {
-                  modelErrors[modelId] = 'Download timed out';
-                }
-              }
-              setAiPhase((prev) => ({
-                ...prev,
-                modelErrors: { ...modelErrors },
-                error:
-                  Object.keys(modelErrors).length > 0
-                    ? t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_DID_NOT_FINISH', { count: Object.keys(modelErrors).length })
-                    : t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_TIMED_OUT'),
-              }));
-            } else if (Object.keys(modelErrors).length > 0) {
+            if (Object.keys(modelErrors).length > 0) {
               setAiPhase((prev) => ({
                 ...prev,
                 modelErrors: { ...modelErrors },
@@ -574,7 +581,9 @@ export const InstallStep = ({
               ) : (
                 aiPhase.status === 'pulling-models' &&
                 (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
-                  <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
+                  <span className="text-xs text-muted-foreground">
+                    {(aiPhase.modelProgress[modelId] ?? 0) > 0 ? `${aiPhase.modelProgress[modelId]}%` : t('ONBOARDING_INSTALL_STATUS_DOWNLOADING')}
+                  </span>
                 )
               )}
             </div>

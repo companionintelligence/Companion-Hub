@@ -209,7 +209,13 @@ export const AiSetupStep = ({
 
   // Agent frameworks are multi-select; deselecting all is allowed (run no agent, add one later).
   const toggleFramework = (framework: AgentFramework) => {
-    setAgentFrameworks((prev) => (prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework]));
+    setAgentFrameworks((prev) => {
+      const next = prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework];
+      if (next.length === 0) {
+        setRemoteAccess([]);
+      }
+      return next;
+    });
   };
 
   // Remote access is multi-select and optional (empty = local-only).

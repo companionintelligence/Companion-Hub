@@ -860,6 +860,8 @@
   "ONBOARDING_REMOTE_TRANSPORT_CLOUDFLARE": "Cloudflare",
   "ONBOARDING_REMOTE_SET_UP_LATER_SUFFIX": "- set up later",
   "ONBOARDING_REMOTE_ACCESS_HINT": "Pick one or more remote-access options, or keep your agents on this device only for now.",
+  "ONBOARDING_REMOTE_ACCESS_REQUIRES_AGENT": "Select an agent above to configure remote access for it.",
+  "ONBOARDING_INSTALL_STATUS_DOWNLOADING": "Downloading...",
   "ONBOARDING_OPTIONAL": "Optional",
   "ONBOARDING_CLOUD_API_KEYS": "Cloud API Keys",
   "ONBOARDING_OLLAMA_CHECKING": "Checking for Ollama...",
