@@ -50,6 +50,83 @@ function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes
 }
 
 /**
+ * Host paths that are safe to bind even though they sit under a denied root: single,
+ * well-known timezone files. Binding these grants no meaningful host access and many
+ * apps rely on them, so they are never treated as a sandbox escape.
+ */
+const ALLOWED_CUSTOM_APP_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
+
+/**
+ * Per-app grants for host-privileged compose features. First-party / marketplace apps
+ * that legitimately require host access are listed here; every other app is rejected at
+ * install time by the compose builder (see collectServiceSecurityViolations).
+ *
+ * Keep this list MINIMAL and AUDITED — each entry is an explicit hole in the app sandbox.
+ * Grants are per-field and per-path: e.g. granting netdata `/proc` does NOT grant it
+ * `privileged`.
+ */
+export interface AppSecurityGrants {
+  privileged?: boolean;
+  networkModeHost?: boolean;
+  pidHost?: boolean;
+  /** Denied host paths this app is explicitly permitted to bind. */
+  hostPaths?: string[];
+}
+
+export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> = {
+  'home-assistant': { privileged: true, networkModeHost: true },
+  'steam-headless': { privileged: true },
+  coolify: { hostPaths: ['/root/.ssh', '/var/run/docker.sock'] },
+  netdata: { hostPaths: ['/proc', '/sys', '/var/run/docker.sock'] },
+};
+
+export interface ServiceSecurityViolation {
+  path: (string | number)[];
+  message: string;
+  hostPath?: string;
+}
+
+interface SecurityCheckedService {
+  privileged?: boolean;
+  networkMode?: string;
+  pid?: string;
+  volumes?: { hostPath: string }[];
+}
+
+/**
+ * Returns the host-privileged features a service requests that are NOT permitted by its
+ * grants. An empty array means the service stays within the app sandbox. This is the
+ * authoritative check enforced at the compose-build (install) sink so that a malicious or
+ * compromised marketplace manifest cannot obtain root-equivalent access on the host.
+ */
+export function collectServiceSecurityViolations(service: SecurityCheckedService, grants?: AppSecurityGrants): ServiceSecurityViolation[] {
+  const violations: ServiceSecurityViolation[] = [];
+
+  if (service.privileged === true && !grants?.privileged) {
+    violations.push({ path: ['privileged'], message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' });
+  }
+  if (service.networkMode === 'host' && !grants?.networkModeHost) {
+    violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED' });
+  }
+  if (service.pid === 'host' && !grants?.pidHost) {
+    violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });
+  }
+
+  const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
+  for (const [index, volume] of (service.volumes ?? []).entries()) {
+    const normalized = normalizeCustomAppHostPath(volume.hostPath);
+    if (ALLOWED_CUSTOM_APP_HOST_PATHS.has(normalized) || grantedPaths.has(normalized)) {
+      continue;
+    }
+    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+      violations.push({ path: ['volumes', index, 'hostPath'], message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED', hostPath: volume.hostPath });
+    }
+  }
+
+  return violations;
+}
+
+/**
  * Minimum supported schema version
  * Apps with schema version below this will be blocked from installation/update
  */
