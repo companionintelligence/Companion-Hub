@@ -134,4 +134,35 @@ describe('McpSettingsContainer', () => {
     );
     await waitFor(() => expect(screen.getByTestId('mcp-run-result').textContent).toContain('5'));
   });
+
+  it('gates a destructive tool run behind an explicit confirmation checkbox', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && url.includes('/tools/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ ok: true, result: {} }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    // Open the runner for the destructive tool.
+    const row = screen.getByText('hub_uninstall_app').closest('li') as HTMLElement;
+    await user.click(within(row).getByRole('button', { name: 'MCP_SETTINGS_RUN' }));
+    await waitFor(() => expect(screen.getByTestId('mcp-run-submit')).toBeTruthy());
+
+    // Run is disabled until the operator explicitly confirms.
+    expect((screen.getByTestId('mcp-run-submit') as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('checkbox'));
+    expect((screen.getByTestId('mcp-run-submit') as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(screen.getByTestId('mcp-run-submit'));
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/mcp-admin/tools/hub_uninstall_app/call',
+        expect.objectContaining({ body: expect.stringContaining('"confirmDestructive":true') }),
+      ),
+    );
+  });
 });

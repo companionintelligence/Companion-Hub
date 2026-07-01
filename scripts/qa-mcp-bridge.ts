@@ -14,7 +14,7 @@
  * What it asserts (against a RUNNING Hub backend):
  *   1. POST /api/mcp initialize → result.protocolVersion + result.serverInfo, and an Mcp-Session-Id header
  *   2. POST /api/mcp tools/list (with the session header) → a non-empty tool set
- *   3. Namespacing: any bridged app tool is exposed as `<storeSlug>_<appName>__<tool>` — a
+ *   3. Namespacing: any bridged app tool is exposed as `<appName>_<storeSlug>__<tool>` — a
  *      `__`-containing name must match that shape.
  *
  * Auth: the Hub's McpAuthGuard requires `MCP_API_KEY` on the SERVER and an
@@ -94,7 +94,7 @@ async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
   throw new Error(`no JSON-RPC payload in response (content-type ${contentType})`);
 }
 
-/** A `__`-containing tool name must be a bridged app tool: `<storeSlug>_<appName>__<tool>`. */
+/** A `__`-containing tool name must be a bridged app tool: `<appName>_<storeSlug>__<tool>`. */
 function namespacingOk(toolNames: string[]): { ok: boolean; bad: string[] } {
   const bridged = toolNames.filter((n) => n.includes('__'));
   const bad = bridged.filter((n) => !/^[a-z0-9-]+_[a-z0-9-]+__.+$/i.test(n));
@@ -181,7 +181,7 @@ async function run(): Promise<Record<string, unknown>> {
       result.notes = 'endpoint connected + initialize OK, but tools/list is EMPTY';
     } else if (ns.ok) {
       result.score = 'pass';
-      result.notes = `bridge OK — ${names.length} tools (protocol ${initResult.protocolVersion})${bridged ? `, ${bridged} bridged (<storeSlug>_<appName>__<tool>)` : ' (Hub-native; no catalog app bridged — see gap)'}`;
+      result.notes = `bridge OK — ${names.length} tools (protocol ${initResult.protocolVersion})${bridged ? `, ${bridged} bridged (<appName>_<storeSlug>__<tool>)` : ' (Hub-native; no catalog app bridged — see gap)'}`;
     } else {
       result.score = 'warn';
       result.notes = `tools/list OK (${names.length} tools) but malformed bridged-tool names: ${ns.bad.slice(0, 4).join(', ')}`;

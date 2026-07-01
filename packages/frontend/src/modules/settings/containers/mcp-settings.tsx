@@ -1,6 +1,7 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
@@ -52,6 +53,8 @@ export const McpSettingsContainer = () => {
   const [runArgs, setRunArgs] = useState('{}');
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
+  // Explicit operator confirmation for running a destructive tool (never auto-confirmed).
+  const [runConfirmed, setRunConfirmed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -122,6 +125,7 @@ export const McpSettingsContainer = () => {
     setRunTool(tool);
     setRunArgs('{}');
     setRunResult(null);
+    setRunConfirmed(false);
   }, []);
 
   // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
@@ -152,7 +156,8 @@ export const McpSettingsContainer = () => {
       const res = await apiFetch(`/api/mcp-admin/tools/${encodeURIComponent(runTool.name)}/call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ arguments: parsedArgs, confirmDestructive: runTool.destructive }),
+        // Only forward the destructive confirmation when the operator has explicitly ticked it.
+        body: JSON.stringify({ arguments: parsedArgs, confirmDestructive: Boolean(runTool.destructive && runConfirmed) }),
       });
       const body = (await res.json()) as ToolCallResponse;
       if (body.ok) {
@@ -167,7 +172,7 @@ export const McpSettingsContainer = () => {
     } finally {
       setRunning(false);
     }
-  }, [runTool, runArgs, t]);
+  }, [runTool, runArgs, runConfirmed, t]);
 
   if (loading) {
     return (
@@ -319,7 +324,6 @@ export const McpSettingsContainer = () => {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('MCP_SETTINGS_RUN_TITLE', { tool: runTool?.name ?? '' })}</DialogTitle>
-            {runTool?.destructive && <DialogDescription className="text-destructive">{t('MCP_SETTINGS_RUN_DESTRUCTIVE_CONFIRM')}</DialogDescription>}
           </DialogHeader>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="mcp-run-args">
@@ -332,6 +336,15 @@ export const McpSettingsContainer = () => {
               onChange={(e) => setRunArgs(e.target.value)}
               data-testid="mcp-run-args"
             />
+            {runTool?.destructive && (
+              <Checkbox
+                name="mcp-run-confirm"
+                checked={runConfirmed}
+                onCheckedChange={(v: boolean) => setRunConfirmed(v)}
+                label={t('MCP_SETTINGS_RUN_DESTRUCTIVE_CONFIRM')}
+                className="text-destructive"
+              />
+            )}
             {runResult !== null && (
               <div>
                 <p className="text-sm font-medium">{t('MCP_SETTINGS_RUN_RESULT')}</p>
@@ -348,6 +361,8 @@ export const McpSettingsContainer = () => {
             <Button
               variant={runTool?.destructive ? 'destructive' : 'default'}
               loading={running}
+              // Destructive tools require an explicit confirmation tick before Run is enabled.
+              disabled={running || Boolean(runTool?.destructive && !runConfirmed)}
               onClick={() => void runToolCall()}
               data-testid="mcp-run-submit"
             >
