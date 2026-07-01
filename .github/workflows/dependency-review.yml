@@ -13,6 +13,8 @@ permissions:
 jobs:
   dependency-review:
     name: Dependency Review
+    # non-blocking until GitHub Advanced Security / GITLEAKS_LICENSE is enabled on this repo
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
