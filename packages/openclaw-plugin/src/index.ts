@@ -4,6 +4,28 @@ import { createWakeEndpointHandler } from './wake-endpoint';
 import { SseListenerService } from './sse-listener';
 
 /**
+ * Unwrap a Hub MCP tools/call result into its raw payload. The Hub wraps every tool result via
+ * formatToolSuccess as `{ content: [{ type: 'text', text: JSON.stringify(payload) }], isError? }`,
+ * so a caller that needs the domain object must parse content[0].text. Returns null on an error
+ * result or an unparseable body (callers then fall back, e.g. to the REST inference endpoint).
+ */
+function unwrapToolResult<T>(result: unknown): T | null {
+  const wrapped = result as { content?: Array<{ text?: string }>; isError?: boolean } | null | undefined;
+  if (!wrapped || wrapped.isError) {
+    return null;
+  }
+  const text = wrapped.content?.[0]?.text;
+  if (typeof text !== 'string') {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * OpenClaw plugin entry point.
  * Registers Hub MCP tools, wake webhook endpoint, optional SSE listener,
  * and auto-discovers local inference capabilities (OC-1).
@@ -87,8 +109,9 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
 
     if (mcpClient.isConnected()) {
       try {
-        const result = await mcpClient.callTool('hub_get_inference_status', {});
-        inferenceStatus = result as HubInferenceStatus;
+        // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
+        // A null result (error/unparseable) falls through to the REST fallback below.
+        inferenceStatus = unwrapToolResult<HubInferenceStatus>(await mcpClient.callTool('hub_get_inference_status', {}));
       } catch {
         api.log.debug('hub_get_inference_status not yet available — trying REST fallback');
       }

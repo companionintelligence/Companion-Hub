@@ -18,6 +18,7 @@ const SystemInspectorContainer = lazy(() =>
 );
 const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 const AiSettingsContainer = lazy(() => import('../containers/ai-settings').then((module) => ({ default: module.AiSettingsContainer })));
+const McpSettingsContainer = lazy(() => import('../containers/mcp-settings').then((module) => ({ default: module.McpSettingsContainer })));
 
 export default () => {
   const { t } = useTranslation();
@@ -57,6 +58,9 @@ export default () => {
               <TabsTrigger value="ai" className="hidden md:inline-flex">
                 {t('COMMON_AI')}
               </TabsTrigger>
+              <TabsTrigger value="mcp" className="hidden md:inline-flex">
+                {t('COMMON_MCP')}
+              </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
                 {t('COMMON_SYSTEM')}
               </TabsTrigger>
@@ -71,6 +75,7 @@ export default () => {
                   <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('COMMON_APP_STORES')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('COMMON_NETWORK')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('COMMON_AI')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('mcp')}>{t('COMMON_MCP')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('COMMON_LOGS')}</DropdownMenuItem>
                 </DropdownMenuContent>
@@ -102,6 +107,11 @@ export default () => {
               <TabsContent value="ai">
                 <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <AiSettingsContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="mcp">
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                  <McpSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">

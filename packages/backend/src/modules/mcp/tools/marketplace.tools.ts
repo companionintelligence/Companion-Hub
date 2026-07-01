@@ -69,6 +69,7 @@ export class MarketplaceTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_delete_app_store',
+      destructive: true, // ISSUE-MCP-2: deletes a configured app store.
       description: 'Delete an app store. Installed apps from this store are not removed.',
       inputSchema: { type: 'object', properties: { storeId: { type: 'string', description: 'Store ID to delete' } }, required: ['storeId'] },
       handler: (p) => this.deleteAppStore(p as { storeId: string }),

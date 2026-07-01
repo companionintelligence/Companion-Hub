@@ -18,13 +18,18 @@ export class AppApiProxyTools implements OnModuleInit {
   onModuleInit() {
     this.registry.register({
       name: 'hub_call_app_api',
+      // ISSUE-MCP-2: this proxy can mutate app data. A read-only GET/HEAD stays ungated, but any
+      // mutating verb (POST/PUT/PATCH/DELETE) is treated as destructive so it requires
+      // MCP_ALLOW_DESTRUCTIVE (agent) or an operator confirmation (admin runner) — otherwise a
+      // leaked key could DELETE arbitrary app data despite the safe default.
+      isDestructive: (p) => !['GET', 'HEAD'].includes(String((p as { method?: string }).method ?? '').toUpperCase()),
       description:
         "Call an app's API endpoint directly. Acts as an HTTP proxy — the Hub makes the request to the app container and returns the response. " +
         "Useful when generated OpenAPI tools aren't sufficient or when the app has no OpenAPI spec.",
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format (e.g. ci-store:nextcloud)' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format (e.g. nextcloud:ci-store)' },
           method: { type: 'string', description: 'HTTP method (GET, POST, PUT, DELETE, PATCH)', enum: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] },
           path: { type: 'string', description: 'API path (e.g. /api/v1/users)' },
           body: { type: 'object', description: 'Request body (for POST/PUT/PATCH)', additionalProperties: true },

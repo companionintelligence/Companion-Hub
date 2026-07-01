@@ -40,6 +40,7 @@ export class SystemTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_perform_update',
+      destructive: true, // ISSUE-MCP-2: replaces the running Hub with a new version.
       description: 'Update the Hub to a specific or latest version.',
       inputSchema: {
         type: 'object',

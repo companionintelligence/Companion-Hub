@@ -242,17 +242,7 @@ export class ConfigurationService {
     }
 
     try {
-      const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-
-      const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
-      const parsedContent = JSON.parse(fileContent);
-      const currentSettingsResult = settingsSchema.partial().safeParse(parsedContent);
-      if (!currentSettingsResult.success) {
-        throw currentSettingsResult.error.message;
-      }
-      const currentSettings = currentSettingsResult.data;
-
-      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`);
+      await this.mergeSettingsToDisk(settings);
 
       this.config.userSettings = { ...this.config.userSettings, ...settings };
 
@@ -267,6 +257,35 @@ export class ConfigurationService {
       this.logger.error('Failed to set user settings', error);
       throw new InternalServerErrorException('Failed to set user settings');
     }
+  }
+
+  /**
+   * ISSUE-MCP-2 / ENH-MCP-4: persist MCP admin-managed settings (a rotated agent API key, the
+   * destructive-tool gate) to settings.json ONLY — without merging them into the in-memory
+   * `userSettings` object that GET /app-context returns. This is what prevents the plaintext MCP
+   * API key from being disclosed to every authenticated browser session after a rotation. The
+   * caller (McpAdminService) applies the live value to `process.env` for immediate effect; this
+   * write is purely for persistence across restarts (env-helpers re-reads settings.json at boot).
+   */
+  public async persistMcpSettings(settings: { mcpApiKey?: string; mcpAllowDestructive?: boolean }): Promise<void> {
+    try {
+      await this.mergeSettingsToDisk(settings as UserSettingsBody);
+    } catch (error) {
+      this.logger.error('Failed to persist MCP settings', error);
+      throw new InternalServerErrorException('Failed to persist MCP settings');
+    }
+  }
+
+  /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
+   *  the in-memory config (callers that want the runtime change apply it separately). */
+  private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
+    const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+    const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
+    const currentSettingsResult = settingsSchema.partial().safeParse(JSON.parse(fileContent));
+    if (!currentSettingsResult.success) {
+      throw currentSettingsResult.error.message;
+    }
+    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettingsResult.data, ...settings }, null, 2)}`);
   }
 
   public getInferencePreferences() {

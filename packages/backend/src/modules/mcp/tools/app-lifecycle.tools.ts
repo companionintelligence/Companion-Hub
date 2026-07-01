@@ -3,7 +3,7 @@ import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.servi
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
-const urnProp = { type: 'string', description: 'App identifier in storeSlug:appName format' } as const;
+const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 @Injectable()
 export class AppLifecycleTools implements OnModuleInit {
@@ -46,6 +46,7 @@ export class AppLifecycleTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_uninstall_app',
+      destructive: true, // ISSUE-MCP-2: removes the app and (by default) deletes its data volumes.
       description: 'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId.',
       inputSchema: {
         type: 'object',
@@ -56,12 +57,14 @@ export class AppLifecycleTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_reset_app',
+      destructive: true, // ISSUE-MCP-2: wipes all app data back to defaults.
       description: 'Reset an app to its default state, removing all data. Returns a requestId.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.resetApp(p as { appUrn: string }),
     });
     this.registry.register({
       name: 'hub_update_app',
+      destructive: true, // ISSUE-MCP-2: in-place upgrade (agent can skip the pre-update backup) → possible data loss.
       description: 'Update an app to the latest version. Optionally skip backup. Returns a requestId.',
       inputSchema: {
         type: 'object',
@@ -82,6 +85,7 @@ export class AppLifecycleTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_update_all_apps',
+      destructive: true, // ISSUE-MCP-2: bulk mutation across every installed app.
       description: 'Update all installed apps to their latest versions.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.updateAllApps(),
@@ -94,12 +98,14 @@ export class AppLifecycleTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_stop_all_apps',
+      destructive: true, // ISSUE-MCP-2: bulk mutation — stops every running app at once.
       description: 'Stop all running apps.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.stopAllApps(),
     });
     this.registry.register({
       name: 'hub_restart_all_apps',
+      destructive: true, // ISSUE-MCP-2: bulk mutation — restarts every running app at once.
       description: 'Restart all running apps.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.restartAllApps(),

@@ -15,7 +15,11 @@ import { RegistrationModule } from '@/modules/registration/registration.module';
 import { CloudflareModule } from '@/modules/cloudflare/cloudflare.module';
 import { LinksModule } from '@/modules/links/links.module';
 import { McpController } from './mcp.controller';
+import { McpAdminController } from './mcp-admin.controller';
 import { McpService } from './mcp.service';
+import { McpServerFactory } from './mcp-server.factory';
+import { McpSessionRegistry } from './mcp-session.registry';
+import { McpAdminService } from './mcp-admin.service';
 import { McpToolRegistry } from './mcp-tool-registry.service';
 import { McpAuthGuard } from './mcp-auth.guard';
 import { AppDiscoveryTools } from './tools/app-discovery.tools';
@@ -29,16 +33,25 @@ import { RegistrationTools } from './tools/registration.tools';
 import { LinkTools } from './tools/link.tools';
 import { AppAgentTools } from './tools/app-agent.tools';
 import { AppApiProxyTools } from './tools/app-api-proxy.tools';
+import { OperationsTools } from './tools/operations.tools';
 import { AgentConfigService } from './agents/agent-config.service';
 import { SkillResolverService } from './agents/skill-resolver.service';
 import { OpenApiBridgeService } from './agents/openapi-bridge.service';
 import { McpBridgeService } from './agents/mcp-bridge.service';
 import { ApiProxyService } from './agents/api-proxy.service';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { InferenceTools } from './tools/inference.tools';
 
+// ISSUE-MCP-2: rate-limit the MCP endpoint so a runaway or hostile client can't flood the Hub with
+// tool calls. Applied via ThrottlerGuard on the controller. Tunable via env; defaults suit a chatty
+// but well-behaved agent (many tools/list + tools/call per session).
+const MCP_RATE_TTL_MS = Number(process.env.MCP_RATE_TTL_MS) || 60_000;
+const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
+
 @Module({
   imports: [
+    ThrottlerModule.forRoot([{ ttl: MCP_RATE_TTL_MS, limit: MCP_RATE_LIMIT }]),
     LoggerModule,
     AgentNotifyModule,
     AppsModule,
@@ -56,9 +69,12 @@ import { InferenceTools } from './tools/inference.tools';
     LinksModule,
     InferenceModule,
   ],
-  controllers: [McpController],
+  controllers: [McpController, McpAdminController],
   providers: [
     McpService,
+    McpServerFactory,
+    McpSessionRegistry,
+    McpAdminService,
     McpToolRegistry,
     McpAuthGuard,
     AppDiscoveryTools,
@@ -72,6 +88,7 @@ import { InferenceTools } from './tools/inference.tools';
     LinkTools,
     AppAgentTools,
     AppApiProxyTools,
+    OperationsTools,
     InferenceTools,
     AgentConfigService,
     SkillResolverService,

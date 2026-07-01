@@ -66,37 +66,42 @@ export class InferenceTools implements OnModuleInit {
     });
 
     // ─── hub_start_inference_backend ────────────────────────────────
+    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade) are managed by the Hub runtime (its
+    // compose stack / host services), not started on demand by the Hub. The previous handler
+    // returned a "start requested" message but did nothing — misleading an agent into believing a
+    // backend was started. This now honestly reports live status and states that lifecycle is not
+    // performed here. (Real on-demand start/stop would need a public compose-orchestration path in
+    // the inference module — tracked separately.)
     this.registry.register({
       name: 'hub_start_inference_backend',
-      description: 'Start an inference backend. Requires the backend type: "ollama", "vllm", or "lemonade".',
+      description:
+        'Report the live status of an inference backend ("ollama", "vllm", or "lemonade"). NOTE: this does NOT ' +
+        'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
+        'whether a backend is up before routing inference.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to start' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
-      handler: async (params) => {
-        const backendType = params.backend as InferenceBackendType;
-        return { message: `Backend ${backendType} start requested. Use Docker lifecycle to manage backend containers.`, backendType };
-      },
+      handler: (params) => this.reportBackendLifecycle(params.backend as InferenceBackendType, 'start'),
     });
 
     // ─── hub_stop_inference_backend ─────────────────────────────────
     this.registry.register({
       name: 'hub_stop_inference_backend',
-      description: 'Stop an inference backend.',
+      description:
+        'Report the live status of an inference backend. NOTE: this does NOT stop a container — inference ' +
+        'backends are managed by the Hub runtime/compose stack, not stopped on demand via MCP.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to stop' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
-      handler: async (params) => {
-        const backendType = params.backend as InferenceBackendType;
-        return { message: `Backend ${backendType} stop requested.`, backendType };
-      },
+      handler: (params) => this.reportBackendLifecycle(params.backend as InferenceBackendType, 'stop'),
     });
 
     // ─── hub_list_models ────────────────────────────────────────────
@@ -281,5 +286,50 @@ export class InferenceTools implements OnModuleInit {
     // tools were removed accordingly.
 
     this.logger.info('[InferenceTools] Registered 14 inference MCP tools');
+  }
+
+  /**
+   * ISSUE-MCP-3: honestly report a backend's live status. Backend lifecycle (start/stop) is owned by
+   * the Hub runtime/compose stack, so this never mutates state — it health-checks the requested
+   * backend and returns `supported: false` for the lifecycle action plus its current running state.
+   */
+  private async reportBackendLifecycle(
+    backendType: InferenceBackendType,
+    action: 'start' | 'stop',
+  ): Promise<{
+    supported: false;
+    backend: InferenceBackendType;
+    action: 'start' | 'stop';
+    running: boolean;
+    healthy: boolean;
+    baseUrl: string;
+    message: string;
+  }> {
+    const backend = this.backendFor(backendType);
+    const health = await backend.healthCheck();
+    return {
+      supported: false,
+      backend: backendType,
+      action,
+      running: health.running,
+      healthy: health.healthy,
+      baseUrl: backend.getBaseUrl(),
+      message:
+        `Inference backends are managed by the Hub runtime (compose stack / host services), not ${action}ed on demand via MCP. ` +
+        `Backend "${backendType}" is currently ${health.running ? 'running' : 'not running'}. ` +
+        'Use the Hub AI settings to change backend or model configuration.',
+    };
+  }
+
+  /** Resolve the injected backend instance for a backend type. */
+  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend {
+    switch (backendType) {
+      case 'vllm':
+        return this.vllmBackend;
+      case 'lemonade':
+        return this.lemonadeBackend;
+      default:
+        return this.ollamaBackend;
+    }
   }
 }

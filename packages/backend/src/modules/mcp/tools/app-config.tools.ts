@@ -4,7 +4,7 @@ import { AppsService } from '@/modules/apps/apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
-const urnProp = { type: 'string', description: 'App identifier in storeSlug:appName format' } as const;
+const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 @Injectable()
 export class AppConfigTools implements OnModuleInit {
@@ -23,6 +23,7 @@ export class AppConfigTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_update_user_config',
+      destructive: true, // ISSUE-MCP-2: rewrites the app's raw compose/env override (can change/remove volume mounts).
       description: 'Update user-level docker-compose and env overrides for an app.',
       inputSchema: {
         type: 'object',

@@ -336,7 +336,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // --- Resolve all values using the standard priority chain ---
 
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
-  const mcpApiKey = resolve('MCP_API_KEY', { envMap, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
+  const mcpApiKey = resolve('MCP_API_KEY', { envMap, settingsVal: settingsData.mcpApiKey, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -392,6 +392,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('MCP_API_KEY', mcpApiKey);
+  // ISSUE-MCP-2: gate for destructive MCP tools. Resolved from settings.json (admin toggle) so it
+  // persists across restarts; the admin endpoint also sets process.env live for immediate effect.
+  envMap.set(
+    'MCP_ALLOW_DESTRUCTIVE',
+    resolve('MCP_ALLOW_DESTRUCTIVE', { envMap, settingsVal: boolStr(settingsData.mcpAllowDestructive), fallback: 'false' }),
+  );
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure

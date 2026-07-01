@@ -56,6 +56,7 @@ export class LinkTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_delete_link',
+      destructive: true, // ISSUE-MCP-2: permanently deletes a dashboard link.
       description: 'Delete a dashboard link by ID.',
       inputSchema: { type: 'object', properties: { linkId: { type: 'number', description: 'Link ID to delete' } }, required: ['linkId'] },
       handler: (p) => this.deleteLink(p as { linkId: number }),

@@ -25,7 +25,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       description: 'Get detailed info for a specific app including form fields, description, version, and supported architectures.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format (e.g. ci-store:nextcloud)' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format (e.g. nextcloud:ci-store)' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getApp(p as { appUrn: string }),
@@ -36,7 +36,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
           maxLines: { type: 'number', description: 'Max log lines to return (1-1000, default 100)' },
         },
         required: ['appUrn'],
@@ -48,7 +48,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       description: 'Check whether an app is reachable via its configured URL. Returns availability status and URL.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.checkAppAvailability(p as { appUrn: string }),
@@ -58,7 +58,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       description: 'Attempt to fix availability issues for an app. Use after hub_check_app_availability returns unavailable.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.resolveAppAvailability(p as { appUrn: string }),
@@ -68,7 +68,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       description: 'Get the difference between current and new docker-compose config for an app.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getComposeDiff(p as { appUrn: string }),
@@ -78,7 +78,7 @@ export class AppDiscoveryTools implements OnModuleInit {
       description: 'Get the difference between current and new app configuration.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getConfigDiff(p as { appUrn: string }),

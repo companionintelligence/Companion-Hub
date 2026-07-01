@@ -46,6 +46,11 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
+  // ISSUE-MCP-2 / ENH-MCP-4: MCP admin-managed settings, persisted so they survive restarts.
+  // mcpAllowDestructive gates destructive MCP tools; mcpApiKey holds an operator-rotated key
+  // (otherwise the key is derived — see env-helpers). Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
+  mcpAllowDestructive: z.boolean().optional(),
+  mcpApiKey: z.string().trim().optional(),
 });
 
 const simpleAppInfoSchema = appInfoObjectSchema.pick({

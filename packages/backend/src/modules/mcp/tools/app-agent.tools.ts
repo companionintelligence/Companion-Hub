@@ -26,7 +26,7 @@ export class AppAgentTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format (e.g. ci-store:nextcloud)' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format (e.g. nextcloud:ci-store)' },
         },
         required: ['appUrn'],
       },
@@ -47,7 +47,7 @@ export class AppAgentTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
         },
         required: ['appUrn'],
       },
@@ -60,7 +60,7 @@ export class AppAgentTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
         },
         required: ['appUrn'],
       },
