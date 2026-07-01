@@ -1,5 +1,13 @@
 import type { McpToolDefinition, OpenClawPluginApi } from './types';
 
+/** MCP protocol version this client requests at initialize (kept as a named constant rather than
+ *  repeated string literals). The Hub advertises the SDK's LATEST_PROTOCOL_VERSION and negotiates
+ *  down if needed, so bump this when the client is validated against a newer spec revision. */
+const MCP_CLIENT_PROTOCOL_VERSION = '2025-11-25';
+
+/** Default per-request timeout so a hung/half-open Hub connection can't wedge the plugin. */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 interface JsonRpcResponse {
   jsonrpc: '2.0';
   id: string | number;
@@ -44,7 +52,7 @@ export class McpClient {
     try {
       this.log.info('Connecting to Hub MCP endpoint...');
       const { response, body } = await this.post('initialize', {
-        protocolVersion: '2025-11-25',
+        protocolVersion: MCP_CLIENT_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: 'openclaw-plugin', version: '1.0' },
       });
@@ -73,7 +81,7 @@ export class McpClient {
     }
     if (this.sessionId) {
       try {
-        await fetch(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(this.sessionId) });
+        await this.fetchWithTimeout(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(this.sessionId) });
       } catch {
         // best-effort session teardown
       }
@@ -91,11 +99,21 @@ export class McpClient {
     if (!this.connected) {
       throw new Error('Hub MCP server is not connected');
     }
-    const body = await this.sendMessage('tools/list', {});
-    if (body.error) {
-      throw new Error(body.error.message);
+    try {
+      const body = await this.sendMessage('tools/list', {});
+      if (body.error) {
+        throw new Error(body.error.message);
+      }
+      return (body.result as { tools: McpToolDefinition[] }).tools;
+    } catch (error) {
+      // If the session was lost (sendMessage cleared `connected` on a 404), kick off the backoff
+      // reconnect loop before propagating — otherwise a tools/list failure would leave the client
+      // permanently disconnected with no reconnect scheduled (unlike callTool).
+      if (!this.connected) {
+        this.scheduleReconnect();
+      }
+      throw error;
     }
-    return (body.result as { tools: McpToolDefinition[] }).tools;
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -108,10 +126,17 @@ export class McpClient {
         return { error: body.error.message };
       }
       return body.result;
-    } catch {
-      this.connected = false;
-      this.scheduleReconnect();
-      return { error: 'Hub MCP server is not connected' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.connected) {
+        // Transport/parse/5xx fault while the session is still alive: surface the REAL cause instead
+        // of masquerading it as "not connected", and don't tear down a session that may still work.
+        this.log.warn(`MCP tool call '${name}' failed: ${message}`);
+      } else {
+        // Genuine session loss (sendMessage cleared `connected`/`sessionId` on a 404) — reconnect.
+        this.scheduleReconnect();
+      }
+      return { error: message };
     }
   }
 
@@ -129,7 +154,7 @@ export class McpClient {
   /** POST a JSON-RPC request to the single MCP endpoint and parse the JSON or SSE response body. */
   private async post(method: string, params: Record<string, unknown>, sessionId?: string): Promise<{ response: Response; body: JsonRpcResponse }> {
     const id = ++this.requestId;
-    const response = await fetch(this.endpoint, {
+    const response = await this.fetchWithTimeout(this.endpoint, {
       method: 'POST',
       headers: this.buildHeaders(sessionId),
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
@@ -139,6 +164,18 @@ export class McpClient {
       throw new Error(`MCP request failed: ${response.status} ${response.statusText}`);
     }
     return { response, body: await this.readRpcBody(response) };
+  }
+
+  /** fetch with a hard timeout via AbortController, so a hung/half-open connection can't block a
+   *  tool call indefinitely. The timer is always cleared. */
+  private async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private buildHeaders(sessionId?: string): Record<string, string> {
@@ -151,11 +188,15 @@ export class McpClient {
     return headers;
   }
 
-  /** Extract the JSON-RPC payload from a plain JSON body or the last `data:` line of an SSE frame. */
+  /** Extract the JSON-RPC payload from a plain JSON body or the last `data:` line of an SSE frame.
+   *  Convention: gate on `application/json` (else parse as SSE) — kept identical to the Layer-2 QA
+   *  bridge (scripts/qa-mcp-bridge.ts) so both hand-rolled clients resolve an ambiguous content-type
+   *  the same way. The two are intentionally NOT a shared module: the QA script is dependency-free so
+   *  it ships to fleet nodes unchanged, so the convention is mirrored here rather than imported. */
   private async readRpcBody(response: Response): Promise<JsonRpcResponse> {
     const contentType = response.headers.get('content-type') ?? '';
     const text = await response.text();
-    if (!contentType.includes('text/event-stream')) {
+    if (contentType.includes('application/json')) {
       return JSON.parse(text) as JsonRpcResponse;
     }
     const dataLines = text

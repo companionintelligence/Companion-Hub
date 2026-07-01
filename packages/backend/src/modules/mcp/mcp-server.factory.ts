@@ -3,7 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { type CallToolResult, CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
 import { McpService } from './mcp.service';
-import { McpToolNotFoundError, McpToolRegistry } from './mcp-tool-registry.service';
+import { McpToolNotFoundError, McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
 
 /**
@@ -28,13 +28,9 @@ export class McpServerFactory {
   create(): Server {
     const server = new Server(this.mcpService.getServerInfo(), { capabilities: this.mcpService.getCapabilities() });
 
-    // tools/list — project the registry into the MCP tool descriptor shape.
+    // tools/list — project the registry into the MCP tool descriptor shape (shared with the admin catalog).
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.registry.listTools().map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-      })),
+      tools: this.registry.listTools().map(toToolDescriptor),
     }));
 
     // tools/call — route to the registry, format success/errors into MCP content, and audit.

@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
-import { McpToolRegistry } from './mcp-tool-registry.service';
+import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
 
 /** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate). */
 export interface McpAdminToolInfo {
@@ -49,9 +49,7 @@ export class McpAdminService {
   /** Full tool catalog with descriptions, input schemas, and destructive flags. */
   listTools(): McpAdminToolInfo[] {
     return this.registry.listTools().map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
+      ...toToolDescriptor(tool),
       // A tool with an arg-based predicate (e.g. hub_call_app_api) is flagged destructive here so the
       // UI prompts for confirmation; the registry's predicate still decides per-call at execution.
       destructive: Boolean(tool.destructive) || typeof tool.isDestructive === 'function',

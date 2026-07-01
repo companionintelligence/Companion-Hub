@@ -2,6 +2,7 @@ import { Controller, Delete, Get, Headers, HttpCode, Post, Req, Res, UseGuards }
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import { LoggerService } from '@/core/logger/logger.service';
 import { McpAuthGuard } from './mcp-auth.guard';
 import { McpSessionRegistry } from './mcp-session.registry';
 
@@ -18,7 +19,10 @@ import { McpSessionRegistry } from './mcp-session.registry';
 @Controller('mcp')
 @UseGuards(ThrottlerGuard, McpAuthGuard)
 export class McpController {
-  constructor(private readonly sessions: McpSessionRegistry) {}
+  constructor(
+    private readonly sessions: McpSessionRegistry,
+    private readonly logger: LoggerService,
+  ) {}
 
   /**
    * POST /api/mcp — every JSON-RPC message (initialize, tools/list, tools/call, …). An `initialize`
@@ -38,6 +42,9 @@ export class McpController {
       this.sendJsonRpcError(res, 404, -32001, 'Session not found; send an initialize request first.');
       return;
     }
+    // A brand-new transport connects a fresh SDK server that must be released if the request fails or
+    // never establishes a session — otherwise each failed initialize leaks a server + transport.
+    const isNewTransport = !transport;
     if (!transport) {
       if (!isInitializeRequest(req.body)) {
         this.sendJsonRpcError(res, 400, -32000, 'Missing Mcp-Session-Id header; send an initialize request first.');
@@ -46,11 +53,28 @@ export class McpController {
       transport = await this.sessions.createConnectedTransport();
     }
 
-    await transport.handleRequest(req, res, req.body);
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      this.logger.error('MCP request handling failed', error);
+      if (isNewTransport) {
+        void transport.close();
+      }
+      // handleRequest may have already streamed a partial response; only send an envelope if not.
+      if (!res.headersSent) {
+        this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
+      }
+      return;
+    }
 
-    // The SDK assigns the session id while handling `initialize`; record it once available.
-    if (!sessionId) {
-      this.sessions.store(transport);
+    // The SDK assigns the session id while handling `initialize`; record it once available. If a new
+    // transport finished without a session id (initialize rejected), close it so its server isn't leaked.
+    if (isNewTransport) {
+      if (transport.sessionId) {
+        this.sessions.store(transport);
+      } else {
+        void transport.close();
+      }
     }
   }
 

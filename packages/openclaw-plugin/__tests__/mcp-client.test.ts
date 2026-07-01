@@ -138,6 +138,46 @@ describe('McpClient (Streamable HTTP)', () => {
     expect(await client.callTool('hub_list_installed_apps', {})).toEqual(toolResult);
   });
 
+  it('surfaces the real error and stays connected when a tool call hits a transport fault (5xx)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        return mcpResponse({ error: 'server exploded' }, { status: 500 }); // tools/call → hard 5xx
+      }),
+    );
+    await client.connect();
+    expect(client.isConnected()).toBe(true);
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    // The REAL cause is surfaced (not a misleading "not connected"), and the live session is NOT torn down.
+    expect(res.error).toContain('500');
+    expect(res.error).not.toContain('not connected');
+    expect(client.isConnected()).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("tool call 'x' failed"));
+  });
+
+  it('schedules a reconnect when listTools hits an expired session (404)', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+      const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+      if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+      if (method === 'tools/list') return mcpResponse({}, { status: 404 }); // session expired
+      return mcpResponse({ jsonrpc: '2.0', id: 1, result: {} });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client.connect();
+    await expect(client.listTools()).rejects.toThrow('MCP session not found');
+    expect(client.isConnected()).toBe(false);
+
+    // Unlike the old behavior, a tools/list session-loss now arms the backoff reconnect loop.
+    const before = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(before);
+  });
+
   it('parses an SSE (text/event-stream) response body', async () => {
     vi.stubGlobal(
       'fetch',

@@ -21,6 +21,20 @@ export interface McpToolDefinition {
   isDestructive?: (params: Record<string, unknown>) => boolean;
 }
 
+/** The MCP wire shape for a tool in a `tools/list` response — the public subset of a definition
+ *  (no handler/flags). Shared by the SDK server's tools/list handler and the admin catalog so the
+ *  two projections can't drift. */
+export interface McpToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** Project a registered tool into its MCP descriptor (name/description/inputSchema). */
+export function toToolDescriptor(tool: McpToolDefinition): McpToolDescriptor {
+  return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+}
+
 /** Options controlling a single {@link McpToolRegistry.callTool} invocation. */
 export interface CallToolOptions {
   /**

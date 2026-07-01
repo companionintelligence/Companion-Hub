@@ -7,6 +7,7 @@ import type { Request, Response } from 'express';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { McpSessionRegistry } from '../mcp-session.registry';
+import { LoggerService } from '@/core/logger/logger.service';
 
 // A minimal, schema-valid MCP initialize request body (what a fresh client POSTs first).
 const INITIALIZE_BODY = {
@@ -31,7 +32,10 @@ describe('McpController (Streamable HTTP)', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [McpController],
-      providers: [{ provide: McpSessionRegistry, useValue: mock<McpSessionRegistry>() }],
+      providers: [
+        { provide: McpSessionRegistry, useValue: mock<McpSessionRegistry>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+      ],
     })
       // Guards are exercised elsewhere; here we unit-test the routing logic only.
       .overrideGuard(ThrottlerGuard)
@@ -51,6 +55,8 @@ describe('McpController (Streamable HTTP)', () => {
   describe('POST /api/mcp', () => {
     it('creates a session on initialize and stores the transport', async () => {
       const transport = mock<StreamableHTTPServerTransport>();
+      // The SDK assigns the session id while handling initialize.
+      (transport as { sessionId?: string }).sessionId = 'new-sid';
       sessions.createConnectedTransport.mockResolvedValue(transport);
 
       const req = { headers: {}, body: INITIALIZE_BODY } as unknown as Request;
@@ -59,6 +65,34 @@ describe('McpController (Streamable HTTP)', () => {
       expect(sessions.createConnectedTransport).toHaveBeenCalled();
       expect(transport.handleRequest).toHaveBeenCalledWith(req, expect.anything(), INITIALIZE_BODY);
       expect(sessions.store).toHaveBeenCalledWith(transport);
+      expect(transport.close).not.toHaveBeenCalled();
+    });
+
+    it('closes the transport and returns a JSON-RPC 500 when handleRequest throws on a new session', async () => {
+      const transport = mock<StreamableHTTPServerTransport>();
+      transport.handleRequest.mockRejectedValue(new Error('boom'));
+      sessions.createConnectedTransport.mockResolvedValue(transport);
+      const res = fakeRes();
+
+      const req = { headers: {}, body: INITIALIZE_BODY } as unknown as Request;
+      await controller.handlePost(req, res);
+
+      // Orphaned SDK server released, no leaked session stored, error surfaced as an envelope.
+      expect(transport.close).toHaveBeenCalled();
+      expect(sessions.store).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+
+    it('closes the transport without storing when initialize does not establish a session', async () => {
+      const transport = mock<StreamableHTTPServerTransport>();
+      (transport as { sessionId?: string }).sessionId = undefined;
+      sessions.createConnectedTransport.mockResolvedValue(transport);
+
+      const req = { headers: {}, body: INITIALIZE_BODY } as unknown as Request;
+      await controller.handlePost(req, fakeRes());
+
+      expect(sessions.store).not.toHaveBeenCalled();
+      expect(transport.close).toHaveBeenCalled();
     });
 
     it('routes a follow-up request to the existing session transport', async () => {
