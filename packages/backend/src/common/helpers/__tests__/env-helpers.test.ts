@@ -49,7 +49,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
+import { generateSystemEnvFile, resolveRabbitmqPassword, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -188,6 +188,105 @@ describe('env-helpers — resolve() priority chain', () => {
     process.env.ROOT_FOLDER_HOST = input;
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('ROOT_FOLDER_HOST')).toBe(expected);
+  });
+});
+
+describe('env-helpers — RABBITMQ_PASSWORD fail-closed in production', () => {
+  const rabbitSavedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'NODE_ENV', 'RABBITMQ_PASSWORD']) {
+      rabbitSavedEnv[key] = process.env[key];
+    }
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    mockedFs.existsSync.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    for (const [key, val] of Object.entries(rabbitSavedEnv)) {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    }
+  });
+
+  function setupMocks(opts: { settingsJson?: Record<string, any>; dataEnv?: string }) {
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return JSON.stringify(opts.settingsJson || {});
+      if (p.includes('.env')) return opts.dataEnv || '';
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+  }
+
+  it('MUST NOT emit the weak default password in production when unset (fail closed)', async () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.RABBITMQ_PASSWORD;
+    setupMocks({ dataEnv: '' });
+    await expect(generateSystemEnvFile()).rejects.toThrow(/RABBITMQ_PASSWORD is not set/);
+  });
+
+  it('MUST NOT invent the weak default, but tolerates an explicit admin in production (compose still ships it)', async () => {
+    // The shipped prod compose hardcodes RABBITMQ_PASSWORD=admin on both the
+    // broker and the Hub, so hard-failing here would break boot. We keep the
+    // explicit value (broker match) rather than silently inventing it.
+    process.env.NODE_ENV = 'production';
+    process.env.RABBITMQ_PASSWORD = 'admin';
+    setupMocks({ dataEnv: '' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('RABBITMQ_PASSWORD')).toBe('admin');
+  });
+
+  it('MUST expose the fail-closed + warning policy via resolveRabbitmqPassword()', async () => {
+    const savedNodeEnv = process.env.NODE_ENV;
+    delete process.env.RABBITMQ_PASSWORD;
+    try {
+      process.env.NODE_ENV = 'production';
+      // Unset in production → throw (no silent weak fallback)
+      expect(() => resolveRabbitmqPassword(new Map())).toThrow(/RABBITMQ_PASSWORD is not set/);
+      // Explicit weak default in production → returned but warned
+      const weak = resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'admin']]));
+      expect(weak.password).toBe('admin');
+      expect(weak.warning).toMatch(/weak default/i);
+      // Strong explicit value in production → no warning
+      const strong = resolveRabbitmqPassword(new Map([['RABBITMQ_PASSWORD', 'strong-secret']]));
+      expect(strong.password).toBe('strong-secret');
+      expect(strong.warning).toBeUndefined();
+      // Non-production → dev default, no warning
+      process.env.NODE_ENV = 'development';
+      const dev = resolveRabbitmqPassword(new Map());
+      expect(dev.password).toBe('admin');
+      expect(dev.warning).toBeUndefined();
+    } finally {
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = savedNodeEnv;
+    }
+  });
+
+  it('MUST accept a strong explicit password in production', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.RABBITMQ_PASSWORD = 'a-strong-unique-secret';
+    setupMocks({ dataEnv: '' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('RABBITMQ_PASSWORD')).toBe('a-strong-unique-secret');
+  });
+
+  it('MUST honor an explicit production password from data .env', async () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.RABBITMQ_PASSWORD;
+    setupMocks({ dataEnv: 'RABBITMQ_PASSWORD=from-data-secret' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('RABBITMQ_PASSWORD')).toBe('from-data-secret');
+  });
+
+  it('MUST keep the fixed dev default outside production (local dev / e2e)', async () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.RABBITMQ_PASSWORD;
+    setupMocks({ dataEnv: '' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('RABBITMQ_PASSWORD')).toBe('admin');
   });
 });
 
