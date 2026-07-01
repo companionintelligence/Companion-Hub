@@ -51,12 +51,25 @@ describe('McpSessionRegistry.resolveAllowedHosts', () => {
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('includes custom MCP_ALLOWED_HOSTS entries without warning', () => {
+  it('includes custom MCP_ALLOWED_HOSTS entries (with :port variants) without warning', () => {
     process.env.MCP_ALLOWED_HOSTS = 'a.example.com, b.example.com';
     const r = makeRegistry();
     const hosts = r.resolveAllowedHosts();
     expect(hosts).toContain('a.example.com');
     expect(hosts).toContain('b.example.com');
+    // Bare MCP_ALLOWED_HOSTS entries also get a :port variant so a non-default-port Host matches.
+    expect(hosts.some((h) => h.startsWith('a.example.com:'))).toBe(true);
+    expect(hosts.some((h) => h.startsWith('b.example.com:'))).toBe(true);
+    expect(r.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not append a second port to an MCP_ALLOWED_HOSTS entry that already has one', () => {
+    process.env.MCP_ALLOWED_HOSTS = 'c.example.com:8443';
+    const r = makeRegistry();
+    const hosts = r.resolveAllowedHosts();
+    expect(hosts).toContain('c.example.com:8443');
+    // No double-port entry like c.example.com:8443:3000.
+    expect(hosts.some((h) => h.startsWith('c.example.com:8443:'))).toBe(false);
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 });

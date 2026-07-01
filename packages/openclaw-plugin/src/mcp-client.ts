@@ -184,6 +184,11 @@ export class McpClient {
     this.log.info(`Reconnecting to Hub MCP in ${delay}ms...`);
     const timer = setTimeout(() => {
       this.reconnectTimer = null;
+      // Re-check disposed inside the callback: clearTimeout normally prevents this from firing, but a
+      // callback already queued when disconnect() ran would otherwise revive the torn-down client.
+      if (this.disposed) {
+        return;
+      }
       void this.connect();
     }, delay);
     // Never let a pending reconnect keep the host process alive (no-op where unref is unavailable).

@@ -258,12 +258,13 @@ export class ConfigurationService {
 
       this.config.userSettings = { ...this.config.userSettings, ...safeSettings };
 
-      // Update in-memory config for runtime changes
-      if (settings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
+      // Update in-memory config for runtime changes. Use safeSettings (not the raw settings) so this
+      // stays correct if the stripped-key set ever grows; ciHub* are not stripped today.
+      if (safeSettings.ciHubApiKey) {
+        (this.config as Record<string, unknown>).ciHubApiKey = safeSettings.ciHubApiKey;
       }
-      if (settings.ciHubOrganizationId) {
-        (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
+      if (safeSettings.ciHubOrganizationId) {
+        (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
       }
     } catch (error) {
       this.logger.error('Failed to set user settings', error);

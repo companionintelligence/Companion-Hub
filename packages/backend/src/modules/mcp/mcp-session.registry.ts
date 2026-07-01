@@ -117,25 +117,30 @@ export class McpSessionRegistry implements OnModuleDestroy {
   private resolveAllowedHosts(): string[] {
     const port = process.env.API_PORT || '3000';
     const hosts = new Set<string>();
+    // Add a host and — unless it already carries an explicit port (bare `host:port` or IPv6) — its
+    // `:<port>` variant, so a bare hostname still matches a `host:<port>` Host header on a non-default
+    // port. Applied uniformly to localhost/container defaults, DOMAIN/LOCAL_DOMAIN, and MCP_ALLOWED_HOSTS.
+    const addWithPortVariant = (host: string) => {
+      hosts.add(host);
+      if (!host.includes(':')) {
+        hosts.add(`${host}:${port}`);
+      }
+    };
     for (const base of ['localhost', '127.0.0.1', process.env.HUB_CONTAINER_NAME || 'ci-os-hub']) {
-      hosts.add(base);
-      hosts.add(`${base}:${port}`);
+      addWithPortVariant(base);
     }
     let operatorHostConfigured = false;
     for (const domain of [process.env.DOMAIN, process.env.LOCAL_DOMAIN]) {
       const trimmed = domain?.trim();
       if (trimmed) {
-        // Add both the bare host and the :port variant — when the Hub is served on a non-default
-        // port the Host header is `domain:<port>`, which a bare-hostname allowlist would reject.
-        hosts.add(trimmed);
-        hosts.add(`${trimmed}:${port}`);
+        addWithPortVariant(trimmed);
         operatorHostConfigured = true;
       }
     }
     for (const extra of (process.env.MCP_ALLOWED_HOSTS ?? '').split(',')) {
       const trimmed = extra.trim();
       if (trimmed) {
-        hosts.add(trimmed);
+        addWithPortVariant(trimmed);
         operatorHostConfigured = true;
       }
     }
