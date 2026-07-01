@@ -41,11 +41,13 @@ describe('McpSessionRegistry.resolveAllowedHosts', () => {
     expect(r.logger.warn).toHaveBeenCalledWith(expect.stringContaining('MCP_DNS_REBINDING_PROTECTION'));
   });
 
-  it('does not warn when an operator host is configured, and includes it', () => {
+  it('does not warn when an operator host is configured, and includes it with a :port variant', () => {
     process.env.DOMAIN = 'hub.example.com';
     const r = makeRegistry();
     const hosts = r.resolveAllowedHosts();
     expect(hosts).toContain('hub.example.com');
+    // A :port variant is added so a non-default-port Host header (domain:<port>) still matches.
+    expect(hosts.some((h) => h.startsWith('hub.example.com:'))).toBe(true);
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 

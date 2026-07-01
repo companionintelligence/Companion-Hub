@@ -25,7 +25,11 @@ export class McpController {
    * with no session header creates a new transport + SDK server; subsequent calls must carry the
    * `Mcp-Session-Id` header issued at initialize.
    */
+  // The SDK transport writes 200 for a successful JSON-RPC response (error paths set their own status
+  // via sendJsonRpcError). Declare 200 explicitly so generated OpenAPI docs don't default this POST
+  // to 201 and mislead clients — @Res() means Nest applies no status itself, so this is doc-only.
   @Post()
+  @HttpCode(200)
   async handlePost(@Req() req: Request, @Res() res: Response): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 

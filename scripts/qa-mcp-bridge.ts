@@ -161,6 +161,19 @@ async function run(): Promise<Record<string, unknown>> {
       headers: rpcHeaders(sessionId),
       body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
     });
+    // Handle non-OK HTTP before parsing: McpAuthGuard returns a Nest error body (not a JSON-RPC
+    // envelope), which readRpcBody would otherwise parse into an object with no `error`/`result` and
+    // mis-score as an EMPTY tool list (warn). A 401 here is an auth mismatch (skip), like initialize.
+    if (listRes.status === 401) {
+      result.score = 'skip';
+      result.notes = 'Hub returned 401 on tools/list — MCP_API_KEY does not match the server key';
+      return result;
+    }
+    if (!listRes.ok) {
+      result.score = 'fail';
+      result.notes = `tools/list HTTP ${listRes.status} ${listRes.statusText}`.trim();
+      return result;
+    }
     const list = await readRpcBody(listRes);
     if (list.error) {
       result.score = 'fail';

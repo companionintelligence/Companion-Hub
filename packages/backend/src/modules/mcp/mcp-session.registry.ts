@@ -125,7 +125,10 @@ export class McpSessionRegistry implements OnModuleDestroy {
     for (const domain of [process.env.DOMAIN, process.env.LOCAL_DOMAIN]) {
       const trimmed = domain?.trim();
       if (trimmed) {
+        // Add both the bare host and the :port variant — when the Hub is served on a non-default
+        // port the Host header is `domain:<port>`, which a bare-hostname allowlist would reject.
         hosts.add(trimmed);
+        hosts.add(`${trimmed}:${port}`);
         operatorHostConfigured = true;
       }
     }
