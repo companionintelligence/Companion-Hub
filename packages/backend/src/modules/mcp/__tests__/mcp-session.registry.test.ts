@@ -17,12 +17,21 @@ function makeRegistry() {
 }
 
 describe('McpSessionRegistry.resolveAllowedHosts', () => {
-  const saved = { DOMAIN: process.env.DOMAIN, LOCAL_DOMAIN: process.env.LOCAL_DOMAIN, MCP_ALLOWED_HOSTS: process.env.MCP_ALLOWED_HOSTS };
+  const saved = {
+    DOMAIN: process.env.DOMAIN,
+    LOCAL_DOMAIN: process.env.LOCAL_DOMAIN,
+    MCP_ALLOWED_HOSTS: process.env.MCP_ALLOWED_HOSTS,
+    API_PORT: process.env.API_PORT,
+  };
+  // A distinctive, non-default port so the :port assertions prove the code uses API_PORT (not a
+  // hardcoded 3000) and can't falsely pass on a port value leaked from another suite's env.
+  const PORT = '7777';
 
   beforeEach(() => {
     delete process.env.DOMAIN;
     delete process.env.LOCAL_DOMAIN;
     delete process.env.MCP_ALLOWED_HOSTS;
+    process.env.API_PORT = PORT;
   });
 
   afterEach(() => {
@@ -46,8 +55,8 @@ describe('McpSessionRegistry.resolveAllowedHosts', () => {
     const r = makeRegistry();
     const hosts = r.resolveAllowedHosts();
     expect(hosts).toContain('hub.example.com');
-    // A :port variant is added so a non-default-port Host header (domain:<port>) still matches.
-    expect(hosts.some((h) => h.startsWith('hub.example.com:'))).toBe(true);
+    // The :port variant uses API_PORT, so a non-default-port Host header (domain:<port>) still matches.
+    expect(hosts).toContain(`hub.example.com:${PORT}`);
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 
@@ -57,9 +66,9 @@ describe('McpSessionRegistry.resolveAllowedHosts', () => {
     const hosts = r.resolveAllowedHosts();
     expect(hosts).toContain('a.example.com');
     expect(hosts).toContain('b.example.com');
-    // Bare MCP_ALLOWED_HOSTS entries also get a :port variant so a non-default-port Host matches.
-    expect(hosts.some((h) => h.startsWith('a.example.com:'))).toBe(true);
-    expect(hosts.some((h) => h.startsWith('b.example.com:'))).toBe(true);
+    // Bare MCP_ALLOWED_HOSTS entries also get a :API_PORT variant so a non-default-port Host matches.
+    expect(hosts).toContain(`a.example.com:${PORT}`);
+    expect(hosts).toContain(`b.example.com:${PORT}`);
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 
