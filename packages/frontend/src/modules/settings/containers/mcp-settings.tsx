@@ -170,7 +170,7 @@ export const McpSettingsContainer = () => {
       <div className="space-y-3">
         <p className="text-sm text-destructive">{error ?? t('MCP_SETTINGS_LOAD_ERROR')}</p>
         <Button variant="outline" onClick={() => void load()}>
-          {t('MCP_SETTINGS_RUN')}
+          {t('COMMON_RETRY')}
         </Button>
       </div>
     );

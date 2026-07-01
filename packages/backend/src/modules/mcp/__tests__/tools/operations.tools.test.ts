@@ -38,7 +38,7 @@ describe('OperationsTools', () => {
       operationRegistry.get.mockReturnValue({ requestId: 'r1', command: 'install', phase: 'pulling', tier: 'safe' } as never);
       appsService.getApp.mockResolvedValue({ app: { status: 'installing' } } as never);
 
-      const res = await tools.getOperationStatus({ appUrn: 'ci-store:nextcloud' });
+      const res = await tools.getOperationStatus({ appUrn: 'nextcloud:ci-store' });
       expect(res).toMatchObject({ inFlight: true, command: 'install', phase: 'pulling', requestId: 'r1', appStatus: 'installing' });
     });
 
@@ -46,7 +46,7 @@ describe('OperationsTools', () => {
       operationRegistry.get.mockReturnValue({ requestId: 'r1', command: 'install', phase: 'pulling', tier: 'safe' } as never);
       appsService.getApp.mockResolvedValue({ app: { status: 'running' } } as never);
 
-      const res = await tools.getOperationStatus({ appUrn: 'ci-store:nextcloud', requestId: 'other' });
+      const res = await tools.getOperationStatus({ appUrn: 'nextcloud:ci-store', requestId: 'other' });
       expect(res).toMatchObject({ inFlight: false, appStatus: 'running' });
     });
 
@@ -54,7 +54,7 @@ describe('OperationsTools', () => {
       operationRegistry.get.mockReturnValue(undefined);
       appsService.getApp.mockRejectedValue(new Error('not found'));
 
-      const res = await tools.getOperationStatus({ appUrn: 'ci-store:gone' });
+      const res = await tools.getOperationStatus({ appUrn: 'gone:ci-store' });
       expect(res).toEqual({ inFlight: false, appStatus: null });
     });
   });
@@ -62,8 +62,8 @@ describe('OperationsTools', () => {
   describe('hub_cancel_operation', () => {
     it('delegates to AppLifecycleService.cancelOperation', async () => {
       appLifecycleService.cancelOperation.mockResolvedValue({ outcome: 'cancelling', message: 'ok' } as never);
-      const res = await tools.cancelOperation({ appUrn: 'ci-store:nextcloud', requestId: 'r1' });
-      expect(appLifecycleService.cancelOperation).toHaveBeenCalledWith('ci-store:nextcloud', 'r1');
+      const res = await tools.cancelOperation({ appUrn: 'nextcloud:ci-store', requestId: 'r1' });
+      expect(appLifecycleService.cancelOperation).toHaveBeenCalledWith('nextcloud:ci-store', 'r1');
       expect(res).toMatchObject({ outcome: 'cancelling' });
     });
   });
