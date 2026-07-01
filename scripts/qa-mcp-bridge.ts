@@ -181,7 +181,7 @@ async function run(): Promise<Record<string, unknown>> {
       result.notes = 'endpoint connected + initialize OK, but tools/list is EMPTY';
     } else if (ns.ok) {
       result.score = 'pass';
-      result.notes = `bridge OK — ${names.length} tools (protocol ${initResult.protocolVersion})${bridged ? `, ${bridged} bridged (<appUrn>__<tool>)` : ' (Hub-native; no catalog app bridged — see gap)'}`;
+      result.notes = `bridge OK — ${names.length} tools (protocol ${initResult.protocolVersion})${bridged ? `, ${bridged} bridged (<storeSlug>_<appName>__<tool>)` : ' (Hub-native; no catalog app bridged — see gap)'}`;
     } else {
       result.score = 'warn';
       result.notes = `tools/list OK (${names.length} tools) but malformed bridged-tool names: ${ns.bad.slice(0, 4).join(', ')}`;

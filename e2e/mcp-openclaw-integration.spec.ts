@@ -128,7 +128,7 @@ async function readMcpBody(res: Response): Promise<Record<string, unknown>> {
 }
 
 /** Open a Streamable HTTP session (initialize) and return the session id + the initialize result. */
-async function mcpInitialize(): Promise<{ sessionId: string; body: Record<string, unknown> }> {
+async function mcpInitialize(): Promise<{ sessionId: string; status: number; body: Record<string, unknown> }> {
   const res = await fetch(`${BACKEND_URL}/api/mcp`, {
     method: 'POST',
     headers: mcpHeaders(),
@@ -139,7 +139,7 @@ async function mcpInitialize(): Promise<{ sessionId: string; body: Record<string
       params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'ci-e2e', version: '1.0' } },
     }),
   });
-  return { sessionId: res.headers.get('mcp-session-id') ?? '', body: await readMcpBody(res) };
+  return { sessionId: res.headers.get('mcp-session-id') ?? '', status: res.status, body: await readMcpBody(res) };
 }
 
 /**
@@ -148,14 +148,22 @@ async function mcpInitialize(): Promise<{ sessionId: string; body: Record<string
  * one per call keeps each test independent.)
  */
 async function jsonRpc(method: string, params: Record<string, unknown> = {}, id = 1) {
-  const { sessionId, body: initBody } = await mcpInitialize();
-  if (method === 'initialize') return { status: 200, body: initBody };
-  const response = await fetch(`${BACKEND_URL}/api/mcp`, {
-    method: 'POST',
-    headers: mcpHeaders(sessionId),
-    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-  });
-  return { status: response.status, body: await readMcpBody(response) };
+  const { sessionId, status: initStatus, body: initBody } = await mcpInitialize();
+  try {
+    if (method === 'initialize') return { status: initStatus, body: initBody };
+    const response = await fetch(`${BACKEND_URL}/api/mcp`, {
+      method: 'POST',
+      headers: mcpHeaders(sessionId),
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    });
+    return { status: response.status, body: await readMcpBody(response) };
+  } finally {
+    // Best-effort session teardown so per-call sessions don't accumulate (avoids inflating
+    // activeSessions and rate-limit flakiness in the suite).
+    if (sessionId) {
+      await fetch(`${BACKEND_URL}/api/mcp`, { method: 'DELETE', headers: mcpHeaders(sessionId) }).catch(() => undefined);
+    }
+  }
 }
 
 async function loginToHub(): Promise<string> {

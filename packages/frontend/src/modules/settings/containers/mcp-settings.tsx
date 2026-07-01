@@ -124,6 +124,19 @@ export const McpSettingsContainer = () => {
     setRunResult(null);
   }, []);
 
+  // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
+  // (insecure context) or blocked, in which case we stay silent rather than falsely claim success.
+  const copyToClipboard = useCallback((text: string, successMsg: string) => {
+    const clip = navigator.clipboard;
+    if (!clip) return;
+    clip.writeText(text).then(
+      () => toast.success(successMsg),
+      () => {
+        /* clipboard write blocked — no false-positive toast */
+      },
+    );
+  }, []);
+
   const runToolCall = useCallback(async () => {
     if (!runTool) return;
     let parsedArgs: Record<string, unknown>;
@@ -201,10 +214,7 @@ export const McpSettingsContainer = () => {
           <StatItem
             label={t('MCP_SETTINGS_ENDPOINT')}
             value={status.endpoint}
-            onClick={() => {
-              void navigator.clipboard?.writeText(status.endpoint);
-              toast.success(t('MCP_SETTINGS_ENDPOINT_COPIED'));
-            }}
+            onClick={() => copyToClipboard(status.endpoint, t('MCP_SETTINGS_ENDPOINT_COPIED'))}
           />
         </CardContent>
       </Card>
@@ -222,14 +232,7 @@ export const McpSettingsContainer = () => {
           {rotatedKey && (
             <div className="flex items-center gap-2">
               <code className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-xs">{rotatedKey}</code>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(rotatedKey);
-                  toast.success(t('MCP_SETTINGS_KEY_COPIED'));
-                }}
-              >
+              <Button variant="ghost" size="sm" onClick={() => copyToClipboard(rotatedKey, t('MCP_SETTINGS_KEY_COPIED'))}>
                 {t('MCP_SETTINGS_KEY_COPY')}
               </Button>
             </div>
