@@ -56,7 +56,7 @@ describe('LogsContainer', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Download full logs' }));
 
-    expect(mockDownloadHubLogsSdk).toHaveBeenCalledWith({ parseAs: 'blob' });
+    expect(mockDownloadHubLogsSdk).toHaveBeenCalledWith({ parseAs: 'stream' });
     expect(mockDownloadResponseAsFile).toHaveBeenCalledWith(response, 'ci-hub-logs.log');
     expect(mockToastError).not.toHaveBeenCalled();
   });
