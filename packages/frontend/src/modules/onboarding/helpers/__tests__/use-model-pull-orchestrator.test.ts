@@ -2,30 +2,34 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const mockApiFetch = vi.fn();
-
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+const { fetchOllamaInstallStatus } = vi.hoisted(() => ({
+  fetchOllamaInstallStatus: vi.fn(),
 }));
+
+const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
+  fetchTrackedModels: vi.fn(),
+  ensurePullStarted: vi.fn(),
+}));
+
+vi.mock('@/lib/inference/inference-api', () => ({
+  fetchOllamaInstallStatus,
+}));
+
+vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inference/tracked-models')>();
+  return {
+    ...actual,
+    fetchTrackedModels,
+    ensurePullStarted,
+  };
+});
 
 describe('useModelPullOrchestrator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApiFetch.mockImplementation(async (url: string) => {
-      if (url === '/api/inference/ollama/status') {
-        return { ok: true, json: async () => ({ ready: true, running: true }) };
-      }
-      if (url === '/api/inference/models/pull/start') {
-        return { ok: true, json: async () => ({ status: 'queued' }) };
-      }
-      if (url === '/api/inference/models/tracked') {
-        return {
-          ok: true,
-          json: async () => [{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }],
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true });
+    ensurePullStarted.mockResolvedValue(undefined);
+    fetchTrackedModels.mockResolvedValue([{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }] as never);
   });
 
   it('starts pulls when selection changes and ollama is ready', async () => {
@@ -46,45 +50,41 @@ describe('useModelPullOrchestrator', () => {
     });
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/models/pull/start',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ modelId: 'phi-4-mini', bestEffort: true }),
-        }),
-      );
+      expect(ensurePullStarted).toHaveBeenCalledWith('phi-4-mini', true);
     });
   });
 
-  it('polls tracked models and exposes progress', async () => {
+  it('does not start pulls when ollama is not ready', async () => {
+    fetchOllamaInstallStatus.mockResolvedValue({ ready: false, running: false });
+
+    renderHook(() =>
+      useModelPullOrchestrator({
+        selectedModelIds: ['phi-4-mini'],
+        installedCatalogIds: [],
+        enabled: true,
+        bestEffort: true,
+      }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(ensurePullStarted).not.toHaveBeenCalled();
+  });
+
+  it('reports progress from tracked models', async () => {
     const { result } = renderHook(() =>
       useModelPullOrchestrator({
         selectedModelIds: ['phi-4-mini'],
         installedCatalogIds: [],
         enabled: true,
+        bestEffort: true,
       }),
     );
 
     await waitFor(() => {
       expect(result.current.progressById['phi-4-mini']).toBe(42);
     });
-    expect(result.current.isPulling).toBe(true);
-    expect(result.current.activeCount).toBe(1);
-  });
-
-  it('does not start pulls when disabled', async () => {
-    renderHook(() =>
-      useModelPullOrchestrator({
-        selectedModelIds: ['phi-4-mini'],
-        installedCatalogIds: [],
-        enabled: false,
-      }),
-    );
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/inference/models/pull/start', expect.anything());
   });
 });

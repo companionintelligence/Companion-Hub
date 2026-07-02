@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { parsePullProgress } from '@/lib/inference/tracked-models';
 import type { TrackedModel } from '@ci-hub/common/types';
 
-const mockApiFetch = vi.fn();
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+const mockStartInferenceModelPull = vi.fn();
+vi.mock('@/lib/inference/inference-api', () => ({
+  startInferenceModelPull: (...args: unknown[]) => mockStartInferenceModelPull(...args),
+  fetchInferenceTrackedModels: vi.fn().mockResolvedValue([]),
 }));
 
 describe('parsePullProgress', () => {
@@ -30,18 +31,12 @@ describe('parsePullProgress', () => {
 });
 
 describe('ensurePullStarted', () => {
-  it('posts to pull/start', async () => {
+  it('starts model pull via inference API', async () => {
     vi.resetModules();
-    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'queued' }) });
+    mockStartInferenceModelPull.mockResolvedValue(undefined);
     const { ensurePullStarted } = await import('@/lib/inference/tracked-models');
     await ensurePullStarted('phi-4-mini', true);
 
-    expect(mockApiFetch).toHaveBeenCalledWith(
-      '/api/inference/models/pull/start',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ modelId: 'phi-4-mini', bestEffort: true }),
-      }),
-    );
+    expect(mockStartInferenceModelPull).toHaveBeenCalledWith('phi-4-mini', true);
   });
 });

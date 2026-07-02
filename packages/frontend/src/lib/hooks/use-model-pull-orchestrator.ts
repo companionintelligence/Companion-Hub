@@ -1,4 +1,4 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { fetchOllamaInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -70,9 +70,7 @@ export function useModelPullOrchestrator({
     let cancelled = false;
     void (async () => {
       try {
-        const res = await apiFetch('/api/inference/ollama/status');
-        if (!res.ok) return;
-        const data = (await res.json()) as { ready?: boolean; running?: boolean };
+        const data = (await fetchOllamaInstallStatus()) as { ready?: boolean; running?: boolean };
         if (!cancelled) setOllamaReady(!!(data.ready ?? data.running));
       } catch {
         if (!cancelled) setOllamaReady(false);
