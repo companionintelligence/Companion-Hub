@@ -63,9 +63,11 @@ export class AppService implements OnApplicationShutdown {
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
 
-      // SEC-MCP-8: migrate a legacy single MCP_API_KEY into the multi-key store (no-op if the store
-      // already has keys). Runs after migrate() so the mcp_api_key table exists.
-      await this.mcpApiKeyService.seedLegacyKeyIfEmpty();
+      // SEC-MCP-8: ensure a default MCP key exists in the multi-key store, seeded from MCP_API_KEY
+      // (no-op if the store already has keys). Runs after migrate() so the api_key table exists; the
+      // guard authenticates only against this store, so this keeps existing agents working and lets a
+      // wiped DB self-heal on the next boot.
+      await this.mcpApiKeyService.seedDefaultKeyIfEmpty();
 
       // Validate data directory integrity
       await this.validateDataDirectories();

@@ -180,11 +180,17 @@ describe('McpSettingsContainer', () => {
     await waitFor(() => expect(screen.getByTestId('mcp-created-key').textContent).toContain('deadbeefRAWKEY'));
   });
 
-  it('revokes a key via DELETE', async () => {
+  it('revokes a key via DELETE and refreshes the list so the row disappears', async () => {
     const user = userEvent.setup();
+    let revoked = false;
     mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/mcp-admin/keys/1' && init?.method === 'DELETE') {
+        revoked = true;
         return Promise.resolve({ ok: true, json: async () => ({ revoked: true }) });
+      }
+      // After the revoke, the reloaded list no longer contains 'Laptop CLI' (id 1).
+      if (url === '/api/mcp-admin/keys' && revoked) {
+        return Promise.resolve({ ok: true, json: async () => ({ keys: KEYS.keys.filter((k) => k.id !== 1) }) });
       }
       return mockGet(url);
     });
@@ -196,6 +202,9 @@ describe('McpSettingsContainer', () => {
     await user.click(within(row).getByRole('button', { name: 'MCP_SETTINGS_KEY_REVOKE' }));
 
     await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith('/api/mcp-admin/keys/1', expect.objectContaining({ method: 'DELETE' })));
+    // The refresh must actually re-render without the revoked key (not just fire the DELETE).
+    await waitFor(() => expect(screen.queryByText('Laptop CLI')).toBeNull());
+    expect(screen.getByText('openclaw')).toBeTruthy(); // the other key remains
   });
 
   it('filters the tool list by search', async () => {

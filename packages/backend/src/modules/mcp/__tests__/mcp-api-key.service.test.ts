@@ -65,6 +65,25 @@ describe('McpApiKeyService', () => {
       );
       expect(await service.validate('raw')).toBe(false);
     });
+
+    it('does not authenticate a key that exists only under a different audience', async () => {
+      // Audience isolation: the same secret stored for another surface (e.g. 'rest') must not open MCP.
+      // The repo mock honours its audience arg, so a lookup scoped to 'mcp' misses the 'rest' row.
+      const restRow = rowFrom({
+        name: 'rest',
+        prefix: 'p',
+        hashedKey: sha256('raw'),
+        managed: false,
+        ownerAppUrn: null,
+        expiresAt: null,
+        audience: 'rest',
+      });
+      repo.findByHash.mockImplementation(async (hash, audience) =>
+        hash === restRow.hashedKey && audience === restRow.audience ? restRow : undefined,
+      );
+      expect(await service.validate('raw')).toBe(false);
+      expect(repo.findByHash).toHaveBeenCalledWith(sha256('raw'), 'mcp'); // never queried the 'rest' slice
+    });
   });
 
   describe('provisionManagedKey', () => {
@@ -81,7 +100,7 @@ describe('McpApiKeyService', () => {
     it('mints a fresh key (revoking stale ones) when there is no valid existing key', async () => {
       repo.findByHash.mockResolvedValue(undefined);
       const key = await service.provisionManagedKey({ appUrn: 'openclaw:ci-store', appName: 'openclaw' });
-      expect(repo.deleteByOwnerAppUrn).toHaveBeenCalledWith('openclaw:ci-store');
+      expect(repo.deleteByOwnerAppUrn).toHaveBeenCalledWith('openclaw:ci-store', 'mcp'); // scoped to the MCP audience
       const stored = repo.insert.mock.calls[0][0];
       expect(stored.managed).toBe(true);
       expect(stored.ownerAppUrn).toBe('openclaw:ci-store');
@@ -89,24 +108,25 @@ describe('McpApiKeyService', () => {
     });
   });
 
-  describe('seedLegacyKeyIfEmpty', () => {
-    it('seeds the legacy env key when the store is empty', async () => {
+  describe('seedDefaultKeyIfEmpty', () => {
+    it('seeds MCP_API_KEY as the "Default" key when the store is empty', async () => {
       process.env.MCP_API_KEY = 'legacy-key';
       repo.countByAudience.mockResolvedValue(0);
-      await service.seedLegacyKeyIfEmpty();
+      await service.seedDefaultKeyIfEmpty();
       const stored = repo.insert.mock.calls[0][0];
-      expect(stored.name).toBe('Default (migrated)');
+      expect(stored.name).toBe('Default');
+      expect(stored.audience).toBe('mcp');
       expect(stored.hashedKey).toBe(sha256('legacy-key'));
     });
 
-    it('is a no-op when keys already exist or no legacy key is set', async () => {
+    it('is a no-op when keys already exist (so a deliberately revoked key is never resurrected) or no key is set', async () => {
       process.env.MCP_API_KEY = 'legacy-key';
       repo.countByAudience.mockResolvedValue(2);
-      await service.seedLegacyKeyIfEmpty();
+      await service.seedDefaultKeyIfEmpty();
 
       delete process.env.MCP_API_KEY;
       repo.countByAudience.mockResolvedValue(0);
-      await service.seedLegacyKeyIfEmpty();
+      await service.seedDefaultKeyIfEmpty();
 
       expect(repo.insert).not.toHaveBeenCalled();
     });

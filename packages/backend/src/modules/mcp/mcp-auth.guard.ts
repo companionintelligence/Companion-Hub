@@ -1,5 +1,4 @@
 import { type CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { timingSafeEqual } from 'node:crypto';
 import { LoggerService } from '@/core/logger/logger.service';
 import { McpApiKeyService } from './mcp-api-key.service';
 
@@ -27,27 +26,17 @@ export class McpAuthGuard implements CanActivate {
 
     const token = parts[1] as string;
 
-    // SEC-MCP-8: primary path — match against the hashed, multi-key store (lookup by SHA-256; the
-    // 256-bit key isn't brute-forceable, so no timing-safe compare is needed for the DB path).
+    // SEC-MCP-8: the hashed, multi-key store is the sole authority (lookup by SHA-256; the 256-bit
+    // key isn't brute-forceable, so no timing-safe compare is needed). We deliberately do NOT accept
+    // the env MCP_API_KEY here as a break-glass fallback: env-helpers always derives a value for it,
+    // so a live env compare would be a permanent credential no revoke could ever retire. The legacy
+    // env key stays usable because bootstrap seeds it into this store as the "Default" key (revocable
+    // like any other), and a wiped DB self-heals by reseeding that same derived value on next boot.
     if (await this.apiKeys.validate(token)) {
-      return true;
-    }
-
-    // Break-glass fallback: the env MCP_API_KEY is still accepted so operators can always recover
-    // (e.g. the DB was wiped/reseeded). Constant-time compared and logged so it's auditable.
-    const envKey = process.env.MCP_API_KEY;
-    if (envKey && this.constantTimeEqual(token, envKey)) {
-      this.logger.warn('MCP auth via break-glass env MCP_API_KEY (no matching stored key)');
       return true;
     }
 
     this.logger.warn('MCP auth failure: invalid API key');
     throw new UnauthorizedException('Invalid API key');
-  }
-
-  private constantTimeEqual(a: string, b: string): boolean {
-    const aBuf = Buffer.from(a);
-    const bBuf = Buffer.from(b);
-    return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
   }
 }

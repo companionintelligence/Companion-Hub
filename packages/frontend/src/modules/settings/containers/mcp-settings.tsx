@@ -166,8 +166,10 @@ export const McpSettingsContainer = () => {
       setCreatedKey(body.key); // shown once
       setCreateKeyOpen(false);
       setNewKeyName('');
-      await refreshKeys();
       toast.success(t('MCP_SETTINGS_KEY_CREATED'));
+      // best-effort: the key already exists and its raw value is revealed, so a list-refresh failure
+      // must not surface as "create failed" (which would push the operator to create a duplicate).
+      await refreshKeys().catch(() => undefined);
     } catch {
       toast.error(t('MCP_SETTINGS_KEY_CREATE_ERROR'));
     } finally {

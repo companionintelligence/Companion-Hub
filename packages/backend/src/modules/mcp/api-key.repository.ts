@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { apiKey } from '@/core/database/drizzle/schema';
 
@@ -51,17 +51,27 @@ export class ApiKeyRepository {
   }
 
   async countByAudience(audience: string): Promise<number> {
-    const rows = await this.db.query.apiKey.findMany({ where: eq(apiKey.audience, audience), columns: { id: true } });
-    return rows.length;
+    const [res] = await this.db.select({ count: count() }).from(apiKey).where(eq(apiKey.audience, audience));
+    return res?.count ?? 0;
   }
 
-  async deleteById(id: number): Promise<number> {
-    const result = await this.db.delete(apiKey).where(eq(apiKey.id, id)).returning().execute();
+  /** Delete by id, scoped to an audience so one surface can't revoke another surface's key by id. */
+  async deleteById(id: number, audience: string): Promise<number> {
+    const result = await this.db
+      .delete(apiKey)
+      .where(and(eq(apiKey.id, id), eq(apiKey.audience, audience)))
+      .returning()
+      .execute();
     return result.length;
   }
 
-  async deleteByOwnerAppUrn(ownerAppUrn: string): Promise<number> {
-    const result = await this.db.delete(apiKey).where(eq(apiKey.ownerAppUrn, ownerAppUrn)).returning().execute();
+  /** Delete an app's managed key(s) within one audience — never touches a different surface's keys. */
+  async deleteByOwnerAppUrn(ownerAppUrn: string, audience: string): Promise<number> {
+    const result = await this.db
+      .delete(apiKey)
+      .where(and(eq(apiKey.ownerAppUrn, ownerAppUrn), eq(apiKey.audience, audience)))
+      .returning()
+      .execute();
     return result.length;
   }
 

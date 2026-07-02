@@ -97,7 +97,7 @@ export class McpApiKeyService {
   }
 
   async revoke(id: number): Promise<boolean> {
-    const removed = await this.repo.deleteById(id);
+    const removed = await this.repo.deleteById(id, MCP_AUDIENCE); // scoped so MCP can't revoke another surface's key
     if (removed > 0) {
       this.logger.info('MCP API key revoked', id);
     }
@@ -117,7 +117,7 @@ export class McpApiKeyService {
         return existingRawKey; // still valid — preserve it (no churn, no restart needed)
       }
     }
-    await this.repo.deleteByOwnerAppUrn(appUrn); // clear any stale managed key(s) for this app
+    await this.repo.deleteByOwnerAppUrn(appUrn, MCP_AUDIENCE); // clear any stale MCP managed key(s) for this app
     const created = await this.create(appName, { managed: true, ownerAppUrn: appUrn });
     this.logger.info('MCP managed key provisioned', appUrn);
     return created.key;
@@ -125,31 +125,37 @@ export class McpApiKeyService {
 
   /** Revoke a companion app's managed key(s) — called on uninstall so access dies with the app. */
   async revokeManagedByApp(appUrn: string): Promise<void> {
-    const removed = await this.repo.deleteByOwnerAppUrn(appUrn);
+    const removed = await this.repo.deleteByOwnerAppUrn(appUrn, MCP_AUDIENCE);
     if (removed > 0) {
       this.logger.info('MCP managed key revoked on uninstall', appUrn, `(${removed})`);
     }
   }
 
   /**
-   * One-time migration: if the store is empty but a legacy `MCP_API_KEY` exists (env/settings.json),
-   * seed it as an operator key so upgraded appliances keep working and the key shows in the UI. The
-   * auth guard also accepts the env key as a break-glass fallback, so this is non-critical.
+   * Ensure the appliance has at least one usable MCP key. When the store is empty, seed the derived
+   * `MCP_API_KEY` (env-helpers always provides one) as the revocable "Default" operator key. This is
+   * how the store — now the sole auth authority (the guard no longer accepts the env key directly) —
+   * stays in sync with the value pre-upgrade agents already hold, and how a wiped DB self-heals on
+   * the next boot. It is NOT gated on "migrated": a fresh appliance's key is equally the default.
+   *
+   * Seeding is empty-store-only, so it never resurrects a specific key an operator deliberately
+   * revoked while other keys remain. To retire the Default key, create a replacement first (leaving
+   * the store non-empty) and then revoke Default — it will not be reseeded.
    */
-  async seedLegacyKeyIfEmpty(): Promise<void> {
+  async seedDefaultKeyIfEmpty(): Promise<void> {
     const legacy = process.env.MCP_API_KEY;
     if (!legacy || (await this.repo.countByAudience(MCP_AUDIENCE)) > 0) {
       return;
     }
     await this.repo.insert({
       audience: MCP_AUDIENCE,
-      name: 'Default (migrated)',
+      name: 'Default',
       prefix: legacy.slice(0, PREFIX_LEN),
       hashedKey: this.hash(legacy),
       managed: false,
       ownerAppUrn: null,
       expiresAt: null,
     });
-    this.logger.info('MCP: seeded legacy MCP_API_KEY as an operator key');
+    this.logger.info('MCP: seeded the default MCP key from MCP_API_KEY');
   }
 }
