@@ -158,6 +158,7 @@ export class DockerComposeBuilder {
       .setStdinOpen(params.stdinOpen)
       .setSysctls(params.sysctls)
       .setDNS(params.dns)
+      .setPlatform(params.platform)
       .setNetwork(`${appName}_${appStoreId}_network`);
 
     if (envFile) {

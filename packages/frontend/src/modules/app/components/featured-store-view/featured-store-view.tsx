@@ -75,7 +75,7 @@ function AppSection({
           ))}
         </div>
       ) : isError ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}
           {error?.message ? `: ${error.message}` : ''}.{' '}
           <button type="button" className="font-medium underline" onClick={onRetry}>

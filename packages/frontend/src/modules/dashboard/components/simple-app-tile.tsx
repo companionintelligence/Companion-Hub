@@ -21,9 +21,9 @@ export const SimpleAppTile = ({ name, urn, status, isInstalling, installConfig }
   const [slug] = urn.split(':');
 
   return (
-    <div className="flex items-center gap-3 p-2 cursor-pointer hover:opacity-80 transition-opacity w-full rounded-xl hover:bg-muted/40">
+    <div className="flex items-center gap-3 p-2 cursor-pointer hover:opacity-80 transition-opacity w-full rounded-md hover:bg-muted/40">
       <div className="relative flex-shrink-0">
-        <AppLogo urn={urn} alt={name} size={44} className={`rounded-xl shadow-sm${hasOverlay ? ' opacity-40' : ''}`} />
+        <AppLogo urn={urn} alt={name} size={44} className={`rounded-md shadow-sm${hasOverlay ? ' opacity-40' : ''}`} />
         {isInstalling && (
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-5 h-5 text-primary animate-spin" />

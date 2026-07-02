@@ -1,17 +1,33 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
-import { apiFetch } from '@/lib/api-fetch';
 import { checkForUpdates, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
+import { sdkOk } from '@/tests/sdk-mock-helpers';
 import toast from 'react-hot-toast';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
+
+const { getAutoUpdates } = vi.hoisted(() => ({
+  getAutoUpdates: vi.fn(),
+}));
 
 vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
 }));
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: vi.fn(),
+vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api-client/sdk.gen')>();
+  return {
+    ...actual,
+    getAutoUpdates,
+    setAutoUpdates: vi.fn(),
+    restartOnboarding: vi.fn(),
+    factoryReset: vi.fn(),
+    checkForUpdates: vi.fn(),
+  };
+});
+
+vi.mock('@/lib/hooks/use-demo-mode', () => ({
+  useDemoMode: () => false,
 }));
 
 vi.mock('@/lib/update-service', async () => {
@@ -41,7 +57,6 @@ vi.mock('@/components/markdown/markdown', () => ({
 }));
 
 const mockUseAppContext = vi.mocked(useAppContext);
-const mockApiFetch = vi.mocked(apiFetch);
 const mockCheckForUpdates = vi.mocked(checkForUpdates);
 const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
@@ -63,10 +78,7 @@ describe('GeneralActionsContainer', () => {
       refreshAppContext: vi.fn(),
     } as unknown as ReturnType<typeof useAppContext>);
 
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ enabled: true }),
-    } as Response);
+    getAutoUpdates.mockResolvedValue(sdkOk({ enabled: true }));
   });
 
   it('shows the desktop version and linux download installer action in tauri mode', async () => {

@@ -1,11 +1,6 @@
-import {
-  apiFetch,
-  getHubSessionIssuedAt,
-  getTauriSessionId,
-  HUB_SESSION_REFRESH_AFTER_MS,
-  markHubSessionIssuedAt,
-  setTauriSessionId,
-} from '@/lib/api-fetch';
+import { getHubSessionIssuedAt, getTauriSessionId, HUB_SESSION_REFRESH_AFTER_MS, markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
+import { refreshSession } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 
@@ -60,16 +55,16 @@ export async function refreshHubSessionIfDue(): Promise<boolean> {
 
   refreshInFlight = (async () => {
     try {
-      const res = await apiFetch('/api/auth/session/refresh', { method: 'POST' });
-      if (res.status === 401) {
+      const result = await sdkResult(refreshSession());
+      if (result.status === 401) {
         await handleSessionExpired();
         return false;
       }
-      if (!res.ok) {
+      if (!result.ok) {
         return false;
       }
 
-      const data = (await res.json()) as { sessionId?: string; issuedAt?: number };
+      const data = (result.data ?? {}) as { sessionId?: string; issuedAt?: number };
       if (data.sessionId && isTauriReleaseBuild()) {
         setTauriSessionId(data.sessionId, data.issuedAt);
       } else {

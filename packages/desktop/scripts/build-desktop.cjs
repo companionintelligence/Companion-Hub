@@ -25,6 +25,11 @@ if (!commandExists('cargo')) {
   process.exit(0);
 }
 
+execSync('node ../../scripts/sync-docker-compose-prod.cjs', {
+  cwd: process.cwd(),
+  stdio: 'inherit',
+});
+
 try {
   execSync('cargo tauri --version', {
     cwd: process.cwd(),
