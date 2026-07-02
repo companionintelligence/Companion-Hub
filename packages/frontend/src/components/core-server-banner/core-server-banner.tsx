@@ -39,7 +39,7 @@ export function CoreServerBanner({ onDismiss, system }: CoreServerBannerProps) {
       role="status"
       aria-live="polite"
       data-testid="core-server-banner"
-      className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-primary/[0.08] px-4 py-3 text-sm shadow-sm md:flex-row md:items-center md:justify-between"
+      className="flex flex-col gap-3 rounded-lg border border-primary/30 bg-primary/[0.08] px-4 py-3 text-sm shadow-sm md:flex-row md:items-center md:justify-between"
     >
       <span className="leading-relaxed text-foreground">
         <strong className="font-semibold text-primary">{t(titleKey)}</strong> <span className="text-muted-foreground">— {t(messageKey)}</span>

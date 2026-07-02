@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/Button';
-import { apiFetch } from '@/lib/api-fetch';
+import { downloadHubLogs as downloadHubLogsSdk } from '@/api-client/sdk.gen';
 import { useSSE } from '@/lib/hooks/use-sse';
 import { Download } from 'lucide-react';
 import { Suspense, lazy, useRef, useState } from 'react';
@@ -42,10 +42,10 @@ export const LogsContainer = () => {
   const downloadHubLogs = async () => {
     try {
       setIsDownloading(true);
-      const response = await apiFetch('/api/system/logs/download');
-
-      if (!response.ok) {
-        throw new Error(`Hub log download failed with status ${response.status}`);
+      const result = await downloadHubLogsSdk({ parseAs: 'stream' });
+      const response = result.response;
+      if (!response?.ok) {
+        throw new Error(`Hub log download failed with status ${response?.status ?? 'unknown'}`);
       }
 
       await downloadResponseAsFile(response, 'ci-hub-logs.log');

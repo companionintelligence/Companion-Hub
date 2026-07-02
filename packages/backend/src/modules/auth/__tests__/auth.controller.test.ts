@@ -11,6 +11,7 @@ import { AuthController } from '../auth.controller';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { SessionManager } from '../session.manager';
+import { signForwardAuthUser } from '../utils/forward-auth-signing';
 
 vi.mock('../portal-sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../portal-sso')>();
@@ -58,24 +59,36 @@ describe('AuthController', () => {
   });
 
   describe('traefik', () => {
-    it('should return 200 with X-CI-Hub-User header when user is authenticated', async () => {
+    it('should return 200 with a signed X-CI-Hub-User header when user is authenticated', async () => {
       // Arrange
+      config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'shared-secret' : undefined) as never);
       const mockUser = { id: 1, username: 'testuser' };
       const req = {
         user: mockUser,
       } as unknown as Request;
 
+      const setHeader = vi.fn();
       const res = {
         status: vi.fn().mockReturnThis(),
         send: vi.fn(),
-        setHeader: vi.fn(),
+        setHeader,
       } as unknown as Response;
 
       // Act
       await authController.traefik(req, res);
 
-      // Assert
-      expect(res.setHeader).toHaveBeenCalledWith('X-CI-Hub-User', 'testuser');
+      // Assert: identity header + signature + timestamp are all set, and the
+      // signature verifies against the shared secret and canonical message.
+      expect(setHeader).toHaveBeenCalledWith('X-CI-Hub-User', 'testuser');
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(Number.isFinite(timestamp)).toBe(true);
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('shared-secret', 'testuser', timestamp));
+
+      // A signature computed with any other secret must NOT match — this is what
+      // stops a container on ci_os_hub_network forging the identity header.
+      expect(headers['X-CI-Hub-User-Signature']).not.toBe(signForwardAuthUser('wrong-secret', 'testuser', timestamp));
+
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith('User authenticated for Traefik forward auth', { username: 'testuser' });

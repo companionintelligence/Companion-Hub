@@ -214,19 +214,23 @@ export class ModelRegistryService implements OnModuleInit {
    * falling back to sub-q4 quants when nothing else fits, and caps CPU-only picks to small/fast models.
    */
   private selectLlmsForHardware(profile: HardwareProfile): CuratedModel[] {
+    const tierAllowedIds = new Set(this.getModelsForTier(profile.tier).map((m) => m.id));
     const budget = this.computeInferenceBudget(profile);
-    const picks = this.pickBestFittingLlms(budget);
+    const picks = this.pickBestFittingLlms(budget, tierAllowedIds);
     if (picks.length > 0 || budget.cpuOnly) {
       return picks;
     }
     // A discrete GPU too small to hold any model (e.g. 2GB VRAM): fall back to CPU inference out of
     // system RAM — Ollama offloads to CPU — so a tiny-GPU box still gets a usable, size-capped pick.
-    return this.pickBestFittingLlms({
-      budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
-      cpuOnly: true,
-      vendor: 'cpu',
-      bandwidthConstrained: false,
-    });
+    return this.pickBestFittingLlms(
+      {
+        budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
+        cpuOnly: true,
+        vendor: 'cpu',
+        bandwidthConstrained: false,
+      },
+      tierAllowedIds,
+    );
   }
 
   /**
@@ -234,9 +238,10 @@ export class ModelRegistryService implements OnModuleInit {
    * spans small/medium/large size classes. Index 0 is always the single best model (biggest at q4+),
    * which app bootstrap auto-installs; the remaining slots cover a useful range of smaller options.
    */
-  private pickBestFittingLlms(budget: InferenceBudget): CuratedModel[] {
+  private pickBestFittingLlms(budget: InferenceBudget, tierAllowedIds: Set<string>): CuratedModel[] {
     const fitting = CURATED_MODELS.filter(
       (m) =>
+        tierAllowedIds.has(m.id) &&
         m.backend === 'ollama' &&
         m.modality === 'llm' &&
         m.requirements.gpuVendors.includes(budget.vendor) &&

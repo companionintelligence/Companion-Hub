@@ -1,5 +1,7 @@
 # Companion Hub — Distribution Channels
 
+> **Note (2026):** Winget, Chocolatey, AUR, Snap, and Nix manifests under this directory target **v0.2.4** and are maintained manually. Homebrew and Scoop are actively published via `scripts/publish-package-managers.sh`. Stale third-party manifests are kept for reference until refreshed with `scripts/update-package-manifests.sh`.
+
 This directory contains package manifests and formulas for distributing **Companion Hub v0.2.4** across all major desktop package managers.
 
 ---

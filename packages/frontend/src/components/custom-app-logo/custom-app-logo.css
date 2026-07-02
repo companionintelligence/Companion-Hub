@@ -18,7 +18,7 @@
   cursor: pointer;
   border: none;
   padding: 0;
-  border-radius: 30px;
+  border-radius: var(--radius-lg);
 }
 
 .custom-app-logo-overlay:hover {

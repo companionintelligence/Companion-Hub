@@ -151,6 +151,8 @@ export const appInfoObjectSchema = z.object({
     .optional()
     .default(0),
   force_pull: z.boolean().optional().default(false),
+  /** When set, Hub pins all compose services to this Docker platform (e.g. linux/amd64 on Apple Silicon). */
+  runtime_platform: z.string().optional(),
   agents: agentConfigSchema,
   hub_integration: hubIntegrationSchema,
 });

@@ -10,6 +10,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 
 export interface AppInfo {
   name: string;
@@ -72,6 +73,7 @@ export class CloudflareClientService {
   constructor(
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
+    private portalClient: PortalClientService,
   ) {
     const publicCiCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
     const ciCloudUrl = this.configService.getOutboundCiCloudUrl() || DEFAULT_CI_CLOUD_URL;
@@ -86,12 +88,8 @@ export class CloudflareClientService {
   }
 
   private getRequestConfig() {
-    const authToken = this.configService.get('ciHubApiKey');
     return {
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        'x-device-key': authToken,
-      },
+      headers: this.portalClient.getDeviceAuthHeaders(),
     };
   }
 
@@ -198,15 +196,12 @@ export class CloudflareClientService {
     try {
       this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
       this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
-      const response = await this.client.post(
-        'tunnels/state',
-        {
-          organizationId,
-          tunnelId: this.tunnelId,
-          apps,
-        },
-        this.getRequestConfig(),
-      );
+      const responseData = await this.portalClient.postTunnelState({
+        organizationId,
+        tunnelId: this.tunnelId,
+        apps,
+      });
+      const response = { data: responseData };
 
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
 

@@ -151,8 +151,128 @@ describe('ModelPullerService.evaluatePull', () => {
 
     expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pulling phi-4-mini via ollama (backendId: phi4-mini)');
     expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 1% pulling manifest');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 5% pulling manifest');
     expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 27% pulling layers');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 29% pulling layers');
     expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 100% verifying sha256 digest');
     expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Successfully pulled phi-4-mini');
+  });
+});
+
+describe('ModelPullerService.startPull', () => {
+  let service: ModelPullerService;
+  let logger: MockProxy<LoggerService>;
+  let memoryManager: MockProxy<MemoryManagerService>;
+  let hostMetrics: MockProxy<HostMetricsService>;
+  let modelRegistry: MockProxy<ModelRegistryService>;
+  let ollamaBackend: MockProxy<OllamaBackend>;
+
+  beforeEach(async () => {
+    const hardwareInspector = mock<HardwareInspectorService>();
+    logger = mock<LoggerService>();
+    memoryManager = mock<MemoryManagerService>();
+    hostMetrics = mock<HostMetricsService>();
+    modelRegistry = mock<ModelRegistryService>();
+    ollamaBackend = mock<OllamaBackend>();
+
+    hardwareInspector.getProfile.mockResolvedValue(profile);
+    memoryManager.calculateBudget.mockReturnValue({
+      totalVramMb: 8192,
+      totalRamMb: 16384,
+      systemReservedRamMb: 1024,
+      dockerOverheadMb: 0,
+      appContainerBudgetMb: 0,
+      modelBudgetVramMb: 7000,
+      modelBudgetRamMb: 15000,
+      modelUsedVramMb: 0,
+      modelUsedRamMb: 0,
+      pinnedVramMb: 0,
+      pinnedRamMb: 0,
+    });
+    memoryManager.canFitModel.mockReturnValue({ fits: true, availableMb: 7000, requiredMb: 4096 });
+    hostMetrics.readHostSection.mockResolvedValue(null);
+    hostMetrics.getDisplayLoad.mockResolvedValue({
+      diskSize: 100,
+      diskUsed: 50,
+      percentUsed: 50,
+      cpuLoad: 0,
+      cpuCores: 8,
+      memoryTotal: 16,
+      memoryUsed: 8,
+      percentUsedMemory: 50,
+      hasVmWedge: false,
+      runtimeKind: 'container-only',
+    });
+    modelRegistry.getCuratedModel.mockReturnValue(curated);
+    modelRegistry.getModelsForTier.mockReturnValue([curated]);
+    modelRegistry.getTrackedModel.mockReturnValue(undefined);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    ollamaBackend.pullModel.mockResolvedValue(undefined);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ModelPullerService,
+        { provide: LoggerService, useValue: logger },
+        { provide: ModelRegistryService, useValue: modelRegistry },
+        { provide: HardwareInspectorService, useValue: hardwareInspector },
+        { provide: MemoryManagerService, useValue: memoryManager },
+        { provide: HostMetricsService, useValue: hostMetrics },
+        { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: VllmBackend, useValue: mock<VllmBackend>() },
+        { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+      ],
+    }).compile();
+
+    service = moduleRef.get(ModelPullerService);
+  });
+
+  it('returns already_installed without enqueueing', async () => {
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
+    const result = await service.startPull('phi-4-mini');
+    expect(result.status).toBe('already_installed');
+    expect(ollamaBackend.pullModel).not.toHaveBeenCalled();
+  });
+
+  it('dedupes concurrent startPull calls', async () => {
+    let resolvePull: (() => void) | undefined;
+    ollamaBackend.pullModel.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePull = resolve;
+        }),
+    );
+
+    const first = await service.startPull('phi-4-mini');
+    const second = await service.startPull('phi-4-mini');
+
+    expect(first.status).toBe('queued');
+    expect(second.status).toBe('in_progress');
+    resolvePull?.();
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('skips blocked pulls when bestEffort is true', async () => {
+    memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
+    const result = await service.startPull('phi-4-mini', { bestEffort: true });
+    expect(result.status).toBe('skipped');
+    expect(result.reason).toMatch(/memory/i);
+    expect(ollamaBackend.pullModel).not.toHaveBeenCalled();
+  });
+
+  it('queues pulls serially', async () => {
+    const order: string[] = [];
+    ollamaBackend.pullModel.mockImplementation(async (modelId) => {
+      order.push(modelId);
+    });
+
+    const secondCurated = { ...curated, id: 'llama3-3-70b', backendModelId: 'llama3.3:70b' };
+    modelRegistry.getCuratedModel.mockImplementation((id: string) => (id === 'llama3-3-70b' ? secondCurated : curated));
+    modelRegistry.getModelsForTier.mockReturnValue([curated, secondCurated]);
+
+    await service.startPull('phi-4-mini');
+    await service.startPull('llama3-3-70b');
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(order).toEqual(['phi4-mini', 'llama3.3:70b']);
   });
 });

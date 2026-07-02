@@ -7,6 +7,7 @@ import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import axios from 'axios';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
@@ -22,6 +23,7 @@ describe('RegistrationService', () => {
   let traefikConfigService: MockProxy<TraefikConfigService>;
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
+  let portalClient: MockProxy<PortalClientService>;
   const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
@@ -32,6 +34,8 @@ describe('RegistrationService', () => {
     traefikConfigService.writeHubRoute.mockResolvedValue(undefined);
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
+    portalClient = mock<PortalClientService>();
+    portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
 
@@ -47,6 +51,7 @@ describe('RegistrationService', () => {
         { provide: TraefikConfigService, useValue: traefikConfigService },
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
+        { provide: PortalClientService, useValue: portalClient },
       ],
     }).compile();
 

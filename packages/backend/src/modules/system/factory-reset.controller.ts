@@ -2,6 +2,7 @@ import { Controller, Post, Body, Req, UseGuards, ForbiddenException } from '@nes
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { FactoryResetDto } from './dto/factory-reset.dto';
 import { FactoryResetService } from './factory-reset.service';
 
@@ -11,7 +12,7 @@ export class FactoryResetController {
   constructor(private readonly factoryResetService: FactoryResetService) {}
 
   @Post('factory-reset')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Wipe all Hub state and return to first-operator setup' })
   @ApiResponse({ status: 200, description: 'Factory reset completed' })
   @ApiResponse({ status: 403, description: 'Operator authentication required' })

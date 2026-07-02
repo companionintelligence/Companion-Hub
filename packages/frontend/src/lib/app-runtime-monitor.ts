@@ -1,4 +1,5 @@
-import { apiFetch } from './api-fetch';
+import { getResourceMonitor, getRuntimeHealth } from '@/api-client/sdk.gen';
+import { unwrapSdk } from '@/lib/sdk-unwrap';
 
 export interface AppContainerRuntimeStats {
   containerId: string;
@@ -51,22 +52,12 @@ export interface AppRuntimeMonitorSnapshot {
   history: AppRuntimeHistorySample[];
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
-  }
-
-  return (await response.json()) as T;
-}
-
 export async function fetchAppRuntimeHealth(appUrn: string): Promise<AppRuntimeHealth> {
-  const response = await apiFetch(`/api/apps/${encodeURIComponent(appUrn)}/runtime-health`);
-  return parseJson<AppRuntimeHealth>(response);
+  return unwrapSdk(getRuntimeHealth({ path: { urn: appUrn } } as Parameters<typeof getRuntimeHealth>[0])) as Promise<AppRuntimeHealth>;
 }
 
 export async function fetchAppRuntimeMonitor(): Promise<AppRuntimeMonitorSnapshot> {
-  const response = await apiFetch('/api/apps/resource-monitor');
-  return parseJson<AppRuntimeMonitorSnapshot>(response);
+  return unwrapSdk(getResourceMonitor()) as Promise<AppRuntimeMonitorSnapshot>;
 }
 
 export function formatCpuLimitLabel(value: string | null, usesDefaultCpuLimit: boolean): string {

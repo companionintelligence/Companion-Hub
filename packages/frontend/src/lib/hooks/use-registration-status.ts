@@ -1,18 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-fetch';
+import { getStatusOptions } from '@/api-client/@tanstack/react-query.gen';
+import { POLLING } from '@/lib/polling-budget';
 import type { RegistrationStatus } from '@/lib/registration-status';
 
 export const useRegistrationStatus = () => {
-  return useQuery<RegistrationStatus>({
-    queryKey: ['registration', 'status'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/registration/status');
-      if (!res.ok) {
-        throw new Error('Failed to fetch registration status');
-      }
-      return res.json();
+  return useQuery({
+    ...getStatusOptions(),
+    select: (data) => data as RegistrationStatus,
+    refetchInterval: (query) => {
+      const status = query.state.data as RegistrationStatus | undefined;
+      return status?.phase === 'locally_ready' ? 30_000 : POLLING.REGISTRATION_MS;
     },
-    refetchInterval: (query) => (query.state.data?.phase === 'locally_ready' ? 30_000 : 5_000),
     retry: 2,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });

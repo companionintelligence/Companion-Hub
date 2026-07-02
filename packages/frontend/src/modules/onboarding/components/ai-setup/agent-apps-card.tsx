@@ -53,6 +53,7 @@ export const AgentFrameworkCard = ({
 }: AgentFrameworkCardProps) => {
   const { t } = useTranslation();
   const configured: Record<RemoteAccessMode, boolean> = { tailscale: tailscaleAvailable, cloudflare: cloudflareAvailable };
+  const remoteAccessDisabled = frameworks.length === 0;
 
   return (
     <StepSection number={1} title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
@@ -78,23 +79,26 @@ export const AgentFrameworkCard = ({
           </p>
         )}
 
-        <fieldset className="rounded-2xl border border-border bg-foreground/[0.015] p-4">
+        <fieldset className={cn('rounded-md border border-border bg-foreground/[0.015] p-4', remoteAccessDisabled && 'opacity-60')}>
           <legend className="px-1 text-xs font-medium">{t('ONBOARDING_REMOTE_ACCESS')}</legend>
           <div className="mt-1 grid grid-cols-2 gap-2">
             {ACCESS_OPTIONS.map(({ mode, labelKey, transportKey, Icon }) => {
               const isSelected = remoteAccess.includes(mode);
+              const disabled = remoteAccessDisabled;
               return (
                 <label
                   key={mode}
                   className={cn(
-                    'flex cursor-pointer items-start gap-2 rounded-lg border p-2.5 transition-colors',
-                    isSelected ? 'border-primary bg-primary/10 ring-1 ring-primary/30' : 'border-border hover:bg-muted/50',
+                    'flex items-start gap-2 rounded-lg border p-2.5 transition-colors',
+                    disabled ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
+                    isSelected && !disabled ? 'border-primary bg-primary/10 ring-1 ring-primary/30' : 'border-border hover:bg-muted/50',
                   )}
                 >
                   <input
                     type="checkbox"
                     className="sr-only"
                     checked={isSelected}
+                    disabled={disabled}
                     onChange={() => onToggleAccess(mode)}
                     data-testid={`agent-access-${mode}`}
                   />
@@ -118,7 +122,7 @@ export const AgentFrameworkCard = ({
           </div>
           {remoteAccess.length === 0 && (
             <p className="mt-1 text-xs text-muted-foreground" data-testid="agent-access-hint">
-              {t('ONBOARDING_REMOTE_ACCESS_HINT')}
+              {remoteAccessDisabled ? t('ONBOARDING_REMOTE_ACCESS_REQUIRES_AGENT') : t('ONBOARDING_REMOTE_ACCESS_HINT')}
             </p>
           )}
         </fieldset>

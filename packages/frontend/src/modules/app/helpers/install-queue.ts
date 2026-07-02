@@ -1,4 +1,5 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { getInstallQueue } from '@/api-client/sdk.gen';
+import { unwrapSdk } from '@/lib/sdk-unwrap';
 
 export const installQueueQueryKey = ['install-queue'] as const;
 
@@ -13,9 +14,5 @@ export type InstallQueueState = {
 };
 
 export async function fetchInstallQueue(): Promise<InstallQueueState> {
-  const res = await apiFetch('/api/apps/install-queue');
-  if (!res.ok) {
-    throw new Error(`Failed to load install queue (${res.status})`);
-  }
-  return (await res.json()) as InstallQueueState;
+  return unwrapSdk(getInstallQueue()) as Promise<InstallQueueState>;
 }

@@ -27,6 +27,7 @@ import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
+import { initHostProbe } from './init-host-probe';
 import { initHubDataDirs } from './init-hub-data-dirs';
 import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase, publicWebRepairHasFailures } from './public-web-cli';
@@ -892,6 +893,7 @@ export async function startHub(mode: StartMode, env: HubEnv) {
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: envFileName });
   const envOverrides = buildEnvOverrides(envFileName);
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
+  await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: envFileName, ...envOverrides });
 
   if (mode === 'local-dev') {
     ensureLocalDevPortsAvailable();
@@ -944,6 +946,7 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
 
   await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir }, dataDir);
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
+  await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: ctx.envFile, ...envOverrides }, dataDir);
 
   try {
     const portHeal = healHubPortsBeforeStartup(ctx.envFile, (message) => {

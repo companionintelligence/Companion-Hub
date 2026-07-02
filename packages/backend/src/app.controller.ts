@@ -249,10 +249,10 @@ export class AppController {
     }
 
     // Parallelize all independent async calls
-    const [version, org, installedApps, tailscaleStatus] = await Promise.all([
+    const [version, org, updatesAvailable, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
-      this.appsService.getInstalledApps(),
+      this.appsService.countUpdatesAvailable(),
       this.tailscaleService.getStatus().catch(() => ({
         installed: false,
         connected: false,
@@ -264,9 +264,7 @@ export class AppController {
       })),
     ]);
 
-    const updatesAvailable = installedApps.filter(({ app, metadata }) => {
-      return Number(app.version) < Number(metadata?.latestVersion ?? 0) && app.status !== 'updating';
-    });
+    const updatesAvailableCount = updatesAvailable;
 
     // Extract slug from domain
     const orgSlug = org?.slug;
@@ -283,11 +281,17 @@ export class AppController {
     return AppContextDto.parse(
       {
         version,
-        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
+        userSettings: {
+          ...userSettings,
+          ciHubOrganizationSlug: orgSlug,
+          ciHubOrganizationLabel: orgLabel,
+          ciHubDeviceSlug: deviceSlug,
+          ciHubHubSubdomain: org?.hubSubdomain ?? undefined,
+        },
         appDataRootHostPath,
         user: req.user as UserDto,
         apps: [],
-        updatesAvailable: updatesAvailable.length,
+        updatesAvailable: updatesAvailableCount,
         isProduction,
         cloudflareAvailable,
         tailscaleAvailable,

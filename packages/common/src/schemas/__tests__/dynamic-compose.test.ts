@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-import { serviceSchema as serviceSchemaZod, dynamicComposeSchema as dynamicComposeSchemaZod } from '../dynamic-compose.js';
+import {
+  serviceSchema as serviceSchemaZod,
+  dynamicComposeSchema as dynamicComposeSchemaZod,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from '../dynamic-compose.js';
 import type { ZodAny } from 'zod';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
@@ -1001,5 +1006,52 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
         }
       });
     });
+  });
+});
+
+describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
+  it('flags privileged services without a grant', () => {
+    const violations = collectServiceSecurityViolations({ privileged: true });
+    expect(violations.map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED');
+  });
+
+  it('allows privileged services when granted', () => {
+    expect(collectServiceSecurityViolations({ privileged: true }, { privileged: true })).toHaveLength(0);
+  });
+
+  it('flags host network and host pid namespaces', () => {
+    expect(collectServiceSecurityViolations({ networkMode: 'host' }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ pid: 'host' }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ networkMode: 'host' }, { networkModeHost: true })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ pid: 'host' }, { pidHost: true })).toHaveLength(0);
+  });
+
+  it('flags denied host-path binds and honors per-path grants', () => {
+    const svc = { volumes: [{ hostPath: '/var/run/docker.sock' }] };
+    expect(collectServiceSecurityViolations(svc).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    expect(collectServiceSecurityViolations(svc, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(0);
+    // a granted path does not whitelist a different denied path
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/root/.ssh' }] }, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(1);
+  });
+
+  it('never flags the benign /etc/localtime and /etc/timezone binds', () => {
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc/localtime' }, { hostPath: '/etc/timezone' }] })).toHaveLength(0);
+  });
+
+  it('keeps the trusted allowlist tight and self-consistent', () => {
+    // Guard against accidental broadening: every allowlisted app must resolve to zero
+    // violations for exactly the access it is granted, and nothing else.
+    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual(['coolify', 'home-assistant', 'netdata', 'steam-headless']);
+    expect(
+      collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations(
+        { volumes: [{ hostPath: '/proc' }, { hostPath: '/sys' }, { hostPath: '/var/run/docker.sock' }] },
+        TRUSTED_APP_SECURITY_ALLOWLIST.netdata,
+      ),
+    ).toHaveLength(0);
   });
 });
