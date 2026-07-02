@@ -231,6 +231,7 @@ const serviceSchemaV2Object = z.object({
     .string()
     .optional()
     .or(z.array(z.string('CUSTOM_APP_ERROR_DNS_INVALID')).optional()),
+  platform: z.string().optional(),
 });
 
 export const serviceSchemaV2 = serviceSchemaV2Object.superRefine((service, ctx) => {

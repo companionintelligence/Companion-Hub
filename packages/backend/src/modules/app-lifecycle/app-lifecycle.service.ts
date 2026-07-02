@@ -558,10 +558,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // (registry/network couldn't be inspected) does not block the install.
     const archCheck = await this.imageSizeService.verifyAppArchitecture(appUrn, architecture);
     if (archCheck && !archCheck.ok) {
-      this.logger.warn(
-        `App ${appUrn} image ${archCheck.image} does not publish a ${architecture} manifest (available: ${archCheck.available.join(', ') || 'none'})`,
+      const canEmulateAmd64 = architecture === 'arm64' && archCheck.available.includes('amd64') && appInfo.supported_architectures?.includes('amd64');
+
+      if (!canEmulateAmd64) {
+        this.logger.warn(
+          `App ${appUrn} image ${archCheck.image} does not publish a ${architecture} manifest (available: ${archCheck.available.join(', ') || 'none'})`,
+        );
+        throw new TranslatableError('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED', { id: appUrn, arch: architecture });
+      }
+
+      this.logger.info(
+        `App ${appUrn} will run amd64 images via platform emulation on ${architecture} host (image ${archCheck.image} lacks native ${architecture} manifest)`,
       );
-      throw new TranslatableError('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED', { id: appUrn, arch: architecture });
     }
 
     if (!appInfo.exposable) {
