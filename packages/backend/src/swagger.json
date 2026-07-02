@@ -4005,6 +4005,104 @@
         ]
       }
     },
+    "/api/debug/seed": {
+      "post": {
+        "operationId": "seedDatabase",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/set-all-app-update-available": {
+      "post": {
+        "operationId": "setAllAppUpdateAvailable",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/set-all-subnets-to-null": {
+      "post": {
+        "operationId": "setAllAppSubnetToNull",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/start-all-apps": {
+      "post": {
+        "operationId": "startAllApps",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/backup-all-apps": {
+      "post": {
+        "operationId": "backupAllApps",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/increment-all-app-versions": {
+      "post": {
+        "operationId": "incrementAllAppVersions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
+    "/api/debug/uninstall-all-apps": {
+      "post": {
+        "operationId": "uninstallAllApps",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Debug"
+        ]
+      }
+    },
     "/api/mcp": {
       "post": {
         "operationId": "handlePost",
