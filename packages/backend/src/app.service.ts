@@ -185,8 +185,12 @@ export class AppService implements OnApplicationShutdown {
 
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
         let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com');
-        if (process.env.NODE_ENV === 'production') {
-          next = next.replace(/^(\s*)insecure:\s*true\s*$/m, '$1insecure: false');
+        // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
+        // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
+        // dashboard for explicit local development — never in production/staging/test,
+        // where the prod compose publishes :8080 to the host.
+        if (process.env.NODE_ENV === 'development') {
+          next = next.replace(/^(\s*)insecure:\s*false\s*$/m, '$1insecure: true');
         }
         return next;
       });
