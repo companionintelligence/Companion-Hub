@@ -8,6 +8,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -53,6 +54,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
     @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
+    @Inject(forwardRef(() => PortalClientService)) private readonly portalClient: PortalClientService,
     @Inject(forwardRef(() => TraefikConfigService)) private readonly traefikConfigService: TraefikConfigService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
@@ -76,6 +78,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async onApplicationBootstrap() {
+    setImmediate(() => {
+      void this.runDeferredBootstrap();
+    });
+  }
+
+  private async runDeferredBootstrap() {
     // Before checking full registration status, try to recover the tunnel
     // token file from the database. isRegistered() requires both a DB record
     // AND the token file on disk, so we must restore the file first.
@@ -550,12 +558,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Reset device registration to allow re-pairing.
    * Clears in-memory state, database records, tunnel token, and resolved env.
    */
-  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected'; deregisterFromPortal?: boolean }): Promise<void> {
     const reason = options?.reason ?? 'manual';
     if (reason === 'portal_rejected') {
       this.logger.info('Clearing local device registration after CI Portal rejected check-in');
     } else {
       this.logger.info('Resetting device registration...');
+    }
+
+    if (options?.deregisterFromPortal) {
+      try {
+        const deviceId = await this.getDeviceId();
+        await this.portalClient.postDeviceDeregister(deviceId);
+        this.logger.info('Requested Portal deregistration for paired reset');
+      } catch (error) {
+        this.logger.warn(
+          `Portal deregistration failed during reset (continuing local reset): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     // Transition via setPhase so the change is logged consistently.
