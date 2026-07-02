@@ -2,7 +2,8 @@ import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
-import { apiFetch } from '@/lib/api-fetch';
+import { exchangePortalDesktopLogin } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 import { takePendingDesktopPortalAuth, type DesktopPortalAuthPayload } from '@/lib/deep-link-auth';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { rememberPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
@@ -104,12 +105,16 @@ export default () => {
       processedDesktopPortalTokens.current.add(payload.token);
 
       try {
-        const res = await apiFetch(`/api/auth/portal/desktop-exchange?token=${encodeURIComponent(payload.token)}`);
-        if (!res.ok) {
-          throw new Error(`Desktop portal exchange failed with status ${res.status}`);
+        const result = await sdkResult(
+          exchangePortalDesktopLogin({
+            query: { token: payload.token },
+          } as Parameters<typeof exchangePortalDesktopLogin>[0]),
+        );
+        if (!result.ok) {
+          throw new Error(`Desktop portal exchange failed with status ${result.status}`);
         }
 
-        const data = (await res.json()) as { sessionId: string; redirectPath: string };
+        const data = (result.data ?? {}) as { sessionId: string; redirectPath: string };
         setTauriSessionId(data.sessionId);
         setUserContext({ isLoggedIn: true });
         await refreshUserContext();

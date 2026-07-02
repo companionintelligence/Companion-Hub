@@ -1,6 +1,7 @@
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { executeRehydrate, getRehydrateStatus } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 import { clearStoredDriftChoice, getStoredDriftChoice } from '@/lib/registration-state-drift';
 import { QueuedInstallsIndicator } from '@/modules/dashboard/components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
@@ -71,12 +72,12 @@ function RestoreAppsContent() {
 
     (async () => {
       try {
-        const statusRes = await apiFetch('/api/app-lifecycle/rehydrate/status');
-        if (!statusRes.ok) {
+        const statusResult = await sdkResult(getRehydrateStatus());
+        if (!statusResult.ok) {
           throw new Error(t('RESTORE_APPS_STATUS_FAILED'));
         }
 
-        const status = await readApiJson<RehydrationStatus>(statusRes);
+        const status = statusResult.data as RehydrationStatus | null;
         if (!status) {
           throw new Error(t('RESTORE_APPS_STATUS_FAILED'));
         }
@@ -88,17 +89,13 @@ function RestoreAppsContent() {
         }
 
         setIsExecuting(true);
-        const res = await apiFetch('/api/app-lifecycle/rehydrate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: 'restore' }),
-        });
-        const data = await readApiJson<RehydrationExecuteResult & { message?: string }>(res);
+        const executeResult = await sdkResult(executeRehydrate({ body: { source: 'restore' } } as Parameters<typeof executeRehydrate>[0]));
+        const data = executeResult.data as (RehydrationExecuteResult & { message?: string }) | undefined;
         if (!data) {
           throw new Error(t('RESTORE_APPS_EXECUTE_FAILED'));
         }
 
-        if (!res.ok || !data.success) {
+        if (!executeResult.ok || !data.success) {
           throw new Error(data.message ?? t('RESTORE_APPS_EXECUTE_FAILED'));
         }
 
@@ -226,15 +223,15 @@ function RestoreAppsGate({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const res = await apiFetch('/api/app-lifecycle/rehydrate/status');
-        if (!res.ok) {
+        const statusResult = await sdkResult(getRehydrateStatus());
+        if (!statusResult.ok) {
           if (!cancelled) {
             setAllowed(false);
           }
           return;
         }
 
-        const status = await readApiJson<{ restoreIntent?: boolean; completed?: boolean }>(res);
+        const status = statusResult.data as { restoreIntent?: boolean; completed?: boolean } | undefined;
         if (!cancelled) {
           setAllowed(Boolean(status?.restoreIntent) && !status?.completed);
         }
