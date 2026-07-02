@@ -2,6 +2,7 @@
  * Preload for `gen:swagger`: loads monorepo root `.env*` before Nest imports
  * (so `constants.ts` sees CI_HUB_APP_DIR, ROOT_FOLDER_HOST, CI_CLOUD_URL, etc.)
  */
+const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
 const dotenv = require('dotenv');
@@ -24,3 +25,10 @@ if (!process.env.CI_HUB_VERSION) {
 }
 
 process.env.CI_HUB_OPENAPI_GENERATE = '1';
+
+// CI and fresh clones often have no `.env*` — avoid mkdir `/data` (EACCES).
+const openapiDataDir = process.env.CI_HUB_DATA_DIR || path.join(os.tmpdir(), 'ci-hub-openapi-gen');
+process.env.CI_HUB_DATA_DIR = openapiDataDir;
+if (!process.env.ROOT_FOLDER_HOST) {
+  process.env.ROOT_FOLDER_HOST = openapiDataDir;
+}
