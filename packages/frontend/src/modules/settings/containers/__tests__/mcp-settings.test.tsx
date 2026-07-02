@@ -64,7 +64,7 @@ const STATUS = {
   toolCount: 2,
   activeSessions: 0,
   destructiveAllowed: false,
-  apiKeyConfigured: true,
+  activeKeyCount: 2,
   endpoint: '/api/mcp',
 };
 const TOOLS = {
@@ -73,10 +73,35 @@ const TOOLS = {
     { name: 'hub_uninstall_app', description: 'Uninstall an app', inputSchema: { type: 'object' }, destructive: true, category: 'App Lifecycle' },
   ],
 };
+const KEYS = {
+  keys: [
+    {
+      id: 1,
+      name: 'Laptop CLI',
+      prefix: 'a1b2c3d4',
+      managed: false,
+      ownerAppUrn: null,
+      expiresAt: null,
+      lastUsedAt: null,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 2,
+      name: 'openclaw',
+      prefix: 'ff00aa11',
+      managed: true,
+      ownerAppUrn: 'openclaw:ci-store',
+      expiresAt: null,
+      lastUsedAt: '2026-02-01T00:00:00Z',
+      createdAt: '2026-01-02T00:00:00Z',
+    },
+  ],
+};
 
 function mockGet(url: string) {
   if (url === '/api/mcp-admin/status') return Promise.resolve({ ok: true, json: async () => STATUS });
   if (url === '/api/mcp-admin/tools') return Promise.resolve({ ok: true, json: async () => TOOLS });
+  if (url === '/api/mcp-admin/keys') return Promise.resolve({ ok: true, json: async () => KEYS });
   return Promise.resolve({ ok: true, json: async () => ({}) });
 }
 
@@ -116,6 +141,61 @@ describe('McpSettingsContainer', () => {
     // Tools still render under their group.
     expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
     expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
+  });
+
+  it('lists API keys with a managed badge and never shows the raw key', async () => {
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-key-list')).toBeTruthy());
+    expect(screen.getByText('Laptop CLI')).toBeTruthy();
+    expect(screen.getByText('openclaw')).toBeTruthy();
+    expect(screen.getByText('a1b2c3d4…')).toBeTruthy(); // prefix only, not the raw key
+    // The managed companion-app key is badged; the operator key is not.
+    expect(screen.getAllByText('MCP_SETTINGS_KEY_MANAGED_BADGE')).toHaveLength(1);
+  });
+
+  it('creates a key and reveals the raw value once', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/mcp-admin/keys' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 3, name: 'n8n', prefix: 'deadbeef', key: 'deadbeefRAWKEY' }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+
+    await user.click(screen.getByTestId('mcp-create-key'));
+    await waitFor(() => expect(screen.getByTestId('mcp-new-key-name')).toBeTruthy());
+    fireEvent.change(screen.getByTestId('mcp-new-key-name'), { target: { value: 'n8n' } });
+    await user.click(screen.getByTestId('mcp-create-key-submit'));
+
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/mcp-admin/keys',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'n8n' }) }),
+      ),
+    );
+    // The raw key is surfaced exactly once, in the "copy it now" panel.
+    await waitFor(() => expect(screen.getByTestId('mcp-created-key').textContent).toContain('deadbeefRAWKEY'));
+  });
+
+  it('revokes a key via DELETE', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/mcp-admin/keys/1' && init?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: async () => ({ revoked: true }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-key-list')).toBeTruthy());
+
+    const row = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
+    await user.click(within(row).getByRole('button', { name: 'MCP_SETTINGS_KEY_REVOKE' }));
+
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith('/api/mcp-admin/keys/1', expect.objectContaining({ method: 'DELETE' })));
   });
 
   it('filters the tool list by search', async () => {

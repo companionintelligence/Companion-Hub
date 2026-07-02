@@ -4,22 +4,25 @@ import { McpAdminService } from '../mcp-admin.service';
 import { McpService } from '../mcp.service';
 import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
+import { McpApiKeyService } from '../mcp-api-key.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 describe('McpAdminService', () => {
   let registry: McpToolRegistry;
   let configuration: MockProxy<ConfigurationService>;
+  let apiKeys: MockProxy<McpApiKeyService>;
   let service: McpAdminService;
   const savedEnv = { ...process.env };
 
   beforeEach(() => {
     registry = new McpToolRegistry();
     configuration = mock<ConfigurationService>();
+    apiKeys = mock<McpApiKeyService>();
     const mcpService = new McpService(registry, mock<LoggerService>());
     // Stub the session registry: only activeSessions (a getter) is read here.
     const sessions = { activeSessions: 2 } as unknown as McpSessionRegistry;
-    service = new McpAdminService(registry, mcpService, sessions, configuration, mock<LoggerService>());
+    service = new McpAdminService(registry, mcpService, sessions, configuration, apiKeys, mock<LoggerService>());
   });
 
   afterEach(() => {
@@ -28,25 +31,25 @@ describe('McpAdminService', () => {
   });
 
   describe('getStatus', () => {
-    it('reports enabled state, server info, tool count, sessions, and gate', () => {
+    it('reports enabled state, server info, tool count, sessions, gate, and key count', async () => {
       process.env.MCP_ENABLED = 'true';
-      process.env.MCP_API_KEY = 'secret';
       process.env.MCP_ALLOW_DESTRUCTIVE = 'true';
+      apiKeys.count.mockResolvedValue(3);
       registry.register({ name: 'hub_a', description: '', inputSchema: {}, handler: async () => ({}) });
 
-      const status = service.getStatus();
+      const status = await service.getStatus();
       expect(status.enabled).toBe(true);
       expect(status.server.name).toBe('ci-hub');
       expect(status.toolCount).toBe(1);
       expect(status.activeSessions).toBe(2);
       expect(status.destructiveAllowed).toBe(true);
-      expect(status.apiKeyConfigured).toBe(true);
+      expect(status.activeKeyCount).toBe(3);
       expect(status.endpoint).toBe('/api/mcp');
     });
 
-    it('treats MCP_ENABLED=false as disabled', () => {
+    it('treats MCP_ENABLED=false as disabled', async () => {
       process.env.MCP_ENABLED = 'false';
-      expect(service.getStatus().enabled).toBe(false);
+      expect((await service.getStatus()).enabled).toBe(false);
     });
   });
 
@@ -103,16 +106,34 @@ describe('McpAdminService', () => {
     });
   });
 
-  describe('rotateApiKey', () => {
-    it('generates + persists (disk-only) + applies a new key and warns about agent apps', async () => {
-      const res = await service.rotateApiKey();
-      expect(res.apiKey).toMatch(/^[a-f0-9]{48}$/);
-      // SECURITY: key must be persisted via the disk-only path, never via setUserSettings (which
-      // merges into the /app-context userSettings and would disclose the key to browser sessions).
-      expect(configuration.persistMcpSettings).toHaveBeenCalledWith({ mcpApiKey: res.apiKey });
-      expect(configuration.setUserSettings).not.toHaveBeenCalled();
-      expect(process.env.MCP_API_KEY).toBe(res.apiKey);
-      expect(res.warning).toMatch(/re-installed or restarted/i);
+  describe('key management', () => {
+    it('createKey delegates to the key service and returns the raw key once', async () => {
+      apiKeys.create.mockResolvedValue({
+        id: 5,
+        name: 'CLI',
+        prefix: 'abcd1234',
+        key: 'abcd1234RAW',
+        managed: false,
+        ownerAppUrn: null,
+        expiresAt: null,
+        lastUsedAt: null,
+        createdAt: '2026-01-01T00:00:00Z',
+      });
+      const res = await service.createKey('CLI');
+      expect(apiKeys.create).toHaveBeenCalledWith('CLI');
+      expect(res.key).toBe('abcd1234RAW');
+    });
+
+    it('listKeys delegates to the key service', async () => {
+      apiKeys.list.mockResolvedValue([]);
+      await service.listKeys();
+      expect(apiKeys.list).toHaveBeenCalled();
+    });
+
+    it('revokeKey delegates and reports the outcome', async () => {
+      apiKeys.revoke.mockResolvedValue(true);
+      expect(await service.revokeKey(5)).toEqual({ revoked: true });
+      expect(apiKeys.revoke).toHaveBeenCalledWith(5);
     });
   });
 });

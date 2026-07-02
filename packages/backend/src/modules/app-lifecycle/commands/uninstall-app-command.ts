@@ -4,6 +4,7 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { DockerService } from '@/modules/docker/docker.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
 
@@ -74,6 +75,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
       } catch {
         // AgentNotifyService may not be available
+      }
+
+      // SEC-MCP-8: revoke the app's managed MCP key so its Hub access dies with the app.
+      try {
+        const mcpApiKeyService = this.moduleRef.get(McpApiKeyService, { strict: false });
+        await mcpApiKeyService?.revokeManagedByApp(appUrn);
+      } catch (error) {
+        logger.warn(`Failed to revoke managed MCP key for ${appUrn}: ${error}`);
       }
 
       await appFilesManager.deleteAppFolder(appUrn);

@@ -1,7 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { type MockProxy, mock } from 'vitest-mock-extended';
 import { McpAuthGuard } from '../mcp-auth.guard';
+import { McpApiKeyService } from '../mcp-api-key.service';
 import { UnauthorizedException } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -17,12 +18,14 @@ function mockExecutionContext(authHeader?: string) {
 
 describe('McpAuthGuard', () => {
   let guard: McpAuthGuard;
+  let apiKeys: MockProxy<McpApiKeyService>;
   const originalEnv = process.env.MCP_API_KEY;
 
   beforeEach(async () => {
-    process.env.MCP_API_KEY = 'test-secret-key';
+    delete process.env.MCP_API_KEY; // most tests exercise the DB path; break-glass tests set it explicitly
+    apiKeys = mock<McpApiKeyService>();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpAuthGuard, { provide: LoggerService, useValue: mock<LoggerService>() }],
+      providers: [McpAuthGuard, { provide: LoggerService, useValue: mock<LoggerService>() }, { provide: McpApiKeyService, useValue: apiKeys }],
     }).compile();
 
     guard = module.get<McpAuthGuard>(McpAuthGuard);
@@ -41,36 +44,35 @@ describe('McpAuthGuard', () => {
   });
 
   describe('canActivate', () => {
-    it('should allow request with valid Authorization: Bearer <apiKey>', () => {
-      const ctx = mockExecutionContext('Bearer test-secret-key');
-      expect(guard.canActivate(ctx)).toBe(true);
+    it('allows a request whose Bearer token matches a stored key', async () => {
+      apiKeys.validate.mockResolvedValue(true);
+      await expect(guard.canActivate(mockExecutionContext('Bearer stored-key'))).resolves.toBe(true);
+      expect(apiKeys.validate).toHaveBeenCalledWith('stored-key');
     });
 
-    it('should reject request with missing Authorization header', () => {
-      const ctx = mockExecutionContext(undefined);
-      expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    it('allows via the break-glass env MCP_API_KEY when no stored key matches', async () => {
+      apiKeys.validate.mockResolvedValue(false);
+      process.env.MCP_API_KEY = 'break-glass';
+      await expect(guard.canActivate(mockExecutionContext('Bearer break-glass'))).resolves.toBe(true);
     });
 
-    it('should reject request with invalid API key', () => {
-      const ctx = mockExecutionContext('Bearer wrong-key');
-      expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    it('rejects a token that matches neither a stored key nor the env key', async () => {
+      apiKeys.validate.mockResolvedValue(false);
+      process.env.MCP_API_KEY = 'break-glass';
+      await expect(guard.canActivate(mockExecutionContext('Bearer nope'))).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should reject request with malformed Authorization header', () => {
-      const ctx = mockExecutionContext('Basic abc123');
-      expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    it('rejects a request with a missing Authorization header', async () => {
+      await expect(guard.canActivate(mockExecutionContext(undefined))).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should read API key from MCP_API_KEY environment variable', () => {
-      process.env.MCP_API_KEY = 'different-key';
-      const ctx = mockExecutionContext('Bearer different-key');
-      expect(guard.canActivate(ctx)).toBe(true);
+    it('rejects a request with a malformed Authorization header', async () => {
+      await expect(guard.canActivate(mockExecutionContext('Basic abc123'))).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should throw when MCP_API_KEY is not configured', () => {
-      delete process.env.MCP_API_KEY;
-      const ctx = mockExecutionContext('Bearer anything');
-      expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    it('rejects when there is no stored key match and no env key configured', async () => {
+      apiKeys.validate.mockResolvedValue(false);
+      await expect(guard.canActivate(mockExecutionContext('Bearer anything'))).rejects.toThrow(UnauthorizedException);
     });
   });
 });

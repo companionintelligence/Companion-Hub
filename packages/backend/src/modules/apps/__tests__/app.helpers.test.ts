@@ -8,11 +8,12 @@ import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { type MockProxy, mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
+import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -28,6 +29,7 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
+  let mcpApiKeys: MockProxy<McpApiKeyService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -45,6 +47,7 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
+    mcpApiKeys = moduleRef.get(McpApiKeyService);
   });
 
   describe('generateEnvFile', () => {
@@ -970,30 +973,32 @@ describe('AppHelpers', () => {
         }
       });
 
-      it('R-ENV: should inject HUB_MCP_API_KEY when MCP_API_KEY is set', async () => {
+      it('R-ENV/SEC-MCP-8: provisions a dedicated managed key and injects it as HUB_MCP_API_KEY', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+        mcpApiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
 
-        process.env.MCP_API_KEY = 'test-mcp-key-12345';
-        try {
-          await appHelpers.generateEnvFile(testAppUrn, {});
-          expect(envMap.get('HUB_MCP_API_KEY')).toBe('test-mcp-key-12345');
-        } finally {
-          delete process.env.MCP_API_KEY;
-        }
-      });
-
-      it('R-ENV: should NOT inject HUB_MCP_API_KEY when MCP_API_KEY is not set', async () => {
-        const envMap = new Map<string, string>();
-        envUtils.envStringToMap.mockReturnValue(envMap);
-        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
-        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-
+        // Independent of process.env.MCP_API_KEY now — the app gets its OWN managed key.
         delete process.env.MCP_API_KEY;
         await appHelpers.generateEnvFile(testAppUrn, {});
-        expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+
+        expect(envMap.get('HUB_MCP_API_KEY')).toBe('managed-key-xyz');
+        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
+      });
+
+      it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
+        // The same mocked map is the app's existing env; seed it with a prior key.
+        const envMap = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+        mcpApiKeys.provisionManagedKey.mockResolvedValue('old-key');
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
       });
 
       it('R-ENV-4: should generate a HUB_WAKE_SECRET', async () => {

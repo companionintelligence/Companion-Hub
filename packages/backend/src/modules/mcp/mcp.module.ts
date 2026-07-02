@@ -14,6 +14,7 @@ import { SystemUpdateModule } from '@/modules/system-update/system-update.module
 import { RegistrationModule } from '@/modules/registration/registration.module';
 import { CloudflareModule } from '@/modules/cloudflare/cloudflare.module';
 import { LinksModule } from '@/modules/links/links.module';
+import { McpApiKeyModule } from './mcp-api-key.module';
 import { McpController } from './mcp.controller';
 import { McpAdminController } from './mcp-admin.controller';
 import { McpService } from './mcp.service';
@@ -68,6 +69,7 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     CloudflareModule,
     LinksModule,
     InferenceModule,
+    McpApiKeyModule,
   ],
   controllers: [McpController, McpAdminController],
   providers: [

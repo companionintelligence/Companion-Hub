@@ -1,8 +1,8 @@
-import { randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { type McpApiKeyInfo, McpApiKeyService } from './mcp-api-key.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
@@ -30,11 +30,12 @@ export class McpAdminService {
     private readonly mcpService: McpService,
     private readonly sessions: McpSessionRegistry,
     private readonly configuration: ConfigurationService,
+    private readonly apiKeys: McpApiKeyService,
     private readonly logger: LoggerService,
   ) {}
 
   /** Overall MCP server status for the admin screen. */
-  getStatus() {
+  async getStatus() {
     return {
       // MCP_ENABLED gates the module at import time, so it's read-only here (toggle via `cihub mcp`).
       enabled: process.env.MCP_ENABLED !== 'false',
@@ -43,7 +44,8 @@ export class McpAdminService {
       toolCount: this.registry.listTools().length,
       activeSessions: this.sessions.activeSessions,
       destructiveAllowed: McpToolRegistry.destructiveAllowedByEnv(),
-      apiKeyConfigured: Boolean(process.env.MCP_API_KEY),
+      // SEC-MCP-8: number of stored API keys (operator + managed) — replaces the single-key flag.
+      activeKeyCount: await this.apiKeys.count(),
       endpoint: '/api/mcp',
     };
   }
@@ -95,22 +97,27 @@ export class McpAdminService {
     return { destructiveAllowed: allow };
   }
 
+  /** List all stored API keys (operator + managed) — hashes/raw values are never included. */
+  async listKeys(): Promise<McpApiKeyInfo[]> {
+    return this.apiKeys.list();
+  }
+
   /**
-   * Rotate the MCP API key. Persisted to settings.json and applied to process.env immediately (the
-   * auth guard reads process.env per request, so new requests must use the new key at once). Installed
-   * agent apps that received HUB_MCP_API_KEY at install must be re-installed/restarted to pick it up.
+   * SEC-MCP-8: create an operator API key. Returns the raw key exactly once so the operator can copy
+   * it; only its hash is stored. Multiple keys are valid at once, so "rotation" is create-new →
+   * roll-out → revoke-old, with no downtime for connected agents.
    */
-  async rotateApiKey(): Promise<{ apiKey: string; warning: string }> {
-    const newKey = randomBytes(24).toString('hex');
-    // SECURITY: persist to settings.json ONLY (not the in-memory userSettings that /app-context
-    // exposes), so the rotated agent Bearer key is never disclosed to browser sessions. Applied
-    // live to process.env below (the auth guard reads it per request).
-    await this.configuration.persistMcpSettings({ mcpApiKey: newKey });
-    process.env.MCP_API_KEY = newKey;
-    this.logger.info('MCP admin: API key rotated');
-    return {
-      apiKey: newKey,
-      warning: 'Installed agent apps carrying HUB_MCP_API_KEY must be re-installed or restarted to use the new key.',
-    };
+  async createKey(name: string): Promise<McpApiKeyInfo & { key: string }> {
+    const created = await this.apiKeys.create(name);
+    this.logger.info('MCP admin: API key created', created.id);
+    return created;
+  }
+
+  /** Revoke a key by id. Managed keys can be revoked too (break-glass) — the owning app loses MCP
+   *  access until it is re-provisioned on its next install/env-regen. */
+  async revokeKey(id: number): Promise<{ revoked: boolean }> {
+    const revoked = await this.apiKeys.revoke(id);
+    this.logger.info('MCP admin: API key revoke', id, revoked ? 'ok' : 'not-found');
+    return { revoked };
   }
 }

@@ -1,0 +1,112 @@
+import { createHash } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type MockProxy, mock } from 'vitest-mock-extended';
+import { LoggerService } from '@/core/logger/logger.service';
+import { type McpApiKeyRow, McpApiKeyRepository } from '../mcp-api-key.repository';
+import { McpApiKeyService } from '../mcp-api-key.service';
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/** Build a stored row from the values insert() was called with (echoes what the DB would return). */
+function rowFrom(values: Parameters<McpApiKeyRepository['insert']>[0], id = 1): McpApiKeyRow {
+  return { id, lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
+}
+
+describe('McpApiKeyService', () => {
+  let repo: MockProxy<McpApiKeyRepository>;
+  let service: McpApiKeyService;
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    repo = mock<McpApiKeyRepository>();
+    repo.insert.mockImplementation(async (values) => rowFrom(values));
+    repo.touchLastUsed.mockResolvedValue(undefined); // real repo returns a Promise (validate chains .catch)
+    service = new McpApiKeyService(repo, mock<LoggerService>());
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+    vi.clearAllMocks();
+  });
+
+  describe('create', () => {
+    it('returns a 64-hex raw key once and stores only its SHA-256 hash + prefix', async () => {
+      const res = await service.create('CLI');
+      expect(res.key).toMatch(/^[a-f0-9]{64}$/);
+      const stored = repo.insert.mock.calls[0][0];
+      expect(stored.hashedKey).toBe(sha256(res.key)); // hash at rest, never the raw
+      expect(stored.hashedKey).not.toBe(res.key);
+      expect(stored.prefix).toBe(res.key.slice(0, 8));
+      expect(stored.managed).toBe(false);
+    });
+  });
+
+  describe('validate', () => {
+    it('accepts a token that hashes to a stored, non-expired key and bumps last-used', async () => {
+      repo.findByHash.mockResolvedValue(
+        rowFrom({ name: 'k', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: null }),
+      );
+      expect(await service.validate('raw')).toBe(true);
+      expect(repo.findByHash).toHaveBeenCalledWith(sha256('raw'));
+      expect(repo.touchLastUsed).toHaveBeenCalled();
+    });
+
+    it('rejects an unknown key and an empty token', async () => {
+      repo.findByHash.mockResolvedValue(undefined);
+      expect(await service.validate('nope')).toBe(false);
+      expect(await service.validate('')).toBe(false);
+    });
+
+    it('rejects an expired key', async () => {
+      repo.findByHash.mockResolvedValue(
+        rowFrom({ name: 'k', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: '2000-01-01T00:00:00Z' }),
+      );
+      expect(await service.validate('raw')).toBe(false);
+    });
+  });
+
+  describe('provisionManagedKey', () => {
+    it("preserves the app's existing key when it still validates as that app's managed key", async () => {
+      repo.findByHash.mockResolvedValue(
+        rowFrom({ name: 'openclaw', prefix: 'p', hashedKey: sha256('existing'), managed: true, ownerAppUrn: 'openclaw:ci-store', expiresAt: null }),
+      );
+      const key = await service.provisionManagedKey({ appUrn: 'openclaw:ci-store', appName: 'openclaw', existingRawKey: 'existing' });
+      expect(key).toBe('existing'); // no churn
+      expect(repo.insert).not.toHaveBeenCalled();
+      expect(repo.deleteByOwnerAppUrn).not.toHaveBeenCalled();
+    });
+
+    it('mints a fresh key (revoking stale ones) when there is no valid existing key', async () => {
+      repo.findByHash.mockResolvedValue(undefined);
+      const key = await service.provisionManagedKey({ appUrn: 'openclaw:ci-store', appName: 'openclaw' });
+      expect(repo.deleteByOwnerAppUrn).toHaveBeenCalledWith('openclaw:ci-store');
+      const stored = repo.insert.mock.calls[0][0];
+      expect(stored.managed).toBe(true);
+      expect(stored.ownerAppUrn).toBe('openclaw:ci-store');
+      expect(key).toMatch(/^[a-f0-9]{64}$/);
+    });
+  });
+
+  describe('seedLegacyKeyIfEmpty', () => {
+    it('seeds the legacy env key when the store is empty', async () => {
+      process.env.MCP_API_KEY = 'legacy-key';
+      repo.count.mockResolvedValue(0);
+      await service.seedLegacyKeyIfEmpty();
+      const stored = repo.insert.mock.calls[0][0];
+      expect(stored.name).toBe('Default (migrated)');
+      expect(stored.hashedKey).toBe(sha256('legacy-key'));
+    });
+
+    it('is a no-op when keys already exist or no legacy key is set', async () => {
+      process.env.MCP_API_KEY = 'legacy-key';
+      repo.count.mockResolvedValue(2);
+      await service.seedLegacyKeyIfEmpty();
+
+      delete process.env.MCP_API_KEY;
+      repo.count.mockResolvedValue(0);
+      await service.seedLegacyKeyIfEmpty();
+
+      expect(repo.insert).not.toHaveBeenCalled();
+    });
+  });
+});

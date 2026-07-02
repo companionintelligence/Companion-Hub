@@ -18,3 +18,11 @@ const mcpAdminSettingsSchema = z.object({
 });
 
 export class McpAdminSettingsBody extends createZodDto(mcpAdminSettingsSchema) {}
+
+/** SEC-MCP-8: body for creating an operator MCP API key. */
+const mcpCreateKeySchema = z.object({
+  /** Human-readable label shown in the keys table (e.g. "Laptop CLI", "n8n"). */
+  name: z.string().trim().min(1).max(100),
+});
+
+export class McpCreateKeyBody extends createZodDto(mcpCreateKeySchema) {}

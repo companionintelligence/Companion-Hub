@@ -4226,12 +4226,57 @@
         ]
       }
     },
-    "/api/mcp-admin/key/rotate": {
-      "post": {
-        "operationId": "rotateKey",
+    "/api/mcp-admin/keys": {
+      "get": {
+        "operationId": "listKeys",
         "parameters": [],
         "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpCreateKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
           "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
             "description": ""
           }
         },
@@ -4520,6 +4565,10 @@
         "properties": {}
       },
       "McpAdminSettingsBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpCreateKeyBody": {
         "type": "object",
         "properties": {}
       }

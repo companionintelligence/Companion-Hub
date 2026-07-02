@@ -152,6 +152,26 @@ export const portAllocation = pgTable(
   (table) => [uniqueIndex('port_protocol_idx').on(table.hostPort, table.protocol)],
 );
 
+// SEC-MCP-8: MCP API keys. Only the SHA-256 hash is stored (never the raw key); the raw is shown
+// once at creation. `managed` keys are auto-provisioned by the Hub for companion apps (Hermes,
+// OpenClaw, any hub_integration.mcp_client app) and carry the owning app's URN — operators see them
+// in the catalog but never create/edit them by hand. Non-managed keys are operator-created.
+export const mcpApiKey = pgTable(
+  'mcp_api_key',
+  {
+    id: serial().primaryKey().notNull(),
+    name: varchar().notNull(),
+    prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
+    hashedKey: varchar('hashed_key').notNull(),
+    managed: boolean().default(false).notNull(),
+    ownerAppUrn: varchar('owner_app_urn'), // set for managed keys: the companion app that owns it
+    expiresAt: timestamp('expires_at', { mode: 'string' }), // null = never expires
+    lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('mcp_api_key_hashed_key_idx').on(table.hashedKey)],
+);
+
 export const deviceRegistration = pgTable('device_registration', {
   id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
   slug: varchar().notNull(), // organization slug for subdomain
