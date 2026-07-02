@@ -15,6 +15,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppLifecycleCommandFactory } from '@/modules/app-lifecycle/app-lifecycle-command.factory';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
 import { AppStoreRepository } from '@/modules/app-stores/app-store.repository';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -172,6 +173,7 @@ describe('App lifecycle', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
+        ExposureSyncService,
         MarketplaceService,
         {
           provide: ImageSizeService,

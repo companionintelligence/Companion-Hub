@@ -14,12 +14,10 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
-import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { ExposureSyncService } from './exposure-sync.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
-import { RegistrationService } from '../registration/registration.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
@@ -91,9 +89,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     private readonly dockerService: DockerService,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
-    private readonly cloudflareClientService: CloudflareClientService,
     private readonly exposureSyncService: ExposureSyncService,
-    private readonly registrationService: RegistrationService,
     private readonly repoHelpers: ReposHelpers,
     private readonly appStoreService: AppStoreService,
     private readonly moduleRef: ModuleRef,

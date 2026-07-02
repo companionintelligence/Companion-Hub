@@ -52,8 +52,6 @@ const openapiEnvPath = path.join(openapiDataDir, '.env');
 if (!fs.existsSync(openapiEnvPath)) {
   fs.writeFileSync(
     openapiEnvPath,
-    [`ROOT_FOLDER_HOST=${openapiDataDir}`, `CI_CLOUD_URL=${process.env.CI_CLOUD_URL}`, `POSTGRES_PASSWORD=${process.env.POSTGRES_PASSWORD}`].join(
-      '\n',
-    ) + '\n',
+    `${[`ROOT_FOLDER_HOST=${openapiDataDir}`, `CI_CLOUD_URL=${process.env.CI_CLOUD_URL}`, `POSTGRES_PASSWORD=${process.env.POSTGRES_PASSWORD}`].join('\n')}\n`,
   );
 }
