@@ -2,23 +2,24 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
-import { type McpApiKeyRow, McpApiKeyRepository } from '../mcp-api-key.repository';
+import { type ApiKeyRow, ApiKeyRepository } from '../api-key.repository';
 import { McpApiKeyService } from '../mcp-api-key.service';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
-/** Build a stored row from the values insert() was called with (echoes what the DB would return). */
-function rowFrom(values: Parameters<McpApiKeyRepository['insert']>[0], id = 1): McpApiKeyRow {
-  return { id, lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
+/** Build a stored row from the values insert() was called with (echoes what the DB would return).
+ *  audience defaults to 'mcp' so row fixtures can omit it. */
+function rowFrom(values: Omit<Parameters<ApiKeyRepository['insert']>[0], 'audience'> & { audience?: string }, id = 1): ApiKeyRow {
+  return { id, audience: 'mcp', lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
 }
 
 describe('McpApiKeyService', () => {
-  let repo: MockProxy<McpApiKeyRepository>;
+  let repo: MockProxy<ApiKeyRepository>;
   let service: McpApiKeyService;
   const savedEnv = { ...process.env };
 
   beforeEach(() => {
-    repo = mock<McpApiKeyRepository>();
+    repo = mock<ApiKeyRepository>();
     repo.insert.mockImplementation(async (values) => rowFrom(values));
     repo.touchLastUsed.mockResolvedValue(undefined); // real repo returns a Promise (validate chains .catch)
     service = new McpApiKeyService(repo, mock<LoggerService>());
@@ -38,6 +39,7 @@ describe('McpApiKeyService', () => {
       expect(stored.hashedKey).not.toBe(res.key);
       expect(stored.prefix).toBe(res.key.slice(0, 8));
       expect(stored.managed).toBe(false);
+      expect(stored.audience).toBe('mcp'); // MCP service tags every key with its audience
     });
   });
 
@@ -47,7 +49,7 @@ describe('McpApiKeyService', () => {
         rowFrom({ name: 'k', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: null }),
       );
       expect(await service.validate('raw')).toBe(true);
-      expect(repo.findByHash).toHaveBeenCalledWith(sha256('raw'));
+      expect(repo.findByHash).toHaveBeenCalledWith(sha256('raw'), 'mcp');
       expect(repo.touchLastUsed).toHaveBeenCalled();
     });
 
@@ -90,7 +92,7 @@ describe('McpApiKeyService', () => {
   describe('seedLegacyKeyIfEmpty', () => {
     it('seeds the legacy env key when the store is empty', async () => {
       process.env.MCP_API_KEY = 'legacy-key';
-      repo.count.mockResolvedValue(0);
+      repo.countByAudience.mockResolvedValue(0);
       await service.seedLegacyKeyIfEmpty();
       const stored = repo.insert.mock.calls[0][0];
       expect(stored.name).toBe('Default (migrated)');
@@ -99,11 +101,11 @@ describe('McpApiKeyService', () => {
 
     it('is a no-op when keys already exist or no legacy key is set', async () => {
       process.env.MCP_API_KEY = 'legacy-key';
-      repo.count.mockResolvedValue(2);
+      repo.countByAudience.mockResolvedValue(2);
       await service.seedLegacyKeyIfEmpty();
 
       delete process.env.MCP_API_KEY;
-      repo.count.mockResolvedValue(0);
+      repo.countByAudience.mockResolvedValue(0);
       await service.seedLegacyKeyIfEmpty();
 
       expect(repo.insert).not.toHaveBeenCalled();

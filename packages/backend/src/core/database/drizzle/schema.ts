@@ -152,14 +152,18 @@ export const portAllocation = pgTable(
   (table) => [uniqueIndex('port_protocol_idx').on(table.hostPort, table.protocol)],
 );
 
-// SEC-MCP-8: MCP API keys. Only the SHA-256 hash is stored (never the raw key); the raw is shown
-// once at creation. `managed` keys are auto-provisioned by the Hub for companion apps (Hermes,
-// OpenClaw, any hub_integration.mcp_client app) and carry the owning app's URN — operators see them
-// in the catalog but never create/edit them by hand. Non-managed keys are operator-created.
-export const mcpApiKey = pgTable(
-  'mcp_api_key',
+// SEC-MCP-8: locally-minted, hashed API keys. One table for ALL inbound key surfaces, discriminated
+// by `audience` ('mcp' today; 'rest' etc. later) so a new surface doesn't need a new table. Only the
+// SHA-256 hash is stored (never the raw key); the raw is shown once at creation. `managed` keys are
+// auto-provisioned by the Hub for companion apps (Hermes, OpenClaw, any hub_integration.mcp_client
+// app) and carry the owning app's URN — operators see them but never create/edit them by hand.
+// NOTE: this is distinct from `ciHubApiKey` (the Portal-issued device credential in settings.json,
+// stored plaintext because the Hub replays it outbound to CI-Portal) — that stays where it is.
+export const apiKey = pgTable(
+  'api_key',
   {
     id: serial().primaryKey().notNull(),
+    audience: varchar({ length: 16 }).default('mcp').notNull(), // which surface accepts this key
     name: varchar().notNull(),
     prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
     hashedKey: varchar('hashed_key').notNull(),
@@ -169,7 +173,7 @@ export const mcpApiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  (table) => [uniqueIndex('mcp_api_key_hashed_key_idx').on(table.hashedKey)],
+  (table) => [uniqueIndex('api_key_hashed_key_idx').on(table.hashedKey)],
 );
 
 export const deviceRegistration = pgTable('device_registration', {

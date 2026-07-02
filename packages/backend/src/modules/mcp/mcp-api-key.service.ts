@@ -1,10 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import { type McpApiKeyRow, McpApiKeyRepository } from './mcp-api-key.repository';
+import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
+// This service owns the 'mcp' slice of the shared api_key table; a future REST-key service would use
+// its own audience against the same repository.
+const MCP_AUDIENCE = 'mcp';
 
 /** Operator-facing view of a stored key — never includes the hash or the raw key. */
 export interface McpApiKeyInfo {
@@ -18,7 +21,7 @@ export interface McpApiKeyInfo {
   createdAt: string;
 }
 
-function toInfo(row: McpApiKeyRow): McpApiKeyInfo {
+function toInfo(row: ApiKeyRow): McpApiKeyInfo {
   return {
     id: row.id,
     name: row.name,
@@ -40,7 +43,7 @@ function toInfo(row: McpApiKeyRow): McpApiKeyInfo {
 @Injectable()
 export class McpApiKeyService {
   constructor(
-    private readonly repo: McpApiKeyRepository,
+    private readonly repo: ApiKeyRepository,
     private readonly logger: LoggerService,
   ) {}
 
@@ -48,7 +51,7 @@ export class McpApiKeyService {
     return createHash('sha256').update(rawKey).digest('hex');
   }
 
-  private isExpired(row: McpApiKeyRow): boolean {
+  private isExpired(row: ApiKeyRow): boolean {
     return row.expiresAt !== null && new Date(row.expiresAt).getTime() < Date.now();
   }
 
@@ -59,6 +62,7 @@ export class McpApiKeyService {
   ): Promise<McpApiKeyInfo & { key: string }> {
     const rawKey = randomBytes(KEY_BYTES).toString('hex');
     const row = await this.repo.insert({
+      audience: MCP_AUDIENCE,
       name,
       prefix: rawKey.slice(0, PREFIX_LEN),
       hashedKey: this.hash(rawKey),
@@ -75,7 +79,7 @@ export class McpApiKeyService {
     if (!rawKey) {
       return false;
     }
-    const row = await this.repo.findByHash(this.hash(rawKey));
+    const row = await this.repo.findByHash(this.hash(rawKey), MCP_AUDIENCE);
     if (!row || this.isExpired(row)) {
       return false;
     }
@@ -85,11 +89,11 @@ export class McpApiKeyService {
   }
 
   async list(): Promise<McpApiKeyInfo[]> {
-    return (await this.repo.list()).map(toInfo);
+    return (await this.repo.listByAudience(MCP_AUDIENCE)).map(toInfo);
   }
 
   async count(): Promise<number> {
-    return this.repo.count();
+    return this.repo.countByAudience(MCP_AUDIENCE);
   }
 
   async revoke(id: number): Promise<boolean> {
@@ -108,7 +112,7 @@ export class McpApiKeyService {
   async provisionManagedKey(params: { appUrn: string; appName: string; existingRawKey?: string }): Promise<string> {
     const { appUrn, appName, existingRawKey } = params;
     if (existingRawKey) {
-      const row = await this.repo.findByHash(this.hash(existingRawKey));
+      const row = await this.repo.findByHash(this.hash(existingRawKey), MCP_AUDIENCE);
       if (row?.managed && row.ownerAppUrn === appUrn && !this.isExpired(row)) {
         return existingRawKey; // still valid — preserve it (no churn, no restart needed)
       }
@@ -134,10 +138,11 @@ export class McpApiKeyService {
    */
   async seedLegacyKeyIfEmpty(): Promise<void> {
     const legacy = process.env.MCP_API_KEY;
-    if (!legacy || (await this.repo.count()) > 0) {
+    if (!legacy || (await this.repo.countByAudience(MCP_AUDIENCE)) > 0) {
       return;
     }
     await this.repo.insert({
+      audience: MCP_AUDIENCE,
       name: 'Default (migrated)',
       prefix: legacy.slice(0, PREFIX_LEN),
       hashedKey: this.hash(legacy),

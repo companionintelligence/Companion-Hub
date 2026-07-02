@@ -1,5 +1,6 @@
-CREATE TABLE IF NOT EXISTS "mcp_api_key" (
+CREATE TABLE IF NOT EXISTS "api_key" (
   "id" serial PRIMARY KEY NOT NULL,
+  "audience" varchar(16) DEFAULT 'mcp' NOT NULL,
   "name" varchar NOT NULL,
   "prefix" varchar(12) NOT NULL,
   "hashed_key" varchar NOT NULL,
@@ -10,4 +11,4 @@ CREATE TABLE IF NOT EXISTS "mcp_api_key" (
   "createdAt" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "mcp_api_key_hashed_key_idx" ON "mcp_api_key" ("hashed_key");
+CREATE UNIQUE INDEX IF NOT EXISTS "api_key_hashed_key_idx" ON "api_key" ("hashed_key");

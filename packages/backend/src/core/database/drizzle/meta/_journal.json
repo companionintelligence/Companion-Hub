@@ -321,7 +321,7 @@
       "idx": 45,
       "version": "7",
       "when": 1780500000000,
-      "tag": "0045_add_mcp_api_keys",
+      "tag": "0045_add_api_keys",
       "breakpoints": true
     }
   ]
