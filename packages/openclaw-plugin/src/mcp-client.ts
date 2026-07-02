@@ -96,6 +96,13 @@ export class McpClient {
         this.log.info('MCP connect aborted (client disconnected during initialize)');
         return;
       }
+      // A transport-fault teardown keeps sessionId (the Hub was unreachable, so a DELETE was
+      // pointless then). Now that the Hub answers again, reclaim that stale session fire-and-forget
+      // rather than leaving it to the server's idle reaper. (404 session-loss already nulls it.)
+      const staleSessionId = this.sessionId;
+      if (staleSessionId && staleSessionId !== sessionId) {
+        fetchWithTimeout(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(staleSessionId) }).catch(() => undefined);
+      }
       this.sessionId = sessionId;
       this.connected = true;
       this.backoffMs = 1000;
@@ -199,6 +206,10 @@ export class McpClient {
    */
   private async post(method: string, params: Record<string, unknown>, sessionId?: string): Promise<{ response: Response; body: JsonRpcResponse }> {
     const id = ++this.requestId;
+    // Serialize OUTSIDE the transport try: a non-serializable tool argument (BigInt, circular
+    // object) is a caller-side input error and must surface as a plain error — never as a transport
+    // fault that would tear down a healthy session.
+    const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -207,7 +218,7 @@ export class McpClient {
         response = await fetch(this.endpoint, {
           method: 'POST',
           headers: this.buildHeaders(sessionId),
-          body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+          body: payload,
           signal: controller.signal,
         });
       } catch (error) {
@@ -218,20 +229,38 @@ export class McpClient {
             : `MCP request failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      // 404 (expired session) is handled by the caller; other non-2xx are hard failures — but from a
-      // LIVE server, so deliberately NOT McpTransportError (no reconnect churn for a server-side 5xx).
-      if (!response.ok && response.status !== 404) {
+      // 502/504 are proxy-generated (bad gateway / gateway timeout): the Hub behind Traefik/CI-Gateway
+      // is unreachable — a transport fault in all but name, so classify it for the reconnect loop.
+      // 503 is deliberately EXCLUDED: a live server emits it under load/maintenance, and tearing down a
+      // valid session then would add initialize churn at the worst possible time.
+      if (response.status === 502 || response.status === 504) {
+        throw new McpTransportError(`MCP request failed: ${response.status} ${response.statusText}`);
+      }
+      // 404: the caller (sendMessage) decides on status alone and never reads the body — synthesize
+      // the envelope instead of parsing it. This also covers a gateway "no route" 404 whose HTML body
+      // would otherwise fail parsing and mask the 404 from the session-loss recovery path.
+      if (response.status === 404) {
+        return { response, body: { jsonrpc: '2.0', id, error: { code: -32001, message: 'Session not found (HTTP 404)' } } };
+      }
+      // Other non-2xx are hard failures — but from a LIVE server, so deliberately NOT
+      // McpTransportError (no reconnect churn for a server-side 5xx).
+      if (!response.ok) {
         throw new Error(`MCP request failed: ${response.status} ${response.statusText}`);
       }
+      // Read the body under the same timeout. A body-read failure is transport-level either way:
+      // the stream stalled until the abort fired, or it died outright (reset/terminated mid-body).
+      let text: string;
       try {
-        return { response, body: await this.readRpcBody(response) };
+        text = await response.text();
       } catch (error) {
-        if (controller.signal.aborted) {
-          // Half-open connection: headers arrived but the body stream stalled until the timeout.
-          throw new McpTransportError(`MCP response timed out after ${REQUEST_TIMEOUT_MS}ms`);
-        }
-        throw error; // malformed body from a live server — not a transport fault
+        throw new McpTransportError(
+          controller.signal.aborted
+            ? `MCP response timed out after ${REQUEST_TIMEOUT_MS}ms`
+            : `MCP response body failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
+      // Parsing is a server-side concern: a malformed body from a live server stays a plain error.
+      return { response, body: this.parseRpcBody(text, response.headers.get('content-type') ?? '') };
     } finally {
       clearTimeout(timer);
     }
@@ -248,13 +277,12 @@ export class McpClient {
   }
 
   /** Extract the JSON-RPC payload from a plain JSON body or the last `data:` line of an SSE frame.
-   *  Convention: gate on `application/json` (else parse as SSE) — kept identical to the Layer-2 QA
-   *  bridge (scripts/qa-mcp-bridge.ts) so both hand-rolled clients resolve an ambiguous content-type
-   *  the same way. The two are intentionally NOT a shared module: the QA script is dependency-free so
-   *  it ships to fleet nodes unchanged, so the convention is mirrored here rather than imported. */
-  private async readRpcBody(response: Response): Promise<JsonRpcResponse> {
-    const contentType = response.headers.get('content-type') ?? '';
-    const text = await response.text();
+   *  Pure parse — the body TEXT is read (and timeout-guarded) by post(), so parse failures here are
+   *  unambiguously server-side, never transport faults. Convention: gate on `application/json` (else
+   *  parse as SSE) — kept identical to the Layer-2 QA bridge (scripts/qa-mcp-bridge.ts) so both
+   *  hand-rolled clients resolve an ambiguous content-type the same way. The two are intentionally
+   *  NOT a shared module: the QA script is dependency-free so it ships to fleet nodes unchanged. */
+  private parseRpcBody(text: string, contentType: string): JsonRpcResponse {
     if (contentType.includes('application/json')) {
       return JSON.parse(text) as JsonRpcResponse;
     }

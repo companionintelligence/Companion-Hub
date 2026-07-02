@@ -207,6 +207,146 @@ describe('McpClient (Streamable HTTP)', () => {
     expect(client.isConnected()).toBe(false);
   });
 
+  it('treats a body stream that dies mid-read (reset after headers) as a transport fault', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        // Headers arrive, then the socket resets before the body completes (undici 'terminated').
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
+          text: () => Promise.reject(new TypeError('terminated')),
+        };
+      }),
+    );
+    await client.connect();
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    // A dead body stream is a transport fault: surface it AND enter the reconnect loop.
+    expect(res.error).toContain('terminated');
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('treats a gateway 502 as a transport fault (Hub down behind a reverse proxy)', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        return mcpResponse({ error: 'bad gateway' }, { status: 502 }); // Traefik: backend unreachable
+      }),
+    );
+    await client.connect();
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    expect(res.error).toContain('502');
+    // Unlike a live-server 500/503, a gateway 502/504 means the Hub is unreachable — reconnect.
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('stays connected and surfaces the error on a 503 from a live server (no reconnect churn)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        return mcpResponse({ error: 'overloaded' }, { status: 503 }); // live server under load/maintenance
+      }),
+    );
+    await client.connect();
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    expect(res.error).toContain('503');
+    // A 503 can come from a LIVE server under load — tearing down the session then would add
+    // initialize churn at the worst time, so the client must stay connected.
+    expect(client.isConnected()).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("tool call 'x' failed"));
+  });
+
+  it('recovers via the session-loss path when a gateway answers 404 with an HTML body', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        // Traefik "no route": a 404 with an HTML body, not a JSON-RPC envelope.
+        return {
+          ok: false,
+          status: 404,
+          headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'text/html' : null) },
+          text: async () => '<html>404 page not found</html>',
+        };
+      }),
+    );
+    await client.connect();
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    // The unparseable HTML body must not mask the 404: the session-loss path still runs.
+    expect(res.error).toContain('session not found');
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('reclaims the stale server session after a transport-fault reconnect', async () => {
+    vi.useFakeTimers();
+    let initCount = 0;
+    const deleted: string[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if (opts?.method === 'DELETE') {
+        deleted.push((opts.headers as Record<string, string>)['mcp-session-id']);
+        return mcpResponse({ jsonrpc: '2.0', id: 1, result: {} });
+      }
+      const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+      if (method === 'initialize') {
+        initCount += 1;
+        return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: `s${initCount}` });
+      }
+      throw new Error('ECONNREFUSED'); // tools/call: Hub died (transport fault keeps sessionId)
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client.connect(); // session s1
+    await client.callTool('x', {}); // transport fault → teardown; s1 retained client-side
+    expect(client.isConnected()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1100); // backoff reconnect → session s2
+    expect(client.isConnected()).toBe(true);
+    // The stale s1 is reclaimed on the server once it is reachable again (fire-and-forget DELETE).
+    expect(deleted).toContain('s1');
+  });
+
+  it('does not tear down the session when a tool argument cannot be serialized', async () => {
+    vi.stubGlobal('fetch', mockHub({ initialize: { serverInfo: {} }, 'tools/call': {} }));
+    await client.connect();
+
+    const res = (await client.callTool('x', { bad: BigInt(1) })) as { error?: string };
+    // A caller-side input error must surface as a plain error — never reclassified as a transport
+    // fault that disconnects the whole client.
+    expect(res.error).toContain('BigInt');
+    expect(client.isConnected()).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("tool call 'x' failed"));
+  });
+
+  it('parses a raw JSON body whose content-type was stripped by an intermediary (fallback path)', async () => {
+    const toolResult = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+        if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+        // A proxy rewrote the content-type; the body is still plain JSON-RPC.
+        return mcpResponse({ jsonrpc: '2.0', id: 2, result: toolResult }, { contentType: 'text/plain' });
+      }),
+    );
+    await client.connect();
+    expect(await client.callTool('hub_list_installed_apps', {})).toEqual(toolResult);
+  });
+
   it('does not revive after disconnect() races an in-flight connect', async () => {
     let resolveInit!: (r: unknown) => void;
     const deferred = new Promise((resolve) => {
