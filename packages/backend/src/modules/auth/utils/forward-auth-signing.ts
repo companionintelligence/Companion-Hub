@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
  * secret can verify the signature before trusting the identity; a forger that
  * does not know the secret cannot produce a valid signature.
  *
- * A monotonic timestamp is signed alongside the username to bound replay: a
+ * A timestamp (ms since Unix epoch) is signed alongside the username to bound replay: a
  * consumer rejects signatures older than a small skew window.
  *
  * Canonical message: `${username}\n${timestampMs}` (UTF-8).
