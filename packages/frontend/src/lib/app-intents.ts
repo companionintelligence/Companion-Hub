@@ -138,8 +138,10 @@ export async function resolveIntentNavigation(action: IntentAction, knownHubs: K
         await setHubConnection(match.hubUrl);
         return { path: '/', reload: true };
       }
-      // Unknown name → let the user pick.
-      return { path: '/connect', reload: false };
+      // Unknown/unreachable Hub → clear the active connection so the picker can
+      // render instead of the `/connect` loader redirecting back home.
+      await clearHubConnection();
+      return { path: '/connect', reload: true };
     }
   }
 }

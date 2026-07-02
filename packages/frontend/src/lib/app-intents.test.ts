@@ -124,9 +124,10 @@ describe('resolveIntentNavigation', () => {
   });
 
   it('falls back to the picker for an unknown or unreachable Hub name', async () => {
-    expect(await resolveIntentNavigation({ kind: 'open', hub: 'Ghost' }, HUBS)).toEqual({ path: '/connect', reload: false });
-    expect(await resolveIntentNavigation({ kind: 'open', hub: 'No Address' }, HUBS)).toEqual({ path: '/connect', reload: false });
+    expect(await resolveIntentNavigation({ kind: 'open', hub: 'Ghost' }, HUBS)).toEqual({ path: '/connect', reload: true });
+    expect(await resolveIntentNavigation({ kind: 'open', hub: 'No Address' }, HUBS)).toEqual({ path: '/connect', reload: true });
     expect(mc.setHub).not.toHaveBeenCalled();
+    expect(mc.clearHub).toHaveBeenCalledTimes(2);
   });
 });
 

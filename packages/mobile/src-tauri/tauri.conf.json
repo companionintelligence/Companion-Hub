@@ -31,7 +31,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ipc: http://ipc.localhost https://fonts.googleapis.com https://fonts.gstatic.com http: https: ws: wss:; img-src 'self' data: blob: http: https:; font-src 'self' data: https://fonts.gstatic.com"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ipc: http://ipc.localhost https://hub.ci.computer https://*.ci.computer wss://*.ci.computer http://127.0.0.1:* http://localhost:* http://*.localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* ws://*.localhost:* wss://localhost:*; img-src 'self' data: blob: http: https:; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "plugins": {
