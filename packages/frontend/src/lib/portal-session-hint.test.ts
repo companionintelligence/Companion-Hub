@@ -6,16 +6,16 @@ import {
   resolvePortalSessionHint,
 } from './portal-session-hint';
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: vi.fn(),
+vi.mock('@/api-client/sdk.gen', () => ({
+  portalSessionHint: vi.fn(),
 }));
 
-import { apiFetch } from '@/lib/api-fetch';
+import { portalSessionHint } from '@/api-client/sdk.gen';
 
 describe('portal-session-hint', () => {
   beforeEach(() => {
     localStorage.clear();
-    vi.mocked(apiFetch).mockReset();
+    vi.mocked(portalSessionHint).mockReset();
   });
 
   afterEach(() => {
@@ -23,16 +23,14 @@ describe('portal-session-hint', () => {
   });
 
   it('returns the hub session hint when available', async () => {
-    vi.mocked(apiFetch).mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          email: 'operator@example.com',
-          portalBaseUrl: 'https://ci-portal.localhost',
-          source: 'hub_operator',
-        }),
-        { status: 200 },
-      ),
-    );
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: 'operator@example.com',
+        portalBaseUrl: 'https://ci-portal.localhost',
+        source: 'hub_operator',
+      },
+      response: { ok: true } as Response,
+    });
 
     await expect(resolvePortalSessionHint()).resolves.toEqual({
       email: 'operator@example.com',
@@ -43,16 +41,14 @@ describe('portal-session-hint', () => {
   });
 
   it('falls back to a direct Portal session probe when the hub hint has no email', async () => {
-    vi.mocked(apiFetch).mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          email: null,
-          portalBaseUrl: 'https://ci-portal.localhost',
-          source: null,
-        }),
-        { status: 200 },
-      ),
-    );
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: null,
+        portalBaseUrl: 'https://ci-portal.localhost',
+        source: null,
+      },
+      response: { ok: true } as Response,
+    });
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ user: { email: 'portal@example.com' } }), { status: 200 }));
 
@@ -66,16 +62,14 @@ describe('portal-session-hint', () => {
   it('uses a remembered email when live probes fail', async () => {
     rememberPortalAccountEmail('remembered@example.com');
 
-    vi.mocked(apiFetch).mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          email: null,
-          portalBaseUrl: 'https://ci-portal.localhost',
-          source: null,
-        }),
-        { status: 200 },
-      ),
-    );
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: null,
+        portalBaseUrl: 'https://ci-portal.localhost',
+        source: null,
+      },
+      response: { ok: true } as Response,
+    });
 
     await expect(resolvePortalSessionHint()).resolves.toEqual({
       email: 'remembered@example.com',
