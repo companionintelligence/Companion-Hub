@@ -1,4 +1,6 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
+import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
+import { sdkResult } from '@/lib/sdk-unwrap';
 import { fetchTrackedModels, parsePullProgress } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
@@ -118,19 +120,12 @@ export const InstallStep = ({
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
           for (const cp of aiSetupConfig.cloudProviders) {
             try {
-              const res = await apiFetch('/api/inference/cloud-providers', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
-              });
-              if (!res.ok) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: res.status }),
-                }));
-              }
+              await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
             } catch {
-              // Non-fatal — continue with other providers
+              setAiPhase((prev) => ({
+                ...prev,
+                error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: 0 }),
+              }));
             }
           }
           setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
@@ -193,11 +188,7 @@ export const InstallStep = ({
           for (const modelId of aiSetupConfig.selectedModels) {
             if (!pinableIds.has(modelId)) continue;
             try {
-              await apiFetch('/api/inference/models/pin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ modelId }),
-              });
+              await pinInferenceModel(modelId);
             } catch {
               // Non-fatal
             }
@@ -209,22 +200,15 @@ export const InstallStep = ({
         const resolvedVisionPreference = aiSetupConfig.preferredVisionModelId;
 
         try {
-          const preferenceRes = await apiFetch('/api/inference/preferences', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              backend: aiSetupConfig.backend,
-              model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
-              embeddingModel:
-                resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
-              visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
-            }),
+          await saveInferencePreferences({
+            backend: aiSetupConfig.backend,
+            model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
+            embeddingModel:
+              resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
+            visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
           });
-          if (!preferenceRes.ok) {
-            setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: preferenceRes.status }) }));
-          }
         } catch {
-          // Non-fatal — do not block onboarding install progress
+          setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
         }
 
         setAiPhase((prev) => ({ ...prev, status: 'done', modelsDone: true }));
@@ -260,18 +244,20 @@ export const InstallStep = ({
         }
 
         try {
-          const [res] = await Promise.all([
-            apiFetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(buildInstallBody(app)),
-            }),
+          const installBody = buildInstallBody(app);
+          const [installResult] = await Promise.all([
+            sdkResult(
+              installApp({
+                path: { urn: app.urn },
+                body: installBody,
+              } as Parameters<typeof installApp>[0]),
+            ),
             minDelay(500),
           ]);
 
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(data.message || `HTTP ${res.status}`);
+          if (!installResult.ok) {
+            const data = (installResult.data ?? {}) as { message?: string };
+            throw new Error(data.message || `HTTP ${installResult.status}`);
           }
 
           // Poll to confirm the app shows up in the installed apps list with
@@ -282,9 +268,9 @@ export const InstallStep = ({
 
           const checkRunning = async (): Promise<'running' | 'installing' | 'install_failed' | false> => {
             try {
-              const installedRes = await apiFetch('/api/apps/installed');
-              if (!installedRes.ok) return false;
-              const data = await installedRes.json().catch(() => ({}));
+              const installedResult = await sdkResult(getInstalledApps());
+              if (!installedResult.ok) return false;
+              const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
               const installed = data.installed || [];
               const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
               if (!match) return false;
