@@ -85,29 +85,39 @@ export default () => {
           <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
-                </Suspense>
+                {currentTab === 'settings' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="security">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
-                </Suspense>
+                {currentTab === 'security' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="appstores">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <AppStoresContainer />
-                </Suspense>
+                {currentTab === 'appstores' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <AppStoresContainer />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="network">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <NetworkSettingsContainer />
-                </Suspense>
+                {currentTab === 'network' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <NetworkSettingsContainer />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="ai">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <AiSettingsContainer />
-                </Suspense>
+                {currentTab === 'ai' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <AiSettingsContainer />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="mcp">
                 <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
@@ -115,17 +125,21 @@ export default () => {
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <GeneralActionsContainer />
-                  <div className="mt-6">
-                    <SystemInspectorContainer />
-                  </div>
-                </Suspense>
+                {currentTab === 'system' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <GeneralActionsContainer />
+                    <div className="mt-6">
+                      <SystemInspectorContainer />
+                    </div>
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="logs" className="mt-0 h-full">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <LogsContainer />
-                </Suspense>
+                {currentTab === 'logs' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <LogsContainer />
+                  </Suspense>
+                )}
               </TabsContent>
             </div>
           </div>

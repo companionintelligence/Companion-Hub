@@ -70,9 +70,18 @@ vi.mock('@/lib/api-fetch', () => ({
 
 // The config sections are exercised in their own suites; here we mock them to drive the page flow.
 vi.mock('../components/ai-setup-step', () => ({
-  AiSetupStep: ({ onConfigChange, children }: { onConfigChange?: (c: unknown) => void; children?: ReactNode }) => (
+  AiSetupStep: ({
+    onConfigChange,
+    children,
+    afterHarness,
+  }: {
+    onConfigChange?: (c: unknown) => void;
+    children?: ReactNode;
+    afterHarness?: ReactNode;
+  }) => (
     <div data-testid="ai-setup-step">
       AI Setup
+      {afterHarness}
       {children}
       <button
         type="button"
@@ -129,6 +138,23 @@ vi.mock('../components/ai-setup-step', () => ({
         type="button"
         onClick={() =>
           onConfigChange?.({
+            agentFrameworks: ['openclaw'],
+            selectedModels: ['llama3-3-70b'],
+            installedCatalogIds: [],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+            installBlocked: false,
+          })
+        }
+      >
+        emit-ai-config-needs-download
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onConfigChange?.({
             agentFrameworks: ['openclaw', 'hermes'],
             selectedModels: ['phi-4-mini'],
             installedCatalogIds: ['phi-4-mini'],
@@ -141,6 +167,42 @@ vi.mock('../components/ai-setup-step', () => ({
         }
       >
         emit-ai-config-both-agents
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock('../components/ai-setup/companion-apps-card', () => ({
+  CompanionAppsCard: ({ onChange }: { onChange?: (apps: unknown[]) => void }) => (
+    <div data-testid="companion-apps-card">
+      <button
+        type="button"
+        onClick={() =>
+          onChange?.([
+            {
+              appSlug: 'ci-memory',
+              name: 'Companion Memory',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-memory',
+              localSubdomain: 'ci-memory',
+              exposureMode: 'tailscale',
+            },
+            {
+              appSlug: 'ci-import-tools',
+              name: 'Import Tools',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-import-tools',
+              localSubdomain: 'ci-import-tools',
+              exposureMode: 'tailscale',
+            },
+          ])
+        }
+      >
+        emit-companion-apps
       </button>
     </div>
   ),
@@ -212,6 +274,7 @@ describe('OnboardingPage (single vertical form)', () => {
     renderPage();
     // AiSetupStep owns steps 1-3 + 5 and renders children (step 4) inline.
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
+    expect(screen.getByTestId('companion-apps-card')).toBeInTheDocument();
     // RecommendationsStep is now embedded as step 4 on the form page.
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
@@ -284,6 +347,17 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
   });
 
+  it('includes companion apps in the install list when selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    await user.click(screen.getByRole('button', { name: 'emit-companion-apps' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory,ci-import-tools');
+  });
+
   it('deduplicates Hermes when selected via agent framework and legacy app slug', async () => {
     const user = userEvent.setup();
     renderPage();
@@ -293,5 +367,34 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByTestId('finish-setup-btn'));
 
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-hermes');
+  });
+
+  it('keeps Install & Finish enabled while model downloads are in progress', async () => {
+    const { apiFetch } = await import('@/lib/api-fetch');
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url === '/api/system/detect-services') {
+        return new Response(JSON.stringify({ services: [] }), { status: 200 });
+      }
+      if (url === '/api/inference/ollama/status') {
+        return new Response(JSON.stringify({ ready: true, running: true }), { status: 200 });
+      }
+      if (url === '/api/inference/models/pull/start') {
+        return new Response(JSON.stringify({ status: 'queued' }), { status: 200 });
+      }
+      if (url === '/api/inference/models/tracked') {
+        return new Response(JSON.stringify([{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 34 }]), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    // Override with a model that still needs download
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-needs-download' }));
+
+    expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
+    expect(await screen.findByTestId('model-download-status')).toBeInTheDocument();
   });
 });

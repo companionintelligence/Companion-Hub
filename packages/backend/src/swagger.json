@@ -516,6 +516,21 @@
         ]
       }
     },
+    "/api/portal/config": {
+      "get": {
+        "operationId": "getPortalConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Portal configuration"
+          }
+        },
+        "summary": "Portal URL and device registration metadata for the frontend",
+        "tags": [
+          "Portal"
+        ]
+      }
+    },
     "/api/cloudflare/check-dns-availability": {
       "get": {
         "operationId": "checkDnsAvailability",
@@ -1209,21 +1224,12 @@
         ]
       }
     },
-    "/api/inference/models/pull-preflight": {
-      "get": {
-        "operationId": "pullPreflight",
-        "parameters": [
-          {
-            "name": "modelId",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+    "/api/inference/models/pull/start": {
+      "post": {
+        "operationId": "startPullModel",
+        "parameters": [],
         "responses": {
-          "200": {
+          "201": {
             "description": ""
           }
         },
@@ -3213,17 +3219,11 @@
         "operationId": "syncExposure",
         "parameters": [],
         "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
+          "200": {
+            "description": "Sync triggered"
           }
         },
+        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
         "tags": [
           "Tailscale"
         ]

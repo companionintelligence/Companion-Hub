@@ -57,7 +57,7 @@ export class AppLifecycleCommand {
     protected docker: Dockerode,
   ) {}
 
-  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
+  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }): Promise<void> {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -86,7 +86,12 @@ export class AppLifecycleCommand {
       const architecture = configService.get('architecture');
 
       // Merge architecture-specific overrides with base services
-      const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+      let mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+
+      const appInfo = await Promise.resolve(marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn)).catch(() => null);
+      if (appInfo?.runtime_platform) {
+        mergedServices = mergedServices.map((service) => (service.platform ? service : { ...service, platform: appInfo.runtime_platform }));
+      }
 
       // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
       const appEnv = await appFilesManager.getAppEnv(appUrn);
@@ -126,7 +131,7 @@ export class AppLifecycleCommand {
       }
 
       const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
-      const subnet = await subnetManager.allocateSubnet(appUrn);
+      const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
       const composeFile = await dockerComposeBuilder.getDockerCompose(
         mergedServices,
@@ -189,6 +194,7 @@ export class AppLifecycleCommand {
     }
 
     let lastError: unknown;
+    const failedSubnets: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       throwIfAborted(signal);
       await this.removeStaleAppNetworks(appUrn);
@@ -214,8 +220,13 @@ export class AppLifecycleCommand {
         }
 
         logger.warn(`Docker network overlap for ${appUrn} on attempt ${attempt}/${maxAttempts}; releasing subnet and regenerating compose`);
+        const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+        const app = appsRepository ? await appsRepository.getAppByUrn(appUrn).catch(() => null) : null;
+        if (app?.subnet) {
+          failedSubnets.push(app.subnet);
+        }
         await subnetManager?.releaseSubnet(appUrn);
-        await this.ensureAppDir(appUrn, form);
+        await this.ensureAppDir(appUrn, form, { excludeSubnets: failedSubnets });
       }
     }
 

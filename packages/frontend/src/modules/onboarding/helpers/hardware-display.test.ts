@@ -29,6 +29,15 @@ describe('hardware-display', () => {
     expect(resolveTierBadge('high', hardware).label).toBe('APU');
   });
 
+  it('uses a visible light-mode chip for Apple Silicon systems', () => {
+    const hardware = makeHardware({ vendor: 'apple', model: 'Apple M1 Pro (Apple Silicon)' }, 16_384);
+    const badge = resolveTierBadge('medium', hardware);
+
+    expect(badge.label).toBe('Apple Silicon');
+    expect(badge.color).toContain('bg-slate-200');
+    expect(badge.color).toContain('border-slate-300');
+  });
+
   it('shows shared RAM as VRAM for APUs', () => {
     const hardware = makeHardware();
     const vram = resolveVramDisplay(hardware);

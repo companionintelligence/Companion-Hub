@@ -58,7 +58,20 @@ services:
     # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    privileged: true
+    # SECURITY: the Hub container does NOT run privileged. It manages app
+    # containers by talking to the host Docker daemon over the mounted
+    # /var/run/docker.sock (see docker.service.ts — it spawns `docker compose`
+    # and uses dockerode against that socket). The daemon performs all
+    # privileged work host-side; the Hub process only needs *access* to the
+    # socket, which is granted by `user: <uid>:<gid>` + `group_add: DOCKER_GID`
+    # + the read-only socket mount below. The backend performs no iptables /
+    # modprobe / mknod / device or kernel-module operations of its own, so it
+    # needs no host devices, no extra capabilities, and no seccomp/AppArmor
+    # opt-out. `privileged: true` would grant ALL of those and directly
+    # contradict the least-privilege setup on the lines that follow, so it is
+    # intentionally omitted. If a future feature needs a specific capability,
+    # add a scoped `cap_add:` (as the tailscale sidecar does with NET_ADMIN /
+    # SYS_MODULE) rather than reintroducing blanket privilege.
     build:
       context: .
       dockerfile: Dockerfile
@@ -106,8 +119,8 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
       # Allow Hub to configure Tunnel — resolves to the sibling tunnel/ directory
       # relative to ROOT_FOLDER_HOST (e.g. /home/user/ci-hub/.internal → /home/user/ci-hub/tunnel).
-      # When ROOT_FOLDER_HOST is unset, defaults to .internal/../tunnel (relative CWD).
-      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/app/tunnel
+      # When ROOT_FOLDER_HOST is unset, the tunnel bind uses .internal/tunnel under the compose CWD.
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel
       - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
       - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
@@ -136,8 +149,8 @@ services:
           - host.docker.internal
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
-      VLLM_URL: ${VLLM_URL:-http://ci-hub-vllm:8000}
-      LEMONADE_URL: ${LEMONADE_URL:-http://ci-hub-lemonade:13305}
+      VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
+      LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
@@ -211,7 +224,7 @@ services:
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
-      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
     extra_hosts:

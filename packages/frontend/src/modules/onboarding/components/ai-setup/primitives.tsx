@@ -22,7 +22,7 @@ interface StepSectionProps {
 /** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
 export function StepSection({ number, title, description, titleHint, children, action, className }: StepSectionProps) {
   return (
-    <section className={cn('rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
+    <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
@@ -38,7 +38,7 @@ export function StepSection({ number, title, description, titleHint, children, a
                 title
               )}
             </h2>
-            {description && <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{description}</p>}
+            {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
           </div>
         </div>
         {action && <div className="flex-shrink-0">{action}</div>}
@@ -88,7 +88,7 @@ export function OptionCard({ title, description, icon, selected = false, disable
       data-testid={testId}
       onClick={onSelect}
       className={cn(
-        'group relative flex w-full items-start gap-4 rounded-2xl border p-4 text-left transition-all',
+        'group relative flex w-full items-start gap-4 rounded-md border p-4 text-left transition-all',
         selected
           ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20'
           : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-foreground/[0.03]',
@@ -177,7 +177,7 @@ export function ModelCard({
     <label
       data-testid={testId}
       className={cn(
-        'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-2xl border p-4 text-left transition-all',
+        'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-md border p-4 text-left transition-all',
         selected ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20' : 'border-border bg-foreground/[0.015] hover:border-primary/50',
       )}
     >

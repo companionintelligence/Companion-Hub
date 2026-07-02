@@ -2,7 +2,7 @@
 
 import { type Client, formDataBodySerializer, type Options as Options2, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { AcknowledgeWelcomeData, AcknowledgeWelcomeResponses, AppContextData, AppContextResponses, AppEventsData, AppEventsResponses, AppLogsEventsData, AppLogsEventsResponses, BackupAllAppsData, BackupAllAppsResponses, BackupAppData, BackupAppResponses, CancelResetPasswordData, CancelResetPasswordResponses, ChangePasswordData, ChangePasswordResponses, ChangeUsernameData, ChangeUsernameResponses, CheckData, CheckErrors, CheckResetPasswordRequestData, CheckResetPasswordRequestResponses, CheckResponses, CreateAppStoreData, CreateAppStoreResponses, CreateCustomAppData, CreateCustomAppResponses, CreateLinkData, CreateLinkResponses, DeleteAppBackupData, DeleteAppBackupResponses, DeleteAppStoreData, DeleteAppStoreResponses, DeleteLinkData, DeleteLinkResponses, DisableTotpData, DisableTotpResponses, DisableUserConfigData, DisableUserConfigResponses, DownloadBackupData, DownloadBackupResponses, DownloadLocalCertificateData, DownloadLocalCertificateResponses, EditLinkData, EditLinkResponses, EnableUserConfigData, EnableUserConfigResponses, GetAllAppStoresData, GetAllAppStoresResponses, GetAppBackupsData, GetAppBackupsResponses, GetAppComposeDiffData, GetAppComposeDiffResponses, GetAppConfigDiffData, GetAppConfigDiffResponses, GetAppData, GetAppResponses, GetEnabledAppStoresData, GetEnabledAppStoresResponses, GetGuestAppsData, GetGuestAppsResponses, GetGuestLinksData, GetGuestLinksResponses, GetImageData, GetImageResponses, GetInstalledAppsData, GetInstalledAppsResponses, GetLinksData, GetLinksResponses, GetRandomPortData, GetRandomPortResponses, GetTotpUriData, GetTotpUriResponses, GetTranslationData, GetTranslationResponses, GetUserConfigData, GetUserConfigResponses, IgnoreAppVersionData, IgnoreAppVersionResponses, IncrementAllAppVersionsData, IncrementAllAppVersionsResponses, InstallAppData, InstallAppResponses, LoginData, LoginResponses, LogoutData, LogoutResponses, PullAppStoresData, PullAppStoresResponses, RegisterData, RegisterResponses, ResetAppData, ResetAppResponses, CancelOperationData, CancelOperationResponses, ResetPasswordData, ResetPasswordResponses, RestartAllAppsData, RestartAllAppsResponses, RestartAppData, RestartAppResponses, RestoreAppBackupData, RestoreAppBackupResponses, HubLogsEventsData, HubLogsEventsResponses, SearchAppsData, SearchAppsResponses, SeedDatabaseData, SeedDatabaseResponses, SetAllAppSubnetToNullData, SetAllAppSubnetToNullResponses, SetAllAppUpdateAvailableData, SetAllAppUpdateAvailableResponses, SetupTotpData, SetupTotpResponses, StartAllApps2Data, StartAllApps2Responses, StartAllAppsData, StartAllAppsResponses, StartAppData, StartAppResponses, StopAllAppsData, StopAllAppsResponses, StopAppData, StopAppResponses, SystemLoadData, SystemLoadResponses, TraefikData, TraefikResponses, UnignoreAppVersionData, UnignoreAppVersionResponses, UninstallAllAppsData, UninstallAllAppsResponses, UninstallAppData, UninstallAppResponses, UpdateAllAppsData, UpdateAllAppsResponses, UpdateAppConfigData, UpdateAppConfigResponses, UpdateAppData, UpdateAppMetadataData, UpdateAppMetadataResponses, UpdateAppResponses, UpdateAppStoreData, UpdateAppStoreResponses, UpdateCustomAppData, UpdateCustomAppResponses, UpdateUserConfigData, UpdateUserConfigResponses, UpdateUserSettingsData, UpdateUserSettingsResponses, UpdateAdvancedModeData, UpdateAdvancedModeResponses, UploadAppImageData, UploadAppImageResponses, UploadBackupData, UploadBackupResponses, UserContextData, UserContextResponses, VerifyTotpData, VerifyTotpResponses } from './types.gen';
+import type { AcknowledgeWelcomeData, AcknowledgeWelcomeResponses, AppContextData, AppContextResponses, AppEventsData, AppEventsResponses, AppLogsEventsData, AppLogsEventsResponses, BackupAllAppsData, BackupAllAppsResponses, BackupAppData, BackupAppResponses, CancelOperationData, CancelOperationResponses, CancelResetPasswordData, CancelResetPasswordResponses, ChangePasswordData, ChangePasswordResponses, ChangeUsernameData, ChangeUsernameResponses, CheckAppPortsData, CheckAppPortsResponses, CheckAuthData, CheckAuthResponses, CheckAvailabilityData, CheckAvailabilityResponses, CheckData, CheckDataIntegrityData, CheckDataIntegrityResponses, CheckDnsAvailabilityData, CheckDnsAvailabilityResponses, CheckErrors, CheckForUpdatesData, CheckForUpdatesResponses, CheckResetPasswordRequestData, CheckResetPasswordRequestResponses, CheckResponses, CheckUrlAvailabilityData, CheckUrlAvailabilityResponses, CompleteOnboardingData, CompleteOnboardingResponses, CompletePasswordResetData, CompletePasswordResetResponses, ConnectWithAuthKeyData, ConnectWithAuthKeyResponses, CreateAppStoreData, CreateAppStoreResponses, CreateCustomAppData, CreateCustomAppResponses, CreateLinkData, CreateLinkResponses, DeleteAppBackupData, DeleteAppBackupResponses, DeleteAppStoreData, DeleteAppStoreResponses, DeleteLinkData, DeleteLinkResponses, DetectServicesData, DetectServicesResponses, DisableTotpData, DisableTotpResponses, DisableUserConfigData, DisableUserConfigResponses, DisconnectData, DisconnectResponses, DownloadBackupData, DownloadBackupResponses, DownloadHubLogsData, DownloadHubLogsResponses, DownloadLocalCertificateData, DownloadLocalCertificateResponses, EditLinkData, EditLinkResponses, EnableUserConfigData, EnableUserConfigResponses, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponses, ExecuteRehydrateData, ExecuteRehydrateResponses, FactoryResetData, FactoryResetErrors, FactoryResetResponses, ForceStopAppData, ForceStopAppResponses, GetAllAllocationsData, GetAllAllocationsResponses, GetAllAppStoresData, GetAllAppStoresResponses, GetAppBackupsData, GetAppBackupsResponses, GetAppComposeDiffData, GetAppComposeDiffResponses, GetAppConfigDiffData, GetAppConfigDiffResponses, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv0Responses, GetAppCredentialsEnv1Data, GetAppCredentialsEnv1Responses, GetAppCredentialsResponses, GetAppData, GetAppImageSizeData, GetAppImageSizeResponses, GetAppPortsData, GetAppPortsResponses, GetAppResponses, GetAutoUpdatesData, GetAutoUpdatesResponses, GetCatalogData, GetCatalogResponses, GetCloudProvidersData, GetCloudProvidersResponses, GetConfigData, GetConfigResponses, GetContainersData, GetContainersResponses, GetDeviceIdData, GetDeviceIdResponses, GetDiagnostics2Data, GetDiagnostics2Responses, GetDiagnosticsData, GetDiagnosticsResponses, GetDomainsData, GetDomainsResponses, GetEnabledAppStoresData, GetEnabledAppStoresResponses, GetFullInspectionData, GetFullInspectionResponses, GetGuestAppsData, GetGuestAppsResponses, GetGuestLinksData, GetGuestLinksResponses, GetHardwareData, GetHardwareResponses, GetHealthData, GetHealthResponses, GetHostListenerTokenData, GetHostListenerTokenResponses, GetImageData, GetImageResponses, GetInstalledAppsData, GetInstalledAppsResponses, GetInstallQueueData, GetInstallQueueResponses, GetLinksData, GetLinksResponses, GetMemoryData, GetMemoryResponses, GetOllamaStatusData, GetOllamaStatusResponses, GetOnboardingProfileData, GetOnboardingProfileResponses, GetPortalConfigData, GetPortalConfigResponses, GetPortsData, GetPortsResponses, GetPreferencesData, GetPreferencesResponses, GetRandomPortData, GetRandomPortResponses, GetRehydratePlanData, GetRehydratePlanResponses, GetRehydrateStatusData, GetRehydrateStatusResponses, GetResourceMonitorData, GetResourceMonitorResponses, GetRocmStatusData, GetRocmStatusResponses, GetRuntimeHealthData, GetRuntimeHealthResponses, GetRuntimeModelsData, GetRuntimeModelsResponses, GetServeStatusData, GetServeStatusResponses, GetStateDriftData, GetStateDriftResponses, GetStatus2Data, GetStatus2Responses, GetStatus3Data, GetStatus3Responses, GetStatus4Data, GetStatus4Responses, GetStatusData, GetStatusResponses, GetStoreAlternativesData, GetStoreAlternativesErrors, GetStoreAlternativesResponses, GetStoreListingsData, GetStoreListingsErrors, GetStoreListingsResponses, GetTotpUriData, GetTotpUriResponses, GetTrackedModelsData, GetTrackedModelsResponses, GetTranslationData, GetTranslationResponses, GetUserConfigData, GetUserConfigResponses, HandleCallbackData, HandleCallbackErrors, HandleCallbackPostData, HandleCallbackPostErrors, HandleCallbackPostResponses, HandleCallbackResponses, HealthData, HealthResponses, HubLogsEventsData, HubLogsEventsResponses, IgnoreAppVersionData, IgnoreAppVersionResponses, IncrementAllAppVersionsData, IncrementAllAppVersionsResponses, InstallAppData, InstallAppResponses, InstallOllamaData, InstallOllamaResponses, LiveData, LiveResponses, LoadModelData, LoadModelResponses, LoginData, LoginResponses, LogoutData, LogoutResponses, MarkRestoreIntentData, MarkRestoreIntentResponses, MessagesData, MessagesResponses, PairDeviceData, PairDeviceErrors, PairDeviceResponses, PerformUpdateData, PerformUpdateResponses, PinModelData, PinModelResponses, PortalCallbackData, PortalCallbackResponses, PortalSessionHintData, PortalSessionHintResponses, PrepareFreshSetupData, PrepareFreshSetupResponses, ProbeDomainData, ProbeDomainResponses, PullAppStoresData, PullAppStoresResponses, PullModelData, PullModelResponses, RefreshSessionData, RefreshSessionResponses, RegisterData, RegisterDeviceData, RegisterDeviceErrors, RegisterDeviceResponses, RegisterResponses, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponses, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponses, RepairData, RepairOrphansData, RepairOrphansResponses, RepairResponses, RequestPasswordResetData, RequestPasswordResetResponses, RescanHardwareData, RescanHardwareResponses, ResetAppData, ResetAppResponses, ResetPasswordData, ResetPasswordResponses, ResetRegistrationData, ResetRegistrationResponses, ResolveAvailabilityData, ResolveAvailabilityResponses, RestartAllAppsData, RestartAllAppsResponses, RestartAppData, RestartAppResponses, RestartOnboardingData, RestartOnboardingResponses, RestoreAppBackupData, RestoreAppBackupResponses, SearchAppsData, SearchAppsResponses, SeedDatabaseData, SeedDatabaseResponses, SetAllAppSubnetToNullData, SetAllAppSubnetToNullResponses, SetAllAppUpdateAvailableData, SetAllAppUpdateAvailableResponses, SetAutoUpdatesData, SetAutoUpdatesResponses, SetCloudProviderData, SetCloudProviderResponses, SetupTotpData, SetupTotpResponses, SseData, SseResponses, StartAllApps2Data, StartAllApps2Responses, StartAllAppsData, StartAllAppsResponses, StartAppData, StartAppResponses, StartAuthData, StartAuthResponses, StartPortalLoginData, StartPortalLoginResponses, StartPullModelData, StartPullModelResponses, StopAllAppsData, StopAllAppsResponses, StopAppData, StopAppResponses, SyncExposureData, SyncExposureResponses, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponses, SystemLoadData, SystemLoadResponses, SystemResourcesData, SystemResourcesResponses, TraefikData, TraefikResponses, UnignoreAppVersionData, UnignoreAppVersionResponses, UninstallAllAppsData, UninstallAllAppsResponses, UninstallAppData, UninstallAppResponses, UnloadModelData, UnloadModelResponses, UnpinModelData, UnpinModelResponses, UpdateAdvancedModeData, UpdateAdvancedModeResponses, UpdateAllAppsData, UpdateAllAppsResponses, UpdateAppConfigData, UpdateAppConfigResponses, UpdateAppData, UpdateAppMetadataData, UpdateAppMetadataResponses, UpdateAppResponses, UpdateAppStoreData, UpdateAppStoreResponses, UpdateCustomAppData, UpdateCustomAppResponses, UpdatePreferencesData, UpdatePreferencesResponses, UpdateRocmInstallStateData, UpdateRocmInstallStateResponses, UpdateUserConfigData, UpdateUserConfigResponses, UpdateUserSettingsData, UpdateUserSettingsResponses, UploadAppImageData, UploadAppImageResponses, UploadBackupData, UploadBackupResponses, UserContextData, UserContextResponses, ValidateOrganizationNameData, ValidateOrganizationNameResponses, VerifyPairingCodeData, VerifyPairingCodeErrors, VerifyPairingCodeResponses, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponses, VerifyTotpData, VerifyTotpResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -25,6 +25,26 @@ export const userContext = <ThrowOnError extends boolean = false>(options?: Opti
     });
 };
 
+/**
+ * Open-source app alternatives catalog (proxied from CI Cloud)
+ */
+export const getStoreAlternatives = <ThrowOnError extends boolean = false>(options?: Options<GetStoreAlternativesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStoreAlternativesResponses, GetStoreAlternativesErrors, ThrowOnError>({
+        url: '/api/store/alternatives',
+        ...options
+    });
+};
+
+/**
+ * App store listings (proxied from CI Cloud)
+ */
+export const getStoreListings = <ThrowOnError extends boolean = false>(options: Options<GetStoreListingsData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetStoreListingsResponses, GetStoreListingsErrors, ThrowOnError>({
+        url: '/api/store/listings',
+        ...options
+    });
+};
+
 export const appContext = <ThrowOnError extends boolean = false>(options?: Options<AppContextData, ThrowOnError>) => {
     return (options?.client ?? client).get<AppContextResponses, unknown, ThrowOnError>({
         url: '/api/app-context',
@@ -43,14 +63,10 @@ export const updateUserSettings = <ThrowOnError extends boolean = false>(options
     });
 };
 
-export const updateAdvancedMode = <ThrowOnError extends boolean = false>(options: Options<UpdateAdvancedModeData, ThrowOnError>) => {
-    return (options.client ?? client).patch<UpdateAdvancedModeResponses, unknown, ThrowOnError>({
+export const updateAdvancedMode = <ThrowOnError extends boolean = false>(options?: Options<UpdateAdvancedModeData, ThrowOnError>) => {
+    return (options?.client ?? client).patch<UpdateAdvancedModeResponses, unknown, ThrowOnError>({
         url: '/api/user-advanced-mode',
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        }
+        ...options
     });
 };
 
@@ -65,9 +81,517 @@ export const acknowledgeWelcome = <ThrowOnError extends boolean = false>(options
     });
 };
 
+export const completeOnboarding = <ThrowOnError extends boolean = false>(options?: Options<CompleteOnboardingData, ThrowOnError>) => {
+    return (options?.client ?? client).patch<CompleteOnboardingResponses, unknown, ThrowOnError>({
+        url: '/api/complete-onboarding',
+        ...options
+    });
+};
+
+export const restartOnboarding = <ThrowOnError extends boolean = false>(options?: Options<RestartOnboardingData, ThrowOnError>) => {
+    return (options?.client ?? client).patch<RestartOnboardingResponses, unknown, ThrowOnError>({
+        url: '/api/restart-onboarding',
+        ...options
+    });
+};
+
+/**
+ * Reset device registration to allow re-pairing
+ */
+export const resetRegistration = <ThrowOnError extends boolean = false>(options?: Options<ResetRegistrationData, ThrowOnError>) => {
+    return (options?.client ?? client).post<ResetRegistrationResponses, unknown, ThrowOnError>({
+        url: '/api/registration/reset',
+        ...options
+    });
+};
+
+/**
+ * Get device registration and provisioning status
+ */
+export const getStatus = <ThrowOnError extends boolean = false>(options?: Options<GetStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStatusResponses, unknown, ThrowOnError>({
+        url: '/api/registration/status',
+        ...options
+    });
+};
+
+/**
+ * Detect local vs CI Portal registration state drift
+ */
+export const getStateDrift = <ThrowOnError extends boolean = false>(options?: Options<GetStateDriftData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStateDriftResponses, unknown, ThrowOnError>({
+        url: '/api/registration/state-drift',
+        ...options
+    });
+};
+
+/**
+ * Clear local registration artifacts for a fresh device pairing
+ */
+export const prepareFreshSetup = <ThrowOnError extends boolean = false>(options?: Options<PrepareFreshSetupData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PrepareFreshSetupResponses, unknown, ThrowOnError>({
+        url: '/api/registration/prepare-fresh',
+        ...options
+    });
+};
+
+/**
+ * Record restore intent before re-pairing an existing Portal device
+ */
+export const markRestoreIntent = <ThrowOnError extends boolean = false>(options?: Options<MarkRestoreIntentData, ThrowOnError>) => {
+    return (options?.client ?? client).post<MarkRestoreIntentResponses, unknown, ThrowOnError>({
+        url: '/api/registration/mark-restore-intent',
+        ...options
+    });
+};
+
+/**
+ * Get device ID for registration redirect
+ */
+export const getDeviceId = <ThrowOnError extends boolean = false>(options?: Options<GetDeviceIdData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetDeviceIdResponses, unknown, ThrowOnError>({
+        url: '/api/registration/device-id',
+        ...options
+    });
+};
+
+/**
+ * Handle registration callback from CI Cloud (legacy GET redirect)
+ */
+export const handleCallback = <ThrowOnError extends boolean = false>(options: Options<HandleCallbackData, ThrowOnError>) => {
+    return (options.client ?? client).get<HandleCallbackResponses, HandleCallbackErrors, ThrowOnError>({
+        url: '/api/registration/callback',
+        ...options
+    });
+};
+
+/**
+ * Handle registration callback from CI Cloud (preferred — secrets in body)
+ */
+export const handleCallbackPost = <ThrowOnError extends boolean = false>(options?: Options<HandleCallbackPostData, ThrowOnError>) => {
+    return (options?.client ?? client).post<HandleCallbackPostResponses, HandleCallbackPostErrors, ThrowOnError>({
+        url: '/api/registration/callback',
+        ...options
+    });
+};
+
+/**
+ * Get CI Cloud configuration (operator debug)
+ */
+export const getConfig = <ThrowOnError extends boolean = false>(options?: Options<GetConfigData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetConfigResponses, unknown, ThrowOnError>({
+        url: '/api/registration/config',
+        ...options
+    });
+};
+
+/**
+ * Validate organization name/subdomain availability
+ */
+export const validateOrganizationName = <ThrowOnError extends boolean = false>(options: Options<ValidateOrganizationNameData, ThrowOnError>) => {
+    return (options.client ?? client).get<ValidateOrganizationNameResponses, unknown, ThrowOnError>({
+        url: '/api/registration/validate',
+        ...options
+    });
+};
+
+/**
+ * Verify a signup pairing code and bind device identity with CI Cloud
+ */
+export const verifyPairingCode = <ThrowOnError extends boolean = false>(options?: Options<VerifyPairingCodeData, ThrowOnError>) => {
+    return (options?.client ?? client).post<VerifyPairingCodeResponses, VerifyPairingCodeErrors, ThrowOnError>({
+        url: '/api/registration/verify-pairing-code',
+        ...options
+    });
+};
+
+/**
+ * Probe a CF domain to check if the tunnel is serving the Hub
+ */
+export const probeDomain = <ThrowOnError extends boolean = false>(options: Options<ProbeDomainData, ThrowOnError>) => {
+    return (options.client ?? client).get<ProbeDomainResponses, unknown, ThrowOnError>({
+        url: '/api/registration/probe-domain',
+        ...options
+    });
+};
+
+/**
+ * Pair device using a pairing code — atomic registration in one step
+ */
+export const pairDevice = <ThrowOnError extends boolean = false>(options?: Options<PairDeviceData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PairDeviceResponses, PairDeviceErrors, ThrowOnError>({
+        url: '/api/registration/pair',
+        ...options
+    });
+};
+
+/**
+ * Initiate device registration with organization
+ */
+export const registerDevice = <ThrowOnError extends boolean = false>(options?: Options<RegisterDeviceData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RegisterDeviceResponses, RegisterDeviceErrors, ThrowOnError>({
+        url: '/api/registration/register',
+        ...options
+    });
+};
+
+/**
+ * Portal URL and device registration metadata for the frontend
+ */
+export const getPortalConfig = <ThrowOnError extends boolean = false>(options?: Options<GetPortalConfigData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetPortalConfigResponses, unknown, ThrowOnError>({
+        url: '/api/portal/config',
+        ...options
+    });
+};
+
+export const checkDnsAvailability = <ThrowOnError extends boolean = false>(options: Options<CheckDnsAvailabilityData, ThrowOnError>) => {
+    return (options.client ?? client).get<CheckDnsAvailabilityResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/check-dns-availability',
+        ...options
+    });
+};
+
+export const getDomains = <ThrowOnError extends boolean = false>(options?: Options<GetDomainsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetDomainsResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/domains',
+        ...options
+    });
+};
+
+export const getStatus2 = <ThrowOnError extends boolean = false>(options?: Options<GetStatus2Data, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStatus2Responses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/status',
+        ...options
+    });
+};
+
+export const checkUrlAvailability = <ThrowOnError extends boolean = false>(options: Options<CheckUrlAvailabilityData, ThrowOnError>) => {
+    return (options.client ?? client).get<CheckUrlAvailabilityResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/check-url-availability',
+        ...options
+    });
+};
+
+export const syncMissingDnsRecords = <ThrowOnError extends boolean = false>(options?: Options<SyncMissingDnsRecordsData, ThrowOnError>) => {
+    return (options?.client ?? client).post<SyncMissingDnsRecordsResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/sync-dns',
+        ...options
+    });
+};
+
+export const removeOriginRequestFromAllRoutes = <ThrowOnError extends boolean = false>(options?: Options<RemoveOriginRequestFromAllRoutesData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RemoveOriginRequestFromAllRoutesResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/remove-origin-request',
+        ...options
+    });
+};
+
+export const removeCatchAllRoutes = <ThrowOnError extends boolean = false>(options: Options<RemoveCatchAllRoutesData, ThrowOnError>) => {
+    return (options.client ?? client).post<RemoveCatchAllRoutesResponses, unknown, ThrowOnError>({
+        url: '/api/cloudflare/remove-catch-all-routes',
+        ...options
+    });
+};
+
+export const getInstalledApps = <ThrowOnError extends boolean = false>(options?: Options<GetInstalledAppsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetInstalledAppsResponses, unknown, ThrowOnError>({
+        url: '/api/apps/installed',
+        ...options
+    });
+};
+
+export const getInstallQueue = <ThrowOnError extends boolean = false>(options?: Options<GetInstallQueueData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetInstallQueueResponses, unknown, ThrowOnError>({
+        url: '/api/apps/install-queue',
+        ...options
+    });
+};
+
+export const getGuestApps = <ThrowOnError extends boolean = false>(options?: Options<GetGuestAppsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetGuestAppsResponses, unknown, ThrowOnError>({
+        url: '/api/apps/guest',
+        ...options
+    });
+};
+
+export const getRandomPort = <ThrowOnError extends boolean = false>(options?: Options<GetRandomPortData, ThrowOnError>) => {
+    return (options?.client ?? client).post<GetRandomPortResponses, unknown, ThrowOnError>({
+        url: '/api/apps/random-port',
+        ...options
+    });
+};
+
+export const getResourceMonitor = <ThrowOnError extends boolean = false>(options?: Options<GetResourceMonitorData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetResourceMonitorResponses, unknown, ThrowOnError>({
+        url: '/api/apps/resource-monitor',
+        ...options
+    });
+};
+
+export const getApp = <ThrowOnError extends boolean = false>(options: Options<GetAppData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}',
+        ...options
+    });
+};
+
+export const getAppComposeDiff = <ThrowOnError extends boolean = false>(options: Options<GetAppComposeDiffData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppComposeDiffResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/compose-diff',
+        ...options
+    });
+};
+
+export const getAppConfigDiff = <ThrowOnError extends boolean = false>(options: Options<GetAppConfigDiffData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppConfigDiffResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/config-diff',
+        ...options
+    });
+};
+
+export const ignoreAppVersion = <ThrowOnError extends boolean = false>(options: Options<IgnoreAppVersionData, ThrowOnError>) => {
+    return (options.client ?? client).patch<IgnoreAppVersionResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/ignore-version',
+        ...options
+    });
+};
+
+export const unignoreAppVersion = <ThrowOnError extends boolean = false>(options: Options<UnignoreAppVersionData, ThrowOnError>) => {
+    return (options.client ?? client).patch<UnignoreAppVersionResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/unignore-version',
+        ...options
+    });
+};
+
+export const checkAvailability = <ThrowOnError extends boolean = false>(options: Options<CheckAvailabilityData, ThrowOnError>) => {
+    return (options.client ?? client).get<CheckAvailabilityResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/check-availability',
+        ...options
+    });
+};
+
+export const getRuntimeHealth = <ThrowOnError extends boolean = false>(options: Options<GetRuntimeHealthData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetRuntimeHealthResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/runtime-health',
+        ...options
+    });
+};
+
+export const resolveAvailability = <ThrowOnError extends boolean = false>(options: Options<ResolveAvailabilityData, ThrowOnError>) => {
+    return (options.client ?? client).post<ResolveAvailabilityResponses, unknown, ThrowOnError>({
+        url: '/api/apps/{urn}/resolve-availability',
+        ...options
+    });
+};
+
+export const health = <ThrowOnError extends boolean = false>(options?: Options<HealthData, ThrowOnError>) => {
+    return (options?.client ?? client).get<HealthResponses, unknown, ThrowOnError>({
+        url: '/api/inference/health',
+        ...options
+    });
+};
+
+export const getPreferences = <ThrowOnError extends boolean = false>(options?: Options<GetPreferencesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetPreferencesResponses, unknown, ThrowOnError>({
+        url: '/api/inference/preferences',
+        ...options
+    });
+};
+
+export const updatePreferences = <ThrowOnError extends boolean = false>(options: Options<UpdatePreferencesData, ThrowOnError>) => {
+    return (options.client ?? client).patch<UpdatePreferencesResponses, unknown, ThrowOnError>({
+        url: '/api/inference/preferences',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const getRuntimeModels = <ThrowOnError extends boolean = false>(options?: Options<GetRuntimeModelsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetRuntimeModelsResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/runtime',
+        ...options
+    });
+};
+
+export const getStatus3 = <ThrowOnError extends boolean = false>(options?: Options<GetStatus3Data, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStatus3Responses, unknown, ThrowOnError>({
+        url: '/api/inference/status',
+        ...options
+    });
+};
+
+export const getHardware = <ThrowOnError extends boolean = false>(options?: Options<GetHardwareData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetHardwareResponses, unknown, ThrowOnError>({
+        url: '/api/inference/hardware',
+        ...options
+    });
+};
+
+export const rescanHardware = <ThrowOnError extends boolean = false>(options?: Options<RescanHardwareData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RescanHardwareResponses, unknown, ThrowOnError>({
+        url: '/api/inference/hardware/rescan',
+        ...options
+    });
+};
+
+export const getRocmStatus = <ThrowOnError extends boolean = false>(options?: Options<GetRocmStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetRocmStatusResponses, unknown, ThrowOnError>({
+        url: '/api/inference/rocm/status',
+        ...options
+    });
+};
+
+export const updateRocmInstallState = <ThrowOnError extends boolean = false>(options: Options<UpdateRocmInstallStateData, ThrowOnError>) => {
+    return (options.client ?? client).post<UpdateRocmInstallStateResponses, unknown, ThrowOnError>({
+        url: '/api/inference/rocm/install-state',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const getMemory = <ThrowOnError extends boolean = false>(options?: Options<GetMemoryData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetMemoryResponses, unknown, ThrowOnError>({
+        url: '/api/inference/memory',
+        ...options
+    });
+};
+
+export const getCatalog = <ThrowOnError extends boolean = false>(options?: Options<GetCatalogData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetCatalogResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/catalog',
+        ...options
+    });
+};
+
+export const getTrackedModels = <ThrowOnError extends boolean = false>(options?: Options<GetTrackedModelsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetTrackedModelsResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/tracked',
+        ...options
+    });
+};
+
+export const startPullModel = <ThrowOnError extends boolean = false>(options?: Options<StartPullModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<StartPullModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/pull/start',
+        ...options
+    });
+};
+
+export const pullModel = <ThrowOnError extends boolean = false>(options?: Options<PullModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PullModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/pull',
+        ...options
+    });
+};
+
+export const loadModel = <ThrowOnError extends boolean = false>(options?: Options<LoadModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<LoadModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/load',
+        ...options
+    });
+};
+
+export const unloadModel = <ThrowOnError extends boolean = false>(options?: Options<UnloadModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<UnloadModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/unload',
+        ...options
+    });
+};
+
+export const pinModel = <ThrowOnError extends boolean = false>(options?: Options<PinModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PinModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/pin',
+        ...options
+    });
+};
+
+export const unpinModel = <ThrowOnError extends boolean = false>(options?: Options<UnpinModelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<UnpinModelResponses, unknown, ThrowOnError>({
+        url: '/api/inference/models/unpin',
+        ...options
+    });
+};
+
+export const getCloudProviders = <ThrowOnError extends boolean = false>(options?: Options<GetCloudProvidersData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetCloudProvidersResponses, unknown, ThrowOnError>({
+        url: '/api/inference/cloud-providers',
+        ...options
+    });
+};
+
+export const setCloudProvider = <ThrowOnError extends boolean = false>(options?: Options<SetCloudProviderData, ThrowOnError>) => {
+    return (options?.client ?? client).post<SetCloudProviderResponses, unknown, ThrowOnError>({
+        url: '/api/inference/cloud-providers',
+        ...options
+    });
+};
+
+export const getOnboardingProfile = <ThrowOnError extends boolean = false>(options?: Options<GetOnboardingProfileData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetOnboardingProfileResponses, unknown, ThrowOnError>({
+        url: '/api/inference/onboarding-profile',
+        ...options
+    });
+};
+
+export const getOllamaStatus = <ThrowOnError extends boolean = false>(options?: Options<GetOllamaStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetOllamaStatusResponses, unknown, ThrowOnError>({
+        url: '/api/inference/ollama/status',
+        ...options
+    });
+};
+
+export const installOllama = <ThrowOnError extends boolean = false>(options?: Options<InstallOllamaData, ThrowOnError>) => {
+    return (options?.client ?? client).post<InstallOllamaResponses, unknown, ThrowOnError>({
+        url: '/api/inference/ollama/install',
+        ...options
+    });
+};
+
+export const getAppCredentials = <ThrowOnError extends boolean = false>(options: Options<GetAppCredentialsData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppCredentialsResponses, unknown, ThrowOnError>({
+        url: '/api/inference/apps/{slug}/credentials',
+        ...options
+    });
+};
+
+export const getAppCredentialsEnv0 = <ThrowOnError extends boolean = false>(options: Options<GetAppCredentialsEnv0Data, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppCredentialsEnv0Responses, unknown, ThrowOnError>({
+        url: '/api/inference/apps/{slug}/credentials.env',
+        ...options
+    });
+};
+
+export const getAppCredentialsEnv1 = <ThrowOnError extends boolean = false>(options: Options<GetAppCredentialsEnv1Data, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppCredentialsEnv1Responses, unknown, ThrowOnError>({
+        url: '/api/inference/apps/{slug}/bootstrap.env',
+        ...options
+    });
+};
+
 export const systemLoad = <ThrowOnError extends boolean = false>(options?: Options<SystemLoadData, ThrowOnError>) => {
     return (options?.client ?? client).get<SystemLoadResponses, unknown, ThrowOnError>({
         url: '/api/system/load',
+        ...options
+    });
+};
+
+export const systemResources = <ThrowOnError extends boolean = false>(options?: Options<SystemResourcesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<SystemResourcesResponses, unknown, ThrowOnError>({
+        url: '/api/system/resources',
+        ...options
+    });
+};
+
+export const downloadHubLogs = <ThrowOnError extends boolean = false>(options?: Options<DownloadHubLogsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<DownloadHubLogsResponses, unknown, ThrowOnError>({
+        url: '/api/system/logs/download',
         ...options
     });
 };
@@ -76,6 +600,182 @@ export const downloadLocalCertificate = <ThrowOnError extends boolean = false>(o
     return (options?.client ?? client).get<DownloadLocalCertificateResponses, unknown, ThrowOnError>({
         url: '/api/system/certificate',
         ...options
+    });
+};
+
+export const detectServices = <ThrowOnError extends boolean = false>(options?: Options<DetectServicesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<DetectServicesResponses, unknown, ThrowOnError>({
+        url: '/api/system/detect-services',
+        ...options
+    });
+};
+
+/**
+ * Full system inspection: ports, containers, health
+ */
+export const getFullInspection = <ThrowOnError extends boolean = false>(options?: Options<GetFullInspectionData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetFullInspectionResponses, unknown, ThrowOnError>({
+        url: '/api/system-inspector',
+        ...options
+    });
+};
+
+/**
+ * Running Docker containers and their status
+ */
+export const getContainers = <ThrowOnError extends boolean = false>(options?: Options<GetContainersData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetContainersResponses, unknown, ThrowOnError>({
+        url: '/api/system-inspector/containers',
+        ...options
+    });
+};
+
+/**
+ * Port allocations with live bind checks
+ */
+export const getPorts = <ThrowOnError extends boolean = false>(options?: Options<GetPortsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetPortsResponses, unknown, ThrowOnError>({
+        url: '/api/system-inspector/ports',
+        ...options
+    });
+};
+
+/**
+ * System health: CPU, memory, disk, uptime
+ */
+export const getHealth = <ThrowOnError extends boolean = false>(options?: Options<GetHealthData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetHealthResponses, unknown, ThrowOnError>({
+        url: '/api/system-inspector/health',
+        ...options
+    });
+};
+
+/**
+ * Wipe all Hub state and return to first-operator setup
+ */
+export const factoryReset = <ThrowOnError extends boolean = false>(options: Options<FactoryResetData, ThrowOnError>) => {
+    return (options.client ?? client).post<FactoryResetResponses, FactoryResetErrors, ThrowOnError>({
+        url: '/api/system/factory-reset',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+/**
+ * Get all port allocations
+ */
+export const getAllAllocations = <ThrowOnError extends boolean = false>(options?: Options<GetAllAllocationsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetAllAllocationsResponses, unknown, ThrowOnError>({
+        url: '/api/ports',
+        ...options
+    });
+};
+
+/**
+ * Get port allocations for a specific app
+ */
+export const getAppPorts = <ThrowOnError extends boolean = false>(options: Options<GetAppPortsData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppPortsResponses, unknown, ThrowOnError>({
+        url: '/api/ports/{appUrn}',
+        ...options
+    });
+};
+
+/**
+ * Check port availability for an app
+ */
+export const checkAppPorts = <ThrowOnError extends boolean = false>(options: Options<CheckAppPortsData, ThrowOnError>) => {
+    return (options.client ?? client).get<CheckAppPortsResponses, unknown, ThrowOnError>({
+        url: '/api/ports/{appUrn}/check',
+        ...options
+    });
+};
+
+export const getDiagnostics = <ThrowOnError extends boolean = false>(options?: Options<GetDiagnosticsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetDiagnosticsResponses, unknown, ThrowOnError>({
+        url: '/api/network/diagnostics',
+        ...options
+    });
+};
+
+export const repairOrphans = <ThrowOnError extends boolean = false>(options?: Options<RepairOrphansData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RepairOrphansResponses, unknown, ThrowOnError>({
+        url: '/api/network/repair-orphans',
+        ...options
+    });
+};
+
+export const searchApps = <ThrowOnError extends boolean = false>(options?: Options<SearchAppsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<SearchAppsResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/apps/search',
+        ...options
+    });
+};
+
+export const getImage = <ThrowOnError extends boolean = false>(options: Options<GetImageData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetImageResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/apps/{urn}/image',
+        ...options
+    });
+};
+
+export const getAppImageSize = <ThrowOnError extends boolean = false>(options: Options<GetAppImageSizeData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetAppImageSizeResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/apps/{urn}/image-size',
+        ...options
+    });
+};
+
+export const pullAppStores = <ThrowOnError extends boolean = false>(options?: Options<PullAppStoresData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PullAppStoresResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/pull',
+        ...options
+    });
+};
+
+export const createAppStore = <ThrowOnError extends boolean = false>(options: Options<CreateAppStoreData, ThrowOnError>) => {
+    return (options.client ?? client).post<CreateAppStoreResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/create',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const getAllAppStores = <ThrowOnError extends boolean = false>(options?: Options<GetAllAppStoresData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetAllAppStoresResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/all',
+        ...options
+    });
+};
+
+export const getEnabledAppStores = <ThrowOnError extends boolean = false>(options?: Options<GetEnabledAppStoresData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetEnabledAppStoresResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/enabled',
+        ...options
+    });
+};
+
+export const deleteAppStore = <ThrowOnError extends boolean = false>(options: Options<DeleteAppStoreData, ThrowOnError>) => {
+    return (options.client ?? client).delete<DeleteAppStoreResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/{id}',
+        ...options
+    });
+};
+
+export const updateAppStore = <ThrowOnError extends boolean = false>(options: Options<UpdateAppStoreData, ThrowOnError>) => {
+    return (options.client ?? client).patch<UpdateAppStoreResponses, unknown, ThrowOnError>({
+        url: '/api/marketplace/{id}',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
     });
 };
 
@@ -122,6 +822,41 @@ export const register = <ThrowOnError extends boolean = false>(options: Options<
 export const logout = <ThrowOnError extends boolean = false>(options?: Options<LogoutData, ThrowOnError>) => {
     return (options?.client ?? client).post<LogoutResponses, unknown, ThrowOnError>({
         url: '/api/auth/logout',
+        ...options
+    });
+};
+
+export const refreshSession = <ThrowOnError extends boolean = false>(options?: Options<RefreshSessionData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RefreshSessionResponses, unknown, ThrowOnError>({
+        url: '/api/auth/session/refresh',
+        ...options
+    });
+};
+
+export const startPortalLogin = <ThrowOnError extends boolean = false>(options: Options<StartPortalLoginData, ThrowOnError>) => {
+    return (options.client ?? client).get<StartPortalLoginResponses, unknown, ThrowOnError>({
+        url: '/api/auth/portal/start',
+        ...options
+    });
+};
+
+export const portalCallback = <ThrowOnError extends boolean = false>(options: Options<PortalCallbackData, ThrowOnError>) => {
+    return (options.client ?? client).get<PortalCallbackResponses, unknown, ThrowOnError>({
+        url: '/api/auth/portal/callback',
+        ...options
+    });
+};
+
+export const portalSessionHint = <ThrowOnError extends boolean = false>(options?: Options<PortalSessionHintData, ThrowOnError>) => {
+    return (options?.client ?? client).get<PortalSessionHintResponses, unknown, ThrowOnError>({
+        url: '/api/auth/portal/session-hint',
+        ...options
+    });
+};
+
+export const exchangePortalDesktopLogin = <ThrowOnError extends boolean = false>(options: Options<ExchangePortalDesktopLoginData, ThrowOnError>) => {
+    return (options.client ?? client).get<ExchangePortalDesktopLoginResponses, unknown, ThrowOnError>({
+        url: '/api/auth/portal/desktop-exchange',
         ...options
     });
 };
@@ -206,6 +941,35 @@ export const resetPassword = <ThrowOnError extends boolean = false>(options: Opt
     });
 };
 
+export const requestPasswordReset = <ThrowOnError extends boolean = false>(options: Options<RequestPasswordResetData, ThrowOnError>) => {
+    return (options.client ?? client).post<RequestPasswordResetResponses, unknown, ThrowOnError>({
+        url: '/api/auth/password-reset/request',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const verifyPasswordResetToken = <ThrowOnError extends boolean = false>(options?: Options<VerifyPasswordResetTokenData, ThrowOnError>) => {
+    return (options?.client ?? client).get<VerifyPasswordResetTokenResponses, unknown, ThrowOnError>({
+        url: '/api/auth/password-reset/verify/{token}',
+        ...options
+    });
+};
+
+export const completePasswordReset = <ThrowOnError extends boolean = false>(options: Options<CompletePasswordResetData, ThrowOnError>) => {
+    return (options.client ?? client).post<CompletePasswordResetResponses, unknown, ThrowOnError>({
+        url: '/api/auth/password-reset/complete',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
 export const traefik = <ThrowOnError extends boolean = false>(options?: Options<TraefikData, ThrowOnError>) => {
     return (options?.client ?? client).get<TraefikResponses, unknown, ThrowOnError>({
         url: '/api/auth/traefik',
@@ -213,123 +977,24 @@ export const traefik = <ThrowOnError extends boolean = false>(options?: Options<
     });
 };
 
-export const getInstalledApps = <ThrowOnError extends boolean = false>(options?: Options<GetInstalledAppsData, ThrowOnError>) => {
-    return (options?.client ?? client).get<GetInstalledAppsResponses, unknown, ThrowOnError>({
-        url: '/api/apps/installed',
+export const getRehydratePlan = <ThrowOnError extends boolean = false>(options?: Options<GetRehydratePlanData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetRehydratePlanResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/rehydrate/plan',
         ...options
     });
 };
 
-export const getGuestApps = <ThrowOnError extends boolean = false>(options?: Options<GetGuestAppsData, ThrowOnError>) => {
-    return (options?.client ?? client).get<GetGuestAppsResponses, unknown, ThrowOnError>({
-        url: '/api/apps/guest',
+export const getRehydrateStatus = <ThrowOnError extends boolean = false>(options?: Options<GetRehydrateStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetRehydrateStatusResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/rehydrate/status',
         ...options
     });
 };
 
-export const getRandomPort = <ThrowOnError extends boolean = false>(options?: Options<GetRandomPortData, ThrowOnError>) => {
-    return (options?.client ?? client).post<GetRandomPortResponses, unknown, ThrowOnError>({
-        url: '/api/apps/random-port',
+export const executeRehydrate = <ThrowOnError extends boolean = false>(options?: Options<ExecuteRehydrateData, ThrowOnError>) => {
+    return (options?.client ?? client).post<ExecuteRehydrateResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/rehydrate',
         ...options
-    });
-};
-
-export const getApp = <ThrowOnError extends boolean = false>(options: Options<GetAppData, ThrowOnError>) => {
-    return (options.client ?? client).get<GetAppResponses, unknown, ThrowOnError>({
-        url: '/api/apps/{urn}',
-        ...options
-    });
-};
-
-export const getAppComposeDiff = <ThrowOnError extends boolean = false>(options: Options<GetAppComposeDiffData, ThrowOnError>) => {
-    return (options.client ?? client).get<GetAppComposeDiffResponses, unknown, ThrowOnError>({
-        url: '/api/apps/{urn}/compose-diff',
-        ...options
-    });
-};
-
-export const getAppConfigDiff = <ThrowOnError extends boolean = false>(options: Options<GetAppConfigDiffData, ThrowOnError>) => {
-    return (options.client ?? client).get<GetAppConfigDiffResponses, unknown, ThrowOnError>({
-        url: '/api/apps/{urn}/config-diff',
-        ...options
-    });
-};
-
-export const ignoreAppVersion = <ThrowOnError extends boolean = false>(options: Options<IgnoreAppVersionData, ThrowOnError>) => {
-    return (options.client ?? client).patch<IgnoreAppVersionResponses, unknown, ThrowOnError>({
-        url: '/api/apps/{urn}/ignore-version',
-        ...options
-    });
-};
-
-export const unignoreAppVersion = <ThrowOnError extends boolean = false>(options: Options<UnignoreAppVersionData, ThrowOnError>) => {
-    return (options.client ?? client).patch<UnignoreAppVersionResponses, unknown, ThrowOnError>({
-        url: '/api/apps/{urn}/unignore-version',
-        ...options
-    });
-};
-
-export const searchApps = <ThrowOnError extends boolean = false>(options?: Options<SearchAppsData, ThrowOnError>) => {
-    return (options?.client ?? client).get<SearchAppsResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/apps/search',
-        ...options
-    });
-};
-
-export const getImage = <ThrowOnError extends boolean = false>(options: Options<GetImageData, ThrowOnError>) => {
-    return (options.client ?? client).get<GetImageResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/apps/{urn}/image',
-        ...options
-    });
-};
-
-export const pullAppStores = <ThrowOnError extends boolean = false>(options?: Options<PullAppStoresData, ThrowOnError>) => {
-    return (options?.client ?? client).post<PullAppStoresResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/pull',
-        ...options
-    });
-};
-
-export const createAppStore = <ThrowOnError extends boolean = false>(options: Options<CreateAppStoreData, ThrowOnError>) => {
-    return (options.client ?? client).post<CreateAppStoreResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/create',
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        }
-    });
-};
-
-export const getAllAppStores = <ThrowOnError extends boolean = false>(options?: Options<GetAllAppStoresData, ThrowOnError>) => {
-    return (options?.client ?? client).get<GetAllAppStoresResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/all',
-        ...options
-    });
-};
-
-export const getEnabledAppStores = <ThrowOnError extends boolean = false>(options?: Options<GetEnabledAppStoresData, ThrowOnError>) => {
-    return (options?.client ?? client).get<GetEnabledAppStoresResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/enabled',
-        ...options
-    });
-};
-
-export const deleteAppStore = <ThrowOnError extends boolean = false>(options: Options<DeleteAppStoreData, ThrowOnError>) => {
-    return (options.client ?? client).delete<DeleteAppStoreResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/{id}',
-        ...options
-    });
-};
-
-export const updateAppStore = <ThrowOnError extends boolean = false>(options: Options<UpdateAppStoreData, ThrowOnError>) => {
-    return (options.client ?? client).patch<UpdateAppStoreResponses, unknown, ThrowOnError>({
-        url: '/api/marketplace/{id}',
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        }
     });
 };
 
@@ -354,6 +1019,13 @@ export const startApp = <ThrowOnError extends boolean = false>(options: Options<
 export const stopApp = <ThrowOnError extends boolean = false>(options: Options<StopAppData, ThrowOnError>) => {
     return (options.client ?? client).post<StopAppResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/{urn}/stop',
+        ...options
+    });
+};
+
+export const forceStopApp = <ThrowOnError extends boolean = false>(options: Options<ForceStopAppData, ThrowOnError>) => {
+    return (options.client ?? client).post<ForceStopAppResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/{urn}/force-stop',
         ...options
     });
 };
@@ -383,17 +1055,6 @@ export const resetApp = <ThrowOnError extends boolean = false>(options: Options<
     });
 };
 
-export const cancelOperation = <ThrowOnError extends boolean = false>(options: Options<CancelOperationData, ThrowOnError>) => {
-    return (options.client ?? client).post<CancelOperationResponses, unknown, ThrowOnError>({
-        url: '/api/app-lifecycle/{urn}/cancel',
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        }
-    });
-};
-
 export const updateApp = <ThrowOnError extends boolean = false>(options: Options<UpdateAppData, ThrowOnError>) => {
     return (options.client ?? client).patch<UpdateAppResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/{urn}/update',
@@ -408,6 +1069,17 @@ export const updateApp = <ThrowOnError extends boolean = false>(options: Options
 export const updateAppConfig = <ThrowOnError extends boolean = false>(options: Options<UpdateAppConfigData, ThrowOnError>) => {
     return (options.client ?? client).patch<UpdateAppConfigResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/{urn}/update-config',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const cancelOperation = <ThrowOnError extends boolean = false>(options: Options<CancelOperationData, ThrowOnError>) => {
+    return (options.client ?? client).post<CancelOperationResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/{urn}/cancel',
         ...options,
         headers: {
             'Content-Type': 'application/json',
@@ -520,6 +1192,58 @@ export const hubLogsEvents = <ThrowOnError extends boolean = false>(options?: Op
     });
 };
 
+export const getStatus4 = <ThrowOnError extends boolean = false>(options?: Options<GetStatus4Data, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStatus4Responses, unknown, ThrowOnError>({
+        url: '/api/tailscale/status',
+        ...options
+    });
+};
+
+/**
+ * Reconcile Tailscale Serve routes for Private VPN apps
+ */
+export const syncExposure = <ThrowOnError extends boolean = false>(options?: Options<SyncExposureData, ThrowOnError>) => {
+    return (options?.client ?? client).post<SyncExposureResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/sync',
+        ...options
+    });
+};
+
+export const startAuth = <ThrowOnError extends boolean = false>(options?: Options<StartAuthData, ThrowOnError>) => {
+    return (options?.client ?? client).post<StartAuthResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/auth/start',
+        ...options
+    });
+};
+
+export const connectWithAuthKey = <ThrowOnError extends boolean = false>(options?: Options<ConnectWithAuthKeyData, ThrowOnError>) => {
+    return (options?.client ?? client).post<ConnectWithAuthKeyResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/auth/key',
+        ...options
+    });
+};
+
+export const checkAuth = <ThrowOnError extends boolean = false>(options?: Options<CheckAuthData, ThrowOnError>) => {
+    return (options?.client ?? client).get<CheckAuthResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/auth/check',
+        ...options
+    });
+};
+
+export const disconnect = <ThrowOnError extends boolean = false>(options?: Options<DisconnectData, ThrowOnError>) => {
+    return (options?.client ?? client).post<DisconnectResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/disconnect',
+        ...options
+    });
+};
+
+export const getServeStatus = <ThrowOnError extends boolean = false>(options?: Options<GetServeStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetServeStatusResponses, unknown, ThrowOnError>({
+        url: '/api/tailscale/serve',
+        ...options
+    });
+};
+
 export const getGuestLinks = <ThrowOnError extends boolean = false>(options?: Options<GetGuestLinksData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetGuestLinksResponses, unknown, ThrowOnError>({
         url: '/api/links/guest',
@@ -563,9 +1287,37 @@ export const editLink = <ThrowOnError extends boolean = false>(options: Options<
     });
 };
 
+export const live = <ThrowOnError extends boolean = false>(options?: Options<LiveData, ThrowOnError>) => {
+    return (options?.client ?? client).get<LiveResponses, unknown, ThrowOnError>({
+        url: '/api/health/live',
+        ...options
+    });
+};
+
 export const check = <ThrowOnError extends boolean = false>(options?: Options<CheckData, ThrowOnError>) => {
     return (options?.client ?? client).get<CheckResponses, CheckErrors, ThrowOnError>({
         url: '/api/health',
+        ...options
+    });
+};
+
+export const checkDataIntegrity = <ThrowOnError extends boolean = false>(options?: Options<CheckDataIntegrityData, ThrowOnError>) => {
+    return (options?.client ?? client).get<CheckDataIntegrityResponses, unknown, ThrowOnError>({
+        url: '/api/health/data',
+        ...options
+    });
+};
+
+export const getDiagnostics2 = <ThrowOnError extends boolean = false>(options?: Options<GetDiagnostics2Data, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetDiagnostics2Responses, unknown, ThrowOnError>({
+        url: '/api/public-web/diagnostics',
+        ...options
+    });
+};
+
+export const repair = <ThrowOnError extends boolean = false>(options?: Options<RepairData, ThrowOnError>) => {
+    return (options?.client ?? client).post<RepairResponses, unknown, ThrowOnError>({
+        url: '/api/public-web/repair',
         ...options
     });
 };
@@ -659,6 +1411,41 @@ export const updateAppMetadata = <ThrowOnError extends boolean = false>(options:
     });
 };
 
+export const checkForUpdates = <ThrowOnError extends boolean = false>(options?: Options<CheckForUpdatesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<CheckForUpdatesResponses, unknown, ThrowOnError>({
+        url: '/api/system/update/check',
+        ...options
+    });
+};
+
+export const performUpdate = <ThrowOnError extends boolean = false>(options?: Options<PerformUpdateData, ThrowOnError>) => {
+    return (options?.client ?? client).post<PerformUpdateResponses, unknown, ThrowOnError>({
+        url: '/api/system/update',
+        ...options
+    });
+};
+
+export const getAutoUpdates = <ThrowOnError extends boolean = false>(options?: Options<GetAutoUpdatesData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetAutoUpdatesResponses, unknown, ThrowOnError>({
+        url: '/api/system/update/auto-updates',
+        ...options
+    });
+};
+
+export const setAutoUpdates = <ThrowOnError extends boolean = false>(options?: Options<SetAutoUpdatesData, ThrowOnError>) => {
+    return (options?.client ?? client).post<SetAutoUpdatesResponses, unknown, ThrowOnError>({
+        url: '/api/system/update/auto-updates',
+        ...options
+    });
+};
+
+export const getHostListenerToken = <ThrowOnError extends boolean = false>(options?: Options<GetHostListenerTokenData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetHostListenerTokenResponses, unknown, ThrowOnError>({
+        url: '/api/system/update/host-listener-token',
+        ...options
+    });
+};
+
 export const seedDatabase = <ThrowOnError extends boolean = false>(options?: Options<SeedDatabaseData, ThrowOnError>) => {
     return (options?.client ?? client).post<SeedDatabaseResponses, unknown, ThrowOnError>({
         url: '/api/debug/seed',
@@ -704,6 +1491,20 @@ export const incrementAllAppVersions = <ThrowOnError extends boolean = false>(op
 export const uninstallAllApps = <ThrowOnError extends boolean = false>(options?: Options<UninstallAllAppsData, ThrowOnError>) => {
     return (options?.client ?? client).post<UninstallAllAppsResponses, unknown, ThrowOnError>({
         url: '/api/debug/uninstall-all-apps',
+        ...options
+    });
+};
+
+export const sse = <ThrowOnError extends boolean = false>(options?: Options<SseData, ThrowOnError>) => {
+    return (options?.client ?? client).get<SseResponses, unknown, ThrowOnError>({
+        url: '/api/mcp/sse',
+        ...options
+    });
+};
+
+export const messages = <ThrowOnError extends boolean = false>(options?: Options<MessagesData, ThrowOnError>) => {
+    return (options?.client ?? client).post<MessagesResponses, unknown, ThrowOnError>({
+        url: '/api/mcp/messages',
         ...options
     });
 };

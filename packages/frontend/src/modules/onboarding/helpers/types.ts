@@ -18,6 +18,8 @@ export interface AltEntry {
 
 export type AltsCategory = Record<string, AltEntry[]>;
 
+import type { ExposureMode } from './ai-setup-types';
+
 export interface OnboardingApp {
   appSlug: string;
   name: string;
@@ -26,6 +28,8 @@ export interface OnboardingApp {
   replacesNames: string[];
   urn?: string; // resolved from app store
   localSubdomain?: string;
+  /** When set, overrides the install step's default exposure mode for this app only. */
+  exposureMode?: ExposureMode;
 }
 
 /** Fine-grained install status for each app during the install step. */

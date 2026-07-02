@@ -145,6 +145,47 @@ function boolStr(val: boolean | undefined): string | undefined {
   return typeof val === 'boolean' ? String(val) : undefined;
 }
 
+/**
+ * Resolve the RabbitMQ broker password, fail-closed in production.
+ *
+ * SECURITY: `DEFAULT_RABBITMQ_PASSWORD` ('admin') is a weak dev-only credential.
+ * The core bug this closes is the *silent* fallback: a production Hub whose
+ * environment omits RABBITMQ_PASSWORD would previously boot on 'admin' with no
+ * signal. In production we now refuse to invent the weak default — an
+ * explicit value is required, otherwise we throw.
+ *
+ * When production *explicitly* configures 'admin' (today the shipped prod
+ * compose still hardcodes it on both broker and Hub, so we cannot hard-fail
+ * without breaking boot) we return it but flag a `warning` for the caller to
+ * log loudly. Local dev, e2e and tests (NODE_ENV !== 'production') keep the
+ * fixed dev default so nothing breaks.
+ */
+export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const explicit = resolve('RABBITMQ_PASSWORD', { envMap, fallback: '' });
+
+  if (explicit) {
+    if (isProduction && explicit === DEFAULT_RABBITMQ_PASSWORD) {
+      return {
+        password: explicit,
+        warning:
+          "RABBITMQ_PASSWORD is set to the weak default 'admin' in production. Set a strong, unique RABBITMQ_PASSWORD " +
+          '(and match RABBITMQ_DEFAULT_PASS on the broker) — the default is a known credential.',
+      };
+    }
+    return { password: explicit };
+  }
+
+  if (isProduction) {
+    throw new Error(
+      'RABBITMQ_PASSWORD is not set. Production must provide an explicit RABBITMQ_PASSWORD ' +
+        "instead of silently falling back to the weak default 'admin'. Set it in the environment or the Hub .env file.",
+    );
+  }
+
+  return { password: DEFAULT_RABBITMQ_PASSWORD };
+}
+
 function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
@@ -431,7 +472,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);
   envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: DEFAULT_RABBITMQ_USERNAME }));
-  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: DEFAULT_RABBITMQ_PASSWORD }));
+  const rabbitmqPassword = resolveRabbitmqPassword(envMap);
+  if (rabbitmqPassword.warning) {
+    logger.warn(rabbitmqPassword.warning);
+  }
+  envMap.set('RABBITMQ_PASSWORD', rabbitmqPassword.password);
 
   // Feature flags / user preferences (settingsData.json booleans)
   envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settingsData.demoMode), fallback: DEFAULT_DEMO_MODE }));

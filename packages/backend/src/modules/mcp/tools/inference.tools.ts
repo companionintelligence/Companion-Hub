@@ -129,7 +129,7 @@ export class InferenceTools implements OnModuleInit {
       },
       handler: async (params) => {
         const modelId = params.modelId as string;
-        await this.modelPuller.pullModel(modelId);
+        await this.modelPuller.pullAndWait(modelId);
         return { success: true, message: `Model ${modelId} pulled successfully` };
       },
     });

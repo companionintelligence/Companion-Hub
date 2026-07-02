@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 /** Rounded gradient panel that frames a wizard step's content. */
 export function WizardCard({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <section className={cn('rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-6 shadow-sm sm:p-8', className)}>
+    <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-6 shadow-sm sm:p-8', className)}>
       {children}
     </section>
   );
@@ -17,7 +17,7 @@ export function IconBadge({ children, className }: { children: ReactNode; classN
   return (
     <span
       className={cn(
-        'inline-flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/40 bg-primary/10 text-primary shadow-lg shadow-primary/15 [&_svg]:h-8 [&_svg]:w-8',
+        'inline-flex h-16 w-16 items-center justify-center rounded-md border border-primary/40 bg-primary/10 text-primary shadow-lg shadow-primary/15 [&_svg]:h-8 [&_svg]:w-8',
         className,
       )}
     >

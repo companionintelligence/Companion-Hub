@@ -249,6 +249,23 @@ describe('SubnetManagerService', () => {
       expect(result).toBe('10.128.11.0/24');
     });
 
+    it('skips excluded subnets when allocating after a failed compose attempt', async () => {
+      const appUrn = 'app:test/app' as AppUrn;
+
+      appsRepository.getApps.mockResolvedValue([fromPartial({ subnet: '10.128.10.0/24' })]);
+      appsRepository.getAppByUrn.mockResolvedValue(
+        fromPartial({
+          id: 1,
+          subnet: null,
+        }),
+      );
+      appsRepository.updateAppById.mockImplementation((id, subnet) => Promise.resolve(fromAny({ id, subnet })));
+
+      const result = await service.allocateSubnet(appUrn, 0, ['10.128.11.0/24']);
+
+      expect(result).toBe('10.128.12.0/24');
+    });
+
     it('should handle malformed subnet strings correctly', async () => {
       // arrange
       const appUrn = 'app:test/app' as AppUrn;
