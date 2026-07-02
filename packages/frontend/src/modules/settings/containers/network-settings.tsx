@@ -1,11 +1,12 @@
-import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey, getStatus2Options, getStatus4Options, getStatus4QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
-import { apiFetch } from '@/lib/api-fetch';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import toast from 'react-hot-toast';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
@@ -44,29 +45,30 @@ interface AuthStartResponse {
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const demoMode = useDemoMode();
 
-  const { data, isLoading } = useQuery<TailscaleApiStatus>({
-    queryKey: ['tailscale-status'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/status');
-      return res.json();
-    },
+  const { data, isLoading } = useQuery({
+    ...getStatus4Options(),
+    select: (payload) => payload as unknown as TailscaleApiStatus,
     refetchInterval: 10_000,
   });
 
   useTailscaleReadinessSync(data);
 
   const invalidateTailscaleAndAppContext = () => {
-    void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });
+    void queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() });
     void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
   };
 
   const browserAuthMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST' });
-      return res.json() as Promise<AuthStartResponse>;
+      const result = await startAuth();
+      if (result.error) {
+        throw result.error instanceof Error ? result.error : new Error(String(result.error));
+      }
+      return result.data as unknown as AuthStartResponse;
     },
-    onSuccess: (payload) => {
+    onSuccess: (payload: AuthStartResponse) => {
       if (!payload.success) {
         toast.error(payload.error ?? t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED'));
         return;
@@ -87,8 +89,11 @@ const TailscaleSidecarSection = () => {
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST' });
-      const json = (await res.json()) as { success: boolean; error?: string };
+      const result = await disconnect();
+      if (result.error) {
+        throw result.error instanceof Error ? result.error : new Error(String(result.error));
+      }
+      const json = result.data as { success: boolean; error?: string };
       if (!json.success) {
         throw new Error(json.error ?? t('SETTINGS_NETWORK_DISCONNECT_FAILED'));
       }
@@ -160,7 +165,7 @@ const TailscaleSidecarSection = () => {
             variant="default"
             size="lg"
             className="w-full"
-            disabled={browserAuthMutation.isPending}
+            disabled={demoMode || browserAuthMutation.isPending}
             onClick={() => browserAuthMutation.mutate()}
           >
             {browserAuthMutation.isPending ? (
@@ -181,7 +186,7 @@ const TailscaleSidecarSection = () => {
 
       {active && (
         <div className="pt-2 border-t">
-          <Button type="button" variant="outline" disabled={disconnectMutation.isPending} onClick={() => disconnectMutation.mutate()}>
+          <Button type="button" variant="outline" disabled={demoMode || disconnectMutation.isPending} onClick={() => disconnectMutation.mutate()}>
             {disconnectMutation.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -199,31 +204,33 @@ const TailscaleSidecarSection = () => {
 
 const CloudflareSection = () => {
   const { t } = useTranslation();
+  const demoMode = useDemoMode();
   const [isResetting, setIsResetting] = useState(false);
 
-  const { data: status, isLoading } = useQuery<CloudflareStatus>({
-    queryKey: ['cloudflare-status'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/cloudflare/status');
-      return res.json();
-    },
-    refetchInterval: 30000,
+  const { data: status, isLoading } = useQuery({
+    ...getStatus2Options(),
+    select: (payload) => payload as CloudflareStatus,
+    refetchInterval: 30_000,
   });
 
   const handleResetRegistration = async () => {
+    if (demoMode) {
+      toast.error(t('SERVER_ERROR_NOT_ALLOWED_IN_DEMO'));
+      return;
+    }
     if (!window.confirm(t('SETTINGS_NETWORK_RESET_REGISTRATION_CONFIRM'))) return;
     setIsResetting(true);
     try {
-      const res = await apiFetch('/api/registration/reset', { method: 'POST' });
-      if (res.ok) {
-        toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
-        clearClientHubState({ keepPortalEmail: true });
-        setTimeout(() => {
-          window.location.href = '/device-registration';
-        }, 1500);
-      } else {
+      const result = await resetRegistration();
+      if (result.error) {
         toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
+        return;
       }
+      toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
+      clearClientHubState({ keepPortalEmail: true });
+      setTimeout(() => {
+        window.location.href = '/device-registration';
+      }, 1500);
     } catch {
       toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
     } finally {
@@ -263,8 +270,8 @@ const CloudflareSection = () => {
         <button
           type="button"
           onClick={handleResetRegistration}
-          disabled={isResetting}
-          className="text-sm text-destructive hover:text-destructive/80 underline"
+          disabled={demoMode || isResetting}
+          className="text-sm text-destructive hover:text-destructive/80 underline disabled:opacity-50 disabled:pointer-events-none"
         >
           {isResetting ? t('SETTINGS_NETWORK_RESETTING') : t('SETTINGS_NETWORK_REREGISTER_DEVICE')}
         </button>

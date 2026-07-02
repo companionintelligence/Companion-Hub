@@ -3,13 +3,13 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LogsContainer } from './logs';
 
-const mockApiFetch = vi.fn();
+const mockDownloadHubLogsSdk = vi.fn();
 const mockDownloadResponseAsFile = vi.fn();
 const mockToastError = vi.fn();
 const mockUseSSE = vi.fn();
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+vi.mock('@/api-client/sdk.gen', () => ({
+  downloadHubLogs: (...args: unknown[]) => mockDownloadHubLogsSdk(...args),
 }));
 
 vi.mock('@/lib/hooks/use-sse', () => ({
@@ -43,7 +43,7 @@ describe('LogsContainer', () => {
 
   it('downloads full hub logs from the backend endpoint', async () => {
     const response = new Response(new Blob(['hub logs'], { type: 'text/plain' }), { status: 200 });
-    mockApiFetch.mockResolvedValue(response);
+    mockDownloadHubLogsSdk.mockResolvedValue({ response });
     mockDownloadResponseAsFile.mockResolvedValue(undefined);
 
     render(<LogsContainer />);
@@ -56,13 +56,13 @@ describe('LogsContainer', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Download full logs' }));
 
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/system/logs/download');
+    expect(mockDownloadHubLogsSdk).toHaveBeenCalledWith({ parseAs: 'blob' });
     expect(mockDownloadResponseAsFile).toHaveBeenCalledWith(response, 'ci-hub-logs.log');
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
   it('shows an error toast when the log download fails', async () => {
-    mockApiFetch.mockResolvedValue(new Response('failed', { status: 500 }));
+    mockDownloadHubLogsSdk.mockResolvedValue({ response: new Response('failed', { status: 500 }) });
 
     render(<LogsContainer />);
 

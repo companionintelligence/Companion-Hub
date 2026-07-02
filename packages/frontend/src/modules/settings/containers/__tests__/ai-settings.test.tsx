@@ -5,19 +5,50 @@ import { MemoryRouter } from 'react-router';
 import { AiSettingsContainer } from '../ai-settings';
 import toast from 'react-hot-toast';
 
-const mockApiFetch = vi.fn();
-
-function renderAiSettings(initialEntry = '/settings?tab=ai') {
-  return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <AiSettingsContainer />
-    </MemoryRouter>,
-  );
-}
-
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+const {
+  fetchInferenceOnboardingProfile,
+  fetchInferencePreferences,
+  fetchInferenceTrackedModels,
+  fetchInferenceRuntimeModels,
+  fetchConfiguredCloudProviders,
+  saveInferencePreferences,
+  rescanInferenceHardware,
+  pinInferenceModel,
+  saveCloudProviderConfig,
+  ensurePullsStarted,
+} = vi.hoisted(() => ({
+  fetchInferenceOnboardingProfile: vi.fn(),
+  fetchInferencePreferences: vi.fn(),
+  fetchInferenceTrackedModels: vi.fn(),
+  fetchInferenceRuntimeModels: vi.fn(),
+  fetchConfiguredCloudProviders: vi.fn(),
+  saveInferencePreferences: vi.fn(),
+  rescanInferenceHardware: vi.fn(),
+  pinInferenceModel: vi.fn(),
+  saveCloudProviderConfig: vi.fn(),
+  ensurePullsStarted: vi.fn(),
 }));
+
+vi.mock('@/lib/inference/inference-api', () => ({
+  fetchInferenceOnboardingProfile,
+  fetchInferencePreferences,
+  fetchInferenceTrackedModels,
+  fetchInferenceRuntimeModels,
+  fetchConfiguredCloudProviders,
+  saveInferencePreferences,
+  rescanInferenceHardware,
+  pinInferenceModel,
+  saveCloudProviderConfig,
+}));
+
+vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inference/tracked-models')>();
+  return {
+    ...actual,
+    ensurePullsStarted,
+    waitForModelPulls: vi.fn().mockResolvedValue({ errorsById: {}, pulledIds: new Set(), progressById: {}, allDone: true }),
+  };
+});
 
 vi.mock('react-hot-toast', () => ({
   default: {
@@ -132,34 +163,29 @@ const profile = {
   },
 };
 
+function renderAiSettings(initialEntry = '/settings?tab=ai') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <AiSettingsContainer />
+    </MemoryRouter>,
+  );
+}
+
 describe('AiSettingsContainer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        return Promise.resolve({ ok: true, json: async () => profile });
-      }
-      if (url === '/api/inference/preferences') {
-        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
-      }
-      if (url === '/api/inference/models/tracked') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            backend: 'vllm',
-            discoveryUnavailable: false,
-            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
-          }),
-        });
-      }
-      if (url === '/api/inference/cloud-providers') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profile);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+    fetchInferenceRuntimeModels.mockResolvedValue({
+      backend: 'vllm',
+      discoveryUnavailable: false,
+      models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
     });
+    fetchConfiguredCloudProviders.mockResolvedValue([]);
+    saveInferencePreferences.mockResolvedValue(undefined);
+    rescanInferenceHardware.mockResolvedValue(undefined);
+    ensurePullsStarted.mockResolvedValue(undefined);
   });
 
   it('loads preferred backend from preferences endpoint', async () => {
@@ -170,7 +196,7 @@ describe('AiSettingsContainer', () => {
     });
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/models/runtime?backend=vllm');
+      expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('vllm');
     });
   });
 
@@ -188,13 +214,12 @@ describe('AiSettingsContainer', () => {
     await user.click(screen.getByTestId('ai-settings-confirm-btn'));
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/preferences',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ backend: 'lemonade', model: null, embeddingModel: null, visionModel: null }),
-        }),
-      );
+      expect(saveInferencePreferences).toHaveBeenCalledWith({
+        backend: 'lemonade',
+        model: null,
+        embeddingModel: null,
+        visionModel: null,
+      });
     });
   });
 
@@ -211,36 +236,9 @@ describe('AiSettingsContainer', () => {
   });
 
   it('keeps curated model selection independent of runtime model discovery', async () => {
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        return Promise.resolve({ ok: true, json: async () => profile });
-      }
-      if (url === '/api/inference/preferences') {
-        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
-      }
-      if (url === '/api/inference/models/tracked') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
-            { catalogId: 'm1', backend: 'ollama', backendModelId: 'qwen3:8b', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
-          ],
-        });
-      }
-      if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            backend: 'vllm',
-            discoveryUnavailable: false,
-            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
-          }),
-        });
-      }
-      if (url === '/api/inference/cloud-providers') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
-    });
+    fetchInferenceTrackedModels.mockResolvedValue([
+      { catalogId: 'm1', backend: 'ollama', backendModelId: 'qwen3:8b', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
+    ] as never);
 
     renderAiSettings();
 
@@ -250,45 +248,18 @@ describe('AiSettingsContainer', () => {
   });
 
   it('shows tracked download progress for recommended models', async () => {
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        return Promise.resolve({ ok: true, json: async () => profile });
-      }
-      if (url === '/api/inference/preferences') {
-        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
-      }
-      if (url === '/api/inference/models/tracked') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
-            {
-              catalogId: 'm1',
-              backend: 'ollama',
-              backendModelId: 'qwen3:8b',
-              state: 'pulling',
-              pinned: false,
-              pullProgress: 42,
-              memoryUsedMb: 1024,
-              requestCount: 0,
-            },
-          ],
-        });
-      }
-      if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            backend: 'vllm',
-            discoveryUnavailable: false,
-            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
-          }),
-        });
-      }
-      if (url === '/api/inference/cloud-providers') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
-    });
+    fetchInferenceTrackedModels.mockResolvedValue([
+      {
+        catalogId: 'm1',
+        backend: 'ollama',
+        backendModelId: 'qwen3:8b',
+        state: 'pulling',
+        pinned: false,
+        pullProgress: 42,
+        memoryUsedMb: 1024,
+        requestCount: 0,
+      },
+    ] as never);
 
     renderAiSettings();
 
@@ -298,66 +269,42 @@ describe('AiSettingsContainer', () => {
   });
 
   it('only pulls models compatible with the selected backend', async () => {
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            ...profile,
-            recommendedModels: [
-              { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
-              {
-                id: 'whisper-base',
-                backend: 'lemonade',
-                displayName: 'Whisper Base',
-                runtime: { memoryFootprintMb: 512 },
-                requirements: { diskMb: 500 },
-              },
-            ],
-            availableModels: [
-              { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
-              {
-                id: 'whisper-base',
-                backend: 'lemonade',
-                displayName: 'Whisper Base',
-                runtime: { memoryFootprintMb: 512 },
-                requirements: { diskMb: 500 },
-              },
-            ],
-          }),
-        });
-      }
-      if (url === '/api/inference/preferences') {
-        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
-      }
-      if (url === '/api/inference/models/tracked') {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [
-            { catalogId: 'm1', backend: 'vllm', backendModelId: 'model-1', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
-            {
-              catalogId: 'whisper-base',
-              backend: 'lemonade',
-              backendModelId: 'whisper-base',
-              state: 'pinned',
-              pinned: true,
-              memoryUsedMb: 512,
-              requestCount: 0,
-            },
-          ],
-        });
-      }
-      if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({ backend: 'vllm', discoveryUnavailable: false, models: [] }),
-        });
-      }
-      if (url === '/api/inference/cloud-providers') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
-    });
+    ensurePullsStarted.mockResolvedValue(undefined);
+    fetchInferenceOnboardingProfile.mockResolvedValue({
+      ...profile,
+      recommendedModels: [
+        { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
+        {
+          id: 'whisper-base',
+          backend: 'lemonade',
+          displayName: 'Whisper Base',
+          runtime: { memoryFootprintMb: 512 },
+          requirements: { diskMb: 500 },
+        },
+      ],
+      availableModels: [
+        { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
+        {
+          id: 'whisper-base',
+          backend: 'lemonade',
+          displayName: 'Whisper Base',
+          runtime: { memoryFootprintMb: 512 },
+          requirements: { diskMb: 500 },
+        },
+      ],
+    } as never);
+    fetchInferenceTrackedModels.mockResolvedValue([
+      { catalogId: 'm1', backend: 'vllm', backendModelId: 'model-1', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
+      {
+        catalogId: 'whisper-base',
+        backend: 'lemonade',
+        backendModelId: 'whisper-base',
+        state: 'pinned',
+        pinned: true,
+        memoryUsedMb: 512,
+        requestCount: 0,
+      },
+    ] as never);
 
     const user = userEvent.setup();
     renderAiSettings();
@@ -370,37 +317,14 @@ describe('AiSettingsContainer', () => {
     await user.click(screen.getByTestId('ai-settings-confirm-btn'));
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/preferences', expect.objectContaining({ method: 'PATCH' }));
+      expect(saveInferencePreferences).toHaveBeenCalled();
     });
 
-    expect(mockApiFetch).not.toHaveBeenCalledWith(
-      '/api/inference/models/pull/start',
-      expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
-    );
+    expect(ensurePullsStarted).not.toHaveBeenCalledWith(['whisper-base'], expect.anything());
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        return Promise.resolve({ ok: true, json: async () => profile });
-      }
-      if (url === '/api/inference/preferences') {
-        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
-      }
-      if (url === '/api/inference/models/tracked') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({ ok: true, json: async () => ({ backend: 'vllm', discoveryUnavailable: false, models: [] }) });
-      }
-      if (url === '/api/inference/cloud-providers') {
-        return Promise.resolve({ ok: true, json: async () => [] });
-      }
-      if (url === '/api/inference/hardware/rescan') {
-        return Promise.resolve({ ok: false, status: 503 });
-      }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
-    });
+    rescanInferenceHardware.mockRejectedValue(new Error('HTTP 503'));
 
     const user = userEvent.setup();
     renderAiSettings();
@@ -415,7 +339,6 @@ describe('AiSettingsContainer', () => {
       expect(toast.error).toHaveBeenCalledWith('Rescan failed: HTTP 503');
     });
 
-    const profileCalls = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/onboarding-profile');
-    expect(profileCalls).toHaveLength(1);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
   });
 });
