@@ -853,7 +853,7 @@
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "Ningún agente seleccionado - puedes agregar uno más tarde desde la tienda de aplicaciones.",
   "ONBOARDING_COMPANION_SECTION_TITLE": "Uncloud your life",
   "ONBOARDING_COMPANION_SECTION_DESC": "Own and organize your memory on your Hub. These apps install with sensible defaults and are reachable on the public web.",
-  "ONBOARDING_COMPANION_MEMORY_DESC": "Your private memory server — remember your digital life and keep context for your agents.",
+  "ONBOARDING_COMPANION_MEMORY_DESC": "Private memory server — context for you and your agents.",
   "ONBOARDING_COMPANION_IMPORT_TOOLS_DESC": "Import files, social accounts, and cloud histories into your localized ecosystem.",
   "ONBOARDING_COMPANION_APP_UNAVAILABLE": "Not available in your app store yet.",
   "ONBOARDING_AI_PROFILE_UNAVAILABLE": "Perfil de IA no disponible",
