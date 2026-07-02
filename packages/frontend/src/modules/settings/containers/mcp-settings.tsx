@@ -201,6 +201,10 @@ export const McpSettingsContainer = () => {
     );
   }
 
+  // The backend reports the endpoint as a path (/api/mcp); show + copy the absolute URL an agent
+  // would actually connect to, resolved against the origin the operator is browsing the Hub on.
+  const endpointUrl = /^https?:\/\//.test(status.endpoint) ? status.endpoint : `${window.location.origin}${status.endpoint}`;
+
   return (
     <div className="space-y-6" data-testid="mcp-settings">
       <div>
@@ -225,8 +229,8 @@ export const McpSettingsContainer = () => {
           <StatItem label={t('MCP_SETTINGS_ACTIVE_SESSIONS')} value={String(status.activeSessions)} />
           <StatItem
             label={t('MCP_SETTINGS_ENDPOINT')}
-            value={status.endpoint}
-            onClick={() => copyToClipboard(status.endpoint, t('MCP_SETTINGS_ENDPOINT_COPIED'))}
+            value={endpointUrl}
+            onClick={() => copyToClipboard(endpointUrl, t('MCP_SETTINGS_ENDPOINT_COPIED'))}
           />
         </CardContent>
       </Card>
@@ -382,12 +386,19 @@ export const McpSettingsContainer = () => {
   );
 };
 
-/** A single labelled status value; clickable when an onClick is supplied (e.g. copy the endpoint). */
+/** A single labelled status value; clickable when an onClick is supplied (e.g. copy the endpoint).
+ *  The clickable variant carries cursor-pointer (browsers/Tailwind Preflight leave <button> as the
+ *  default arrow) and a title tooltip so the full value is legible even when the column truncates it. */
 const StatItem = ({ label, value, onClick }: { label: string; value: string; onClick?: () => void }) => (
   <div className="space-y-0.5">
     <p className="text-xs text-muted-foreground">{label}</p>
     {onClick ? (
-      <button type="button" className="truncate text-left font-medium text-primary hover:underline" onClick={onClick}>
+      <button
+        type="button"
+        title={value}
+        className="w-full cursor-pointer truncate text-left font-medium text-primary hover:underline"
+        onClick={onClick}
+      >
         {value}
       </button>
     ) : (

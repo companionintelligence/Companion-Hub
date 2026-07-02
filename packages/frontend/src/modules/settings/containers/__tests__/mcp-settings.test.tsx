@@ -95,6 +95,18 @@ describe('McpSettingsContainer', () => {
     expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
   });
 
+  it('renders the endpoint as a clickable absolute URL (not the bare path)', async () => {
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+    // The backend reports '/api/mcp'; the UI resolves it against the browsing origin so an operator
+    // can copy the real URL an agent connects to.
+    const expected = `${window.location.origin}/api/mcp`;
+    const el = screen.getByText(expected);
+    expect(el.tagName).toBe('BUTTON'); // clickable-to-copy
+    expect(el.getAttribute('title')).toBe(expected); // full URL legible even when truncated
+    expect(screen.queryByText('/api/mcp')).toBeNull(); // no longer shows the bare path
+  });
+
   it('filters the tool list by search', async () => {
     render(<McpSettingsContainer />);
     await waitFor(() => expect(screen.getByTestId('mcp-tool-search')).toBeTruthy());
