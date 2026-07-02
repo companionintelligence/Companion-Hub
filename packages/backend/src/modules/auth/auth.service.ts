@@ -16,6 +16,7 @@ import {
 } from '@/common/helpers/portal-url';
 import { PasswordService } from '@/core/password/password.service';
 import axios from 'axios';
+import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
@@ -32,6 +33,7 @@ export class AuthService {
 
   constructor(
     private userRepository: UserRepository,
+    private federatedIdentityRepository: FederatedIdentityRepository,
     private sessionManager: SessionManager,
     private config: ConfigurationService,
     private encryption: EncryptionService,
@@ -170,6 +172,75 @@ export class AuthService {
     }
 
     return created;
+  }
+
+  /**
+   * Resolve the local Hub user for a verified external OIDC identity, keyed by
+   * the stable (issuer, subject) pair rather than by email.
+   *
+   * Resolution order (see CI-Engineering architecture/identity/unified-identity-plan.md, Track B/B2):
+   *   1. If a `federated_identity` row already exists for (iss, sub), it is
+   *      authoritative — return the bound user even if their email has since
+   *      changed. This closes the email-reuse account-takeover gap.
+   *   2. Otherwise this is a first login for that subject. Require the IdP to
+   *      assert `email_verified` (the one exception is a one-time migration
+   *      link — `allowUnverifiedEmailForMigration` — used to adopt pre-existing
+   *      email-provisioned operators). Match/create the local user by email and
+   *      record the (iss, sub) → user binding so all future logins skip email.
+   *
+   * @throws TranslatableError when the email is unverified and no migration link is allowed.
+   */
+  public async ensureFederatedUser(params: {
+    issuer: string;
+    subject: string;
+    email: string;
+    emailVerified: boolean;
+    /** Permit linking by email match without a verified claim, for one-time migration of legacy operators only. */
+    allowUnverifiedEmailForMigration?: boolean;
+  }) {
+    const issuer = params.issuer.trim();
+    const subject = params.subject.trim();
+
+    if (!issuer || !subject) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const existingLink = await this.federatedIdentityRepository.findByIssuerSubject(issuer, subject);
+
+    if (existingLink) {
+      const linkedUser = await this.userRepository.getUserById(existingLink.userId);
+
+      if (!linkedUser) {
+        // Binding points at a user that no longer exists — refuse rather than silently re-provision.
+        throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      return linkedUser;
+    }
+
+    const email = params.email.trim().toLowerCase();
+
+    if (!email || !validator.isEmail(email)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    if (!params.emailVerified && !params.allowUnverifiedEmailForMigration) {
+      throw new TranslatableError('AUTH_ERROR_EMAIL_NOT_VERIFIED', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    // First login for this subject: match or provision the local user by email,
+    // then bind (iss, sub) so subsequent logins are email-independent.
+    const localUser = await this.ensureLocalCompanionUser(email);
+
+    await this.federatedIdentityRepository.create({
+      userId: localUser.id,
+      issuer,
+      subject,
+      email,
+      emailVerified: params.emailVerified,
+    });
+
+    return localUser;
   }
 
   private getPasswordResetRateLimitKey(email: string) {
