@@ -364,7 +364,9 @@ export const McpSettingsContainer = () => {
           <DialogHeader>
             <DialogTitle>{t('MCP_SETTINGS_RUN_TITLE', { tool: runTool?.name ?? '' })}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-2">
+          {/* min-w-0: this is a grid item of DialogContent; without it the result <pre>'s long lines
+              force the grid track wide and blow the dialog past its max-width instead of scrolling. */}
+          <div className="min-w-0 space-y-2">
             <label className="text-sm font-medium" htmlFor="mcp-run-args">
               {t('MCP_SETTINGS_RUN_ARGS_LABEL')}
             </label>
@@ -387,7 +389,7 @@ export const McpSettingsContainer = () => {
             {runResult !== null && (
               <div>
                 <p className="text-sm font-medium">{t('MCP_SETTINGS_RUN_RESULT')}</p>
-                <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-xs" data-testid="mcp-run-result">
+                <pre className="max-h-48 w-full min-w-0 overflow-auto rounded-md bg-muted p-2 text-xs" data-testid="mcp-run-result">
                   {runResult}
                 </pre>
               </div>
