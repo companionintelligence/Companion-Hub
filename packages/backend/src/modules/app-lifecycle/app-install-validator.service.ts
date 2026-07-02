@@ -23,13 +23,14 @@ export class AppInstallValidator {
   }
 
   assertDomainRules(parsedForm: ParsedInstallForm): void {
-    const { exposed, domain } = parsedForm;
     const { isProduction } = this.config.getConfig();
 
-    if (isProduction && exposed) {
+    if (isProduction && parsedForm.exposed) {
       parsedForm.exposed = false;
       parsedForm.domain = undefined;
     }
+
+    const { exposed, domain } = parsedForm;
 
     if (exposed && !domain) {
       throw new TranslatableError('APP_ERROR_DOMAIN_REQUIRED_IF_EXPOSE_APP');
