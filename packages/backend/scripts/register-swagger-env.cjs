@@ -26,9 +26,12 @@ if (!process.env.CI_HUB_VERSION) {
 
 process.env.CI_HUB_OPENAPI_GENERATE = '1';
 
-// CI and fresh clones often have no `.env*` — avoid mkdir `/data` (EACCES).
+// CI and fresh clones often have no `.env*` — provide minimal writable state + config.
 const openapiDataDir = process.env.CI_HUB_DATA_DIR || path.join(os.tmpdir(), 'ci-hub-openapi-gen');
 process.env.CI_HUB_DATA_DIR = openapiDataDir;
 if (!process.env.ROOT_FOLDER_HOST) {
   process.env.ROOT_FOLDER_HOST = openapiDataDir;
+}
+if (!process.env.CI_CLOUD_URL) {
+  process.env.CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 }
