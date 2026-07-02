@@ -36,7 +36,8 @@ jobs:
 
           if [ "$http_code" = "200" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
-          elif [ "$http_code" = "403" ] && grep -qiE 'Advanced Security|not supported|Dependency graph' /tmp/dg-response.json; then
+          elif [ "$http_code" = "403" ]; then
+            # Private repos without GHAS return 403 from the dependency-graph API.
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "Unexpected dependency-graph API response (HTTP ${http_code}):" >&2
