@@ -27,6 +27,9 @@ jobs:
       - name: Run tsc
         run: pnpm run tsc
 
+      - name: Check OpenAPI drift
+        run: pnpm run check:openapi
+
       - name: Run tests
         run: pnpm run test
 

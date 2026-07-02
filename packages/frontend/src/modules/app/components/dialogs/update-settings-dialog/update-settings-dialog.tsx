@@ -62,7 +62,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
           {hasChanges && (
             <div
-              className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-400 mt-2"
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-400 mt-2"
               data-testid="update-settings-restart-hint"
             >
               {isRunning ? t('APP_UPDATE_SETTINGS_RESTART_HINT') : t('APP_UPDATE_SETTINGS_STOPPED_HINT')}

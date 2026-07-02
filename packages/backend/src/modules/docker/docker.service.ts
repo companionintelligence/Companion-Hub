@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -274,39 +275,46 @@ export class DockerService {
       },
     });
 
-    for (const containerInfo of containers) {
-      const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
-      const labels = inspect.Config?.Labels || {};
-      const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
-      const containerIP = networkSettings?.IPAddress;
+    const limit = pLimit(5);
+    const targets = await Promise.all(
+      containers.map((containerInfo) =>
+        limit(async () => {
+          const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
+          const labels = inspect.Config?.Labels || {};
+          const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
+          const containerIP = networkSettings?.IPAddress;
 
-      if (!containerIP) {
-        continue;
-      }
+          if (!containerIP) {
+            return null;
+          }
 
-      const portEntry = Object.entries(labels).find(([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'));
+          const portEntry = Object.entries(labels).find(
+            ([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'),
+          );
 
-      if (!portEntry) {
-        continue;
-      }
+          if (!portEntry) {
+            return null;
+          }
 
-      const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
-      const internalPort = Number.parseInt(String(portEntry[1]), 10);
+          const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
+          const internalPort = Number.parseInt(String(portEntry[1]), 10);
 
-      if (Number.isNaN(internalPort)) {
-        continue;
-      }
+          if (Number.isNaN(internalPort)) {
+            return null;
+          }
 
-      const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
-      const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
+          const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
+          const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
 
-      return {
-        url: `${scheme}://${containerIP}:${internalPort}`,
-        internalPort,
-      };
-    }
+          return {
+            url: `${scheme}://${containerIP}:${internalPort}`,
+            internalPort,
+          } satisfies AppNetworkTarget;
+        }),
+      ),
+    );
 
-    return null;
+    return targets.find((target): target is AppNetworkTarget => target !== null) ?? null;
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {

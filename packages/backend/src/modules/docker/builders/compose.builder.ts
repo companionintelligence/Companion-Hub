@@ -1,7 +1,13 @@
 import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
-import { type Service, type ServiceInput, serviceSchema } from '@ci-hub/common/schemas';
+import {
+  type Service,
+  type ServiceInput,
+  serviceSchema,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
@@ -83,6 +89,21 @@ export class DockerComposeBuilder {
       );
     }
 
+    // Enforce the app sandbox at the install sink: reject host-privileged features
+    // (privileged, host network/PID namespaces, denied host-path binds like /var/run/docker.sock)
+    // unless the app is explicitly granted them in TRUSTED_APP_SECURITY_ALLOWLIST. A warn-only
+    // schema check is not enough here — a malicious or compromised manifest would otherwise be
+    // rendered into a root-equivalent container. This throw aborts the install (the caller in
+    // command.ts surfaces it as an app error).
+    const securityViolations = collectServiceSecurityViolations(params, TRUSTED_APP_SECURITY_ALLOWLIST[appName]);
+    if (securityViolations.length > 0) {
+      const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');
+      throw new Error(
+        `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
+          'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.',
+      );
+    }
+
     const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultCpuLimit;
     const effectiveMemoryLimit = (typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() : undefined) || this.defaultMemoryLimit;
     // App-provided limits always win; defaults only fill the gaps
@@ -137,6 +158,7 @@ export class DockerComposeBuilder {
       .setStdinOpen(params.stdinOpen)
       .setSysctls(params.sysctls)
       .setDNS(params.dns)
+      .setPlatform(params.platform)
       .setNetwork(`${appName}_${appStoreId}_network`);
 
     if (envFile) {

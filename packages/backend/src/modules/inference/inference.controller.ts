@@ -1,6 +1,9 @@
 import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
+import { ApiTags } from '@nestjs/swagger';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -31,6 +34,7 @@ import { resolveInstalledCatalogIds } from './model-availability.util';
  * stores the operator's cloud-provider keys, and distributes connection info to
  * apps via the credentials endpoints below.
  */
+@ApiTags('Inference')
 @Controller('inference')
 export class InferenceController {
   constructor(
@@ -208,28 +212,31 @@ export class InferenceController {
     return this.modelRegistry.getTrackedModels();
   }
 
-  @UseGuards(AuthGuard)
-  @Get('models/pull-preflight')
-  async pullPreflight(@Query('modelId') modelId: string) {
-    if (!modelId?.trim()) {
-      return { canPull: false, reason: 'modelId is required' };
+  @UseGuards(AuthGuard, DemoModeGuard)
+  @Post('models/pull/start')
+  async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
+    if (!body.modelId?.trim()) {
+      throw new TranslatableError('INFERENCE_ERROR_MODEL_ID_REQUIRED');
     }
-    return this.modelPuller.evaluatePull(modelId.trim());
+    return this.modelPuller.startPull(body.modelId.trim(), { bestEffort: body.bestEffort });
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, DemoModeGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
-    const evaluation = await this.modelPuller.evaluatePull(body.modelId);
-    if (!evaluation.canPull && !evaluation.alreadyInstalled) {
-      if (body.bestEffort) {
-        return { success: false, skipped: true, message: evaluation.reason ?? `Pull blocked for ${body.modelId}` };
-      }
-      throw new ConflictException(evaluation.reason ?? `Pull blocked for ${body.modelId}`);
+    const result = await this.modelPuller.startPull(body.modelId, { bestEffort: body.bestEffort });
+    if (result.status === 'already_installed') {
+      return { success: true, message: `Model ${body.modelId} already installed` };
+    }
+    if (result.status === 'skipped') {
+      return { success: false, skipped: true, message: result.reason ?? `Pull blocked for ${body.modelId}` };
+    }
+    if (result.status === 'error') {
+      throw new ConflictException(result.reason ?? `Pull blocked for ${body.modelId}`);
     }
 
     try {
-      await this.modelPuller.pullModel(body.modelId);
+      await this.modelPuller.waitForPullCompletion(body.modelId);
       return { success: true, message: `Model ${body.modelId} pulled` };
     } catch (err) {
       const curated = this.modelRegistry.getCuratedModel(body.modelId);

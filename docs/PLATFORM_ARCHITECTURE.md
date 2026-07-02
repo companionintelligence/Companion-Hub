@@ -579,4 +579,5 @@ App data, configuration files, Docker volumes, database contents, and backups al
 | Staging | `portal.companionintel.com` | `.env.staging` | `ci-cloud-db-staging` | `ci-registry-staging` | staging /v2 |
 | Production | `portal.ci.computer` | `.env.prod` | `ci-cloud-db-prod` | `ci-registry-prod` | prod /v2 |
 
-Hub environments (`local`, `dev`, `staging`, `prod`) each point to their corresponding Portal via the `CI_CLOUD_URL` environment variable.
+Hub environments (`local`, `dev`, `staging`, `prod`) each point to their corresponding Portal via the `CI_CLOUD_URL` environment variable (treat `CI_CLOUD_URL` as the **Portal URL** in code and docs; `portalUrl` in new APIs).
+
