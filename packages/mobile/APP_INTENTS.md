@@ -80,11 +80,41 @@ Then, on an iOS 16+ device/simulator:
 Verify the round-trip: running an intent should open the app and land on the
 right screen; "Open _<Hub>_" should connect to that Hub.
 
-> **Known caveat:** on-device iOS builds are currently blocked by the
-> `swift-rs` × Xcode 27 beta issue documented in `README.md`. The App Intents
-> code, project wiring, Rust capture, and frontend routing are complete and the
-> JS/Rust layers are unit-tested; full on-device verification is pending an
-> unblocked iOS toolchain.
+### Build status on Xcode 27.0 (verified 2026-06-29)
+
+The App Intents implementation is **confirmed to compile** under Xcode 27.0
+(release, build 27A5209h) targeting the iOS 26/27 simulator SDK:
+
+- `CompanionHubAppIntents.swift` (all five intents + the `AppShortcutsProvider`)
+  compiles cleanly.
+- Xcode recognizes the App Shortcuts — the build sets
+  `APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING=YES`.
+- The Rust shell, frontend, and intent capture compile for `aarch64-apple-ios-sim`.
+
+**One toolchain blocker remains, unrelated to this feature.** Tauri's mobile
+Swift glue is built by [`swift-rs`](https://crates.io/crates/swift-rs) `1.0.7`,
+which predates Xcode 27. Two problems surface, both in `swift-rs`, not in our code:
+
+1. **SDK selection (fixable).** `swift-rs`'s build script runs
+   `swift build --arch <arch>`, which makes SwiftPM emit *macOS* `-sdk`/`-target`
+   flags → the Swift package compiles against the macOS SDK → `OpenGLES/EAGL.h`,
+   `UIKit/NSAttributedString.h` not found. Replacing `--arch` with
+   `--triple <ios-triple>` (plus resolving the `swift build` output dir, which
+   changed to `out/Products/<Config>-iphonesimulator/`) fixes this and the Swift
+   packages compile.
+2. **Static-lib link propagation (open).** Even with (1), `swift-rs`'s
+   `cargo:rustc-link-search` reaches the final `aarch64-apple-ios-sim` link but
+   its `cargo:rustc-link-lib=static=<pkg>` does **not** — so `-lTauri`,
+   `-ltauri_plugin_*` are never passed and the link fails with undefined Swift
+   symbols (`_log_stdout`, `_register_plugin`, `_retain_object`, …). This needs an
+   upstream `swift-rs` release with Xcode-27 support (or a heavier in-repo
+   workaround) and is tracked separately from App Intents.
+
+The `--triple` fix is a local toolchain patch (not committed — it's a vendored
+`swift-rs` change, not app code). Once `swift-rs` ships Xcode-27 support, this app
+— App Intents included — builds and installs on the simulator with no code
+changes. The App Intents Swift/Rust/JS layers are complete and the JS/Rust
+layers are unit-tested.
 
 ## Possible follow-ups
 
