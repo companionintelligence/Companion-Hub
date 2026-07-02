@@ -143,12 +143,18 @@ export const McpSettingsContainer = () => {
     [t],
   );
 
+  // Never throws: callers toast their own action's outcome, and a failed list refresh must not be
+  // misreported as that action failing — the list just stays stale until the next successful load.
   const refreshKeys = useCallback(async () => {
-    const res = await apiFetch('/api/mcp-admin/keys');
-    if (!res.ok) return;
-    const body = (await res.json()) as { keys: McpApiKeyInfo[] };
-    setKeys(body.keys);
-    setStatus((prev) => (prev ? { ...prev, activeKeyCount: body.keys.length } : prev));
+    try {
+      const res = await apiFetch('/api/mcp-admin/keys');
+      if (!res.ok) return;
+      const body = (await res.json()) as { keys: McpApiKeyInfo[] };
+      setKeys(body.keys);
+      setStatus((prev) => (prev ? { ...prev, activeKeyCount: body.keys.length } : prev));
+    } catch {
+      // stale list until the next refresh
+    }
   }, []);
 
   const createKey = useCallback(async () => {
@@ -167,9 +173,7 @@ export const McpSettingsContainer = () => {
       setCreateKeyOpen(false);
       setNewKeyName('');
       toast.success(t('MCP_SETTINGS_KEY_CREATED'));
-      // best-effort: the key already exists and its raw value is revealed, so a list-refresh failure
-      // must not surface as "create failed" (which would push the operator to create a duplicate).
-      await refreshKeys().catch(() => undefined);
+      await refreshKeys();
     } catch {
       toast.error(t('MCP_SETTINGS_KEY_CREATE_ERROR'));
     } finally {
@@ -181,9 +185,18 @@ export const McpSettingsContainer = () => {
     async (id: number) => {
       try {
         const res = await apiFetch(`/api/mcp-admin/keys/${id}`, { method: 'DELETE' });
+        if (res.status === 409) {
+          // The backend refuses to revoke the last key (an empty store would re-seed the same
+          // derived Default key at next boot, resurrecting the credential).
+          toast.error(t('MCP_SETTINGS_KEY_REVOKE_LAST'));
+          return;
+        }
         if (!res.ok) throw new Error('revoke');
+        const body = (await res.json()) as { revoked: boolean };
+        // revoked:false = the id no longer exists (e.g. revoked from another tab). No success toast
+        // for a no-op — the refresh below reconciles the stale list.
+        if (body.revoked) toast.success(t('MCP_SETTINGS_KEY_REVOKED'));
         await refreshKeys();
-        toast.success(t('MCP_SETTINGS_KEY_REVOKED'));
       } catch {
         toast.error(t('MCP_SETTINGS_KEY_REVOKE_ERROR'));
       }

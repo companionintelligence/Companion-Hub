@@ -40,12 +40,22 @@ describe('McpAuthGuard', () => {
       expect(apiKeys.validate).toHaveBeenCalledWith('stored-key');
     });
 
-    it('rejects any token the store does not recognise (the env MCP_API_KEY is not a live credential)', async () => {
-      // Regression: the guard must NOT accept process.env.MCP_API_KEY directly. env-helpers always
-      // derives that value, so a live env compare would be an unrevocable backdoor — the derived key is
-      // only usable because bootstrap seeds it into the store, where validate() (mocked false here) governs it.
-      apiKeys.validate.mockResolvedValue(false);
-      await expect(guard.canActivate(mockExecutionContext('Bearer derived-env-key'))).rejects.toThrow(UnauthorizedException);
+    it('rejects the env MCP_API_KEY itself when the store does not contain it (no env fallback)', async () => {
+      // Regression: the guard must NOT accept process.env.MCP_API_KEY directly — env-helpers always
+      // derives that value, so a live env compare would be an unrevocable backdoor. Setting the env
+      // var to the presented token is what makes this test able to catch a reinstated fallback.
+      const saved = process.env.MCP_API_KEY;
+      process.env.MCP_API_KEY = 'derived-env-key';
+      try {
+        apiKeys.validate.mockResolvedValue(false);
+        await expect(guard.canActivate(mockExecutionContext('Bearer derived-env-key'))).rejects.toThrow(UnauthorizedException);
+      } finally {
+        if (saved === undefined) {
+          delete process.env.MCP_API_KEY;
+        } else {
+          process.env.MCP_API_KEY = saved;
+        }
+      }
     });
 
     it('rejects a request with a missing Authorization header', async () => {

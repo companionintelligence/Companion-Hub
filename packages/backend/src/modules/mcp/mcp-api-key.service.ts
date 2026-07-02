@@ -140,22 +140,29 @@ export class McpApiKeyService {
    *
    * Seeding is empty-store-only, so it never resurrects a specific key an operator deliberately
    * revoked while other keys remain. To retire the Default key, create a replacement first (leaving
-   * the store non-empty) and then revoke Default — it will not be reseeded.
+   * the store non-empty) and then revoke Default — it will not be reseeded. The admin surface
+   * enforces this by refusing to revoke the last remaining key (see McpAdminService.revokeKey);
+   * an empty store can only arise from external interference (wipe/restore), where re-seeding is
+   * the desired self-heal.
    */
   async seedDefaultKeyIfEmpty(): Promise<void> {
-    const legacy = process.env.MCP_API_KEY;
-    if (!legacy || (await this.repo.countByAudience(MCP_AUDIENCE)) > 0) {
+    const envKey = process.env.MCP_API_KEY;
+    if (!envKey || (await this.repo.countByAudience(MCP_AUDIENCE)) > 0) {
       return;
     }
-    await this.repo.insert({
+    // Conflict-tolerant so a double-start race (two boots seeding the same derived key) is a no-op
+    // for the loser instead of a unique-index violation that kills its bootstrap.
+    const seeded = await this.repo.insertIfHashAbsent({
       audience: MCP_AUDIENCE,
       name: 'Default',
-      prefix: legacy.slice(0, PREFIX_LEN),
-      hashedKey: this.hash(legacy),
+      prefix: envKey.slice(0, PREFIX_LEN),
+      hashedKey: this.hash(envKey),
       managed: false,
       ownerAppUrn: null,
       expiresAt: null,
     });
-    this.logger.info('MCP: seeded the default MCP key from MCP_API_KEY');
+    if (seeded) {
+      this.logger.info('MCP: seeded the default MCP key from MCP_API_KEY');
+    }
   }
 }

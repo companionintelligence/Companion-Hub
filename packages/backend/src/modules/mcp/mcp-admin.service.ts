@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -6,6 +6,11 @@ import { type McpApiKeyInfo, McpApiKeyService } from './mcp-api-key.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
+
+/** A key still counts as access: not expired (expiresAt null = never expires). */
+function isUsable(key: McpApiKeyInfo): boolean {
+  return key.expiresAt === null || new Date(key.expiresAt).getTime() > Date.now();
+}
 
 /** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate
  *  and a `category` for grouping the catalog). */
@@ -116,6 +121,25 @@ export class McpAdminService {
   /** Revoke a key by id. Managed keys can be revoked too (break-glass) — the owning app loses MCP
    *  access until it is re-provisioned on its next install/env-regen. */
   async revokeKey(id: number): Promise<{ revoked: boolean }> {
+    const keys = await this.apiKeys.list();
+    const target = keys.find((k) => k.id === id);
+    if (!target) {
+      this.logger.info('MCP admin: API key revoke', id, 'not-found');
+      return { revoked: false };
+    }
+    // SEC-MCP-8: never revoke the last USABLE OPERATOR key. Managed keys don't count (uninstalls
+    // delete them, and an operator must not lose access when the last app leaves) and neither do
+    // expired keys. This guarantees the store never empties through any path, so the boot-time
+    // seed can never resurrect a deliberately revoked Default key. Revoking an already-unusable
+    // (expired) key is always allowed — deleting a dead key can't reduce access. (Two concurrent
+    // revokes could race past this check; a single operator drives this UI, so we accept that
+    // over a transactional delete.)
+    if (!target.managed && isUsable(target)) {
+      const usableOperatorKeys = keys.filter((k) => !k.managed && isUsable(k));
+      if (usableOperatorKeys.length <= 1) {
+        throw new ConflictException('Cannot revoke the last operator API key — create a replacement key first');
+      }
+    }
     const revoked = await this.apiKeys.revoke(id);
     this.logger.info('MCP admin: API key revoke', id, revoked ? 'ok' : 'not-found');
     return { revoked };

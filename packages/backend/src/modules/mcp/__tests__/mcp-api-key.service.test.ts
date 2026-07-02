@@ -21,6 +21,7 @@ describe('McpApiKeyService', () => {
   beforeEach(() => {
     repo = mock<ApiKeyRepository>();
     repo.insert.mockImplementation(async (values) => rowFrom(values));
+    repo.insertIfHashAbsent.mockImplementation(async (values) => rowFrom(values));
     repo.touchLastUsed.mockResolvedValue(undefined); // real repo returns a Promise (validate chains .catch)
     service = new McpApiKeyService(repo, mock<LoggerService>());
   });
@@ -109,11 +110,12 @@ describe('McpApiKeyService', () => {
   });
 
   describe('seedDefaultKeyIfEmpty', () => {
-    it('seeds MCP_API_KEY as the "Default" key when the store is empty', async () => {
+    it('seeds MCP_API_KEY as the "Default" key when the store is empty (conflict-tolerant insert)', async () => {
       process.env.MCP_API_KEY = 'legacy-key';
       repo.countByAudience.mockResolvedValue(0);
       await service.seedDefaultKeyIfEmpty();
-      const stored = repo.insert.mock.calls[0][0];
+      // insertIfHashAbsent (not plain insert) so a double-start race can't kill bootstrap.
+      const stored = repo.insertIfHashAbsent.mock.calls[0][0];
       expect(stored.name).toBe('Default');
       expect(stored.audience).toBe('mcp');
       expect(stored.hashedKey).toBe(sha256('legacy-key'));
@@ -128,6 +130,7 @@ describe('McpApiKeyService', () => {
       repo.countByAudience.mockResolvedValue(0);
       await service.seedDefaultKeyIfEmpty();
 
+      expect(repo.insertIfHashAbsent).not.toHaveBeenCalled();
       expect(repo.insert).not.toHaveBeenCalled();
     });
   });

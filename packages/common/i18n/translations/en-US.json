@@ -1292,6 +1292,7 @@
   "MCP_SETTINGS_KEY_REVOKE": "Revoke",
   "MCP_SETTINGS_KEY_REVOKED": "API key revoked",
   "MCP_SETTINGS_KEY_REVOKE_ERROR": "Failed to revoke API key",
+  "MCP_SETTINGS_KEY_REVOKE_LAST": "Cannot revoke your last operator API key — create a replacement key first",
   "MCP_SETTINGS_KEY_DISMISS": "Done",
   "MCP_SETTINGS_KEY_COPY": "Copy key",
   "MCP_SETTINGS_KEY_COPIED": "Key copied to clipboard",

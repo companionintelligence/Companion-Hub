@@ -207,6 +207,26 @@ describe('McpSettingsContainer', () => {
     expect(screen.getByText('openclaw')).toBeTruthy(); // the other key remains
   });
 
+  it('shows the last-key explanation when the backend refuses the revoke with 409', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/mcp-admin/keys/1' && init?.method === 'DELETE') {
+        // Backend blocks revoking the final key (an empty store would re-seed it at next boot).
+        return Promise.resolve({ ok: false, status: 409, json: async () => ({}) });
+      }
+      return mockGet(url);
+    });
+
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-key-list')).toBeTruthy());
+
+    const row = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
+    await user.click(within(row).getByRole('button', { name: 'MCP_SETTINGS_KEY_REVOKE' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('MCP_SETTINGS_KEY_REVOKE_LAST'));
+    expect(screen.getByText('Laptop CLI')).toBeTruthy(); // row stays — nothing was revoked
+  });
+
   it('filters the tool list by search', async () => {
     render(<McpSettingsContainer />);
     await waitFor(() => expect(screen.getByTestId('mcp-tool-search')).toBeTruthy());

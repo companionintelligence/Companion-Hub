@@ -17,8 +17,9 @@
  *   3. Namespacing: any bridged app tool is exposed as `<appName>_<storeSlug>__<tool>` — a
  *      `__`-containing name must match that shape.
  *
- * Auth: the Hub's McpAuthGuard requires `MCP_API_KEY` on the SERVER and an
- * `Authorization: Bearer <MCP_API_KEY>` header on every request. Provide the same key here.
+ * Auth: the Hub's McpAuthGuard validates the `Authorization: Bearer <key>` header against the Hub's
+ * key store (SEC-MCP-8; managed in Settings → MCP). Provide any key from that store — the server's
+ * env MCP_API_KEY works only because first boot auto-seeds it into the store as the "Default" key.
  *
  * Scores with the harness vocabulary so it can ride the same NDJSON/dashboard/triage path:
  *   pass  initialize + session id + non-empty tools/list + valid namespacing
@@ -140,7 +141,8 @@ async function run(): Promise<Record<string, unknown>> {
     });
     if (initRes.status === 401) {
       result.score = 'skip';
-      result.notes = 'Hub returned 401 — MCP_API_KEY does not match the server key (or server MCP_API_KEY unset)';
+      result.notes =
+        'Hub returned 401 — key not in the Hub key store (keys are managed in Settings → MCP; the env MCP_API_KEY is only auto-seeded into the store on first boot)';
       return result;
     }
     const sessionId = initRes.headers.get('mcp-session-id') ?? undefined;

@@ -17,23 +17,28 @@ export interface ApiKeyRow {
   createdAt: string;
 }
 
+/** Insertable columns (id/lastUsedAt/createdAt are DB-generated). */
+export type NewApiKeyRow = Omit<ApiKeyRow, 'id' | 'lastUsedAt' | 'createdAt'>;
+
 /** SEC-MCP-8: data access for the shared `api_key` table. Audience-aware so one table serves every
- *  inbound key surface (MCP today, REST later). Mirrors the port-allocation repository pattern. */
+ *  inbound key surface (MCP today, REST later): every lookup and delete is scoped by audience, so
+ *  one surface can never read or revoke another surface's keys. Mirrors the port-allocation
+ *  repository pattern. */
 @Injectable()
 export class ApiKeyRepository {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
-  async insert(row: {
-    audience: string;
-    name: string;
-    prefix: string;
-    hashedKey: string;
-    managed: boolean;
-    ownerAppUrn: string | null;
-    expiresAt: string | null;
-  }): Promise<ApiKeyRow> {
+  async insert(row: NewApiKeyRow): Promise<ApiKeyRow> {
     const [result] = await this.db.insert(apiKey).values(row).returning().execute();
     return result as ApiKeyRow;
+  }
+
+  /** Insert unless the (audience, hashedKey) pair already exists — returns undefined when it does.
+   *  Makes bootstrap seeding idempotent under a double-start race (both would insert the same
+   *  derived key; the loser's plain insert would violate the unique index and kill its boot). */
+  async insertIfHashAbsent(row: NewApiKeyRow): Promise<ApiKeyRow | undefined> {
+    const [result] = await this.db.insert(apiKey).values(row).onConflictDoNothing().returning().execute();
+    return result as ApiKeyRow | undefined;
   }
 
   /** Look up by hash AND audience so a key minted for one surface can't authenticate another. */
@@ -55,7 +60,6 @@ export class ApiKeyRepository {
     return res?.count ?? 0;
   }
 
-  /** Delete by id, scoped to an audience so one surface can't revoke another surface's key by id. */
   async deleteById(id: number, audience: string): Promise<number> {
     const result = await this.db
       .delete(apiKey)
@@ -65,7 +69,6 @@ export class ApiKeyRepository {
     return result.length;
   }
 
-  /** Delete an app's managed key(s) within one audience — never touches a different surface's keys. */
   async deleteByOwnerAppUrn(ownerAppUrn: string, audience: string): Promise<number> {
     const result = await this.db
       .delete(apiKey)

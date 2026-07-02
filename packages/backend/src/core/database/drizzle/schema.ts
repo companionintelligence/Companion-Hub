@@ -173,7 +173,10 @@ export const apiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  (table) => [uniqueIndex('api_key_hashed_key_idx').on(table.hashedKey)],
+  // Unique per (audience, hash), not globally: the same secret may legitimately exist under two
+  // surfaces (every lookup is audience-scoped), and a cross-surface collision must never abort an
+  // insert/seed for an unrelated surface.
+  (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
 );
 
 export const deviceRegistration = pgTable('device_registration', {
