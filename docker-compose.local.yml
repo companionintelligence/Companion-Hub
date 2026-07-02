@@ -42,7 +42,11 @@ services:
       - ci_os_hub_network
 
   ci-os-hub:
-    privileged: true
+    # SECURITY: the Hub container does NOT run privileged — it manages app
+    # containers via the host Docker daemon over the mounted docker.sock, so it
+    # only needs socket *access* (user + group_add: DOCKER_GID), not host
+    # devices/capabilities. See the matching note in docker-compose.prod.yml.
+    # Add a scoped `cap_add:` if a future feature genuinely needs a capability.
     user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
     group_add:
       - "${DOCKER_GID:-973}"
