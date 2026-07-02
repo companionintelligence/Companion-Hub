@@ -1,3 +1,4 @@
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AgentIntent, AppInfo } from '@ci-hub/common/schemas';
@@ -136,7 +137,7 @@ export class AppIntentSyncService {
 
   /** `<appName>:<appStoreSlug>` → `<appName>` (the human-facing app slug). */
   private appSlug(appUrn: AppUrn): string {
-    return appUrn.split(':')[0] ?? appUrn;
+    return extractAppUrn(appUrn).appName;
   }
 
   /** Last dotted segment of a `<domain>.<action>` intent name. */
