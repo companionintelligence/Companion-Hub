@@ -5,1094 +5,267 @@ export type ClientOptions = {
 };
 
 export type UserContextDto = {
-    allowAutoThemes: boolean;
-    allowErrorMonitoring: boolean;
-    isConfigured: boolean;
-    isGuestDashboardEnabled: boolean;
-    isLoggedIn: boolean;
-    isPasswordResetDisabled: boolean;
-    localDomain: string;
-    domain: string;
-    sslPort: number;
-    themeBase: string;
-    themeColor: string;
-    sessionExpiresAt?: number;
-    sessionRefreshRecommendedAt?: number;
-    version: {
-        body: string;
-        current: string;
-        latest: string;
-        releases: Array<{
-            body: string;
-            version: string;
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type AppContextDto = {
-    appDataRootHostPath?: string | null;
-    apps: Array<{
-        available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        id: string;
-        name: string;
-        short_desc: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        urn: string;
-    }>;
-    updatesAvailable: number;
-    isProduction: boolean;
-    cloudflareAvailable: boolean;
-    tailscaleAvailable: boolean;
-    tailscaleNodeFqdn?: string | null;
-    tailscaleSupportsServices?: boolean;
-    tailscaleHttpsEnabled?: boolean;
-    user: {
-        hasCompletedOnboarding: boolean;
-        id: number;
-        locale: string;
-        operator: boolean;
-        totpEnabled: boolean;
-        username: string;
-        advancedMode: boolean;
-    };
-    userSettings: {
-        advancedSettings: boolean;
-        allowAutoThemes: boolean;
-        allowErrorMonitoring: boolean;
-        appDataPath: string;
-        appsRepoUrl: string;
-        defaultAppCpuLimit?: string;
-        demoMode: boolean;
-        disablePasswordReset: boolean;
-        dnsIp: string;
-        domain: string;
-        eventsTimeout: number;
-        forwardAuthUrl: string;
-        guestDashboard: boolean;
-        internalIp: string;
-        listenIp: string;
-        localDomain: string;
-        logLevel: 'debug' | 'error' | 'info' | 'warn';
-        maxBackups: number;
-        persistTraefikConfig: boolean;
-        port: number;
-        postgresPort: number;
-        sslPort: number;
-        timeZone: string;
-        experimental_insecureCookie?: boolean;
-        themeBase?: string;
-        themeColor?: string;
-        ciHubOrganizationSlug?: string;
-        ciHubDeviceSlug?: string;
-    };
-    version: {
-        body: string;
-        current: string;
-        latest: string;
-        releases: Array<{
-            body: string;
-            version: string;
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type UserSettingsBody = {
-    advancedSettings?: boolean;
-    allowAutoThemes?: boolean;
-    allowErrorMonitoring?: boolean;
-    appDataPath?: string;
-    appsRepoUrl?: string;
-    defaultAppCpuLimit?: string;
-    demoMode?: boolean;
-    disablePasswordReset?: boolean;
-    dnsIp?: string;
-    domain?: string;
-    eventsTimeout?: number | string;
-    experimental_insecureCookie?: boolean;
-    forwardAuthUrl?: string;
-    guestDashboard?: boolean;
-    internalIp?: string;
-    listenIp?: string;
-    localDomain?: string;
-    logLevel?: 'debug' | 'error' | 'info' | 'warn';
-    maxBackups?: number | string;
-    persistTraefikConfig?: boolean;
-    port?: number | string;
-    postgresPort?: number | string;
-    sslPort?: number | string;
-    themeBase?: string;
-    themeColor?: string;
-    timeZone?: string;
+    [key: string]: unknown;
 };
 
 export type AcknowledgeWelcomeBody = {
-    allowErrorMonitoring: boolean;
-};
-
-export type LoadDto = {
-    cpuLoad: number;
-    cpuCores: number;
-    diskSize: number;
-    diskUsed: number;
-    memoryTotal: number;
-    memoryUsed: number;
-    percentUsed: number;
-    percentUsedMemory: number;
-    hasVmWedge: boolean;
-    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
-    containerMemoryTotal?: number;
-    containerMemoryUsed?: number;
-    containerDiskTotal?: number;
-    containerDiskUsed?: number;
-    recommendedDockerRamMb?: number;
-    platformGuidance?: string;
-};
-
-export type LoginBody = {
-    password: string;
-    username: string;
-};
-
-export type LoginDto = {
-    success: boolean;
-    totpSessionId?: string;
-};
-
-export type VerifyTotpBody = {
-    totpCode: string;
-    totpSessionId: string;
-};
-
-export type RegisterBody = {
-    password: string;
-    username: string;
-};
-
-export type RegisterDto = {
-    success: boolean;
-    requiresEmailVerification?: boolean;
-};
-
-export type ChangeUsernameBody = {
-    newUsername: string;
-    password: string;
-};
-
-export type ChangePasswordBody = {
-    currentPassword: string;
-    newPassword: string;
-};
-
-export type GetTotpUriBody = {
-    password: string;
-};
-
-export type GetTotpUriDto = {
-    key: string;
-    uri: string;
-};
-
-export type SetupTotpBody = {
-    code: string;
-};
-
-export type DisableTotpBody = {
-    password: string;
-};
-
-export type ResetPasswordBody = {
-    newPassword: string;
-};
-
-export type ResetPasswordDto = {
-    email: string;
-    success: boolean;
-};
-
-export type CheckResetPasswordRequestDto = {
-    isRequestPending: boolean;
+    [key: string]: unknown;
 };
 
 export type MyAppsDto = {
-    installed: Array<{
-        app: {
-            domain: string | null;
-            exposed: boolean;
-            exposedLocal: boolean;
-            id: number;
-            ignoredVersion: number | null;
-            isVisibleOnGuestDashboard: boolean;
-            openPort: boolean;
-            pendingRestart: boolean;
-            port: number | null;
-            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-            version: number;
-            config?: {
-                [key: string]: unknown;
-            };
-            createdAt?: string;
-            enableAuth?: boolean;
-            localSubdomain?: string | null;
-            updatedAt?: string;
-        };
-        info: {
-            author: string;
-            available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-            created_at: number;
-            deprecated: boolean;
-            description: string;
-            dynamic_config: boolean;
-            exposable: boolean;
-            force_expose: boolean;
-            force_pull: boolean;
-            form_fields: Array<{
-                env_variable: string;
-                label: string;
-                required: boolean;
-                type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-                default?: number | string | boolean;
-                encoding?: 'base64' | 'hex';
-                hint?: string;
-                max?: number;
-                min?: number;
-                options?: Array<{
-                    label: string;
-                    value: string;
-                }>;
-                pattern_error?: string;
-                placeholder?: string;
-                regex?: string;
-            }>;
-            generate_vapid_keys: boolean;
-            https: boolean;
-            id: string;
-            name: string;
-            no_gui: boolean;
-            short_desc: string;
-            source: string;
-            supported_architectures: Array<'amd64' | 'arm64'>;
-            cihub_app_version: number;
-            updated_at: number;
-            urn: string;
-            version: string;
-            gid?: number;
-            min_hub_version?: string;
-            port?: number;
-            uid?: number;
-            url_suffix?: string;
-            website?: string;
-        };
-        metadata: {
-            latestVersion: number;
-            localSubdomain: string;
-            composeSchemaVersion?: number;
-            hasCustomConfig?: boolean;
-            latestDockerVersion?: string;
-            minHubVersion?: string | null;
-        };
-    }>;
+    [key: string]: unknown;
+};
+
+export type InstallQueueDto = {
+    [key: string]: unknown;
 };
 
 export type GuestAppsDto = {
-    installed: Array<{
-        app: {
-            domain: string | null;
-            exposed: boolean;
-            exposedLocal: boolean;
-            id: number;
-            ignoredVersion: number | null;
-            isVisibleOnGuestDashboard: boolean;
-            openPort: boolean;
-            pendingRestart: boolean;
-            port: number | null;
-            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-            version: number;
-            config?: {
-                [key: string]: unknown;
-            };
-            createdAt?: string;
-            enableAuth?: boolean;
-            localSubdomain?: string | null;
-            updatedAt?: string;
-        };
-        info: {
-            author: string;
-            available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-            created_at: number;
-            deprecated: boolean;
-            description: string;
-            dynamic_config: boolean;
-            exposable: boolean;
-            force_expose: boolean;
-            force_pull: boolean;
-            form_fields: Array<{
-                env_variable: string;
-                label: string;
-                required: boolean;
-                type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-                default?: number | string | boolean;
-                encoding?: 'base64' | 'hex';
-                hint?: string;
-                max?: number;
-                min?: number;
-                options?: Array<{
-                    label: string;
-                    value: string;
-                }>;
-                pattern_error?: string;
-                placeholder?: string;
-                regex?: string;
-            }>;
-            generate_vapid_keys: boolean;
-            https: boolean;
-            id: string;
-            name: string;
-            no_gui: boolean;
-            short_desc: string;
-            source: string;
-            supported_architectures: Array<'amd64' | 'arm64'>;
-            cihub_app_version: number;
-            updated_at: number;
-            urn: string;
-            version: string;
-            gid?: number;
-            min_hub_version?: string;
-            port?: number;
-            uid?: number;
-            url_suffix?: string;
-            website?: string;
-        };
-        metadata: {
-            latestVersion: number;
-            composeSchemaVersion?: number;
-            hasCustomConfig?: boolean;
-            latestDockerVersion?: string;
-            minHubVersion?: string | null;
-        };
-    }>;
+    [key: string]: unknown;
 };
 
 export type GetRandomPortDto = {
-    port: number;
+    [key: string]: unknown;
+};
+
+export type AppRuntimeMonitorDto = {
+    [key: string]: unknown;
 };
 
 export type GetAppDto = {
-    info: {
-        author: string;
-        available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        description: string;
-        dynamic_config: boolean;
-        exposable: boolean;
-        force_expose: boolean;
-        force_pull: boolean;
-        form_fields: Array<{
-            env_variable: string;
-            label: string;
-            required: boolean;
-            type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-            default?: number | string | boolean;
-            encoding?: 'base64' | 'hex';
-            hint?: string;
-            max?: number;
-            min?: number;
-            options?: Array<{
-                label: string;
-                value: string;
-            }>;
-            pattern_error?: string;
-            placeholder?: string;
-            regex?: string;
-        }>;
-        generate_vapid_keys: boolean;
-        https: boolean;
-        id: string;
-        name: string;
-        no_gui: boolean;
-        short_desc: string;
-        source: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        cihub_app_version: number;
-        updated_at: number;
-        urn: string;
-        version: string;
-        gid?: number;
-        min_hub_version?: string;
-        port?: number;
-        uid?: number;
-        url_suffix?: string;
-        website?: string;
-    };
-    metadata: {
-        latestVersion: number;
-        localSubdomain: string;
-        composeSchemaVersion?: number;
-        hasCustomConfig?: boolean;
-        latestDockerVersion?: string;
-        minHubVersion?: string | null;
-    };
-    app?: {
-        domain: string | null;
-        exposed: boolean;
-        exposedLocal: boolean;
-        id: number;
-        ignoredVersion: number | null;
-        isVisibleOnGuestDashboard: boolean;
-        openPort: boolean;
-        pendingRestart: boolean;
-        port: number | null;
-        status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-        version: number;
-        config?: {
-            [key: string]: unknown;
-        };
-        createdAt?: string;
-        enableAuth?: boolean;
-        localSubdomain?: string | null;
-        updatedAt?: string;
-    } | null;
-    appDataHostPath?: string | null;
+    [key: string]: unknown;
 };
 
 export type GetComposeDiffDto = {
-    current: string | null;
-    new: string | null;
+    [key: string]: unknown;
 };
 
 export type GetConfigDiffDto = {
-    current: string | null;
-    new: string | null;
+    [key: string]: unknown;
+};
+
+export type AppRuntimeHealthDto = {
+    [key: string]: unknown;
+};
+
+export type UpdateInferencePreferencesBody = {
+    [key: string]: unknown;
+};
+
+export type UpdateRocmInstallStateBody = {
+    [key: string]: unknown;
+};
+
+export type LoadDto = {
+    [key: string]: unknown;
+};
+
+export type SystemResourcesDto = {
+    [key: string]: unknown;
+};
+
+export type FactoryResetDto = {
+    [key: string]: unknown;
 };
 
 export type SearchAppsDto = {
-    data: Array<{
-        available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        id: string;
-        name: string;
-        short_desc: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        urn: string;
-    }>;
-    total: number;
-    nextCursor?: string | null;
+    [key: string]: unknown;
 };
 
 export type PullDto = {
-    success: boolean;
+    [key: string]: unknown;
 };
 
 export type CreateAppStoreBodyDto = {
-    name: string;
-    url: string;
+    [key: string]: unknown;
 };
 
 export type AppStoreDto = {
-    enabled: boolean;
-    name: string;
-    slug: string;
-    url: string;
+    [key: string]: unknown;
 };
 
 export type AllAppStoresDto = {
-    appStores: Array<{
-        enabled: boolean;
-        name: string;
-        slug: string;
-        url: string;
-    }>;
+    [key: string]: unknown;
 };
 
 export type UpdateAppStoreBodyDto = {
-    enabled: boolean;
-    name: string;
+    [key: string]: unknown;
 };
 
 export type UpdateAppStoreDto = {
-    success: boolean;
+    [key: string]: unknown;
+};
+
+export type LoginBody = {
+    [key: string]: unknown;
+};
+
+export type LoginDto = {
+    [key: string]: unknown;
+};
+
+export type VerifyTotpBody = {
+    [key: string]: unknown;
+};
+
+export type RegisterBody = {
+    [key: string]: unknown;
+};
+
+export type RegisterDto = {
+    [key: string]: unknown;
+};
+
+export type SessionRefreshDto = {
+    [key: string]: unknown;
+};
+
+export type PortalSessionHintDto = {
+    [key: string]: unknown;
+};
+
+export type PortalDesktopExchangeDto = {
+    [key: string]: unknown;
+};
+
+export type ChangeUsernameBody = {
+    [key: string]: unknown;
+};
+
+export type ChangePasswordBody = {
+    [key: string]: unknown;
+};
+
+export type GetTotpUriBody = {
+    [key: string]: unknown;
+};
+
+export type GetTotpUriDto = {
+    [key: string]: unknown;
+};
+
+export type SetupTotpBody = {
+    [key: string]: unknown;
+};
+
+export type DisableTotpBody = {
+    [key: string]: unknown;
+};
+
+export type ResetPasswordBody = {
+    [key: string]: unknown;
+};
+
+export type ResetPasswordDto = {
+    [key: string]: unknown;
+};
+
+export type CheckResetPasswordRequestDto = {
+    [key: string]: unknown;
+};
+
+export type PasswordResetRequestBody = {
+    [key: string]: unknown;
+};
+
+export type PasswordResetRequestDto = {
+    [key: string]: unknown;
+};
+
+export type PasswordResetVerifyResponseDto = {
+    [key: string]: unknown;
+};
+
+export type PasswordResetCompleteBody = {
+    [key: string]: unknown;
+};
+
+export type PasswordResetCompleteDto = {
+    [key: string]: unknown;
 };
 
 export type AppFormBody = {
-    domain?: string;
-    enableAuth?: boolean;
-    exposed?: boolean;
-    exposedLocal?: boolean;
-    isVisibleOnGuestDashboard?: boolean;
-    localSubdomain?: string;
-    maxBackups?: number;
-    openPort?: boolean;
-    port?: number;
-    skipEnv?: boolean;
-    skipPull?: boolean;
-    skipRun?: boolean;
+    [key: string]: unknown;
 };
 
 export type LifecycleRequestDto = {
-    /**
-     * a UUID
-     */
-    requestId: string | '00000000-0000-0000-0000-000000000000' | 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    [key: string]: unknown;
 };
 
 export type UninstallAppBody = {
-    deleteAllData?: boolean;
+    [key: string]: unknown;
 };
 
 export type UpdateAppBody = {
-    performBackup: boolean;
+    [key: string]: unknown;
 };
 
 export type CancelOperationBody = {
-    requestId?: string;
+    [key: string]: unknown;
 };
 
 export type CancelOperationResponseDto = {
-    outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found';
-    status?: string;
-    message?: string;
+    [key: string]: unknown;
 };
 
 export type BackupRequestDto = {
-    /**
-     * a UUID
-     */
-    requestId: string | '00000000-0000-0000-0000-000000000000' | 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    [key: string]: unknown;
 };
 
 export type RestoreAppBackupDto = {
-    filename: string;
+    [key: string]: unknown;
 };
 
 export type GetAppBackupsDto = {
-    currentPage: number;
-    data: Array<{
-        date: number;
-        id: string;
-        size: number;
-    }>;
-    lastPage: number;
-    total: number;
+    [key: string]: unknown;
 };
 
 export type DeleteAppBackupBodyDto = {
-    filename: string;
+    [key: string]: unknown;
 };
 
 export type LinksDto = {
-    links: Array<{
-        description: string | null;
-        iconUrl: string | '' | null;
-        id: number;
-        isVisibleOnGuestDashboard: boolean;
-        title: string;
-        url: string;
-        userId: number;
-    }>;
+    [key: string]: unknown;
 };
 
 export type LinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard?: boolean;
+    [key: string]: unknown;
 };
 
 export type EditLinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard?: boolean;
+    [key: string]: unknown;
 };
 
 export type GetUserConfigDto = {
-    appEnv: string | null;
-    dockerCompose: string | null;
-    isEnabled: boolean;
+    [key: string]: unknown;
 };
 
 export type UpdateUserConfigDto = {
-    appEnv: string;
-    dockerCompose: string;
+    [key: string]: unknown;
 };
 
 export type CreateCustomAppDto = {
-    config: {
-        schemaVersion: 2;
-        services: Array<{
-            image: string;
-            name: string;
-            addPorts?: Array<{
-                containerPort: string | number;
-                hostPort: string | number;
-                interface?: string;
-                tcp?: boolean;
-                udp?: boolean;
-            }>;
-            addToMainNetwork?: boolean;
-            capAdd?: Array<string>;
-            capDrop?: Array<string>;
-            command?: string | Array<string>;
-            dependsOn?: {
-                [key: string]: {
-                    condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                };
-            } | Array<string>;
-            deploy?: {
-                resources: {
-                    limits?: {
-                        cpus?: string;
-                        memory?: string;
-                        pids?: number;
-                    };
-                    reservations?: {
-                        devices: Array<{
-                            capabilities: Array<string>;
-                            count?: number | 'all';
-                            deviceIds?: Array<string>;
-                            driver?: string;
-                        }>;
-                        cpus?: string;
-                        memory?: string;
-                    };
-                };
-            };
-            devices?: Array<string>;
-            dns?: string | Array<string>;
-            entrypoint?: string | Array<string>;
-            environment?: Array<{
-                key: string;
-                value: number | string | boolean;
-            }>;
-            extraHosts?: Array<string>;
-            extraLabels?: {
-                [key: string]: string | boolean;
-            };
-            healthCheck?: {
-                test: string;
-                interval?: string;
-                retries?: number;
-                startInterval?: string;
-                startPeriod?: string;
-                timeout?: string;
-            };
-            hostname?: string;
-            internalPort?: string | number;
-            isMain?: boolean;
-            logging?: {
-                driver: string;
-                options?: {
-                    [key: string]: string;
-                };
-            };
-            networkMode?: string;
-            pid?: string;
-            privileged?: boolean;
-            readOnly?: boolean;
-            securityOpt?: Array<string>;
-            shmSize?: string;
-            stdinOpen?: boolean;
-            stopGracePeriod?: string;
-            stopSignal?: string;
-            sysctls?: {
-                [key: string]: number;
-            };
-            tty?: boolean;
-            ulimits?: {
-                core?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                memlock?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nofile?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nproc?: number | {
-                    hard: number;
-                    soft: number;
-                };
-            };
-            user?: string;
-            volumes?: Array<{
-                containerPath: string;
-                hostPath: string;
-                bind?: {
-                    propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                };
-                private?: boolean;
-                readOnly?: boolean;
-                shared?: boolean;
-            }>;
-            workingDir?: string;
-        }>;
-        overrides?: Array<{
-            services: Array<{
-                addPorts?: Array<{
-                    containerPort: string | number;
-                    hostPort: string | number;
-                    interface?: string;
-                    tcp?: boolean;
-                    udp?: boolean;
-                }>;
-                addToMainNetwork?: boolean;
-                capAdd?: Array<string>;
-                capDrop?: Array<string>;
-                command?: string | Array<string>;
-                dependsOn?: {
-                    [key: string]: {
-                        condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                    };
-                } | Array<string>;
-                deploy?: {
-                    resources: {
-                        limits?: {
-                            cpus?: string;
-                            memory?: string;
-                            pids?: number;
-                        };
-                        reservations?: {
-                            devices: Array<{
-                                capabilities: Array<string>;
-                                count?: number | 'all';
-                                deviceIds?: Array<string>;
-                                driver?: string;
-                            }>;
-                            cpus?: string;
-                            memory?: string;
-                        };
-                    };
-                };
-                devices?: Array<string>;
-                dns?: string | Array<string>;
-                entrypoint?: string | Array<string>;
-                environment?: Array<{
-                    key: string;
-                    value: number | string | boolean;
-                }>;
-                extraHosts?: Array<string>;
-                extraLabels?: {
-                    [key: string]: string | boolean;
-                };
-                healthCheck?: {
-                    test: string;
-                    interval?: string;
-                    retries?: number;
-                    startInterval?: string;
-                    startPeriod?: string;
-                    timeout?: string;
-                };
-                hostname?: string;
-                image?: string;
-                internalPort?: string | number;
-                isMain?: boolean;
-                logging?: {
-                    driver: string;
-                    options?: {
-                        [key: string]: string;
-                    };
-                };
-                name?: string;
-                networkMode?: string;
-                pid?: string;
-                privileged?: boolean;
-                readOnly?: boolean;
-                securityOpt?: Array<string>;
-                shmSize?: string;
-                stdinOpen?: boolean;
-                stopGracePeriod?: string;
-                stopSignal?: string;
-                sysctls?: {
-                    [key: string]: number;
-                };
-                tty?: boolean;
-                ulimits?: {
-                    core?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    memlock?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nofile?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nproc?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                };
-                user?: string;
-                volumes?: Array<{
-                    containerPath: string;
-                    hostPath: string;
-                    bind?: {
-                        propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                    };
-                    private?: boolean;
-                    readOnly?: boolean;
-                    shared?: boolean;
-                }>;
-                workingDir?: string;
-            }>;
-            architecture?: 'amd64' | 'arm64';
-        }>;
-    };
-    name: string;
+    [key: string]: unknown;
 };
 
 export type CreateCustomAppResponseDto = {
-    appName: string;
-    appUrn: string;
-    storeId: string;
+    [key: string]: unknown;
 };
 
 export type UpdateCustomAppDto = {
-    config: {
-        schemaVersion: 2;
-        services: Array<{
-            image: string;
-            name: string;
-            addPorts?: Array<{
-                containerPort: string | number;
-                hostPort: string | number;
-                interface?: string;
-                tcp?: boolean;
-                udp?: boolean;
-            }>;
-            addToMainNetwork?: boolean;
-            capAdd?: Array<string>;
-            capDrop?: Array<string>;
-            command?: string | Array<string>;
-            dependsOn?: {
-                [key: string]: {
-                    condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                };
-            } | Array<string>;
-            deploy?: {
-                resources: {
-                    limits?: {
-                        cpus?: string;
-                        memory?: string;
-                        pids?: number;
-                    };
-                    reservations?: {
-                        devices: Array<{
-                            capabilities: Array<string>;
-                            count?: number | 'all';
-                            deviceIds?: Array<string>;
-                            driver?: string;
-                        }>;
-                        cpus?: string;
-                        memory?: string;
-                    };
-                };
-            };
-            devices?: Array<string>;
-            dns?: string | Array<string>;
-            entrypoint?: string | Array<string>;
-            environment?: Array<{
-                key: string;
-                value: number | string | boolean;
-            }>;
-            extraHosts?: Array<string>;
-            extraLabels?: {
-                [key: string]: string | boolean;
-            };
-            healthCheck?: {
-                test: string;
-                interval?: string;
-                retries?: number;
-                startInterval?: string;
-                startPeriod?: string;
-                timeout?: string;
-            };
-            hostname?: string;
-            internalPort?: string | number;
-            isMain?: boolean;
-            logging?: {
-                driver: string;
-                options?: {
-                    [key: string]: string;
-                };
-            };
-            networkMode?: string;
-            pid?: string;
-            privileged?: boolean;
-            readOnly?: boolean;
-            securityOpt?: Array<string>;
-            shmSize?: string;
-            stdinOpen?: boolean;
-            stopGracePeriod?: string;
-            stopSignal?: string;
-            sysctls?: {
-                [key: string]: number;
-            };
-            tty?: boolean;
-            ulimits?: {
-                core?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                memlock?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nofile?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nproc?: number | {
-                    hard: number;
-                    soft: number;
-                };
-            };
-            user?: string;
-            volumes?: Array<{
-                containerPath: string;
-                hostPath: string;
-                bind?: {
-                    propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                };
-                private?: boolean;
-                readOnly?: boolean;
-                shared?: boolean;
-            }>;
-            workingDir?: string;
-        }>;
-        overrides?: Array<{
-            services: Array<{
-                addPorts?: Array<{
-                    containerPort: string | number;
-                    hostPort: string | number;
-                    interface?: string;
-                    tcp?: boolean;
-                    udp?: boolean;
-                }>;
-                addToMainNetwork?: boolean;
-                capAdd?: Array<string>;
-                capDrop?: Array<string>;
-                command?: string | Array<string>;
-                dependsOn?: {
-                    [key: string]: {
-                        condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                    };
-                } | Array<string>;
-                deploy?: {
-                    resources: {
-                        limits?: {
-                            cpus?: string;
-                            memory?: string;
-                            pids?: number;
-                        };
-                        reservations?: {
-                            devices: Array<{
-                                capabilities: Array<string>;
-                                count?: number | 'all';
-                                deviceIds?: Array<string>;
-                                driver?: string;
-                            }>;
-                            cpus?: string;
-                            memory?: string;
-                        };
-                    };
-                };
-                devices?: Array<string>;
-                dns?: string | Array<string>;
-                entrypoint?: string | Array<string>;
-                environment?: Array<{
-                    key: string;
-                    value: number | string | boolean;
-                }>;
-                extraHosts?: Array<string>;
-                extraLabels?: {
-                    [key: string]: string | boolean;
-                };
-                healthCheck?: {
-                    test: string;
-                    interval?: string;
-                    retries?: number;
-                    startInterval?: string;
-                    startPeriod?: string;
-                    timeout?: string;
-                };
-                hostname?: string;
-                image?: string;
-                internalPort?: string | number;
-                isMain?: boolean;
-                logging?: {
-                    driver: string;
-                    options?: {
-                        [key: string]: string;
-                    };
-                };
-                name?: string;
-                networkMode?: string;
-                pid?: string;
-                privileged?: boolean;
-                readOnly?: boolean;
-                securityOpt?: Array<string>;
-                shmSize?: string;
-                stdinOpen?: boolean;
-                stopGracePeriod?: string;
-                stopSignal?: string;
-                sysctls?: {
-                    [key: string]: number;
-                };
-                tty?: boolean;
-                ulimits?: {
-                    core?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    memlock?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nofile?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nproc?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                };
-                user?: string;
-                volumes?: Array<{
-                    containerPath: string;
-                    hostPath: string;
-                    bind?: {
-                        propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                    };
-                    private?: boolean;
-                    readOnly?: boolean;
-                    shared?: boolean;
-                }>;
-                workingDir?: string;
-            }>;
-            architecture?: 'amd64' | 'arm64';
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type UpdateAppMetadataDto = {
-    data: string;
+    [key: string]: unknown;
 };
 
 export type UserContextData = {
@@ -1107,6 +280,53 @@ export type UserContextResponses = {
 };
 
 export type UserContextResponse = UserContextResponses[keyof UserContextResponses];
+
+export type GetStoreAlternativesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/store/alternatives';
+};
+
+export type GetStoreAlternativesErrors = {
+    /**
+     * CI Cloud unreachable or CI_CLOUD_URL not set
+     */
+    503: unknown;
+};
+
+export type GetStoreAlternativesResponses = {
+    /**
+     * Alternatives JSON
+     */
+    200: unknown;
+};
+
+export type GetStoreListingsData = {
+    body?: never;
+    path?: never;
+    query: {
+        tags: string;
+        sort: string;
+        category: string;
+        q: string;
+    };
+    url: '/api/store/listings';
+};
+
+export type GetStoreListingsErrors = {
+    /**
+     * CI Cloud unreachable or CI_CLOUD_URL not set
+     */
+    503: unknown;
+};
+
+export type GetStoreListingsResponses = {
+    /**
+     * Store apps JSON array
+     */
+    200: unknown;
+};
 
 export type AppContextData = {
     body?: never;
@@ -1132,12 +352,8 @@ export type UpdateUserSettingsResponses = {
     200: unknown;
 };
 
-export type UpdateAdvancedModeBody = {
-    advancedMode: boolean;
-};
-
 export type UpdateAdvancedModeData = {
-    body: UpdateAdvancedModeBody;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/user-advanced-mode';
@@ -1158,6 +374,869 @@ export type AcknowledgeWelcomeResponses = {
     200: unknown;
 };
 
+export type CompleteOnboardingData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/complete-onboarding';
+};
+
+export type CompleteOnboardingResponses = {
+    200: unknown;
+};
+
+export type RestartOnboardingData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/restart-onboarding';
+};
+
+export type RestartOnboardingResponses = {
+    200: unknown;
+};
+
+export type ResetRegistrationData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/reset';
+};
+
+export type ResetRegistrationResponses = {
+    /**
+     * Registration reset successfully
+     */
+    200: unknown;
+};
+
+export type GetStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/status';
+};
+
+export type GetStatusResponses = {
+    /**
+     * Returns the explicit provisioning status
+     */
+    200: unknown;
+};
+
+export type GetStateDriftData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/state-drift';
+};
+
+export type GetStateDriftResponses = {
+    /**
+     * Returns drift signals when local and portal state disagree
+     */
+    200: unknown;
+};
+
+export type PrepareFreshSetupData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/prepare-fresh';
+};
+
+export type PrepareFreshSetupResponses = {
+    /**
+     * Local registration artifacts cleared
+     */
+    200: unknown;
+};
+
+export type MarkRestoreIntentData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/mark-restore-intent';
+};
+
+export type MarkRestoreIntentResponses = {
+    /**
+     * Restore intent recorded
+     */
+    200: unknown;
+};
+
+export type GetDeviceIdData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/device-id';
+};
+
+export type GetDeviceIdResponses = {
+    /**
+     * Returns the device ID and registration URL
+     */
+    200: unknown;
+};
+
+export type HandleCallbackData = {
+    body?: never;
+    path?: never;
+    query: {
+        device_id: string;
+        organization_id: string;
+        organization_name: string;
+        slug: string;
+        subdomain: string;
+        tunnel_id: string;
+        tunnel_token: string;
+        api_key: string;
+        domain: string;
+    };
+    url: '/api/registration/callback';
+};
+
+export type HandleCallbackErrors = {
+    /**
+     * Invalid callback data
+     */
+    400: unknown;
+};
+
+export type HandleCallbackResponses = {
+    /**
+     * Registration completed successfully
+     */
+    200: unknown;
+};
+
+export type HandleCallbackPostData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/callback';
+};
+
+export type HandleCallbackPostErrors = {
+    /**
+     * Invalid callback data
+     */
+    400: unknown;
+};
+
+export type HandleCallbackPostResponses = {
+    /**
+     * Registration completed successfully
+     */
+    200: unknown;
+};
+
+export type GetConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/config';
+};
+
+export type GetConfigResponses = {
+    /**
+     * Returns the CI Cloud configuration
+     */
+    200: unknown;
+};
+
+export type ValidateOrganizationNameData = {
+    body?: never;
+    path?: never;
+    query: {
+        name: string;
+    };
+    url: '/api/registration/validate';
+};
+
+export type ValidateOrganizationNameResponses = {
+    /**
+     * Returns validation result
+     */
+    200: unknown;
+};
+
+export type VerifyPairingCodeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/verify-pairing-code';
+};
+
+export type VerifyPairingCodeErrors = {
+    /**
+     * Invalid or missing pairing code
+     */
+    400: unknown;
+};
+
+export type VerifyPairingCodeResponses = {
+    /**
+     * Pairing code verified and device identity bound
+     */
+    200: unknown;
+};
+
+export type ProbeDomainData = {
+    body?: never;
+    path?: never;
+    query: {
+        url: string;
+    };
+    url: '/api/registration/probe-domain';
+};
+
+export type ProbeDomainResponses = {
+    /**
+     * Probe result
+     */
+    200: unknown;
+};
+
+export type PairDeviceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/pair';
+};
+
+export type PairDeviceErrors = {
+    /**
+     * Invalid pairing code or pairing failed
+     */
+    400: unknown;
+};
+
+export type PairDeviceResponses = {
+    /**
+     * Device paired and registered successfully
+     */
+    200: unknown;
+};
+
+export type RegisterDeviceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/register';
+};
+
+export type RegisterDeviceErrors = {
+    /**
+     * Invalid request
+     */
+    400: unknown;
+};
+
+export type RegisterDeviceResponses = {
+    /**
+     * Registration initiated successfully
+     */
+    200: unknown;
+};
+
+export type GetPortalConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/portal/config';
+};
+
+export type GetPortalConfigResponses = {
+    /**
+     * Portal configuration
+     */
+    200: unknown;
+};
+
+export type CheckDnsAvailabilityData = {
+    body?: never;
+    path?: never;
+    query: {
+        subdomain: string;
+        domain: string;
+        appUrn: string;
+    };
+    url: '/api/cloudflare/check-dns-availability';
+};
+
+export type CheckDnsAvailabilityResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckDnsAvailabilityResponse = CheckDnsAvailabilityResponses[keyof CheckDnsAvailabilityResponses];
+
+export type GetDomainsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/domains';
+};
+
+export type GetDomainsResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetDomainsResponse = GetDomainsResponses[keyof GetDomainsResponses];
+
+export type GetStatus2Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/status';
+};
+
+export type GetStatus2Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetStatus2Response = GetStatus2Responses[keyof GetStatus2Responses];
+
+export type CheckUrlAvailabilityData = {
+    body?: never;
+    path?: never;
+    query: {
+        url: string;
+    };
+    url: '/api/cloudflare/check-url-availability';
+};
+
+export type CheckUrlAvailabilityResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckUrlAvailabilityResponse = CheckUrlAvailabilityResponses[keyof CheckUrlAvailabilityResponses];
+
+export type SyncMissingDnsRecordsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/sync-dns';
+};
+
+export type SyncMissingDnsRecordsResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type SyncMissingDnsRecordsResponse = SyncMissingDnsRecordsResponses[keyof SyncMissingDnsRecordsResponses];
+
+export type RemoveOriginRequestFromAllRoutesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/remove-origin-request';
+};
+
+export type RemoveOriginRequestFromAllRoutesResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RemoveOriginRequestFromAllRoutesResponse = RemoveOriginRequestFromAllRoutesResponses[keyof RemoveOriginRequestFromAllRoutesResponses];
+
+export type RemoveCatchAllRoutesData = {
+    body?: never;
+    path?: never;
+    query: {
+        tunnelId: string;
+    };
+    url: '/api/cloudflare/remove-catch-all-routes';
+};
+
+export type RemoveCatchAllRoutesResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RemoveCatchAllRoutesResponse = RemoveCatchAllRoutesResponses[keyof RemoveCatchAllRoutesResponses];
+
+export type GetInstalledAppsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/installed';
+};
+
+export type GetInstalledAppsResponses = {
+    default: MyAppsDto;
+};
+
+export type GetInstalledAppsResponse = GetInstalledAppsResponses[keyof GetInstalledAppsResponses];
+
+export type GetInstallQueueData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/install-queue';
+};
+
+export type GetInstallQueueResponses = {
+    default: InstallQueueDto;
+};
+
+export type GetInstallQueueResponse = GetInstallQueueResponses[keyof GetInstallQueueResponses];
+
+export type GetGuestAppsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/guest';
+};
+
+export type GetGuestAppsResponses = {
+    default: GuestAppsDto;
+};
+
+export type GetGuestAppsResponse = GetGuestAppsResponses[keyof GetGuestAppsResponses];
+
+export type GetRandomPortData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/random-port';
+};
+
+export type GetRandomPortResponses = {
+    default: GetRandomPortDto;
+};
+
+export type GetRandomPortResponse = GetRandomPortResponses[keyof GetRandomPortResponses];
+
+export type GetResourceMonitorData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/resource-monitor';
+};
+
+export type GetResourceMonitorResponses = {
+    default: AppRuntimeMonitorDto;
+};
+
+export type GetResourceMonitorResponse = GetResourceMonitorResponses[keyof GetResourceMonitorResponses];
+
+export type GetAppData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}';
+};
+
+export type GetAppResponses = {
+    default: GetAppDto;
+};
+
+export type GetAppResponse = GetAppResponses[keyof GetAppResponses];
+
+export type GetAppComposeDiffData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/compose-diff';
+};
+
+export type GetAppComposeDiffResponses = {
+    default: GetComposeDiffDto;
+};
+
+export type GetAppComposeDiffResponse = GetAppComposeDiffResponses[keyof GetAppComposeDiffResponses];
+
+export type GetAppConfigDiffData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/config-diff';
+};
+
+export type GetAppConfigDiffResponses = {
+    default: GetConfigDiffDto;
+};
+
+export type GetAppConfigDiffResponse = GetAppConfigDiffResponses[keyof GetAppConfigDiffResponses];
+
+export type IgnoreAppVersionData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/ignore-version';
+};
+
+export type IgnoreAppVersionResponses = {
+    200: unknown;
+};
+
+export type UnignoreAppVersionData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/unignore-version';
+};
+
+export type UnignoreAppVersionResponses = {
+    200: unknown;
+};
+
+export type CheckAvailabilityData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/check-availability';
+};
+
+export type CheckAvailabilityResponses = {
+    200: unknown;
+};
+
+export type GetRuntimeHealthData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/runtime-health';
+};
+
+export type GetRuntimeHealthResponses = {
+    default: AppRuntimeHealthDto;
+};
+
+export type GetRuntimeHealthResponse = GetRuntimeHealthResponses[keyof GetRuntimeHealthResponses];
+
+export type ResolveAvailabilityData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/resolve-availability';
+};
+
+export type ResolveAvailabilityResponses = {
+    201: unknown;
+};
+
+export type HealthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/health';
+};
+
+export type HealthResponses = {
+    200: unknown;
+};
+
+export type GetPreferencesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/preferences';
+};
+
+export type GetPreferencesResponses = {
+    200: unknown;
+};
+
+export type UpdatePreferencesData = {
+    body: UpdateInferencePreferencesBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/preferences';
+};
+
+export type UpdatePreferencesResponses = {
+    200: unknown;
+};
+
+export type GetRuntimeModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/runtime';
+};
+
+export type GetRuntimeModelsResponses = {
+    200: unknown;
+};
+
+export type GetStatus3Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/status';
+};
+
+export type GetStatus3Responses = {
+    200: unknown;
+};
+
+export type GetHardwareData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/hardware';
+};
+
+export type GetHardwareResponses = {
+    200: unknown;
+};
+
+export type RescanHardwareData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/hardware/rescan';
+};
+
+export type RescanHardwareResponses = {
+    201: unknown;
+};
+
+export type GetRocmStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/rocm/status';
+};
+
+export type GetRocmStatusResponses = {
+    200: unknown;
+};
+
+export type UpdateRocmInstallStateData = {
+    body: UpdateRocmInstallStateBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/rocm/install-state';
+};
+
+export type UpdateRocmInstallStateResponses = {
+    201: unknown;
+};
+
+export type GetMemoryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/memory';
+};
+
+export type GetMemoryResponses = {
+    200: unknown;
+};
+
+export type GetCatalogData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/catalog';
+};
+
+export type GetCatalogResponses = {
+    200: unknown;
+};
+
+export type GetTrackedModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/tracked';
+};
+
+export type GetTrackedModelsResponses = {
+    200: unknown;
+};
+
+export type StartPullModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/pull/start';
+};
+
+export type StartPullModelResponses = {
+    201: unknown;
+};
+
+export type PullModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/pull';
+};
+
+export type PullModelResponses = {
+    201: unknown;
+};
+
+export type LoadModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/load';
+};
+
+export type LoadModelResponses = {
+    201: unknown;
+};
+
+export type UnloadModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/unload';
+};
+
+export type UnloadModelResponses = {
+    201: unknown;
+};
+
+export type PinModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/pin';
+};
+
+export type PinModelResponses = {
+    201: unknown;
+};
+
+export type UnpinModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/unpin';
+};
+
+export type UnpinModelResponses = {
+    201: unknown;
+};
+
+export type GetCloudProvidersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/cloud-providers';
+};
+
+export type GetCloudProvidersResponses = {
+    200: unknown;
+};
+
+export type SetCloudProviderData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/cloud-providers';
+};
+
+export type SetCloudProviderResponses = {
+    201: unknown;
+};
+
+export type GetOnboardingProfileData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/onboarding-profile';
+};
+
+export type GetOnboardingProfileResponses = {
+    200: unknown;
+};
+
+export type GetOllamaStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/ollama/status';
+};
+
+export type GetOllamaStatusResponses = {
+    200: unknown;
+};
+
+export type InstallOllamaData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/ollama/install';
+};
+
+export type InstallOllamaResponses = {
+    201: unknown;
+};
+
+export type GetAppCredentialsData = {
+    body?: never;
+    path: {
+        slug: string;
+    };
+    query?: never;
+    url: '/api/inference/apps/{slug}/credentials';
+};
+
+export type GetAppCredentialsResponses = {
+    200: unknown;
+};
+
+export type GetAppCredentialsEnv0Data = {
+    body?: never;
+    path: {
+        slug: string;
+    };
+    query?: never;
+    url: '/api/inference/apps/{slug}/credentials.env';
+};
+
+export type GetAppCredentialsEnv0Responses = {
+    200: unknown;
+};
+
+export type GetAppCredentialsEnv1Data = {
+    body?: never;
+    path: {
+        slug: string;
+    };
+    query?: never;
+    url: '/api/inference/apps/{slug}/bootstrap.env';
+};
+
+export type GetAppCredentialsEnv1Responses = {
+    200: unknown;
+};
+
 export type SystemLoadData = {
     body?: never;
     path?: never;
@@ -1171,6 +1250,33 @@ export type SystemLoadResponses = {
 
 export type SystemLoadResponse = SystemLoadResponses[keyof SystemLoadResponses];
 
+export type SystemResourcesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/resources';
+};
+
+export type SystemResourcesResponses = {
+    default: SystemResourcesDto;
+};
+
+export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResourcesResponses];
+
+export type DownloadHubLogsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/logs/download';
+};
+
+export type DownloadHubLogsResponses = {
+    /**
+     * Hub logs download
+     */
+    200: unknown;
+};
+
 export type DownloadLocalCertificateData = {
     body?: never;
     path?: never;
@@ -1181,6 +1287,277 @@ export type DownloadLocalCertificateData = {
 export type DownloadLocalCertificateResponses = {
     200: unknown;
 };
+
+export type DetectServicesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/detect-services';
+};
+
+export type DetectServicesResponses = {
+    200: unknown;
+};
+
+export type GetFullInspectionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector';
+};
+
+export type GetFullInspectionResponses = {
+    200: unknown;
+};
+
+export type GetContainersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/containers';
+};
+
+export type GetContainersResponses = {
+    200: unknown;
+};
+
+export type GetPortsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/ports';
+};
+
+export type GetPortsResponses = {
+    200: unknown;
+};
+
+export type GetHealthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/health';
+};
+
+export type GetHealthResponses = {
+    200: unknown;
+};
+
+export type FactoryResetData = {
+    body: FactoryResetDto;
+    path?: never;
+    query?: never;
+    url: '/api/system/factory-reset';
+};
+
+export type FactoryResetErrors = {
+    /**
+     * Operator authentication required
+     */
+    403: unknown;
+};
+
+export type FactoryResetResponses = {
+    /**
+     * Factory reset completed
+     */
+    200: unknown;
+};
+
+export type GetAllAllocationsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/ports';
+};
+
+export type GetAllAllocationsResponses = {
+    /**
+     * Returns all port allocations across all apps
+     */
+    200: unknown;
+};
+
+export type GetAppPortsData = {
+    body?: never;
+    path: {
+        appUrn: string;
+    };
+    query?: never;
+    url: '/api/ports/{appUrn}';
+};
+
+export type GetAppPortsResponses = {
+    /**
+     * Returns port allocations for the specified app
+     */
+    200: unknown;
+};
+
+export type CheckAppPortsData = {
+    body?: never;
+    path: {
+        appUrn: string;
+    };
+    query?: never;
+    url: '/api/ports/{appUrn}/check';
+};
+
+export type CheckAppPortsResponses = {
+    /**
+     * Returns current port status and availability
+     */
+    200: unknown;
+};
+
+export type GetDiagnosticsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/network/diagnostics';
+};
+
+export type GetDiagnosticsResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetDiagnosticsResponse = GetDiagnosticsResponses[keyof GetDiagnosticsResponses];
+
+export type RepairOrphansData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/network/repair-orphans';
+};
+
+export type RepairOrphansResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RepairOrphansResponse = RepairOrphansResponses[keyof RepairOrphansResponses];
+
+export type SearchAppsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/apps/search';
+};
+
+export type SearchAppsResponses = {
+    default: SearchAppsDto;
+};
+
+export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
+
+export type GetImageData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/image';
+};
+
+export type GetImageResponses = {
+    200: unknown;
+};
+
+export type GetAppImageSizeData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/image-size';
+};
+
+export type GetAppImageSizeResponses = {
+    200: unknown;
+};
+
+export type PullAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/pull';
+};
+
+export type PullAppStoresResponses = {
+    default: PullDto;
+};
+
+export type PullAppStoresResponse = PullAppStoresResponses[keyof PullAppStoresResponses];
+
+export type CreateAppStoreData = {
+    body: CreateAppStoreBodyDto;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/create';
+};
+
+export type CreateAppStoreResponses = {
+    default: AppStoreDto;
+};
+
+export type CreateAppStoreResponse = CreateAppStoreResponses[keyof CreateAppStoreResponses];
+
+export type GetAllAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/all';
+};
+
+export type GetAllAppStoresResponses = {
+    default: AllAppStoresDto;
+};
+
+export type GetAllAppStoresResponse = GetAllAppStoresResponses[keyof GetAllAppStoresResponses];
+
+export type GetEnabledAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/enabled';
+};
+
+export type GetEnabledAppStoresResponses = {
+    default: AllAppStoresDto;
+};
+
+export type GetEnabledAppStoresResponse = GetEnabledAppStoresResponses[keyof GetEnabledAppStoresResponses];
+
+export type DeleteAppStoreData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/marketplace/{id}';
+};
+
+export type DeleteAppStoreResponses = {
+    200: unknown;
+};
+
+export type UpdateAppStoreData = {
+    body: UpdateAppStoreBodyDto;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/marketplace/{id}';
+};
+
+export type UpdateAppStoreResponses = {
+    default: UpdateAppStoreDto;
+};
+
+export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
 export type GetTranslationData = {
     body?: never;
@@ -1245,6 +1622,75 @@ export type LogoutData = {
 export type LogoutResponses = {
     201: unknown;
 };
+
+export type RefreshSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/session/refresh';
+};
+
+export type RefreshSessionResponses = {
+    default: SessionRefreshDto;
+};
+
+export type RefreshSessionResponse = RefreshSessionResponses[keyof RefreshSessionResponses];
+
+export type StartPortalLoginData = {
+    body?: never;
+    path?: never;
+    query: {
+        redirect_url: string;
+        desktop: string;
+    };
+    url: '/api/auth/portal/start';
+};
+
+export type StartPortalLoginResponses = {
+    200: unknown;
+};
+
+export type PortalCallbackData = {
+    body?: never;
+    path?: never;
+    query: {
+        code: string;
+        state: string;
+    };
+    url: '/api/auth/portal/callback';
+};
+
+export type PortalCallbackResponses = {
+    200: unknown;
+};
+
+export type PortalSessionHintData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/session-hint';
+};
+
+export type PortalSessionHintResponses = {
+    default: PortalSessionHintDto;
+};
+
+export type PortalSessionHintResponse = PortalSessionHintResponses[keyof PortalSessionHintResponses];
+
+export type ExchangePortalDesktopLoginData = {
+    body?: never;
+    path?: never;
+    query: {
+        token: string;
+    };
+    url: '/api/auth/portal/desktop-exchange';
+};
+
+export type ExchangePortalDesktopLoginResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
 
 export type ChangeUsernameData = {
     body: ChangeUsernameBody;
@@ -1340,6 +1786,45 @@ export type ResetPasswordResponses = {
 
 export type ResetPasswordResponse = ResetPasswordResponses[keyof ResetPasswordResponses];
 
+export type RequestPasswordResetData = {
+    body: PasswordResetRequestBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password-reset/request';
+};
+
+export type RequestPasswordResetResponses = {
+    default: PasswordResetRequestDto;
+};
+
+export type RequestPasswordResetResponse = RequestPasswordResetResponses[keyof RequestPasswordResetResponses];
+
+export type VerifyPasswordResetTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password-reset/verify/{token}';
+};
+
+export type VerifyPasswordResetTokenResponses = {
+    default: PasswordResetVerifyResponseDto;
+};
+
+export type VerifyPasswordResetTokenResponse = VerifyPasswordResetTokenResponses[keyof VerifyPasswordResetTokenResponses];
+
+export type CompletePasswordResetData = {
+    body: PasswordResetCompleteBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password-reset/complete';
+};
+
+export type CompletePasswordResetResponses = {
+    default: PasswordResetCompleteDto;
+};
+
+export type CompletePasswordResetResponse = CompletePasswordResetResponses[keyof CompletePasswordResetResponses];
+
 export type TraefikData = {
     body?: never;
     path?: never;
@@ -1351,227 +1836,38 @@ export type TraefikResponses = {
     200: unknown;
 };
 
-export type GetInstalledAppsData = {
+export type GetRehydratePlanData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/apps/installed';
+    url: '/api/app-lifecycle/rehydrate/plan';
 };
 
-export type GetInstalledAppsResponses = {
-    default: MyAppsDto;
-};
-
-export type GetInstalledAppsResponse = GetInstalledAppsResponses[keyof GetInstalledAppsResponses];
-
-export type GetGuestAppsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/apps/guest';
-};
-
-export type GetGuestAppsResponses = {
-    default: GuestAppsDto;
-};
-
-export type GetGuestAppsResponse = GetGuestAppsResponses[keyof GetGuestAppsResponses];
-
-export type GetRandomPortData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/apps/random-port';
-};
-
-export type GetRandomPortResponses = {
-    default: GetRandomPortDto;
-};
-
-export type GetRandomPortResponse = GetRandomPortResponses[keyof GetRandomPortResponses];
-
-export type GetAppData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}';
-};
-
-export type GetAppResponses = {
-    default: GetAppDto;
-};
-
-export type GetAppResponse = GetAppResponses[keyof GetAppResponses];
-
-export type GetAppComposeDiffData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/compose-diff';
-};
-
-export type GetAppComposeDiffResponses = {
-    default: GetComposeDiffDto;
-};
-
-export type GetAppComposeDiffResponse = GetAppComposeDiffResponses[keyof GetAppComposeDiffResponses];
-
-export type GetAppConfigDiffData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/config-diff';
-};
-
-export type GetAppConfigDiffResponses = {
-    default: GetConfigDiffDto;
-};
-
-export type GetAppConfigDiffResponse = GetAppConfigDiffResponses[keyof GetAppConfigDiffResponses];
-
-export type IgnoreAppVersionData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/ignore-version';
-};
-
-export type IgnoreAppVersionResponses = {
+export type GetRehydratePlanResponses = {
     200: unknown;
 };
 
-export type UnignoreAppVersionData = {
+export type GetRehydrateStatusData = {
     body?: never;
-    path: {
-        urn: string;
-    };
+    path?: never;
     query?: never;
-    url: '/api/apps/{urn}/unignore-version';
+    url: '/api/app-lifecycle/rehydrate/status';
 };
 
-export type UnignoreAppVersionResponses = {
+export type GetRehydrateStatusResponses = {
     200: unknown;
 };
 
-export type SearchAppsData = {
-    body?: never;
-    path?: never;
-    query?: {
-        category?: 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
-        cursor?: string;
-        pageSize?: number | string;
-        search?: string;
-        storeId?: string;
-    };
-    url: '/api/marketplace/apps/search';
-};
-
-export type SearchAppsResponses = {
-    default: SearchAppsDto;
-};
-
-export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
-
-export type GetImageData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/image';
-};
-
-export type GetImageResponses = {
-    200: unknown;
-};
-
-export type PullAppStoresData = {
+export type ExecuteRehydrateData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/marketplace/pull';
+    url: '/api/app-lifecycle/rehydrate';
 };
 
-export type PullAppStoresResponses = {
-    default: PullDto;
+export type ExecuteRehydrateResponses = {
+    201: unknown;
 };
-
-export type PullAppStoresResponse = PullAppStoresResponses[keyof PullAppStoresResponses];
-
-export type CreateAppStoreData = {
-    body: CreateAppStoreBodyDto;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/create';
-};
-
-export type CreateAppStoreResponses = {
-    default: AppStoreDto;
-};
-
-export type CreateAppStoreResponse = CreateAppStoreResponses[keyof CreateAppStoreResponses];
-
-export type GetAllAppStoresData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/all';
-};
-
-export type GetAllAppStoresResponses = {
-    default: AllAppStoresDto;
-};
-
-export type GetAllAppStoresResponse = GetAllAppStoresResponses[keyof GetAllAppStoresResponses];
-
-export type GetEnabledAppStoresData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/enabled';
-};
-
-export type GetEnabledAppStoresResponses = {
-    default: AllAppStoresDto;
-};
-
-export type GetEnabledAppStoresResponse = GetEnabledAppStoresResponses[keyof GetEnabledAppStoresResponses];
-
-export type DeleteAppStoreData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/marketplace/{id}';
-};
-
-export type DeleteAppStoreResponses = {
-    200: unknown;
-};
-
-export type UpdateAppStoreData = {
-    body: UpdateAppStoreBodyDto;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/marketplace/{id}';
-};
-
-export type UpdateAppStoreResponses = {
-    default: UpdateAppStoreDto;
-};
-
-export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
 export type InstallAppData = {
     body: AppFormBody;
@@ -1618,6 +1914,21 @@ export type StopAppResponses = {
 
 export type StopAppResponse = StopAppResponses[keyof StopAppResponses];
 
+export type ForceStopAppData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/force-stop';
+};
+
+export type ForceStopAppResponses = {
+    default: LifecycleRequestDto;
+};
+
+export type ForceStopAppResponse = ForceStopAppResponses[keyof ForceStopAppResponses];
+
 export type RestartAppData = {
     body?: never;
     path: {
@@ -1663,21 +1974,6 @@ export type ResetAppResponses = {
 
 export type ResetAppResponse = ResetAppResponses[keyof ResetAppResponses];
 
-export type CancelOperationData = {
-    body: CancelOperationBody;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/app-lifecycle/{urn}/cancel';
-};
-
-export type CancelOperationResponses = {
-    default: CancelOperationResponseDto;
-};
-
-export type CancelOperationResponse = CancelOperationResponses[keyof CancelOperationResponses];
-
 export type UpdateAppData = {
     body: UpdateAppBody;
     path: {
@@ -1707,6 +2003,21 @@ export type UpdateAppConfigResponses = {
 };
 
 export type UpdateAppConfigResponse = UpdateAppConfigResponses[keyof UpdateAppConfigResponses];
+
+export type CancelOperationData = {
+    body: CancelOperationBody;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/cancel';
+};
+
+export type CancelOperationResponses = {
+    default: CancelOperationResponseDto;
+};
+
+export type CancelOperationResponse = CancelOperationResponses[keyof CancelOperationResponses];
 
 export type UpdateAllAppsData = {
     body?: never;
@@ -1800,10 +2111,7 @@ export type GetAppBackupsData = {
     path: {
         urn: string;
     };
-    query?: {
-        page?: number | string;
-        pageSize?: number | string;
-    };
+    query?: never;
     url: '/api/backups/{urn}';
 };
 
@@ -1881,6 +2189,110 @@ export type HubLogsEventsResponses = {
     200: unknown;
 };
 
+export type GetStatus4Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/status';
+};
+
+export type GetStatus4Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
+
+export type SyncExposureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/sync';
+};
+
+export type SyncExposureResponses = {
+    /**
+     * Sync triggered
+     */
+    200: unknown;
+};
+
+export type StartAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/start';
+};
+
+export type StartAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
+
+export type ConnectWithAuthKeyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/key';
+};
+
+export type ConnectWithAuthKeyResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
+
+export type CheckAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/check';
+};
+
+export type CheckAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
+
+export type DisconnectData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/disconnect';
+};
+
+export type DisconnectResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
+
+export type GetServeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/serve';
+};
+
+export type GetServeStatusResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
+
 export type GetGuestLinksData = {
     body?: never;
     path?: never;
@@ -1941,6 +2353,17 @@ export type EditLinkData = {
 };
 
 export type EditLinkResponses = {
+    200: unknown;
+};
+
+export type LiveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/health/live';
+};
+
+export type LiveResponses = {
     200: unknown;
 };
 
@@ -2008,6 +2431,47 @@ export type CheckResponses = {
 };
 
 export type CheckResponse = CheckResponses[keyof CheckResponses];
+
+export type CheckDataIntegrityData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/health/data';
+};
+
+export type CheckDataIntegrityResponses = {
+    200: unknown;
+};
+
+export type GetDiagnostics2Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public-web/diagnostics';
+};
+
+export type GetDiagnostics2Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
+
+export type RepairData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public-web/repair';
+};
+
+export type RepairResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RepairResponse = RepairResponses[keyof RepairResponses];
 
 export type GetUserConfigData = {
     body?: never;
@@ -2120,6 +2584,61 @@ export type UpdateAppMetadataResponses = {
     default: unknown;
 };
 
+export type CheckForUpdatesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/check';
+};
+
+export type CheckForUpdatesResponses = {
+    200: unknown;
+};
+
+export type PerformUpdateData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update';
+};
+
+export type PerformUpdateResponses = {
+    201: unknown;
+};
+
+export type GetAutoUpdatesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/auto-updates';
+};
+
+export type GetAutoUpdatesResponses = {
+    200: unknown;
+};
+
+export type SetAutoUpdatesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/auto-updates';
+};
+
+export type SetAutoUpdatesResponses = {
+    201: unknown;
+};
+
+export type GetHostListenerTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/host-listener-token';
+};
+
+export type GetHostListenerTokenResponses = {
+    200: unknown;
+};
+
 export type SeedDatabaseData = {
     body?: never;
     path?: never;
@@ -2194,5 +2713,27 @@ export type UninstallAllAppsData = {
 };
 
 export type UninstallAllAppsResponses = {
+    201: unknown;
+};
+
+export type SseData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp/sse';
+};
+
+export type SseResponses = {
+    200: unknown;
+};
+
+export type MessagesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp/messages';
+};
+
+export type MessagesResponses = {
     201: unknown;
 };
