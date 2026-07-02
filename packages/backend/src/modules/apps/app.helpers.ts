@@ -386,8 +386,10 @@ export class AppHelpers {
       const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
 
       envMap.set('HUB_URL', hubInternalUrl);
-      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp/sse`);
-      envMap.set('HUB_MCP_MESSAGES_URL', `${hubInternalUrl}/api/mcp/messages`);
+      // BUG-MCP-1: the Hub now speaks the MCP Streamable HTTP transport on a single endpoint
+      // (POST/GET/DELETE at /api/mcp), replacing the old /sse + /messages pair. Agents connect an
+      // MCP Streamable HTTP client here with the injected HUB_MCP_API_KEY as the Bearer token.
+      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp`);
 
       // Inject MCP API key so the agent can authenticate with the Hub MCP endpoint
       if (process.env.MCP_API_KEY) {

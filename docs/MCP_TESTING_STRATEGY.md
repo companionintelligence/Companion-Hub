@@ -52,7 +52,7 @@ ping, and it's free because the marketplace already declares the expected tools.
 | Layer | Code | What it proves | Scale |
 |-------|------|----------------|-------|
 | **1. Direct protocol smoke** (primary) | `scripts/qa-mcp.ts` | The server's own container boots, completes `initialize`, and advertises a `tools/list` matching its declared manifest | All MCP apps, per-node, fast |
-| **2. Hub-bridge regression** | drive the real bridge: `POST /api/mcp/sse` → `initialize` + `tools/list` after a Hub install | The app installs **through the Hub**, the **MCP bridge** (`packages/backend/src/modules/mcp/agents/mcp-bridge.service.ts`) connects it (stdio via `docker exec`, or SSE/HTTP), and re-exposes its tools as `<appUrn>__<tool>` | Per-app, product-accurate |
+| **2. Hub-bridge regression** | drive the real bridge over the **Streamable HTTP** transport: `POST /api/mcp` `initialize` (captures the `Mcp-Session-Id`) → `tools/list` after a Hub install | The app installs **through the Hub**, the **MCP bridge** (`packages/backend/src/modules/mcp/agents/mcp-bridge.service.ts`) connects it (stdio via `docker exec`, or SSE/HTTP), and re-exposes its tools as `<appUrn>__<tool>` | Per-app, product-accurate |
 
 Layer 1 is the broad, fast signal. Layer 2 is the source of truth — it exercises the Hub's
 own bridge and the exact path a user/agent reaches the tools through, and is authoritative
@@ -79,7 +79,7 @@ Hub's *own* tools; bridged-app namespacing is only asserted when such an app is 
 
 **Recommended fix (deferred):** give MCP apps an `agents.mcp` block and teach the
 installer/bridge to launch a top-level-`.mcp` server (not only `docker exec`), so installing a
-catalog MCP app wires its tools through `/api/mcp/sse`. Until then Layer 1 is the coverage signal
+catalog MCP app wires its tools through the Hub's `/api/mcp` endpoint. Until then Layer 1 is the coverage signal
 for the catalog and Layer 2 guards the bridge itself.
 
 ## Transport handling (Layer 1)
@@ -200,12 +200,13 @@ the existing filter groups them; `triage.mjs` buckets an MCP **drift** `warn` as
 
 ## Layer 2 in practice (`scripts/qa-mcp-bridge.ts`)
 
-Env-gated regression of the real bridge: `HUB_URL` (default `http://localhost:5004`) + `MCP_API_KEY`
-(the Hub's Bearer key). It opens `GET /api/mcp/sse` for the `event: endpoint` line, then
-`POST /api/mcp/messages` `initialize` and `tools/list`, asserting `protocolVersion`+`serverInfo`, a
-non-empty tool set, and `<appUrn>__<tool>` namespacing on any bridged tool. A down Hub or a missing
-key is a clean **`skip`**, so it never breaks a fleet run. See the gap note above for why catalog
-apps don't yet appear here.
+Env-gated regression of the real bridge over the **Streamable HTTP** transport: `HUB_URL` (default
+`http://localhost:5002`) + `MCP_API_KEY` (the Hub's Bearer key). It `POST`s `initialize` to the
+single `/api/mcp` endpoint (capturing the `Mcp-Session-Id` response header), then `POST`s
+`tools/list` with that session, asserting `protocolVersion`+`serverInfo`, a non-empty tool set, and
+`<appUrn>__<tool>` namespacing on any bridged tool. Responses may be JSON or an SSE frame; both are
+parsed. A down Hub or a missing key is a clean **`skip`**, so it never breaks a fleet run. See the
+gap note above for why catalog apps don't yet appear here.
 
 ## Measured baseline (2026-06-10, 25 apps)
 

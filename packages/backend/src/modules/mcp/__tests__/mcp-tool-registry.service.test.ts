@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { McpToolNotFoundError, McpToolRegistry } from '../mcp-tool-registry.service';
+import { DestructiveToolDisabledError, McpToolNotFoundError, McpToolRegistry } from '../mcp-tool-registry.service';
 
 describe('McpToolRegistry', () => {
   let registry: McpToolRegistry;
@@ -76,6 +76,38 @@ describe('McpToolRegistry', () => {
       registry.register({ name: 'ret_tool', description: '', inputSchema: {}, handler: async () => ({ value: 42 }) });
       const result = await registry.callTool('ret_tool', {});
       expect(result).toEqual({ value: 42 });
+    });
+  });
+
+  // ISSUE-MCP-2: destructive tools are gated behind MCP_ALLOW_DESTRUCTIVE (env) or an explicit
+  // per-call override (the admin runner after operator confirmation).
+  describe('destructive tool gating', () => {
+    const registerDestructive = () =>
+      registry.register({ name: 'danger', destructive: true, description: '', inputSchema: {}, handler: async () => ({ wiped: true }) });
+
+    beforeEach(() => {
+      delete process.env.MCP_ALLOW_DESTRUCTIVE;
+    });
+
+    it('blocks a destructive tool by default', async () => {
+      registerDestructive();
+      await expect(registry.callTool('danger', {})).rejects.toThrow(DestructiveToolDisabledError);
+    });
+
+    it('allows a destructive tool when MCP_ALLOW_DESTRUCTIVE=true', async () => {
+      registerDestructive();
+      process.env.MCP_ALLOW_DESTRUCTIVE = 'true';
+      await expect(registry.callTool('danger', {})).resolves.toEqual({ wiped: true });
+    });
+
+    it('allows a destructive tool with an explicit allowDestructive override', async () => {
+      registerDestructive();
+      await expect(registry.callTool('danger', {}, { allowDestructive: true })).resolves.toEqual({ wiped: true });
+    });
+
+    it('does not gate non-destructive tools', async () => {
+      registry.register({ name: 'safe', description: '', inputSchema: {}, handler: async () => ({ ok: true }) });
+      await expect(registry.callTool('safe', {})).resolves.toEqual({ ok: true });
     });
   });
 });

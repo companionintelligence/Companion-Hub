@@ -923,7 +923,8 @@ describe('AppHelpers', () => {
     });
 
     describe('R-ENV: MCP env injection for agent harness apps', () => {
-      it('R-ENV-1/2/3: should inject HUB_URL, HUB_MCP_URL, and HUB_MCP_MESSAGES_URL when hub_integration.mcp_client is true', async () => {
+      // BUG-MCP-1: single Streamable HTTP endpoint (/api/mcp); the old /sse + /messages pair is gone.
+      it('R-ENV-1/2: should inject HUB_URL and the single HUB_MCP_URL when hub_integration.mcp_client is true', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
@@ -932,8 +933,8 @@ describe('AppHelpers', () => {
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
-        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp/sse');
-        expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:3000/api/mcp/messages');
+        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+        expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
       });
 
       it('R-ENV-1: should use HUB_CONTAINER_NAME env var when set', async () => {
@@ -946,7 +947,7 @@ describe('AppHelpers', () => {
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
           expect(envMap.get('HUB_URL')).toBe('http://my-custom-hub:3000');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://my-custom-hub:3000/api/mcp/sse');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://my-custom-hub:3000/api/mcp');
         } finally {
           delete process.env.HUB_CONTAINER_NAME;
         }
@@ -962,8 +963,8 @@ describe('AppHelpers', () => {
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
           expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:5002');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp/sse');
-          expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:5002/api/mcp/messages');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp');
+          expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
         } finally {
           delete process.env.API_PORT;
         }

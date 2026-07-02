@@ -21,12 +21,13 @@ export class AppAgentTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'App Agents & Skills',
       name: 'hub_get_app_skill',
       description: 'Get the resolved SKILL.md agent skill description for an app. Returns the content with template variables resolved.',
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format (e.g. ci-store:nextcloud)' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format (e.g. nextcloud:ci-store)' },
         },
         required: ['appUrn'],
       },
@@ -34,6 +35,7 @@ export class AppAgentTools implements OnModuleInit {
     });
 
     this.registry.register({
+      category: 'App Agents & Skills',
       name: 'hub_list_agent_apps',
       description:
         'List all installed apps that have agent integration (skill, openapi, or mcp). Only includes apps with at least one integration layer.',
@@ -42,12 +44,13 @@ export class AppAgentTools implements OnModuleInit {
     });
 
     this.registry.register({
+      category: 'App Agents & Skills',
       name: 'hub_list_app_tools',
       description: 'List all agent tools provided by a specific app, including OpenAPI-generated tools and MCP-bridged tools.',
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
         },
         required: ['appUrn'],
       },
@@ -55,12 +58,13 @@ export class AppAgentTools implements OnModuleInit {
     });
 
     this.registry.register({
+      category: 'App Agents & Skills',
       name: 'hub_get_app_openapi',
       description: 'Get the raw OpenAPI spec for an app as a JSON string.',
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
         },
         required: ['appUrn'],
       },

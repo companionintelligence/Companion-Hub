@@ -4103,9 +4103,9 @@
         ]
       }
     },
-    "/api/mcp/sse": {
-      "get": {
-        "operationId": "sse",
+    "/api/mcp": {
+      "post": {
+        "operationId": "handlePost",
         "parameters": [],
         "responses": {
           "200": {
@@ -4115,11 +4115,120 @@
         "tags": [
           "Mcp"
         ]
+      },
+      "get": {
+        "operationId": "handleGet",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
+      },
+      "delete": {
+        "operationId": "handleDelete",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
       }
     },
-    "/api/mcp/messages": {
+    "/api/mcp-admin/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools": {
+      "get": {
+        "operationId": "listTools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools/{name}/call": {
       "post": {
-        "operationId": "messages",
+        "operationId": "callTool",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpToolCallBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/settings": {
+      "post": {
+        "operationId": "updateSettings",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpAdminSettingsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/key/rotate": {
+      "post": {
+        "operationId": "rotateKey",
         "parameters": [],
         "responses": {
           "201": {
@@ -4127,7 +4236,7 @@
           }
         },
         "tags": [
-          "Mcp"
+          "McpAdmin"
         ]
       }
     }
@@ -4403,6 +4512,14 @@
         "properties": {}
       },
       "UpdateAppMetadataDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpToolCallBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpAdminSettingsBody": {
         "type": "object",
         "properties": {}
       }

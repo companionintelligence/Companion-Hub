@@ -31,6 +31,7 @@ export class InferenceTools implements OnModuleInit {
   onModuleInit() {
     // ─── hub_get_hardware_profile ────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_get_hardware_profile',
       description:
         'Get detected hardware capabilities (GPU, VRAM, RAM, NPU) and computed tier. Returns the full hardware profile used for model selection.',
@@ -43,6 +44,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_list_inference_backends ─────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_list_inference_backends',
       description: 'List available inference backends (Ollama, vLLM, Lemonade) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -66,41 +68,49 @@ export class InferenceTools implements OnModuleInit {
     });
 
     // ─── hub_start_inference_backend ────────────────────────────────
+    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade) are managed by the Hub runtime (its
+    // compose stack / host services), not started on demand by the Hub. The previous handler
+    // returned a "start requested" message but did nothing — misleading an agent into believing a
+    // backend was started. This now honestly reports live status and states that lifecycle is not
+    // performed here. (Real on-demand start/stop would need a public compose-orchestration path in
+    // the inference module — tracked separately.)
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_start_inference_backend',
-      description: 'Start an inference backend. Requires the backend type: "ollama", "vllm", or "lemonade".',
+      description:
+        'Report the live status of an inference backend ("ollama", "vllm", or "lemonade"). NOTE: this does NOT ' +
+        'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
+        'whether a backend is up before routing inference.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to start' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
-      handler: async (params) => {
-        const backendType = params.backend as InferenceBackendType;
-        return { message: `Backend ${backendType} start requested. Use Docker lifecycle to manage backend containers.`, backendType };
-      },
+      handler: (params) => this.reportBackendLifecycle(params.backend as InferenceBackendType, 'start'),
     });
 
     // ─── hub_stop_inference_backend ─────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_stop_inference_backend',
-      description: 'Stop an inference backend.',
+      description:
+        'Report the live status of an inference backend. NOTE: this does NOT stop a container — inference ' +
+        'backends are managed by the Hub runtime/compose stack, not stopped on demand via MCP.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to stop' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
-      handler: async (params) => {
-        const backendType = params.backend as InferenceBackendType;
-        return { message: `Backend ${backendType} stop requested.`, backendType };
-      },
+      handler: (params) => this.reportBackendLifecycle(params.backend as InferenceBackendType, 'stop'),
     });
 
     // ─── hub_list_models ────────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_list_models',
       description:
         'List all models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error).',
@@ -113,6 +123,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_pull_model ─────────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_pull_model',
       description: 'Pull/download a model from the curated catalog to the local backend. Long-running operation.',
       inputSchema: {
@@ -131,6 +142,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_load_model ─────────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_load_model',
       description: 'Load a pulled model into memory for inference.',
       inputSchema: {
@@ -149,6 +161,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_unload_model ───────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_unload_model',
       description: 'Unload a model from memory.',
       inputSchema: {
@@ -167,6 +180,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_pin_model ──────────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_pin_model',
       description: 'Pin a model in memory (prevent eviction while the backend is running). Pinning is not persisted across backend restarts.',
       inputSchema: {
@@ -194,6 +208,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_unpin_model ────────────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_unpin_model',
       description: 'Unpin a model (allow eviction when memory is needed).',
       inputSchema: {
@@ -212,6 +227,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_get_inference_status ───────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_get_inference_status',
       description:
         'Get full inference router status: hardware tier, backend health, loaded models, memory budget, and cloud providers. Used by OpenClaw and agents to discover inference capabilities.',
@@ -223,6 +239,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_get_memory_budget ──────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_get_memory_budget',
       description: 'Get current memory budget breakdown: VRAM, RAM, system reserved, app containers, model usage, pinned.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -234,6 +251,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_set_cloud_provider ─────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_set_cloud_provider',
       description: 'Configure a cloud fallback provider (OpenAI, Anthropic, Google, GitHub Copilot).',
       inputSchema: {
@@ -261,6 +279,7 @@ export class InferenceTools implements OnModuleInit {
 
     // ─── hub_get_cloud_providers ────────────────────────────────────
     this.registry.register({
+      category: 'Inference & Models',
       name: 'hub_get_cloud_providers',
       description: 'List configured cloud fallback providers.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -281,5 +300,52 @@ export class InferenceTools implements OnModuleInit {
     // tools were removed accordingly.
 
     this.logger.info('[InferenceTools] Registered 14 inference MCP tools');
+  }
+
+  /**
+   * ISSUE-MCP-3: honestly report a backend's live status. Backend lifecycle (start/stop) is owned by
+   * the Hub runtime/compose stack, so this never mutates state — it health-checks the requested
+   * backend and returns `supported: false` for the lifecycle action plus its current running state.
+   */
+  private async reportBackendLifecycle(
+    backendType: InferenceBackendType,
+    action: 'start' | 'stop',
+  ): Promise<{
+    supported: false;
+    backend: InferenceBackendType;
+    action: 'start' | 'stop';
+    running: boolean;
+    healthy: boolean;
+    baseUrl: string;
+    message: string;
+  }> {
+    const backend = this.backendFor(backendType);
+    const health = await backend.healthCheck();
+    // Naive `${action}ed` mis-conjugates "stop" → "stoped"; map to the correct past tense.
+    const actionPastTense = action === 'stop' ? 'stopped' : 'started';
+    return {
+      supported: false,
+      backend: backendType,
+      action,
+      running: health.running,
+      healthy: health.healthy,
+      baseUrl: backend.getBaseUrl(),
+      message:
+        `Inference backends are managed by the Hub runtime (compose stack / host services), not ${actionPastTense} on demand via MCP. ` +
+        `Backend "${backendType}" is currently ${health.running ? 'running' : 'not running'}. ` +
+        'Use the Hub AI settings to change backend or model configuration.',
+    };
+  }
+
+  /** Resolve the injected backend instance for a backend type. */
+  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend {
+    switch (backendType) {
+      case 'vllm':
+        return this.vllmBackend;
+      case 'lemonade':
+        return this.lemonadeBackend;
+      default:
+        return this.ollamaBackend;
+    }
   }
 }

@@ -248,32 +248,64 @@ export class ConfigurationService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
+    // SECURITY (ISSUE-MCP-2 / ENH-MCP-4): mcpApiKey and mcpAllowDestructive are MCP admin-managed
+    // secrets with a dedicated, admin-only path ({@link persistMcpSettings} + McpAdminService). They
+    // live in settingsSchema ONLY so that general settings writes preserve them on disk (the merge
+    // below spreads the existing on-disk values). They must never be settable or readable through
+    // this general endpoint: accepting them here would let any authenticated caller overwrite the
+    // agent-facing API key on disk, or leak it into the in-memory userSettings that GET /app-context
+    // returns to every browser session. Strip them before both the disk write and the in-memory merge.
+    const { mcpApiKey, mcpAllowDestructive, ...safeSettings } = settings;
+    if (mcpApiKey !== undefined || mcpAllowDestructive !== undefined) {
+      this.logger.warn('Ignoring mcpApiKey/mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
+    }
+
     try {
-      const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+      await this.mergeSettingsToDisk(safeSettings);
 
-      const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
-      const parsedContent = JSON.parse(fileContent);
-      const currentSettingsResult = settingsSchema.partial().safeParse(parsedContent);
-      if (!currentSettingsResult.success) {
-        throw currentSettingsResult.error.message;
+      this.config.userSettings = { ...this.config.userSettings, ...safeSettings };
+
+      // Update in-memory config for runtime changes. Use safeSettings (not the raw settings) so this
+      // stays correct if the stripped-key set ever grows; ciHub* are not stripped today.
+      if (safeSettings.ciHubApiKey) {
+        (this.config as Record<string, unknown>).ciHubApiKey = safeSettings.ciHubApiKey;
       }
-      const currentSettings = currentSettingsResult.data;
-
-      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`);
-
-      this.config.userSettings = { ...this.config.userSettings, ...settings };
-
-      // Update in-memory config for runtime changes
-      if (settings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
-      }
-      if (settings.ciHubOrganizationId) {
-        (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
+      if (safeSettings.ciHubOrganizationId) {
+        (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
       }
     } catch (error) {
       this.logger.error('Failed to set user settings', error);
       throw new InternalServerErrorException('Failed to set user settings');
     }
+  }
+
+  /**
+   * ISSUE-MCP-2 / ENH-MCP-4: persist MCP admin-managed settings (a rotated agent API key, the
+   * destructive-tool gate) to settings.json ONLY — without merging them into the in-memory
+   * `userSettings` object that GET /app-context returns. This is what prevents the plaintext MCP
+   * API key from being disclosed to every authenticated browser session after a rotation. The
+   * caller (McpAdminService) applies the live value to `process.env` for immediate effect; this
+   * write is purely for persistence across restarts (env-helpers re-reads settings.json at boot).
+   */
+  public async persistMcpSettings(settings: { mcpApiKey?: string; mcpAllowDestructive?: boolean }): Promise<void> {
+    try {
+      await this.mergeSettingsToDisk(settings as UserSettingsBody);
+    } catch (error) {
+      this.logger.error('Failed to persist MCP settings', error);
+      throw new InternalServerErrorException('Failed to persist MCP settings');
+    }
+  }
+
+  /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
+   *  the in-memory config (callers that want the runtime change apply it separately). */
+  private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
+    const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+    const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
+    const currentSettingsResult = settingsSchema.partial().safeParse(JSON.parse(fileContent));
+    if (!currentSettingsResult.success) {
+      throw currentSettingsResult.error.message;
+    }
+    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettingsResult.data, ...settings }, null, 2)}`);
   }
 
   public getInferencePreferences() {

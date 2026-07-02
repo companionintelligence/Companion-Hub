@@ -3,7 +3,7 @@ import { BackupsService } from '@/modules/backups/backups.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
-const urnProp = { type: 'string', description: 'App identifier in storeSlug:appName format' } as const;
+const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 @Injectable()
 export class BackupTools implements OnModuleInit {
@@ -14,13 +14,16 @@ export class BackupTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Backups',
       name: 'hub_backup_app',
       description: 'Create a backup of an app. Returns a requestId.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.backupApp(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'Backups',
       name: 'hub_restore_app_backup',
+      destructive: true, // ISSUE-MCP-2: irreversibly overwrites the app's live data with the snapshot.
       description: 'Restore an app from a named backup file. Returns a requestId.',
       inputSchema: {
         type: 'object',
@@ -30,6 +33,7 @@ export class BackupTools implements OnModuleInit {
       handler: (p) => this.restoreAppBackup(p as { appUrn: string; filename: string }),
     });
     this.registry.register({
+      category: 'Backups',
       name: 'hub_list_app_backups',
       description: 'List available backups for an app with pagination.',
       inputSchema: {
@@ -44,7 +48,9 @@ export class BackupTools implements OnModuleInit {
       handler: (p) => this.listAppBackups(p as { appUrn: string; page?: number; pageSize?: number }),
     });
     this.registry.register({
+      category: 'Backups',
       name: 'hub_delete_backup',
+      destructive: true, // ISSUE-MCP-2: permanently deletes a backup file.
       description: 'Delete a backup file for an app.',
       inputSchema: {
         type: 'object',

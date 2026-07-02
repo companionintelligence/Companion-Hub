@@ -1,23 +1,16 @@
 import { Injectable, Optional, type OnApplicationBootstrap } from '@nestjs/common';
+import type { Implementation, ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
-import { McpToolNotFoundError, McpToolRegistry } from './mcp-tool-registry.service';
-import { formatToolError, formatToolSuccess } from './mcp-error.handler';
+import { McpToolRegistry } from './mcp-tool-registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
-export interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id: string | number;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-export interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id: string | number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
+/**
+ * Holds the Hub's MCP server identity/capabilities and announces readiness at boot.
+ *
+ * BUG-MCP-1: the JSON-RPC protocol handling that used to live here (`handleMessage`) now belongs to
+ * the official SDK — see {@link McpServerFactory} (builds the SDK `Server`) and the Streamable HTTP
+ * `McpController`. This service is intentionally thin: server info + capabilities + a bootstrap log.
+ */
 @Injectable()
 export class McpService implements OnApplicationBootstrap {
   constructor(
@@ -27,60 +20,17 @@ export class McpService implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
-    this.logger.info('MCP server ready');
+    this.logger.info('MCP server ready', `${this.toolRegistry.listTools().length} tools`);
     this.agentNotifyService?.notify('system.mcp_ready', { toolCount: this.toolRegistry.listTools().length }, 'info');
   }
 
-  getServerInfo() {
+  /** Server identity advertised in the MCP `initialize` handshake. */
+  getServerInfo(): Implementation {
     return { name: 'ci-hub', version: '1.0.0' };
   }
 
-  getCapabilities() {
+  /** Capabilities advertised at handshake. The Hub exposes tools only (no resources/prompts). */
+  getCapabilities(): ServerCapabilities {
     return { tools: {} };
-  }
-
-  async handleMessage(request: JsonRpcRequest): Promise<JsonRpcResponse> {
-    if (request.jsonrpc !== '2.0') {
-      return { jsonrpc: '2.0', id: request.id ?? null, error: { code: -32600, message: 'Invalid Request: missing jsonrpc 2.0' } };
-    }
-
-    switch (request.method) {
-      case 'initialize':
-        return {
-          jsonrpc: '2.0',
-          id: request.id,
-          result: { protocolVersion: '2024-11-05', serverInfo: this.getServerInfo(), capabilities: this.getCapabilities() },
-        };
-
-      case 'tools/list':
-        return {
-          jsonrpc: '2.0',
-          id: request.id,
-          result: {
-            tools: this.toolRegistry.listTools().map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
-          },
-        };
-
-      case 'tools/call': {
-        const toolName = request.params?.name as string;
-        const toolArgs = (request.params?.arguments ?? {}) as Record<string, unknown>;
-        const start = Date.now();
-        try {
-          const result = await this.toolRegistry.callTool(toolName, toolArgs);
-          this.logger.debug(`MCP tool ${toolName} completed in ${Date.now() - start}ms`);
-          return { jsonrpc: '2.0', id: request.id, result: formatToolSuccess(result) };
-        } catch (error) {
-          this.logger.debug(`MCP tool ${toolName} failed in ${Date.now() - start}ms`);
-          if (error instanceof McpToolNotFoundError) {
-            return { jsonrpc: '2.0', id: request.id, error: { code: error.code, message: error.message } };
-          }
-          const appUrn = toolArgs.appUrn as string | undefined;
-          return { jsonrpc: '2.0', id: request.id, result: formatToolError(error, appUrn) };
-        }
-      }
-
-      default:
-        return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: `Method not found: ${request.method}` } };
-    }
   }
 }

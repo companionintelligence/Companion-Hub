@@ -18,14 +18,38 @@ function createMockApi(): OpenClawPluginApi {
   };
 }
 
-/** Create a ReadableStream that emits SSE data with the endpoint event */
-function createSseStream(messagesUrl: string) {
-  const data = `event: endpoint\ndata: ${messagesUrl}\n\n`;
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(data));
-    },
-  });
+// BUG-MCP-1: the plugin's MCP client now speaks Streamable HTTP (single /api/mcp endpoint, a session
+// id issued at initialize, JSON or SSE responses). These helpers mock that transport shape:
+// responses expose headers.get() + text() (not json()), and initialize issues an Mcp-Session-Id.
+
+/** Wrap a JSON-RPC result in a Streamable HTTP-style response (headers.get + text). */
+function mcpRes(result: unknown, sessionId?: string) {
+  const headers = new Map<string, string>([['content-type', 'application/json']]);
+  if (sessionId) headers.set('mcp-session-id', sessionId);
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null },
+    text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result }),
+  };
+}
+
+/** A benign default inference status so autoConfigure runs cleanly when a test doesn't care about it. */
+const EMPTY_STATUS = { hardwareTier: 'high', models: [], backends: [], memoryBudget: {}, cloudProviders: [] };
+
+/** Route an /api/mcp POST by JSON-RPC method (initialize issues a session). Returns null for non-MCP URLs. */
+function mcpRoute(url: string, init: RequestInit | undefined, opts: { tools?: unknown[]; onCall?: (name?: string) => unknown } = {}) {
+  if (!url.includes('/api/mcp')) return null;
+  const body = init?.body ? (JSON.parse(String(init.body)) as { method: string; params?: { name?: string } }) : { method: '' };
+  if (body.method === 'initialize') return mcpRes({ serverInfo: { name: 'ci-hub' } }, 'sess-1');
+  if (body.method === 'tools/list') return mcpRes({ tools: opts.tools ?? [] });
+  if (body.method === 'tools/call') {
+    // The real Hub wraps tools/call results via formatToolSuccess: {content:[{type:'text',text:JSON}]}.
+    // Emit that exact envelope so the plugin's content-unwrap path is genuinely exercised.
+    const payload = opts.onCall ? opts.onCall(body.params?.name) : EMPTY_STATUS;
+    return mcpRes({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
+  }
+  return mcpRes({});
 }
 
 describe('CI-Hub Plugin', () => {
@@ -45,11 +69,13 @@ describe('CI-Hub Plugin', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     delete process.env.HUB_URL;
     delete process.env.HUB_API_KEY;
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
     delete process.env.CI_LLM_NUM_CTX;
+    delete process.env.OLLAMA_HOST;
   });
 
   it('should export a register function', () => {
@@ -59,24 +85,21 @@ describe('CI-Hub Plugin', () => {
   it('should register wake HTTP route on /hooks/hub-wake', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async (url: string) => {
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
         if (url.includes('/api/health')) return { ok: true };
-        if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+        const mcp = mcpRoute(url, init);
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
       }),
     );
 
     await register(api, baseConfig);
 
-    expect(api.registerHttpRoute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: 'POST',
-        path: '/hooks/hub-wake',
-      }),
-    );
+    expect(api.registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/hooks/hub-wake' }));
   });
 
   it('should log warning when Hub is unreachable', async () => {
+    vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
 
     await register(api, baseConfig);
@@ -90,17 +113,13 @@ describe('CI-Hub Plugin', () => {
       { name: 'hub_start_app', description: 'Start an app', inputSchema: { type: 'object' } },
     ];
 
-    let jsonRpcCallCount = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async (url: string) => {
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
         if (url.includes('/api/health')) return { ok: true };
-        if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-        jsonRpcCallCount++;
-        if (jsonRpcCallCount === 1) {
-          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
-        }
-        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: { tools: mockTools } }) };
+        const mcp = mcpRoute(url, init, { tools: mockTools });
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
       }),
     );
 
@@ -112,6 +131,7 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('should handle MCP connection failure gracefully', async () => {
+    vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Connection refused')));
 
     // Should not throw
@@ -121,51 +141,21 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('registers the ci-hub provider with real Ollama model ids', async () => {
+    const status = {
+      hardwareTier: 'high',
+      backends: [],
+      memoryBudget: {},
+      cloudProviders: [],
+      models: [
+        { id: 'catalog-model-id', object: 'model', owned_by: 'local:ollama', state: 'pinned', backend: 'ollama', modality: ['text'], local: true },
+      ],
+    };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-      if (url === 'http://ci-hub-ollama:11434/api/tags') {
-        return {
-          ok: true,
-          json: async () => ({
-            models: [{ name: 'qwen3:8b' }],
-          }),
-        };
-      }
-      const body = init?.body ? JSON.parse(String(init.body)) : null;
-      if (body?.method === 'initialize') {
-        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { serverInfo: {} } }) };
-      }
-      if (body?.method === 'tools/list') {
-        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }) };
-      }
-      if (body?.method === 'tools/call' && body?.params?.name === 'hub_get_inference_status') {
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: '2.0',
-            id: body.id,
-            result: {
-              hardwareTier: 'high',
-              backends: [],
-              memoryBudget: {},
-              cloudProviders: [],
-              models: [
-                {
-                  id: 'catalog-model-id',
-                  object: 'model',
-                  owned_by: 'local:ollama',
-                  state: 'pinned',
-                  backend: 'ollama',
-                  modality: ['text'],
-                  local: true,
-                },
-              ],
-            },
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body?.id ?? 1, result: {} }) };
+      const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
+      if (mcp) return mcp;
+      if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
+      return { ok: true, json: async () => ({}) };
     });
     vi.stubGlobal('fetch', fetchSpy);
     process.env.OLLAMA_HOST = 'http://ci-hub-ollama:11434';
@@ -180,38 +170,17 @@ describe('CI-Hub Plugin', () => {
     const catalog = await provider.catalog.run({});
     expect(catalog.provider.baseUrl).toBe('http://ci-hub-ollama:11434');
     expect(catalog.provider.api).toBe('ollama');
-    expect(catalog.provider.models).toEqual([
-      expect.objectContaining({
-        id: 'qwen3:8b',
-        name: 'qwen3:8b',
-        contextWindow: 32768,
-        maxTokens: 8192,
-      }),
-    ]);
+    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'qwen3:8b', name: 'qwen3:8b', contextWindow: 32768, maxTokens: 8192 })]);
     expect(catalog.provider.models.find((model) => model.id === 'auto')).toBeUndefined();
   });
 
   it('applies the Hub hardware-aware context window (CI_LLM_NUM_CTX) to registered models', async () => {
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-      if (url === 'http://ci-hub-ollama:11434/api/tags') {
-        return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
-      }
-      const body = init?.body ? JSON.parse(String(init.body)) : null;
-      if (body?.method === 'initialize') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { serverInfo: {} } }) };
-      if (body?.method === 'tools/list') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }) };
-      if (body?.method === 'tools/call' && body?.params?.name === 'hub_get_inference_status') {
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: '2.0',
-            id: body.id,
-            result: { hardwareTier: 'high', backends: [], memoryBudget: {}, cloudProviders: [], models: [] },
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body?.id ?? 1, result: {} }) };
+      const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? EMPTY_STATUS : {}) });
+      if (mcp) return mcp;
+      if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
+      return { ok: true, json: async () => ({}) };
     });
     vi.stubGlobal('fetch', fetchSpy);
     process.env.OLLAMA_HOST = 'http://ci-hub-ollama:11434';
@@ -221,41 +190,24 @@ describe('CI-Hub Plugin', () => {
 
     const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
     const catalog = await provider.catalog.run({});
-    expect(catalog.provider.models).toEqual([
-      expect.objectContaining({
-        id: 'qwen3:8b',
-        contextWindow: 16384,
-        options: { num_ctx: 16384 },
-      }),
-    ]);
+    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'qwen3:8b', contextWindow: 16384, options: { num_ctx: 16384 } })]);
   });
 
   it('caps CI_LLM_NUM_CTX by each model context_window when the model window is smaller', async () => {
+    const status = {
+      hardwareTier: 'high',
+      backends: [],
+      memoryBudget: {},
+      cloudProviders: [],
+      models: [{ id: 'tiny:4k', local: true, modality: ['text'], state: 'pulled', context_window: 4096, max_tokens: 2048 }],
+    };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+      const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
+      if (mcp) return mcp;
       // Empty /api/tags -> plugin falls back to Hub inference status, which carries context_window.
       if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [] }) };
-      const body = init?.body ? JSON.parse(String(init.body)) : null;
-      if (body?.method === 'initialize') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { serverInfo: {} } }) };
-      if (body?.method === 'tools/list') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }) };
-      if (body?.method === 'tools/call' && body?.params?.name === 'hub_get_inference_status') {
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: '2.0',
-            id: body.id,
-            result: {
-              hardwareTier: 'high',
-              backends: [],
-              memoryBudget: {},
-              cloudProviders: [],
-              models: [{ id: 'tiny:4k', local: true, modality: ['text'], state: 'pulled', context_window: 4096, max_tokens: 2048 }],
-            },
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body?.id ?? 1, result: {} }) };
+      return { ok: true, json: async () => ({}) };
     });
     vi.stubGlobal('fetch', fetchSpy);
     process.env.OLLAMA_HOST = 'http://ci-hub-ollama:11434';
@@ -265,13 +217,7 @@ describe('CI-Hub Plugin', () => {
 
     const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
     const catalog = await provider.catalog.run({});
-    expect(catalog.provider.models).toEqual([
-      expect.objectContaining({
-        id: 'tiny:4k',
-        contextWindow: 4096,
-        options: { num_ctx: 4096 },
-      }),
-    ]);
+    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'tiny:4k', contextWindow: 4096, options: { num_ctx: 4096 } })]);
   });
 
   describe('R-PLG: Env var fallback', () => {
@@ -281,10 +227,11 @@ describe('CI-Hub Plugin', () => {
 
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(async (url: string) => {
+        vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
           if (url.includes('/api/health')) return { ok: true };
-          if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://ci-os-hub:3000/api/mcp/messages') };
-          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+          const mcp = mcpRoute(url, init);
+          if (mcp) return mcp;
+          return { ok: true, json: async () => ({}) };
         }),
       );
 
@@ -299,10 +246,11 @@ describe('CI-Hub Plugin', () => {
 
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(async (url: string) => {
+        vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
           if (url.includes('/api/health')) return { ok: true };
-          if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+          const mcp = mcpRoute(url, init);
+          if (mcp) return mcp;
+          return { ok: true, json: async () => ({}) };
         }),
       );
 
@@ -325,12 +273,12 @@ describe('CI-Hub Plugin', () => {
 
       const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
         if (url.includes('/api/health')) return { ok: true };
-        if (url.includes('/api/mcp/sse')) {
-          // Verify MCP endpoint gets the MCP-specific key
+        if (url.includes('/api/mcp')) {
+          // Verify the MCP endpoint gets the MCP-specific key.
           expect(init?.headers).toEqual(expect.objectContaining({ Authorization: 'Bearer mcp-specific-key' }));
-          return { ok: true, body: createSseStream('http://ci-os-hub:3000/api/mcp/messages') };
+          return mcpRoute(url, init);
         }
-        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+        return { ok: true, json: async () => ({}) };
       });
       vi.stubGlobal('fetch', fetchSpy);
 
@@ -344,17 +292,13 @@ describe('CI-Hub Plugin', () => {
       process.env.HUB_API_KEY = 'fallback-api-key';
 
       const mockTools = [{ name: 'hub_test', description: 'Test', inputSchema: { type: 'object' } }];
-      let jsonRpcCallCount = 0;
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(async (url: string) => {
+        vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
           if (url.includes('/api/health')) return { ok: true };
-          if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://ci-os-hub:3000/api/mcp/messages') };
-          jsonRpcCallCount++;
-          if (jsonRpcCallCount === 1) {
-            return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
-          }
-          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: { tools: mockTools } }) };
+          const mcp = mcpRoute(url, init, { tools: mockTools });
+          if (mcp) return mcp;
+          return { ok: true, json: async () => ({}) };
         }),
       );
 

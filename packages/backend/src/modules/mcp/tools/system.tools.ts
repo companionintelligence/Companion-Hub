@@ -15,31 +15,37 @@ export class SystemTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'System',
       name: 'hub_system_load',
       description: 'Get current system load: disk, CPU, and memory usage.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getSystemLoad(),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_get_hub_logs',
       description: 'Get recent Hub container log lines. Useful for debugging Hub issues.',
       inputSchema: { type: 'object', properties: { maxLines: { type: 'number', description: 'Max log lines (1-1000, default 100)' } }, required: [] },
       handler: (p) => this.getHubLogs(p as { maxLines?: number }),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_detect_services',
       description: 'Detect Docker services running on the host.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.detectServices(),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_check_for_updates',
       description: 'Check if a Hub update is available.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.checkForUpdates(),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_perform_update',
+      destructive: true, // ISSUE-MCP-2: replaces the running Hub with a new version.
       description: 'Update the Hub to a specific or latest version.',
       inputSchema: {
         type: 'object',
@@ -49,12 +55,14 @@ export class SystemTools implements OnModuleInit {
       handler: (p) => this.performUpdate(p as { targetVersion?: string }),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_get_auto_updates',
       description: 'Check whether automatic Hub updates are enabled.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getAutoUpdates(),
     });
     this.registry.register({
+      category: 'System',
       name: 'hub_set_auto_updates',
       description: 'Enable or disable automatic Hub updates.',
       inputSchema: {

@@ -1,16 +1,14 @@
 /**
  * MCP + OpenClaw Integration E2E Test.
  *
- * Tests the full integration flow:
+ * Tests the full integration flow (BUG-MCP-1: MCP Streamable HTTP transport on /api/mcp):
  *   1. Hub launches and MCP server is ready
- *   2. OpenClaw-style MCP client connects via HTTP+SSE
- *   3. Client discovers the messages endpoint
- *   4. Client initializes the MCP session
- *   5. Client lists available tools (should include 50+ Hub tools)
- *   6. Client calls a Hub tool via MCP (hub_list_installed_apps)
- *   7. Custom app with hub_integration.mcp_client=true is created
- *   8. Install flow injects MCP environment variables
- *   9. GitHub Copilot LLM provider is configured via form fields
+ *   2. An MCP client initializes over Streamable HTTP and gets an Mcp-Session-Id
+ *   3. Client lists available tools (Hub-native tools)
+ *   4. Client calls a Hub tool via MCP (hub_list_installed_apps)
+ *   5. Custom app with hub_integration.mcp_client=true is created
+ *   6. Install flow injects MCP environment variables (single HUB_MCP_URL=/api/mcp)
+ *   7. GitHub Copilot LLM provider is configured via form fields
  *
  * Prerequisites:
  *   - Hub backend running with MCP_API_KEY set
@@ -91,9 +89,15 @@ const OPENCLAW_COMPOSE = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mcpHeaders(contentType?: string): Record<string, string> {
-  const h: Record<string, string> = { Authorization: `Bearer ${MCP_API_KEY}` };
-  if (contentType) h['Content-Type'] = contentType;
+// BUG-MCP-1: the Hub speaks the MCP Streamable HTTP transport on a single /api/mcp endpoint.
+// Requests must accept both JSON and SSE; a session id is issued at initialize and echoed back.
+function mcpHeaders(sessionId?: string): Record<string, string> {
+  const h: Record<string, string> = {
+    Authorization: `Bearer ${MCP_API_KEY}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+  };
+  if (sessionId) h['mcp-session-id'] = sessionId;
   return h;
 }
 
@@ -103,13 +107,63 @@ function authHeaders(sessionId: string, contentType?: string): Record<string, st
   return h;
 }
 
-async function jsonRpc(method: string, params: Record<string, unknown> = {}, id = 1) {
-  const response = await fetch(`${BACKEND_URL}/api/mcp/messages`, {
+/** Extract the JSON-RPC payload from a Streamable HTTP response (plain JSON or an SSE data line). */
+async function readMcpBody(res: Response): Promise<Record<string, unknown>> {
+  const contentType = res.headers.get('content-type') ?? '';
+  const text = await res.text();
+  if (contentType.includes('application/json')) return JSON.parse(text) as Record<string, unknown>;
+  const dataLines = text
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .filter(Boolean);
+  for (let i = dataLines.length - 1; i >= 0; i--) {
+    try {
+      return JSON.parse(dataLines[i] as string) as Record<string, unknown>;
+    } catch {
+      /* keep scanning */
+    }
+  }
+  throw new Error('no JSON-RPC payload in MCP response');
+}
+
+/** Open a Streamable HTTP session (initialize) and return the session id + the initialize result. */
+async function mcpInitialize(): Promise<{ sessionId: string; status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${BACKEND_URL}/api/mcp`, {
     method: 'POST',
-    headers: mcpHeaders('application/json'),
-    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    headers: mcpHeaders(),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'ci-e2e', version: '1.0' } },
+    }),
   });
-  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  return { sessionId: res.headers.get('mcp-session-id') ?? '', status: res.status, body: await readMcpBody(res) };
+}
+
+/**
+ * Self-contained JSON-RPC helper: opens a fresh session, runs the method, returns the body. For
+ * `initialize` it returns the handshake result directly. (A real client reuses one session; opening
+ * one per call keeps each test independent.)
+ */
+async function jsonRpc(method: string, params: Record<string, unknown> = {}, id = 1) {
+  const { sessionId, status: initStatus, body: initBody } = await mcpInitialize();
+  try {
+    if (method === 'initialize') return { status: initStatus, body: initBody };
+    const response = await fetch(`${BACKEND_URL}/api/mcp`, {
+      method: 'POST',
+      headers: mcpHeaders(sessionId),
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    });
+    return { status: response.status, body: await readMcpBody(response) };
+  } finally {
+    // Best-effort session teardown so per-call sessions don't accumulate (avoids inflating
+    // activeSessions and rate-limit flakiness in the suite).
+    if (sessionId) {
+      await fetch(`${BACKEND_URL}/api/mcp`, { method: 'DELETE', headers: mcpHeaders(sessionId) }).catch(() => undefined);
+    }
+  }
 }
 
 async function loginToHub(): Promise<string> {
@@ -156,83 +210,51 @@ test.describe('MCP Protocol (OpenClaw client simulation)', () => {
     expect(res.ok).toBeTruthy();
   });
 
-  test('MCP SSE endpoint returns messages URL', async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/mcp/sse`, {
-        headers: mcpHeaders(),
-        signal: controller.signal,
-      });
-      expect(res.status).toBe(200);
-      expect(res.headers.get('content-type')).toContain('text/event-stream');
-
-      // Read the first SSE event — should be an endpoint event
-      const body = res.body;
-      expect(body).toBeTruthy();
-      const reader = (body as ReadableStream<Uint8Array>).getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let messagesUrl = '';
-
-      while (!messagesUrl) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        let currentEvent = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith('data: ') && currentEvent === 'endpoint') {
-            messagesUrl = line.slice(6).trim();
-          }
-        }
-      }
-
-      expect(messagesUrl).toContain('/api/mcp/messages');
-      reader.cancel();
-    } finally {
-      clearTimeout(timeout);
-      controller.abort();
-    }
+  test('MCP endpoint establishes a Streamable HTTP session on initialize', async () => {
+    const res = await fetch(`${BACKEND_URL}/api/mcp`, {
+      method: 'POST',
+      headers: mcpHeaders(),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'ci-e2e', version: '1.0' } },
+      }),
+    });
+    expect(res.ok).toBeTruthy();
+    expect(res.headers.get('mcp-session-id')).toBeTruthy();
+    const body = await readMcpBody(res);
+    expect((body.result as { serverInfo: { name: string } }).serverInfo.name).toBe('ci-hub');
   });
 
-  test('MCP SSE endpoint rejects unauthenticated requests', async () => {
-    const res = await fetch(`${BACKEND_URL}/api/mcp/sse`);
+  test('MCP endpoint rejects unauthenticated requests', async () => {
+    const res = await fetch(`${BACKEND_URL}/api/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     expect(res.status).toBe(401);
   });
 
-  test('MCP messages endpoint rejects invalid API key', async () => {
-    const res = await fetch(`${BACKEND_URL}/api/mcp/messages`, {
+  test('MCP endpoint rejects an invalid API key', async () => {
+    const res = await fetch(`${BACKEND_URL}/api/mcp`, {
       method: 'POST',
-      headers: { Authorization: 'Bearer wrong-key', 'Content-Type': 'application/json' },
+      headers: { Authorization: 'Bearer wrong-key', 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
     });
     expect(res.status).toBe(401);
   });
 
   test('MCP initialize returns server info and capabilities', async () => {
-    const { status, body } = await jsonRpc('initialize');
-    expect(status).toBe(201);
+    const { body } = await jsonRpc('initialize');
     expect(body.jsonrpc).toBe('2.0');
-    expect(body.id).toBe(1);
     expect(body.result).toBeTruthy();
 
     const result = body.result as { protocolVersion: string; serverInfo: { name: string; version: string }; capabilities: object };
-    expect(result.protocolVersion).toBe('2024-11-05');
+    expect(result.protocolVersion).toBe('2025-11-25');
     expect(result.serverInfo.name).toBe('ci-hub');
     expect(result.serverInfo.version).toBe('1.0.0');
     expect(result.capabilities).toBeTruthy();
   });
 
   test('MCP tools/list returns registered Hub tools', async () => {
-    const { status, body } = await jsonRpc('tools/list');
-    expect(status).toBe(201);
+    const { body } = await jsonRpc('tools/list');
     expect(body.result).toBeTruthy();
 
     const result = body.result as { tools: Array<{ name: string; description: string; inputSchema: object }> };
@@ -255,7 +277,7 @@ test.describe('MCP Protocol (OpenClaw client simulation)', () => {
 
   test('MCP tools/call can invoke hub_list_installed_apps', async () => {
     const { status, body } = await jsonRpc('tools/call', { name: 'hub_list_installed_apps', arguments: {} });
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.result).toBeTruthy();
 
     // Should return a content array (MCP tool result format)
@@ -266,7 +288,7 @@ test.describe('MCP Protocol (OpenClaw client simulation)', () => {
 
   test('MCP tools/call returns error for unknown tool', async () => {
     const { status, body } = await jsonRpc('tools/call', { name: 'nonexistent_tool', arguments: {} });
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.error).toBeTruthy();
 
     const error = body.error as { code: number; message: string };
@@ -274,12 +296,14 @@ test.describe('MCP Protocol (OpenClaw client simulation)', () => {
     expect(error.message).toContain('nonexistent_tool');
   });
 
-  test('MCP rejects malformed JSON-RPC', async () => {
-    const res = await fetch(`${BACKEND_URL}/api/mcp/messages`, {
+  test('MCP rejects a non-initialize request without a session', async () => {
+    // No session header + a non-initialize body → the transport layer refuses with a JSON-RPC error.
+    const res = await fetch(`${BACKEND_URL}/api/mcp`, {
       method: 'POST',
-      headers: mcpHeaders('application/json'),
-      body: JSON.stringify({ id: 1, method: 'initialize' }),
+      headers: mcpHeaders(),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     });
+    expect(res.ok).toBeFalsy();
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBeTruthy();
   });
@@ -341,7 +365,7 @@ test.describe('OpenClaw app creation and MCP integration config', () => {
       },
     });
 
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.result).toBeTruthy();
 
     const result = body.result as { content: Array<{ type: string; text: string }> };
@@ -489,7 +513,6 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     // Verify MCP integration environment variables are present
     expect(envContent).toContain('HUB_URL=');
     expect(envContent).toContain('HUB_MCP_URL=');
-    expect(envContent).toContain('HUB_MCP_MESSAGES_URL=');
     expect(envContent).toContain('HUB_WAKE_SECRET=');
 
     // Verify MCP API key is injected (GAP 1 fix: agent needs this to auth with MCP endpoint)
@@ -499,9 +522,10 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     expect(envContent).toContain('LLM_PROVIDER=github-copilot');
     expect(envContent).toContain('LLM_API_KEY=test-copilot-api-key');
 
-    // Verify MCP URLs use the correct Hub port (GAP 3 fix: uses API_PORT, not hardcoded 3000)
-    expect(envContent).toMatch(/HUB_MCP_URL=http:\/\/.+\/api\/mcp\/sse/);
-    expect(envContent).toMatch(/HUB_MCP_MESSAGES_URL=http:\/\/.+\/api\/mcp\/messages/);
+    // BUG-MCP-1: a single Streamable HTTP endpoint (/api/mcp) replaces the old /sse + /messages pair.
+    // Uses the correct Hub port (API_PORT, not a hardcoded 3000) and no longer has a /messages URL.
+    expect(envContent).toMatch(/HUB_MCP_URL=http:\/\/.+\/api\/mcp(\s|$)/m);
+    expect(envContent).not.toContain('HUB_MCP_MESSAGES_URL=');
 
     // Verify wake secret is a 64-char hex string
     const secretMatch = envContent.match(/HUB_WAKE_SECRET=([a-f0-9]+)/);
@@ -549,7 +573,7 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     // registered a wake webhook. Verify by calling hub_system_load (proves
     // the MCP server is still functional after install + webhook registration).
     const { status, body } = await jsonRpc('tools/call', { name: 'hub_system_load', arguments: {} }, 200);
-    expect(status).toBe(201);
+    expect(status).toBe(200);
     expect(body.result).toBeTruthy();
 
     const result = body.result as { content: Array<{ type: string; text: string }> };

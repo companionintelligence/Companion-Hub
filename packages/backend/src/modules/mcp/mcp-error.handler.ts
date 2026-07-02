@@ -6,8 +6,13 @@ export interface McpToolResult {
 }
 
 export function formatToolSuccess(result: unknown): McpToolResult {
+  // `JSON.stringify(undefined)` returns `undefined` (and so do function/symbol values). The MCP SDK
+  // validates every tools/call result against CallToolResultSchema, which requires `text` to be a
+  // string — a non-string here turns a SUCCESSFUL tool (e.g. a void-returning delete/update) into a
+  // JSON-RPC error the agent may retry. Coerce a void/undefined result to a stable "null".
+  const text = JSON.stringify(result);
   return {
-    content: [{ type: 'text', text: JSON.stringify(result) }],
+    content: [{ type: 'text', text: text ?? 'null' }],
   };
 }
 

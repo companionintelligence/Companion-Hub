@@ -15,28 +15,31 @@ export class AppDiscoveryTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_list_installed_apps',
       description: 'List all installed apps with status, ports, domains, and metadata. Use to get an overview of what is running on the Hub.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listInstalledApps(),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_get_app',
       description: 'Get detailed info for a specific app including form fields, description, version, and supported architectures.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format (e.g. ci-store:nextcloud)' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format (e.g. nextcloud:ci-store)' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getApp(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_get_app_logs',
       description: 'Retrieve recent container log lines for a running app. Useful for debugging issues.',
       inputSchema: {
         type: 'object',
         properties: {
-          appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' },
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
           maxLines: { type: 'number', description: 'Max log lines to return (1-1000, default 100)' },
         },
         required: ['appUrn'],
@@ -44,41 +47,45 @@ export class AppDiscoveryTools implements OnModuleInit {
       handler: (p) => this.getAppLogs(p as { appUrn: string; maxLines?: number }),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_check_app_availability',
       description: 'Check whether an app is reachable via its configured URL. Returns availability status and URL.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.checkAppAvailability(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_resolve_app_availability',
       description: 'Attempt to fix availability issues for an app. Use after hub_check_app_availability returns unavailable.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.resolveAppAvailability(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_get_compose_diff',
       description: 'Get the difference between current and new docker-compose config for an app.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getComposeDiff(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Discovery',
       name: 'hub_get_config_diff',
       description: 'Get the difference between current and new app configuration.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: { type: 'string', description: 'App identifier in storeSlug:appName format' } },
+        properties: { appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' } },
         required: ['appUrn'],
       },
       handler: (p) => this.getConfigDiff(p as { appUrn: string }),

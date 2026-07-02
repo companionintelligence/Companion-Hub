@@ -1,98 +1,53 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpService } from '../mcp.service';
+import { AgentNotifyService } from '../../agent-notify/agent-notify.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
+// BUG-MCP-1: JSON-RPC protocol handling moved to the SDK (see mcp-server.factory.test.ts for the
+// end-to-end protocol coverage). McpService is now just identity + capabilities + a bootstrap log.
 describe('McpService', () => {
   let service: McpService;
-  let toolRegistry: McpToolRegistry;
+  let agentNotify: AgentNotifyService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpService, McpToolRegistry, { provide: LoggerService, useValue: mock<LoggerService>() }],
+      providers: [
+        McpService,
+        McpToolRegistry,
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: AgentNotifyService, useValue: mock<AgentNotifyService>() },
+      ],
     }).compile();
 
     service = module.get<McpService>(McpService);
-    toolRegistry = module.get(McpToolRegistry);
+    agentNotify = module.get(AgentNotifyService);
   });
 
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
 
-  describe('initialize', () => {
-    it('should return serverInfo with name "ci-hub"', async () => {
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' });
-      expect((res.result as any).serverInfo.name).toBe('ci-hub');
-    });
-
-    it('should return capabilities with tools object', async () => {
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' });
-      expect((res.result as any).capabilities.tools).toEqual({});
-    });
+  it('advertises server info with name "ci-hub"', () => {
+    expect(service.getServerInfo().name).toBe('ci-hub');
+    expect(service.getServerInfo().version).toBeTruthy();
   });
 
-  describe('tools/list', () => {
-    it('should return all registered tool definitions', async () => {
-      toolRegistry.register({ name: 'test_tool', description: 'A test', inputSchema: { type: 'object' }, handler: async () => ({}) });
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-      const tools = (res.result as any).tools;
-      expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('test_tool');
-    });
-
-    it('should return empty array when no tools registered', async () => {
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-      expect((res.result as any).tools).toEqual([]);
-    });
+  it('advertises a tools capability', () => {
+    expect(service.getCapabilities()).toHaveProperty('tools');
   });
 
-  describe('tools/call', () => {
-    it('should dispatch to the correct tool handler', async () => {
-      let called = false;
-      toolRegistry.register({
-        name: 'my_tool',
-        description: '',
-        inputSchema: {},
-        handler: async () => {
-          called = true;
-          return { ok: true };
-        },
-      });
-      await service.handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'my_tool', arguments: {} } });
-      expect(called).toBe(true);
-    });
-
-    it('should return the tool handler result', async () => {
-      toolRegistry.register({ name: 'ret_tool', description: '', inputSchema: {}, handler: async () => ({ value: 42 }) });
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'ret_tool', arguments: {} } });
-      expect(res.result).toBeDefined();
-      expect(res.error).toBeUndefined();
-    });
+  it('notifies agent-notify that MCP is ready at bootstrap', () => {
+    service.onApplicationBootstrap();
+    expect(agentNotify.notify).toHaveBeenCalledWith('system.mcp_ready', expect.objectContaining({ toolCount: expect.any(Number) }), 'info');
   });
 
-  describe('tools/call — unknown tool', () => {
-    it('should return JSON-RPC error with code -32602 for unknown tool name', async () => {
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'nonexistent', arguments: {} } });
-      expect(res.error).toBeDefined();
-      expect(res.error?.code).toBe(-32602);
-    });
-  });
-
-  describe('unknown method', () => {
-    it('should return JSON-RPC error -32601 for unknown methods', async () => {
-      const res = await service.handleMessage({ jsonrpc: '2.0', id: 5, method: 'unknown/method' });
-      expect(res.error?.code).toBe(-32601);
-    });
-  });
-
-  describe('JSON-RPC validation', () => {
-    it('should reject requests without jsonrpc 2.0 field', async () => {
-      const res = await service.handleMessage({ jsonrpc: '1.0' as any, id: 6, method: 'initialize' });
-      expect(res.error).toBeDefined();
-      expect(res.error?.code).toBe(-32600);
-    });
+  it('does not throw at bootstrap when agent-notify is absent', () => {
+    const registry = new McpToolRegistry();
+    const standalone = new McpService(registry, mock<LoggerService>(), undefined);
+    expect(() => standalone.onApplicationBootstrap()).not.toThrow();
+    vi.clearAllMocks();
   });
 });
