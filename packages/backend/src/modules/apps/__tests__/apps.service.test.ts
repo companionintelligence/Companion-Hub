@@ -85,6 +85,9 @@ describe('AppsService', () => {
       }
       return undefined as any;
     });
+
+    marketplaceService.resolveAppDescription.mockImplementation(async (_urn, info) => info);
+    marketplaceService.getPortalIconUrl.mockResolvedValue(null);
   });
 
   it('should be defined', () => {
@@ -187,6 +190,8 @@ describe('AppsService', () => {
       appsRepository.getAppByUrn.mockResolvedValue(mockApp as any);
 
       marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 0, latestDockerVersion: '0.0.0' } as any);
+      marketplaceService.resolveAppDescription.mockImplementation(async (_urn, info) => info);
+      marketplaceService.getPortalIconUrl.mockResolvedValue(null);
 
       const mockAppInfo = {
         id: appUrn,

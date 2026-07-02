@@ -1,13 +1,38 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { OnboardingApp } from '../../helpers/types';
 import { RecommendationsStep } from '../recommendations-step';
 
-vi.mock('@/context/app-context', () => ({
-  useAppContext: () => ({
-    apps: [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }],
+const { mockCatalogState } = vi.hoisted(() => ({
+  mockCatalogState: {
+    isLoading: false,
+    isRetryingEmptyCatalog: false,
+    isCatalogSettled: true,
+    isError: false,
+    apps: undefined as Array<{ id?: string; name: string; urn: string; short_desc: string }> | undefined,
+  },
+}));
+
+vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
+    apps: mockCatalogState.isError
+      ? []
+      : mockCatalogState.isLoading || mockCatalogState.isRetryingEmptyCatalog
+        ? []
+        : (mockCatalogState.apps ?? [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }]),
+    isLoading: mockCatalogState.isLoading,
+    isRetryingEmptyCatalog: mockCatalogState.isRetryingEmptyCatalog,
+    isCatalogSettled: mockCatalogState.isCatalogSettled,
+    isError: mockCatalogState.isError,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => key,
   }),
 }));
 
@@ -45,6 +70,14 @@ function Harness({ onEmit }: { onEmit: (apps: OnboardingApp[]) => void }) {
 }
 
 describe('RecommendationsStep (embedded emit)', () => {
+  beforeEach(() => {
+    mockCatalogState.isLoading = false;
+    mockCatalogState.isRetryingEmptyCatalog = false;
+    mockCatalogState.isCatalogSettled = true;
+    mockCatalogState.isError = false;
+    mockCatalogState.apps = undefined;
+  });
+
   it('emits the selection once and does not loop on unchanged selections', () => {
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
@@ -68,5 +101,36 @@ describe('RecommendationsStep (embedded emit)', () => {
     await user.click(screen.getByTestId('recommended-app'));
     expect(onEmit).toHaveBeenCalledTimes(1);
     expect(onEmit).toHaveBeenLastCalledWith([]);
+  });
+
+  it('does not show the empty-state message when the catalog query fails', () => {
+    mockCatalogState.isError = true;
+
+    render(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'COMMON_RETRY' })).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
+  });
+
+  it('matches portal catalog entries that only expose urn (no id)', async () => {
+    mockCatalogState.apps = [{ name: 'Immich', urn: 'immich:ci-marketplace', short_desc: 'Photos' }];
+
+    const user = userEvent.setup();
+    const onEmit = vi.fn();
+    render(<Harness onEmit={onEmit} />);
+    onEmit.mockClear();
+
+    await user.click(screen.getByTestId('recommended-app'));
+    expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'immich', urn: 'immich:ci-marketplace' })]);
+  });
+
+  it('shows loading copy while the catalog is retrying an empty response', () => {
+    mockCatalogState.isRetryingEmptyCatalog = true;
+    mockCatalogState.isCatalogSettled = false;
+
+    render(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
+
+    expect(screen.getByText('ONBOARDING_CATALOG_LOADING')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
   });
 });

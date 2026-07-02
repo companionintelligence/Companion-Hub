@@ -42,6 +42,7 @@ export const settingsSchema = z.object({
   ciHubOrganizationSlug: z.string().trim().optional(),
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
+  ciHubHubSubdomain: z.string().trim().optional(),
   inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade']).optional(),
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
@@ -108,6 +109,8 @@ const userContextDto = z.object({
   localDomain: z.string(),
   domain: z.string(),
   sslPort: z.number(),
+  sessionExpiresAt: z.number().optional(),
+  sessionRefreshRecommendedAt: z.number().optional(),
 });
 
 export class UserContextDto extends createZodDto(userContextDto) {}

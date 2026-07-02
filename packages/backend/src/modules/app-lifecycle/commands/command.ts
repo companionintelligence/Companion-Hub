@@ -28,6 +28,28 @@ import {
   translateDockerNetworkOverlapError,
 } from './app-lifecycle-errors';
 import { cidrOverlaps } from '@/modules/network/cidr-overlap';
+import { isAbortError, throwIfAborted } from '@/common/abort';
+import type { OperationPhase } from '../app-operation-registry';
+
+/**
+ * Optional cancellation context threaded into a command's `execute()`.
+ * Commands that support cancellation observe `signal` (passed down to killable docker spawns/pulls)
+ * and report progress via `setPhase` so the cancel endpoint can decide whether an abort is still safe.
+ */
+export interface CommandExecutionContext {
+  /** Aborted when the user cancels the operation. */
+  signal: AbortSignal;
+  /** Report the current execution phase to the operation registry. */
+  setPhase(phase: OperationPhase): void;
+}
+
+/**
+ * Shared shape for a lifecycle command. `execute` accepts an optional {@link CommandExecutionContext}
+ * as its last argument; commands that don't support cancellation simply ignore it.
+ */
+export interface LifecycleCommand {
+  execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<unknown>;
+}
 
 export class AppLifecycleCommand {
   constructor(
@@ -35,7 +57,7 @@ export class AppLifecycleCommand {
     protected docker: Dockerode,
   ) {}
 
-  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
+  protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }): Promise<void> {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -64,7 +86,12 @@ export class AppLifecycleCommand {
       const architecture = configService.get('architecture');
 
       // Merge architecture-specific overrides with base services
-      const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+      let mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+
+      const appInfo = await Promise.resolve(marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn)).catch(() => null);
+      if (appInfo?.runtime_platform) {
+        mergedServices = mergedServices.map((service) => (service.platform ? service : { ...service, platform: appInfo.runtime_platform }));
+      }
 
       // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
       const appEnv = await appFilesManager.getAppEnv(appUrn);
@@ -104,7 +131,7 @@ export class AppLifecycleCommand {
       }
 
       const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
-      const subnet = await subnetManager.allocateSubnet(appUrn);
+      const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
       const composeFile = await dockerComposeBuilder.getDockerCompose(
         mergedServices,
@@ -147,8 +174,17 @@ export class AppLifecycleCommand {
   /**
    * Run compose for an app, removing stale project networks first and retrying
    * with a fresh subnet when Docker reports overlapping bridge ranges.
+   *
+   * When a `signal` is supplied, an abort kills the underlying `docker compose` process and is
+   * re-thrown immediately so a cancellation is never misclassified as a retryable network overlap.
    */
-  protected async composeAppWithNetworkRecovery(appUrn: AppUrn, form: AppEventFormInput, command: string, maxAttempts = 3): Promise<void> {
+  protected async composeAppWithNetworkRecovery(
+    appUrn: AppUrn,
+    form: AppEventFormInput,
+    command: string,
+    maxAttempts = 3,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -158,13 +194,19 @@ export class AppLifecycleCommand {
     }
 
     let lastError: unknown;
+    const failedSubnets: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      throwIfAborted(signal);
       await this.removeStaleAppNetworks(appUrn);
 
       try {
-        await dockerService.composeApp(appUrn, command);
+        await dockerService.composeApp(appUrn, command, signal);
         return;
       } catch (error) {
+        // A cancellation must propagate immediately, not be treated as a network-overlap retry.
+        if (isAbortError(error)) {
+          throw error;
+        }
         lastError = error;
         const canRetry = isDockerNetworkOverlapError(error) && attempt < maxAttempts;
         if (!canRetry) {
@@ -178,8 +220,13 @@ export class AppLifecycleCommand {
         }
 
         logger.warn(`Docker network overlap for ${appUrn} on attempt ${attempt}/${maxAttempts}; releasing subnet and regenerating compose`);
+        const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+        const app = appsRepository ? await appsRepository.getAppByUrn(appUrn).catch(() => null) : null;
+        if (app?.subnet) {
+          failedSubnets.push(app.subnet);
+        }
         await subnetManager?.releaseSubnet(appUrn);
-        await this.ensureAppDir(appUrn, form);
+        await this.ensureAppDir(appUrn, form, { excludeSubnets: failedSubnets });
       }
     }
 

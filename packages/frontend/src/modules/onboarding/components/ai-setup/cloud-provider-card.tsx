@@ -62,7 +62,7 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
         const error = errors[type];
 
         return (
-          <div key={type} className="rounded-xl border border-primary/40 bg-primary/[0.06] p-4" data-testid={`cloud-provider-${type}`}>
+          <div key={type} className="rounded-md border border-primary/40 bg-primary/[0.06] p-4" data-testid={`cloud-provider-${type}`}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 text-sm font-semibold" htmlFor={`cloud-key-input-${type}`}>
                 <BrandLogo name={PROVIDER_BRAND[type]} className="h-4 w-4 text-foreground/80" />

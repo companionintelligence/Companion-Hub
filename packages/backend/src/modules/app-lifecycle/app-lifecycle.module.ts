@@ -13,9 +13,12 @@ import { TailscaleModule } from '../tailscale/tailscale.module';
 import { UserModule } from '../user/user.module';
 import { NetworkModule } from '../network/network.module';
 import { AppRehydrationService } from './app-rehydration.service';
+import { AppInstallValidator } from './app-install-validator.service';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
+import { ExposureSyncService } from './exposure-sync.service';
+import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 
 @Module({
@@ -34,8 +37,16 @@ import { AppStatusSyncService } from './app-status-sync.service';
     UserModule,
     NetworkModule,
   ],
-  providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService, AppRehydrationService],
+  providers: [
+    AppLifecycleService,
+    AppInstallValidator,
+    ExposureSyncService,
+    AppLifecycleCommandFactory,
+    AppOperationRegistry,
+    AppStatusSyncService,
+    AppRehydrationService,
+  ],
   controllers: [AppLifecycleController],
-  exports: [AppLifecycleService, AppStatusSyncService, AppRehydrationService],
+  exports: [AppLifecycleService, AppInstallValidator, ExposureSyncService, AppOperationRegistry, AppStatusSyncService, AppRehydrationService],
 })
 export class AppLifecycleModule {}

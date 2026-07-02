@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ModuleRef } from '@nestjs/core';
 import { AppLifecycleService } from '../app-lifecycle.service';
+import { AppInstallValidator } from '../app-install-validator.service';
+import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
 import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
@@ -17,6 +20,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { AppOperationRegistry } from '../app-operation-registry';
 import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -25,6 +29,7 @@ import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
+  let exposureSyncService: ExposureSyncService;
   let logger: MockProxy<LoggerService>;
   let appEventsQueue: MockProxy<AppEventsQueue>;
   let commandFactory: MockProxy<AppLifecycleCommandFactory>;
@@ -44,6 +49,7 @@ describe('AppLifecycleService', () => {
   let appStoreService: MockProxy<AppStoreService>;
   let mutex: any;
   let installPipelineTracker: InstallPipelineTracker;
+  let operationRegistry: AppOperationRegistry;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -69,11 +75,14 @@ describe('AppLifecycleService', () => {
       acquire: vi.fn().mockResolvedValue(release),
     };
     installPipelineTracker = new InstallPipelineTracker();
+    operationRegistry = new AppOperationRegistry(logger);
     appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
+        ExposureSyncService,
+        AppInstallValidator,
         { provide: LoggerService, useValue: logger },
         { provide: AppEventsQueue, useValue: appEventsQueue },
         { provide: AppLifecycleCommandFactory, useValue: commandFactory },
@@ -93,6 +102,8 @@ describe('AppLifecycleService', () => {
         { provide: AppStoreService, useValue: appStoreService },
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
+        { provide: AppOperationRegistry, useValue: operationRegistry },
+        { provide: ModuleRef, useValue: { get: vi.fn() } },
       ],
     }).compile();
 
@@ -117,6 +128,7 @@ describe('AppLifecycleService', () => {
     } as any);
 
     service = module.get<AppLifecycleService>(AppLifecycleService);
+    exposureSyncService = module.get<ExposureSyncService>(ExposureSyncService);
   });
 
   afterEach(() => {
@@ -449,7 +461,30 @@ describe('AppLifecycleService', () => {
       imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     });
 
-    it('throws when image manifest does not include host architecture', async () => {
+    it('throws when image manifest does not include host architecture and amd64 is not supported', async () => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'arm64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        ...baseAppInfo,
+        supported_architectures: ['arm64'],
+      } as any);
+      imageSizeService.verifyAppArchitecture.mockResolvedValue({
+        ok: false,
+        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        available: ['amd64'],
+      });
+
+      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('allows install on arm64 when amd64-only images are declared for amd64 emulation', async () => {
       configService.getConfig.mockReturnValue({
         isProduction: false,
         architecture: 'arm64',
@@ -462,14 +497,13 @@ describe('AppLifecycleService', () => {
       } as any);
       imageSizeService.verifyAppArchitecture.mockResolvedValue({
         ok: false,
-        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        image: 'ghcr.io/companionintelligence/companion/gateway:2026.7.1',
         available: ['amd64'],
       });
 
-      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+      await service.installApp({ appUrn, form: {} });
 
-      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
-      expect(appsRepository.createApp).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
     it('does not block install when manifest architecture inspection is unavailable', async () => {
@@ -814,7 +848,7 @@ describe('AppLifecycleService', () => {
         domain: 'example.com',
       } as any);
       vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
-      const syncSpy = vi.spyOn(service, 'triggerCloudflareSync').mockResolvedValue(undefined);
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
 
       await service.updateAppConfig({
         appUrn,
@@ -892,7 +926,7 @@ describe('AppLifecycleService', () => {
       // Default: commands succeed
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
 
-      vi.spyOn(service as any, 'syncExposure').mockImplementation(async () => {
+      vi.spyOn(exposureSyncService, 'syncExposurePublic').mockImplementation(async () => {
         callOrder.push('sync_exposure');
       });
 
@@ -1134,6 +1168,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1154,6 +1189,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1206,7 +1242,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appsRepository.getApps.mockResolvedValue([]);
-      const syncSpy = vi.spyOn(service as any, 'syncExposure').mockResolvedValue(undefined);
+      const syncSpy = vi.spyOn(exposureSyncService, 'syncExposurePublic').mockResolvedValue(undefined);
 
       await service.installApp({ appUrn, form: { exposedLocal: true } });
       await flushMicrotasks();
@@ -1218,6 +1254,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1234,6 +1271,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1288,6 +1326,135 @@ describe('AppLifecycleService', () => {
       const successIdx = callOrder.indexOf('sse:install_success');
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+  });
+
+  describe('cancelOperation', () => {
+    const appUrn = 'cancelme:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000abc';
+
+    it('returns not_found when no operation is active', async () => {
+      const res = await service.cancelOperation(appUrn);
+      expect(res.outcome).toBe('not_found');
+    });
+
+    it('returns cancelled_queued and aborts when the op is still queued', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('cancelled_queued');
+      expect(abortSpy).toHaveBeenCalledWith(appUrn, undefined);
+      expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+    });
+
+    it('returns cancelling and aborts when the op is in flight', async () => {
+      const entry = operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.markPhase(appUrn, 'pulling');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('cancelling');
+      expect(entry.abortController.signal.aborted).toBe(true);
+    });
+
+    it('refuses once a safe op reaches the finalizing (post-PONR) phase', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.markPhase(appUrn, 'finalizing');
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn);
+
+      expect(res.outcome).toBe('refused');
+      expect(abortSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns not_found and does not abort when the requestId does not match', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const abortSpy = vi.spyOn(operationRegistry, 'abort');
+
+      const res = await service.cancelOperation(appUrn, '11111111-1111-4111-8111-111111111111');
+
+      expect(res.outcome).toBe('not_found');
+      expect(abortSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invokeCommand — cancellation finalization', () => {
+    const appUrn = 'cancelme:ci-marketplace' as any;
+    const requestId = '00000000-0000-4000-8000-000000000abc';
+    const data = { appUrn, command: 'install', requestId, form: {} } as any;
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'installing' } as any);
+      appsRepository.deleteAppById.mockResolvedValue(undefined as any);
+      appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
+    });
+
+    it('skips execution and finalizes when cancelled while queued (tier-A)', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      operationRegistry.abort(appUrn); // cancelled before the worker dequeued it
+      const execute = vi.fn();
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(data, reply);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
+      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared in finally
+    });
+
+    it('finalizes a cancelled result returned by the command (in-flight abort)', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, cancelled: true, message: 'cancelled and cleaned up' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(data, reply);
+
+      expect(execute).toHaveBeenCalled();
+      expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appStatus: 'missing' }));
+      // A cancellation must not be reported as a failure or a success.
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_success' }));
+    });
+
+    it('finalizes a FAILED install worker-side so a post-RPC-timeout failure is not stranded in installing', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed', errorCode: 'x' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+      const queueSpy = vi.spyOn(service as any, 'emitInstallQueueUpdate');
+
+      await service.invokeCommand(data, reply);
+
+      // Worker writes the terminal status + emits install_error, independent of the RPC reply.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error', appStatus: 'install_failed' }));
+      // A failure must not be treated as a cancellation (record kept, not deleted).
+      expect(appsRepository.deleteAppById).not.toHaveBeenCalled();
+      // invokeCommand emits the install-queue update exactly twice — when it marks the pipeline active
+      // (start) and in its finally after clearing it. finalizeFailedInstall must NOT add a third,
+      // stale one (which would briefly show the just-failed app as the active install).
+      expect(queueSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not double-finalize a failure once the app has left installing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 7, status: 'install_failed' } as any);
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockResolvedValue({ success: false, message: 'pull failed' });
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+
+      await service.invokeCommand(data, vi.fn());
+
+      // Status guard: already install_failed → no second status write / SSE.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
     });
   });
 });

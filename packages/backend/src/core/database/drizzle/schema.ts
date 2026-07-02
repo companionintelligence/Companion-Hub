@@ -89,6 +89,43 @@ export const user = pgTable('user', {
   advancedMode: boolean('advanced_mode').default(false).notNull(),
 });
 
+/**
+ * Binds a verified external OIDC identity — the (issuer, subject) pair from a
+ * Portal / IdP token — to a local Hub `user`. This is the authoritative link
+ * for federated login: the `sub` claim is stable and opaque, so it survives
+ * email changes and prevents the email-reuse account-takeover gap that existed
+ * when provisioning matched on email alone.
+ *
+ * See CI-Engineering architecture/identity/unified-identity-plan.md (Track B, B2).
+ */
+export const federatedIdentity = pgTable(
+  'federated_identity',
+  {
+    id: serial().primaryKey().notNull(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => user.id),
+    /** OIDC `iss` claim — the token issuer (e.g. the Portal IdP base URL). */
+    issuer: varchar().notNull(),
+    /** OIDC `sub` claim — stable, opaque subject identifier at the issuer. */
+    subject: varchar().notNull(),
+    /** Value of the `email` claim at link time, kept for audit/display only (never used for auth matching). */
+    email: varchar(),
+    /** True when the identity was linked from a verified `email_verified` claim rather than legacy email fallback. */
+    emailVerified: boolean('email_verified').default(false).notNull(),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('federated_identity_issuer_subject_idx').on(table.issuer, table.subject)],
+);
+
+export const federatedIdentityRelations = relations(federatedIdentity, ({ one }) => ({
+  user: one(user, {
+    fields: [federatedIdentity.userId],
+    references: [user.id],
+  }),
+}));
+
 export const appStore = pgTable('app_store', {
   slug: varchar().notNull().primaryKey(),
   hash: varchar().notNull().unique(),

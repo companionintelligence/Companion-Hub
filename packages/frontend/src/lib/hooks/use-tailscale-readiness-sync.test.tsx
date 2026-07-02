@@ -2,12 +2,14 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { apiFetch } from '@/lib/api-fetch';
+import { syncExposure } from '@/api-client/sdk.gen';
 import { useTailscaleReadinessSync, type TailscaleReadinessStatus } from './use-tailscale-readiness-sync';
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: vi.fn().mockResolvedValue({ ok: true }),
+vi.mock('@/api-client/sdk.gen', () => ({
+  syncExposure: vi.fn().mockResolvedValue({ data: {}, response: { ok: true } }),
 }));
+
+const mockSyncExposure = vi.mocked(syncExposure);
 
 function createWrapper() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -25,7 +27,7 @@ describe('useTailscaleReadinessSync', () => {
     renderHook(() => useTailscaleReadinessSync(status), { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(apiFetch).not.toHaveBeenCalled();
+      expect(mockSyncExposure).not.toHaveBeenCalled();
     });
   });
 
@@ -38,7 +40,7 @@ describe('useTailscaleReadinessSync', () => {
     rerender({ status: { installed: true, connected: true, httpsAvailable: false } });
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith('/api/tailscale/sync', { method: 'POST' });
+      expect(mockSyncExposure).toHaveBeenCalled();
     });
   });
 
@@ -51,7 +53,7 @@ describe('useTailscaleReadinessSync', () => {
     rerender({ status: { installed: true, connected: true, httpsAvailable: true } });
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith('/api/tailscale/sync', { method: 'POST' });
+      expect(mockSyncExposure).toHaveBeenCalled();
     });
   });
 });

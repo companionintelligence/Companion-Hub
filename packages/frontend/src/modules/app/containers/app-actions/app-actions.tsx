@@ -28,6 +28,7 @@ import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.ty
 import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
+import { CancelInstallDialog } from '../../components/dialogs/cancel-install-dialog/cancel-install-dialog';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
@@ -140,6 +141,7 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
 
 export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
+  const cancelInstallDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const forceStopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
@@ -147,11 +149,23 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const uninstallDisclosure = useDisclosure();
   const resetAppDisclosure = useDisclosure();
 
+  // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
+  // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
+  const [isCancellingInstall, setIsCancellingInstall] = useState(false);
+
   const { t } = useTranslation();
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
+  // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
+  useEffect(() => {
+    if (app?.status !== 'installing') {
+      setIsCancellingInstall(false);
+    }
+  }, [app?.status]);
 
   const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
@@ -192,17 +206,22 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       IconComponent={Play}
       onClick={() => startMutation.mutate({ path: { urn: info.urn } })}
       title={t('APP_ACTION_START')}
-      intent="success"
+      variant="default"
+      size="lg"
+      className="launch-action-button"
     />
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
     const progressValue = progress === null ? 12 : Math.max(8, Math.min(99, progress));
 
-    const statusLabel = t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
+    const cancelling = isCancellingInstall && app?.status === 'installing';
+    const statusLabel = cancelling ? t('APP_STATUS_CANCELLING') : t((app?.status && LOADING_STATUS_LABEL_KEYS[app.status]) ?? 'COMMON_INSTALLING');
 
     let stageText = t('APP_ACTION_PREPARING');
-    if (progress !== null) {
+    if (cancelling) {
+      stageText = t('APP_STATUS_CANCELLING');
+    } else if (progress !== null) {
       if (progress >= INSTALL_FINALIZING_PROGRESS) stageText = t('APP_ACTION_FINALIZING');
       else if (progress >= 60) stageText = t('APP_ACTION_DOWNLOADING');
       else stageText = t('APP_ACTION_PREPARING');
@@ -695,11 +714,19 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       break;
     }
     case 'installing':
-      // Aborting an in-progress install removes the partially-installed app, so the
-      // cancel affordance maps to uninstall. There is no backend cancel/abort, so we
-      // only offer this for installs — see the other transient statuses below.
+      // Real backend cancel: aborts the in-progress install (kills the image pull / compose up) and
+      // removes the partially-installed app. Confirmed via CancelInstallDialog since it discards the
+      // partial install. Only offered for installs in Phase 1 — see the other transient statuses below.
       buttons.push(LoadingButton);
-      secondaryActions.push(<IconActionButton key="cancel" icon={CircleStop} label={t('COMMON_CANCEL')} onClick={uninstallDisclosure.open} />);
+      secondaryActions.push(
+        <IconActionButton
+          key="cancel"
+          icon={CircleStop}
+          label={t('COMMON_CANCEL')}
+          onClick={cancelInstallDisclosure.open}
+          disabled={isCancellingInstall}
+        />,
+      );
       break;
     case 'uninstalling':
     case 'starting':
@@ -760,6 +787,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   return (
     <>
       <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} />
+      <CancelInstallDialog
+        isOpen={cancelInstallDisclosure.isOpen}
+        onClose={cancelInstallDisclosure.close}
+        info={info}
+        onCancelStart={() => setIsCancellingInstall(true)}
+      />
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
       <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />

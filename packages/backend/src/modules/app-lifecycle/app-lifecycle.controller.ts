@@ -4,7 +4,14 @@ import type { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { AppRehydrationService } from './app-rehydration.service';
-import { AppFormBody, LifecycleRequestDto, UninstallAppBody, UpdateAppBody } from './dto/app-lifecycle.dto';
+import {
+  AppFormBody,
+  CancelOperationBody,
+  CancelOperationResponseDto,
+  LifecycleRequestDto,
+  UninstallAppBody,
+  UpdateAppBody,
+} from './dto/app-lifecycle.dto';
 import { ApiResponse } from '@nestjs/swagger';
 
 interface RehydrateBody {
@@ -104,6 +111,18 @@ export class AppLifecycleController {
   async updateAppConfig(@Param('urn') urn: string, @Body() body: AppFormBody) {
     const res = await this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(urn), form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
+  }
+
+  /**
+   * Cancel the in-progress (or queued) operation for an app. Returns the cancellation outcome; the
+   * resulting `*_cancelled` SSE event arrives asynchronously once any compensating cleanup completes.
+   * The optional `requestId` guards against cancelling a newer operation for the same app.
+   */
+  @Post(':urn/cancel')
+  @ApiResponse({ type: CancelOperationResponseDto })
+  async cancelOperation(@Param('urn') urn: string, @Body() body: CancelOperationBody) {
+    const res = await this.appLifecycleService.cancelOperation(castAppUrn(urn), body.requestId);
+    return CancelOperationResponseDto.parse(res, { reportOnly: true });
   }
 
   @Patch('update-all')

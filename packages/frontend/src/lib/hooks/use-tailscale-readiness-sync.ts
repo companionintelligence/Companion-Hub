@@ -1,7 +1,8 @@
-import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { apiFetch } from '@/lib/api-fetch';
+import { appContextQueryKey, getStatus4QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { syncExposure } from '@/api-client/sdk.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
+import { unwrapSdk } from '@/lib/sdk-unwrap';
 
 export interface TailscaleReadinessStatus {
   installed?: boolean;
@@ -10,10 +11,7 @@ export interface TailscaleReadinessStatus {
 }
 
 export async function requestTailscaleExposureSync(): Promise<void> {
-  const res = await apiFetch('/api/tailscale/sync', { method: 'POST' });
-  if (!res.ok) {
-    throw new Error(`Tailscale sync failed: HTTP ${res.status}`);
-  }
+  await unwrapSdk(syncExposure());
 }
 
 /**
@@ -52,7 +50,7 @@ export function useTailscaleReadinessSync(status: TailscaleReadinessStatus | und
           Promise.all([
             queryClient.invalidateQueries({ queryKey: appContextQueryKey() }),
             queryClient.invalidateQueries({ queryKey: ['tailscale-serve'] }),
-            queryClient.invalidateQueries({ queryKey: ['tailscale-status'] }),
+            queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() }),
           ]),
         )
         .catch(() => undefined);

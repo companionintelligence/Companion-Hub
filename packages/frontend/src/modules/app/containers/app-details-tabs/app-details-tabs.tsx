@@ -37,6 +37,10 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
 
   const [isEditing, setIsEditing] = React.useState(false);
   const [meta, setMeta] = React.useState(info.description);
+
+  React.useEffect(() => {
+    setMeta(info.description);
+  }, [info.description]);
   const schemaVersion = metadata?.composeSchemaVersion;
 
   const saveMetaMutation = useMutation({
@@ -214,7 +218,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           </div>
 
           {/* App Privacy card */}
-          <div className="rounded-xl border border-border/50 bg-muted/20 p-3 sm:p-4">
+          <div className="rounded-md border border-border/50 bg-muted/20 p-3 sm:p-4">
             <div className="flex items-center gap-2 mb-2">
               <Shield className="h-4 w-4 text-blue-400" />
               <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>

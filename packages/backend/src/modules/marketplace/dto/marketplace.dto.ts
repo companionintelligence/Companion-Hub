@@ -8,6 +8,7 @@ const metadataSchema = z.object({
   minHubVersion: z.string().nullable().optional(),
   latestDockerVersion: z.string().optional(),
   composeSchemaVersion: z.number().optional(),
+  iconUrl: z.string().url().optional(),
 });
 
 const searchAppQuerySchema = z.object({
@@ -18,17 +19,21 @@ const searchAppQuerySchema = z.object({
   storeId: z.string().optional(),
 });
 
-const simpleAppInfoSchema = appInfoObjectSchema.pick({
-  id: true,
-  urn: true,
-  name: true,
-  short_desc: true,
-  categories: true,
-  deprecated: true,
-  created_at: true,
-  supported_architectures: true,
-  available: true,
-});
+const simpleAppInfoSchema = appInfoObjectSchema
+  .pick({
+    id: true,
+    urn: true,
+    name: true,
+    short_desc: true,
+    categories: true,
+    deprecated: true,
+    created_at: true,
+    supported_architectures: true,
+    available: true,
+  })
+  .extend({
+    icon: z.string().optional().nullable(),
+  });
 
 const searchAppsResponseSchema = z.object({
   data: z.array(simpleAppInfoSchema),

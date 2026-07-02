@@ -7,6 +7,7 @@ import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import axios from 'axios';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
@@ -22,6 +23,7 @@ describe('RegistrationService', () => {
   let traefikConfigService: MockProxy<TraefikConfigService>;
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
+  let portalClient: MockProxy<PortalClientService>;
   const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
@@ -32,6 +34,8 @@ describe('RegistrationService', () => {
     traefikConfigService.writeHubRoute.mockResolvedValue(undefined);
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
+    portalClient = mock<PortalClientService>();
+    portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
 
@@ -47,6 +51,7 @@ describe('RegistrationService', () => {
         { provide: TraefikConfigService, useValue: traefikConfigService },
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
+        { provide: PortalClientService, useValue: portalClient },
       ],
     }).compile();
 
@@ -121,10 +126,37 @@ describe('RegistrationService', () => {
       } as any);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
-      const status = await service.getLiveRegistrationStatus();
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      const status = service.getRegistrationStatus();
 
       expect(status.phase).toBe('locally_ready');
       expect(status.registered).toBe(true);
+    });
+
+    it('returns cached phase immediately and refreshes from sources in the background', async () => {
+      const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockResolvedValue(undefined);
+
+      const status = await service.getLiveRegistrationStatus();
+      expect(status.phase).toBe('unregistered');
+      expect(refreshSpy).toHaveBeenCalledOnce();
+
+      refreshSpy.mockClear();
+      (service as any).phaseReadCachedAt = Date.now();
+      await service.getLiveRegistrationStatus();
+      expect(refreshSpy).not.toHaveBeenCalled();
+    });
+
+    it('throttles background refresh retries after a failed refresh', async () => {
+      const refreshSpy = vi.spyOn(service as any, 'refreshPhaseFromSources').mockRejectedValue(new Error('db unavailable'));
+
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      expect(refreshSpy).toHaveBeenCalledOnce();
+
+      refreshSpy.mockClear();
+      await service.getLiveRegistrationStatus();
+      expect(refreshSpy).not.toHaveBeenCalled();
     });
 
     it('resets stale operational cache to unregistered when DB row and tunnel token are both missing', async () => {
@@ -136,8 +168,11 @@ describe('RegistrationService', () => {
 
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+      (service as any).phaseReadCachedAt = 0;
 
-      const status = await service.getLiveRegistrationStatus();
+      await service.getLiveRegistrationStatus();
+      await (service as any).phaseRefreshInFlight;
+      const status = service.getRegistrationStatus();
 
       expect(status.phase).toBe('unregistered');
       expect(status.registered).toBe(false);

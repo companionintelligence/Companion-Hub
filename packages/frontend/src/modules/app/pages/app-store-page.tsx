@@ -1,16 +1,12 @@
-import {
-  getEnabledAppStoresOptions,
-  searchAppsInfiniteOptions,
-  searchAppsOptions,
-  getInstalledAppsOptions,
-} from '@/api-client/@tanstack/react-query.gen';
+import { getEnabledAppStoresOptions, searchAppsOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
-import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
+import { usePortalCatalog } from '@/lib/hooks/use-portal-catalog';
 import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/featured-store-view';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
@@ -37,6 +33,7 @@ interface AltItem {
 }
 
 const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
+const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
 
@@ -66,6 +63,24 @@ export default () => {
   }, [search]);
 
   const queryClient = useQueryClient();
+
+  const isAlternativesView = category === ALTERNATIVES_VIEW;
+  const isFeaturedView = category === 'featured';
+  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
+  const catalogSearchQuery = useMemo(() => ({ search, category: effectiveCategory, pageSize: 24, storeId }), [search, effectiveCategory, storeId]);
+  const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
+
+  useEffect(() => {
+    if (!catalogSearchEnabled) {
+      return;
+    }
+
+    void queryClient.prefetchInfiniteQuery({
+      ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
+      staleTime: MARKETPLACE_SEARCH_STALE_MS,
+    });
+  }, [queryClient, catalogSearchEnabled, catalogSearchQuery]);
+
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
     onSuccess: () => {
@@ -78,19 +93,13 @@ export default () => {
     },
   });
 
-  const isAlternativesView = category === ALTERNATIVES_VIEW;
-  const isFeaturedView = category === 'featured';
-
   const {
-    data: alternativesData,
+    alternatives: alternativesData,
     isLoading: isAlternativesDataLoading,
     isError: isAlternativesDataError,
-    error: alternativesDataError,
-    refetch: refetchAlternatives,
-  } = useQuery({
-    ...portalAlternativesQueryOptions(),
-    enabled: isAlternativesView,
-  });
+    alternativesError: alternativesDataError,
+    refetchAlternatives,
+  } = usePortalCatalog({}, { enableConfig: false, enableListings: false, enableAlternatives: isAlternativesView });
 
   // Redirect whenever the backend reports the hub is not operational
   // (`registered === false`, e.g. paired/provisioning/unregistered).
@@ -179,16 +188,15 @@ export default () => {
     [setSearch],
   );
 
-  const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
-
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
-    ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
+    ...searchAppsInfiniteOptions({ query: catalogSearchQuery }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
-    enabled: !isAlternativesView && !isFeaturedView,
+    staleTime: MARKETPLACE_SEARCH_STALE_MS,
+    enabled: catalogSearchEnabled,
   });
 
-  const isLoading = !isAlternativesView && !isFeaturedView && !data;
+  const isLoading = catalogSearchEnabled && !data;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
   const { lastElementRef } = useInfiniteScroll({
@@ -264,7 +272,7 @@ export default () => {
       {/* Mobile Search & Categories */}
       <div className="md:hidden space-y-4 mb-6">
         <AppStoreSearchInput value={localSearch} onChange={onSearch} />
-        <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
+        <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-2 px-2 sm:-mx-4 sm:px-4 md:-mx-6 md:px-6">
           <Button
             variant="outline"
             size="sm"
@@ -318,11 +326,11 @@ export default () => {
           {isAlternativesDataLoading && (
             <div className="space-y-4 py-8">
               <div className="h-8 max-w-md w-[60%] animate-pulse rounded bg-muted" />
-              <div className="h-40 animate-pulse rounded-xl bg-muted/40" />
+              <div className="h-40 animate-pulse rounded-md bg-muted/40" />
             </div>
           )}
           {isAlternativesDataError && (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
               {alternativesDataError instanceof Error ? `: ${alternativesDataError.message}` : ''}.{' '}
               <button type="button" className="underline font-medium" onClick={() => refetchAlternatives()}>
@@ -340,7 +348,7 @@ export default () => {
 
               return (
                 <Card key={altCategory} className="overflow-hidden">
-                  <CardHeader className="border-b bg-muted/30 py-4 px-6">
+                  <CardHeader className="border-b bg-muted/30 py-4 px-3 sm:px-6">
                     <div className="flex items-center gap-2">
                       {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
                       <CardTitle className="capitalize text-base">{altCategory}</CardTitle>

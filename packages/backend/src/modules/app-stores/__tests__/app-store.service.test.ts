@@ -5,6 +5,8 @@ import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { AppStoreRepository } from '../app-store.repository';
 import { ReposHelpers } from '../repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -15,6 +17,8 @@ describe('AppStoreService', () => {
   let repoHelpers: MockProxy<ReposHelpers>;
   let configService: MockProxy<ConfigurationService>;
   let appStoreRepository: MockProxy<AppStoreRepository>;
+  let marketplaceService: MockProxy<MarketplaceService>;
+  let portalClient: MockProxy<PortalClientService>;
   let capturedQueueCallback: any;
 
   beforeEach(async () => {
@@ -23,6 +27,9 @@ describe('AppStoreService', () => {
     repoHelpers = mock<ReposHelpers>();
     configService = mock<ConfigurationService>();
     appStoreRepository = mock<AppStoreRepository>();
+    marketplaceService = mock<MarketplaceService>();
+    portalClient = mock<PortalClientService>();
+    portalClient.fetchStoreListings.mockResolvedValue([{ id: 'app1', title: 'App One' }]);
 
     repoQueue.onEvent.mockImplementation((cb) => {
       capturedQueueCallback = cb;
@@ -39,6 +46,8 @@ describe('AppStoreService', () => {
         { provide: ReposHelpers, useValue: repoHelpers },
         { provide: ConfigurationService, useValue: configService },
         { provide: AppStoreRepository, useValue: appStoreRepository },
+        { provide: MarketplaceService, useValue: marketplaceService },
+        { provide: PortalClientService, useValue: portalClient },
       ],
     }).compile();
 
@@ -53,6 +62,7 @@ describe('AppStoreService', () => {
     appStoreRepository.getEnabledAppStores.mockResolvedValue([{ id: 1, name: 'Main', url: 'http://test', slug: 'main', enabled: true } as any]);
     await service.pullRepositories();
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
+    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
   });
 
   it('should register cloud app store if configured', async () => {
@@ -80,22 +90,17 @@ describe('AppStoreService', () => {
     await capturedQueueCallback({ command: 'update_all' }, reply);
 
     expect(repoHelpers.pullRepo).toHaveBeenCalled();
+    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith({ success: true, message: 'All repos updated' });
   });
 
   it('should proxy store listings from CI Cloud', async () => {
     const mockApps = [{ id: 'app1', title: 'App One' }];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => mockApps,
-      } as Response),
-    );
+    portalClient.fetchStoreListings.mockResolvedValue(mockApps);
 
     const result = await service.fetchCiCloudStoreListings({ tags: 'featured' });
 
-    expect(global.fetch).toHaveBeenCalledWith('cloud-url/api/store?tags=featured', expect.any(Object));
+    expect(portalClient.fetchStoreListings).toHaveBeenCalledWith({ tags: 'featured' });
     expect(result).toEqual(mockApps);
   });
 });

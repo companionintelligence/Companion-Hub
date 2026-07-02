@@ -39,6 +39,57 @@ export class AppStoreFilesManager {
     };
   }
 
+  /** Prefer installed copy, then synced repo metadata/description.md when present. */
+  public async readDescriptionMarkdown(appUrn: AppUrn): Promise<string | null> {
+    const { appRepoDir, appInstalledDir } = this.getAppPaths(appUrn);
+
+    for (const baseDir of [appInstalledDir, appRepoDir]) {
+      const descriptionPath = path.join(baseDir, 'metadata', 'description.md');
+      try {
+        if (await this.filesystem.pathExists(descriptionPath)) {
+          const content = await this.filesystem.readTextFile(descriptionPath);
+          if (content?.trim()) {
+            return content;
+          }
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the app info from the app store (config.json only — no description.md).
+   */
+  public async getAppInfoFromAppStoreLite(appUrn: AppUrn) {
+    try {
+      const { appRepoDir } = this.getAppPaths(appUrn);
+
+      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+        const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
+
+        const config = JSON.parse(configFile ?? '{}');
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+
+        if (!parsedConfig.success) {
+          this.logger.debug(`App ${appUrn} config error:`);
+          this.logger.debug(parsedConfig.error.message);
+          return null;
+        }
+
+        if (parsedConfig.data.available) {
+          return parsedConfig.data;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error getting lite app info from app store for ${appUrn}:`, error);
+    }
+
+    return null;
+  }
+
   /**
    * Get the app info from the app store
    * @param appUrn - The app id
@@ -61,7 +112,7 @@ export class AppStoreFilesManager {
 
         if (parsedConfig.data.available) {
           const descriptionPath = path.join(appRepoDir, 'metadata', 'description.md');
-          let description = parsedConfig.data.description || '';
+          let description = '';
           if (await this.filesystem.pathExists(descriptionPath)) {
             const fileDesc = await this.filesystem.readTextFile(descriptionPath);
             if (fileDesc) description = fileDesc;
@@ -69,7 +120,7 @@ export class AppStoreFilesManager {
           return { ...parsedConfig.data, description };
         }
       } else {
-        this.logger.warn(`[DEBUG] config.json not found for ${appUrn} at ${appRepoDir}`);
+        this.logger.debug(`config.json not found for ${appUrn} at ${appRepoDir}`);
       }
     } catch (error) {
       this.logger.error(`Error getting app info from app store for ${appUrn}:`, error);
@@ -97,7 +148,7 @@ export class AppStoreFilesManager {
 
       if (parsedConfig.success && parsedConfig.data.available) {
         const descriptionPath = path.join(appInstalledDir, 'metadata', 'description.md');
-        let description = parsedConfig.data.description || '';
+        let description = '';
         if (await this.filesystem.pathExists(descriptionPath)) {
           const fileDesc = await this.filesystem.readTextFile(descriptionPath);
           if (fileDesc) description = fileDesc;
@@ -210,10 +261,6 @@ export class AppStoreFilesManager {
    */
   public async getAvailableAppUrns() {
     const appsRepoFolder = this.getAppStoreFolder();
-    this.logger.warn(`[DEBUG] Checking if apps repo folder exists: "${appsRepoFolder}"`);
-    const config = this.configuration.getConfig();
-    this.logger.warn(`[DEBUG] Data dir: "${config.directories.dataDir}"`);
-    this.logger.warn(`[DEBUG] Store slug: "${this.storeConfig.slug}"`);
 
     if (!(await this.filesystem.pathExists(appsRepoFolder))) {
       this.logger.error(`Apps repo ${this.storeConfig.slug} not found. Make sure your repo is configured correctly.`);
@@ -223,9 +270,7 @@ export class AppStoreFilesManager {
     const appsDir = await this.filesystem.listFiles(appsRepoFolder);
     const skippedFiles = ['__tests__', 'docker-compose.common.yml', 'schema.json', '.DS_Store'];
 
-    const urns = appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
-    this.logger.warn(`[DEBUG] Found ${urns.length} apps in ${this.storeConfig.slug}`);
-    return urns;
+    return appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
   }
 
   /**
@@ -314,29 +359,29 @@ export class AppStoreFilesManager {
     }
   }
 
-  public async getAppImage(appUrn: AppUrn) {
+  public async findAppLogoPath(appUrn: AppUrn): Promise<string | null> {
     const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
-    const { appDir } = this.configuration.get('directories');
     const extensions = ['jpg', 'jpeg', 'png', 'svg', 'webp'];
-    const searchPaths = [appInstalledDir, appRepoDir];
 
-    let filePath: string | null = null;
-
-    for (const dir of searchPaths) {
+    for (const dir of [appInstalledDir, appRepoDir]) {
       for (const ext of extensions) {
-        const p = path.join(dir, 'metadata', `logo.${ext}`);
-        if (await this.filesystem.pathExists(p)) {
-          filePath = p;
-          break;
+        const logoPath = path.join(dir, 'metadata', `logo.${ext}`);
+        if (await this.filesystem.pathExists(logoPath)) {
+          return logoPath;
         }
       }
-      if (filePath) break;
     }
 
-    if (!filePath) {
-      filePath = path.join(appDir, 'assets', 'default-app-logo.jpg');
-    }
+    return null;
+  }
 
+  public async hasAppLogo(appUrn: AppUrn): Promise<boolean> {
+    return (await this.findAppLogoPath(appUrn)) != null;
+  }
+
+  public async getAppImage(appUrn: AppUrn) {
+    const { appDir } = this.configuration.get('directories');
+    const filePath = (await this.findAppLogoPath(appUrn)) ?? path.join(appDir, 'assets', 'default-app-logo.jpg');
     const file = await this.filesystem.readBinaryFile(filePath);
     const etag = await this.filesystem.getFileEtag(filePath);
     const ext = path.extname(filePath).toLowerCase().substring(1);

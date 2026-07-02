@@ -15,6 +15,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppLifecycleCommandFactory } from '@/modules/app-lifecycle/app-lifecycle-command.factory';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
 import { AppStoreRepository } from '@/modules/app-stores/app-store.repository';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -23,6 +24,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -49,6 +51,8 @@ import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/c
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
+import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -92,6 +96,8 @@ describe('App lifecycle', () => {
   const registrationService = mock<RegistrationService>();
   const imageSizeService = mock<ImageSizeService>();
   const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
+  const portalCatalogService = mock<PortalCatalogService>();
+  const portalClientService = mock<PortalClientService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -135,6 +141,14 @@ describe('App lifecycle', () => {
 
   beforeEach(async () => {
     await cleanTestData(db);
+    portalCatalogService.warmCacheInBackground.mockReturnValue(undefined);
+    portalCatalogService.invalidateCache.mockReturnValue(undefined);
+    portalCatalogService.getAppInfoForUrn.mockResolvedValue(null);
+    portalCatalogService.fetchDescriptionMarkdown.mockResolvedValue(null);
+    portalCatalogService.isCiMarketplaceUrn.mockReturnValue(false);
+    portalCatalogService.searchCatalog.mockResolvedValue(null);
+    portalClientService.fetchStoreAlternatives.mockResolvedValue([]);
+    portalClientService.fetchStoreListings.mockResolvedValue([]);
     // Best-effort arch check: null = registry unreachable, do not block install in tests.
     imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
@@ -159,6 +173,7 @@ describe('App lifecycle', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
+        ExposureSyncService,
         MarketplaceService,
         {
           provide: ImageSizeService,
@@ -183,6 +198,7 @@ describe('App lifecycle', () => {
           useValue: appRuntimeMonitorService,
         },
         InstallPipelineTracker,
+        AppOperationRegistry,
         {
           provide: SubnetManagerService,
           useFactory: (appsRepository: AppsRepository, loggerService: LoggerService, docker: typeof DOCKERODE) =>
@@ -260,6 +276,14 @@ describe('App lifecycle', () => {
         {
           provide: InferenceEnvResolver,
           useValue: mock<InferenceEnvResolver>(),
+        },
+        {
+          provide: PortalCatalogService,
+          useValue: portalCatalogService,
+        },
+        {
+          provide: PortalClientService,
+          useValue: portalClientService,
         },
       ],
     }).compile();

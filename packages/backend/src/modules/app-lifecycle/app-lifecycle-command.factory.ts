@@ -4,6 +4,7 @@ import type Dockerode from 'dockerode';
 import type { z } from 'zod';
 import { DOCKERODE } from '../docker/constants';
 import type { appEventSchema } from '../queue/entities/app-events';
+import type { LifecycleCommand } from './commands/command';
 import { BackupAppCommand } from './commands/backup-app-command';
 import { GenerateAppEnvCommand } from './commands/generate-env-command';
 import { InstallAppCommand } from './commands/install-app-command';
@@ -22,7 +23,7 @@ export class AppLifecycleCommandFactory {
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {}
 
-  createCommand(eventData: z.infer<typeof appEventSchema>) {
+  createCommand(eventData: z.infer<typeof appEventSchema>): LifecycleCommand {
     const command = eventData.command;
 
     switch (command) {

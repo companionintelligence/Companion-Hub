@@ -1,4 +1,5 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
+import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
@@ -7,7 +8,7 @@ import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto
 import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
-import { MarketplaceService } from './modules/marketplace/marketplace.service';
+import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -25,13 +26,34 @@ export class AppController {
     private readonly userRepository: UserRepository,
     private readonly configuration: ConfigurationService,
     private readonly appsService: AppsService,
-    private readonly marketplaceService: MarketplaceService,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly tailscaleService: TailscaleService,
     private readonly appStoreService: AppStoreService,
+    private readonly sessionManager: SessionManager,
   ) {}
+
+  private getSessionMetadata(req: Request): { sessionExpiresAt?: number; sessionRefreshRecommendedAt?: number } {
+    if (!req.user) {
+      return {};
+    }
+
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    if (!sessionId) {
+      return {};
+    }
+
+    const sessionExpiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
+    if (!sessionExpiresAt) {
+      return {};
+    }
+
+    return {
+      sessionExpiresAt,
+      sessionRefreshRecommendedAt: sessionExpiresAt - (SESSION_TTL_SECONDS - SESSION_REFRESH_AFTER_SECONDS) * 1000,
+    };
+  }
 
   @Get('/user-context')
   @ApiResponse({ type: UserContextDto })
@@ -120,6 +142,7 @@ export class AppController {
         localDomain,
         domain,
         sslPort,
+        ...this.getSessionMetadata(req),
       };
 
       // Try to parse with validation, but don't fail if it doesn't match
@@ -170,6 +193,7 @@ export class AppController {
         localDomain: defaultSettings?.localDomain?.trim() || configuredLocalDomain,
         domain: defaultSettings?.domain?.trim() || configuredDomain,
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
+        ...this.getSessionMetadata(req),
       };
 
       // Try to parse, but return raw data if parsing fails
@@ -225,11 +249,10 @@ export class AppController {
     }
 
     // Parallelize all independent async calls
-    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
+    const [version, org, updatesAvailable, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
-      this.marketplaceService.getAvailableApps(),
-      this.appsService.getInstalledApps(),
+      this.appsService.countUpdatesAvailable(),
       this.tailscaleService.getStatus().catch(() => ({
         installed: false,
         connected: false,
@@ -241,9 +264,7 @@ export class AppController {
       })),
     ]);
 
-    const updatesAvailable = installedApps.filter(({ app, metadata }) => {
-      return Number(app.version) < Number(metadata?.latestVersion ?? 0) && app.status !== 'updating';
-    });
+    const updatesAvailableCount = updatesAvailable;
 
     // Extract slug from domain
     const orgSlug = org?.slug;
@@ -260,11 +281,17 @@ export class AppController {
     return AppContextDto.parse(
       {
         version,
-        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
+        userSettings: {
+          ...userSettings,
+          ciHubOrganizationSlug: orgSlug,
+          ciHubOrganizationLabel: orgLabel,
+          ciHubDeviceSlug: deviceSlug,
+          ciHubHubSubdomain: org?.hubSubdomain ?? undefined,
+        },
         appDataRootHostPath,
         user: req.user as UserDto,
-        apps,
-        updatesAvailable: updatesAvailable.length,
+        apps: [],
+        updatesAvailable: updatesAvailableCount,
         isProduction,
         cloudflareAvailable,
         tailscaleAvailable,

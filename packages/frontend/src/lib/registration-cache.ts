@@ -1,19 +1,18 @@
 import type { RegistrationStatus } from './registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './registration-status';
-import { apiFetch } from './api-fetch';
+import { fetchRegistrationStatus } from './registration-api';
 
 export async function resolveRegistrationStatus(): Promise<RegistrationStatus | null> {
   try {
-    const res = await apiFetch('/api/registration/status');
-    if (!res.ok) {
-      return null;
+    const status = await fetchRegistrationStatus();
+    if (!status) {
+      return getCachedRegistrationStatus();
     }
 
-    const status = (await res.json()) as RegistrationStatus;
     cacheRegistrationStatus(status);
     return status;
   } catch {
-    return null;
+    return getCachedRegistrationStatus();
   }
 }
 

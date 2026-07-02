@@ -1,27 +1,54 @@
 import { SESSION_COOKIE_NAME } from '@/common/constants';
-import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
+import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
+
+function resolveSessionId(req: Request): string | undefined {
+  const cookieSession = req.cookies[SESSION_COOKIE_NAME];
+  if (typeof cookieSession === 'string' && cookieSession) {
+    return cookieSession;
+  }
+
+  const headerSession = req.get('x-ci-hub-session');
+  if (headerSession) {
+    return headerSession;
+  }
+
+  const querySession = req.query.session_id;
+  if (typeof querySession === 'string' && querySession) {
+    return querySession;
+  }
+
+  return undefined;
+}
 
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   constructor(
-    private readonly cache: CacheService,
+    private readonly sessionManager: SessionManager,
     private readonly config: ConfigurationService,
     private readonly userRepository: UserRepository,
   ) {}
 
   async use(req: Request, _: Response, next: NextFunction) {
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string) || (req.query.session_id as string);
+    const sessionId = resolveSessionId(req);
     const bearerToken = req.headers.authorization;
 
     if (sessionId) {
-      const userId = this.cache.get(`session:${sessionId}`);
-      if (!Number.isNaN(Number(userId))) {
-        const user = await this.userRepository.getUserDtoById(Number(userId));
+      const userId = this.sessionManager.resolveSessionUserId(sessionId);
+      if (userId) {
+        const expiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
+        if (expiresAt) {
+          const remainingMs = expiresAt - Date.now();
+          if (remainingMs < (SESSION_TTL_SECONDS * 1000) / 2) {
+            this.sessionManager.touchSession(sessionId);
+          }
+        }
+
+        const user = await this.userRepository.getUserDtoById(userId);
         req.user = user;
       }
 

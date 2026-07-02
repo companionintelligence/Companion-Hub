@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -63,8 +63,32 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean }): boolean {
-  return record.exposureMode === 'local' || Boolean(record.exposedLocal) || Boolean(record.openPort);
+function hasDirectLocalAccess(
+  record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
+  options: { hasHostPort: boolean; dynamicConfig: boolean },
+): boolean {
+  if (!options.hasHostPort) return false;
+
+  const mode = record.exposureMode;
+  // Tailscale-only installs may skip publishing a host port unless explicitly requested.
+  if (mode === 'tailscale') return Boolean(record.openPort);
+  // Public-web and local installs still bind the app port on the host — localhost stays valid.
+  if (mode === 'cloudflare' || mode === 'local') return true;
+
+  // Pre-exposureMode installs: match guest-dashboard heuristics.
+  return Boolean(record.openPort) || Boolean(record.exposedLocal) || !options.dynamicConfig;
+}
+
+function getEffectiveExposureMode(record: { exposureMode?: string | null; exposedLocal?: boolean }): 'local' | 'cloudflare' | 'tailscale' {
+  if (record.exposureMode === 'local' || record.exposureMode === 'cloudflare' || record.exposureMode === 'tailscale') {
+    return record.exposureMode;
+  }
+
+  return record.exposedLocal ? 'cloudflare' : 'local';
+}
+
+function publishesPublicWebAccess(record: { exposureMode?: string | null; exposedLocal?: boolean }): boolean {
+  return getEffectiveExposureMode(record) === 'cloudflare' || Boolean(record.exposedLocal);
 }
 
 export function buildAppAccessPoints(input: {
@@ -80,6 +104,7 @@ export function buildAppAccessPoints(input: {
   tailscaleServedPorts?: ReadonlySet<number>;
   organizationSlug?: string;
   deviceSlug?: string;
+  hubSubdomain?: string | null;
 }): AppAccessPoint[] {
   const {
     app,
@@ -94,6 +119,7 @@ export function buildAppAccessPoints(input: {
     tailscaleServedPorts = new Set<number>(),
     organizationSlug,
     deviceSlug,
+    hubSubdomain,
   } = input;
 
   if (!app || info.no_gui) {
@@ -116,18 +142,19 @@ export function buildAppAccessPoints(input: {
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
-  const localEnabled = hasDirectLocalAccess(record);
+  const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
   const directUrl = directPort && localEnabled ? `http://${browserHost}:${directPort}${urlSuffix}` : null;
   const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, directPort);
   const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, directPort, urlSuffix);
 
   const configuredPublicDomain = record.domain?.trim() || null;
   const resolvedPublicDomain = (record.publicDomain?.trim() || publicDomain || '').trim();
+  const resolvedHubSubdomain = hubSubdomain?.trim() || (deviceSlug && organizationSlug ? `hub-${deviceSlug}-${organizationSlug}` : undefined);
   const derivedPublicIdentity =
     !configuredPublicDomain && cleanSubdomain && resolvedPublicDomain
       ? buildPublicWebIdentity({
           appSubdomain: cleanSubdomain,
-          hubSubdomain: deviceSlug ? `hub-${deviceSlug}${organizationSlug ? `-${organizationSlug}` : ''}` : undefined,
+          hubSubdomain: resolvedHubSubdomain,
           orgSlug: organizationSlug,
           publicDomainRoot: resolvedPublicDomain,
         })
@@ -136,7 +163,8 @@ export function buildAppAccessPoints(input: {
   const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
-  const legacyVpnActive = Boolean(record.exposedLocal) || !info.dynamic_config;
+  // Legacy (pre-exposureMode) installs may still infer VPN from older flags.
+  const legacyVpnActive = !record.exposureMode && (Boolean(record.exposedLocal) || !info.dynamic_config);
   const vpnPortPublished = isTailscalePortPublished(directPort, tailscaleServedPorts);
   const tailscalePublishReady = tailscaleAvailable && tailscaleHttpsEnabled && vpnPortPublished;
 
@@ -148,12 +176,9 @@ export function buildAppAccessPoints(input: {
         ? 'available'
         : 'unavailable'
     : 'unavailable';
-  const publicState: AccessPointState =
-    publicUrl && Boolean(record.exposed || configuredPublicDomain)
-      ? 'active'
-      : cloudflareAvailable && publicUrl && info.exposable
-        ? 'available'
-        : 'unavailable';
+  const publicWebConfigured = publishesPublicWebAccess(record) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
+  const publicActive = Boolean(publicUrl && publicWebConfigured);
+  const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
 
   return [
     {
@@ -166,9 +191,7 @@ export function buildAppAccessPoints(input: {
       stateLabel: info.exposable
         ? publicState === 'active'
           ? 'APP_DETAILS_ACCESS_ENABLED'
-          : publicState === 'available'
-            ? 'APP_DETAILS_ACCESS_AVAILABLE'
-            : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
+          : 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
         : 'APP_DETAILS_ACCESS_LOCAL_ONLY',
     },
     {
@@ -186,7 +209,7 @@ export function buildAppAccessPoints(input: {
             : vpnState === 'available' && expectsTailscalePublish
               ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
               : vpnState === 'available'
-                ? 'APP_DETAILS_ACCESS_AVAILABLE'
+                ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
                 : tailscaleAvailable
                   ? 'APP_DETAILS_ACCESS_NOT_CONFIGURED'
                   : 'APP_DETAILS_ACCESS_NOT_AVAILABLE',
@@ -205,7 +228,10 @@ export function buildAppAccessPoints(input: {
 
 const stateClasses: Record<AccessPointState, string> = {
   active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  available: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  // `available`/`pending` describe a route you *could* turn on, not one that is
+  // currently serving the app — render them neutral (not a positive amber) so
+  // the badge can't be misread as "this URL is live".
+  available: 'border-border/70 bg-muted/30 text-muted-foreground',
   unavailable: 'border-border/70 bg-muted/30 text-muted-foreground',
 };
 
@@ -219,14 +245,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
 
   const { data: serveStatus } = useQuery({
-    queryKey: ['tailscale-serve'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/serve');
-      if (!res.ok) {
-        throw new Error(`Failed to fetch Tailscale Serve status: ${res.status}`);
-      }
-      return res.json() as Promise<{ entries: Array<{ listenPort?: number }> }>;
-    },
+    ...getServeStatusOptions(),
+    select: (payload) => payload as { entries: Array<{ listenPort?: number }> },
     enabled: tailscaleAvailable,
     refetchInterval: 30_000,
   });
@@ -246,6 +266,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     tailscaleServedPorts,
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
+    hubSubdomain: userSettings.ciHubHubSubdomain,
   });
 
   const supportsAccessPanel = Boolean(
@@ -283,9 +304,14 @@ export const AppAccessPoints = ({ app, info }: Props) => {
         <div className="grid gap-3 lg:grid-cols-3">
           {accessPoints.map((entry) => {
             const Icon = iconByKey[entry.key];
+            // Only a route that is actually serving the app gets a live link +
+            // working buttons. `available`/`pending`/`unavailable` are routes
+            // you could enable but that don't resolve yet, so we hide the URL
+            // and disable Open/Copy rather than offer a dead link.
+            const isActive = entry.state === 'active';
 
             return (
-              <div key={entry.key} className="min-w-0 rounded-xl border border-border/60 bg-muted/20 p-3 sm:p-4">
+              <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
                 <div className="flex min-w-0 items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-3">
                     <div className="mt-0.5 rounded-lg border border-border/60 bg-background/70 p-1.5 sm:p-2">
@@ -310,7 +336,9 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                 <div className="mt-4 space-y-2">
                   <div className="min-w-0 rounded-lg border border-border/50 bg-background/60 px-2.5 py-2 sm:px-3">
                     <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('APP_DETAILS_LINK')}</div>
-                    <div className="min-w-0 break-all text-sm leading-5">{entry.url || t('COMMON_UNKNOWN')}</div>
+                    <div className={cn('min-w-0 break-all text-sm leading-5', !isActive && 'text-muted-foreground')}>
+                      {isActive && entry.url ? entry.url : t(entry.stateLabel)}
+                    </div>
                   </div>
                 </div>
 
@@ -319,8 +347,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                     variant="outline"
                     size="sm"
                     className="flex-1"
-                    onClick={() => entry.url && openExternal(entry.url)}
-                    disabled={!entry.url || !canOpen}
+                    onClick={() => isActive && entry.url && openExternal(entry.url)}
+                    disabled={!isActive || !entry.url || !canOpen}
                   >
                     <ExternalLink className="mr-1 h-4 w-4" />
                     {t('APP_ACTION_OPEN')}
@@ -328,8 +356,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => entry.url && void copyToClipboard(entry.url)}
-                    disabled={!entry.url}
+                    onClick={() => isActive && entry.url && void copyToClipboard(entry.url)}
+                    disabled={!isActive || !entry.url}
                     title={t('SETTINGS_GENERAL_COPY')}
                   >
                     <Copy className="h-4 w-4" />

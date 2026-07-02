@@ -46,27 +46,35 @@
         "parameters": [
           {
             "name": "tags",
-            "required": false,
+            "required": true,
             "in": "query",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "sort",
-            "required": false,
+            "required": true,
             "in": "query",
-            "schema": { "type": "string", "enum": ["newest", "trending"] }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "category",
-            "required": false,
+            "required": true,
             "in": "query",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "q",
-            "required": false,
+            "required": true,
             "in": "query",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -224,6 +232,51 @@
         ]
       }
     },
+    "/api/registration/state-drift": {
+      "get": {
+        "operationId": "getStateDrift",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns drift signals when local and portal state disagree"
+          }
+        },
+        "summary": "Detect local vs CI Portal registration state drift",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/prepare-fresh": {
+      "post": {
+        "operationId": "prepareFreshSetup",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Local registration artifacts cleared"
+          }
+        },
+        "summary": "Clear local registration artifacts for a fresh device pairing",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/mark-restore-intent": {
+      "post": {
+        "operationId": "markRestoreIntent",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Restore intent recorded"
+          }
+        },
+        "summary": "Record restore intent before re-pairing an existing Portal device",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/device-id": {
       "get": {
         "operationId": "getDeviceId",
@@ -240,6 +293,22 @@
       }
     },
     "/api/registration/callback": {
+      "post": {
+        "operationId": "handleCallbackPost",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Registration completed successfully"
+          },
+          "400": {
+            "description": "Invalid callback data"
+          }
+        },
+        "summary": "Handle registration callback from CI Cloud (preferred — secrets in body)",
+        "tags": [
+          "Registration"
+        ]
+      },
       "get": {
         "operationId": "handleCallback",
         "parameters": [
@@ -324,7 +393,7 @@
             "description": "Invalid callback data"
           }
         },
-        "summary": "Handle registration callback from CI Cloud",
+        "summary": "Handle registration callback from CI Cloud (legacy GET redirect)",
         "tags": [
           "Registration"
         ]
@@ -339,7 +408,7 @@
             "description": "Returns the CI Cloud configuration"
           }
         },
-        "summary": "Get CI Cloud configuration (debug endpoint)",
+        "summary": "Get CI Cloud configuration (operator debug)",
         "tags": [
           "Registration"
         ]
@@ -444,6 +513,21 @@
         "summary": "Initiate device registration with organization",
         "tags": [
           "Registration"
+        ]
+      }
+    },
+    "/api/portal/config": {
+      "get": {
+        "operationId": "getPortalConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Portal configuration"
+          }
+        },
+        "summary": "Portal URL and device registration metadata for the frontend",
+        "tags": [
+          "Portal"
         ]
       }
     },
@@ -1060,6 +1144,44 @@
         ]
       }
     },
+    "/api/inference/rocm/status": {
+      "get": {
+        "operationId": "getRocmStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/rocm/install-state": {
+      "post": {
+        "operationId": "updateRocmInstallState",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRocmInstallStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/memory": {
       "get": {
         "operationId": "getMemory",
@@ -1102,21 +1224,12 @@
         ]
       }
     },
-    "/api/inference/models/pull-preflight": {
-      "get": {
-        "operationId": "pullPreflight",
-        "parameters": [
-          {
-            "name": "modelId",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+    "/api/inference/models/pull/start": {
+      "post": {
+        "operationId": "startPullModel",
+        "parameters": [],
         "responses": {
-          "200": {
+          "201": {
             "description": ""
           }
         },
@@ -1476,6 +1589,34 @@
         ]
       }
     },
+    "/api/system/factory-reset": {
+      "post": {
+        "operationId": "factoryReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactoryResetDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Factory reset completed"
+          },
+          "403": {
+            "description": "Operator authentication required"
+          }
+        },
+        "summary": "Wipe all Hub state and return to first-operator setup",
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/api/ports": {
       "get": {
         "operationId": "getAllAllocations",
@@ -1536,6 +1677,48 @@
         "summary": "Check port availability for an app",
         "tags": [
           "Ports"
+        ]
+      }
+    },
+    "/api/network/diagnostics": {
+      "get": {
+        "operationId": "getDiagnostics",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/api/network/repair-orphans": {
+      "post": {
+        "operationId": "repairOrphans",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Network"
         ]
       }
     },
@@ -1899,6 +2082,27 @@
         ]
       }
     },
+    "/api/auth/session/refresh": {
+      "post": {
+        "operationId": "refreshSession",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRefreshDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/start": {
       "get": {
         "operationId": "startPortalLogin",
@@ -1954,6 +2158,27 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/session-hint": {
+      "get": {
+        "operationId": "portalSessionHint",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalSessionHintDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -2180,6 +2405,89 @@
         ]
       }
     },
+    "/api/auth/password-reset/request": {
+      "post": {
+        "operationId": "requestPasswordReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password-reset/verify/{token}": {
+      "get": {
+        "operationId": "verifyPasswordResetToken",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetVerifyResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password-reset/complete": {
+      "post": {
+        "operationId": "completePasswordReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetCompleteBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetCompleteDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/traefik": {
       "get": {
         "operationId": "traefik",
@@ -2191,6 +2499,48 @@
         },
         "tags": [
           "Auth"
+        ]
+      }
+    },
+    "/api/app-lifecycle/rehydrate/plan": {
+      "get": {
+        "operationId": "getRehydratePlan",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/rehydrate/status": {
+      "get": {
+        "operationId": "getRehydrateStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/rehydrate": {
+      "post": {
+        "operationId": "executeRehydrate",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
         ]
       }
     },
@@ -2494,6 +2844,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LifecycleRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/cancel": {
+      "post": {
+        "operationId": "cancelOperation",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelOperationBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOperationResponseDto"
                 }
               }
             }
@@ -2824,6 +3214,21 @@
         ]
       }
     },
+    "/api/tailscale/sync": {
+      "post": {
+        "operationId": "syncExposure",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Sync triggered"
+          }
+        },
+        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
     "/api/tailscale/auth/start": {
       "post": {
         "operationId": "startAuth",
@@ -3044,6 +3449,20 @@
         },
         "tags": [
           "Links"
+        ]
+      }
+    },
+    "/api/health/live": {
+      "get": {
+        "operationId": "live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
         ]
       }
     },
@@ -3779,11 +4198,19 @@
         "type": "object",
         "properties": {}
       },
+      "UpdateRocmInstallStateBody": {
+        "type": "object",
+        "properties": {}
+      },
       "LoadDto": {
         "type": "object",
         "properties": {}
       },
       "SystemResourcesDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "FactoryResetDto": {
         "type": "object",
         "properties": {}
       },
@@ -3835,6 +4262,14 @@
         "type": "object",
         "properties": {}
       },
+      "SessionRefreshDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "PortalSessionHintDto": {
+        "type": "object",
+        "properties": {}
+      },
       "PortalDesktopExchangeDto": {
         "type": "object",
         "properties": {}
@@ -3875,6 +4310,26 @@
         "type": "object",
         "properties": {}
       },
+      "PasswordResetRequestBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "PasswordResetRequestDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "PasswordResetVerifyResponseDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "PasswordResetCompleteBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "PasswordResetCompleteDto": {
+        "type": "object",
+        "properties": {}
+      },
       "AppFormBody": {
         "type": "object",
         "properties": {}
@@ -3888,6 +4343,14 @@
         "properties": {}
       },
       "UpdateAppBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "CancelOperationBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "CancelOperationResponseDto": {
         "type": "object",
         "properties": {}
       },

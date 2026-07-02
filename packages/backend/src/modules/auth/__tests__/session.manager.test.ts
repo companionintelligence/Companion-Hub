@@ -38,4 +38,38 @@ describe('SessionManager', () => {
 
     await expect(manager.rotateSession('missing-session')).resolves.toBeNull();
   });
+
+  it('extends session TTL on touch', () => {
+    cache.get.mockReturnValue('9');
+
+    expect(manager.touchSession('session-1')).toBe(true);
+    expect(cache.set).toHaveBeenCalledWith('session:session-1', '9', 60 * 60 * 24 * 7);
+    expect(cache.set).toHaveBeenCalledWith('session:9:session-1', 'session:session-1', 60 * 60 * 24 * 7);
+  });
+
+  it('returns session expiry from cache metadata', () => {
+    cache.getExpirationAt.mockReturnValue(1_700_000_000_000);
+
+    expect(manager.getSessionExpiresAt('session-1')).toBe(1_700_000_000_000);
+    expect(cache.getExpirationAt).toHaveBeenCalledWith('session:session-1');
+  });
+
+  it('resolves grace sessions during rotation overlap', () => {
+    cache.get.mockImplementation((key: string) => {
+      if (key === 'session:old-session') return undefined;
+      if (key === 'session:grace:old-session') return '3';
+      return undefined;
+    });
+
+    expect(manager.resolveSessionUserId('old-session')).toBe(3);
+  });
+
+  it('stores a grace mapping when rotating sessions', async () => {
+    cache.get.mockReturnValue('7');
+    cache.del.mockImplementation(() => undefined);
+
+    await manager.rotateSession('old-session');
+
+    expect(cache.set).toHaveBeenCalledWith('session:grace:old-session', '7', 60);
+  });
 });

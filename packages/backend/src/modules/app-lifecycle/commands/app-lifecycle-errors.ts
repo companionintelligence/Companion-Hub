@@ -65,6 +65,10 @@ export type AppCommandFailureResult = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** True when the command stopped because the operation was cancelled (vs. failed). */
+  cancelled?: boolean;
+  /** Resting status a before-PONR cancel reverted to (e.g. 'stopped'); unused by install. */
+  cancelledStatus?: string;
 };
 
 export type AppCommandResult = { success: true; message: string } | AppCommandFailureResult;

@@ -1,5 +1,6 @@
 import { CacheService } from '@/core/cache/cache.service';
 import { PasswordService } from '@/core/password/password.service';
+import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -23,6 +24,7 @@ vi.mock('axios', () => ({
 describe('AuthService', () => {
   let authService: AuthService;
   let userRepository: MockProxy<UserRepository>;
+  let federatedIdentityRepository: MockProxy<FederatedIdentityRepository>;
   let sessionManager: MockProxy<SessionManager>;
   let cacheService: MockProxy<CacheService>;
   let configurationService: MockProxy<ConfigurationService>;
@@ -35,6 +37,7 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: FederatedIdentityRepository, useValue: mock<FederatedIdentityRepository>() },
         { provide: PasswordService, useValue: mock<PasswordService>() },
         { provide: SessionManager, useValue: mock<SessionManager>() },
         { provide: CacheService, useValue: mock<CacheService>() },
@@ -47,6 +50,7 @@ describe('AuthService', () => {
 
     authService = moduleRef.get(AuthService);
     userRepository = moduleRef.get(UserRepository);
+    federatedIdentityRepository = moduleRef.get(FederatedIdentityRepository);
     sessionManager = moduleRef.get(SessionManager);
     cacheService = moduleRef.get(CacheService);
     configurationService = moduleRef.get(ConfigurationService);
@@ -197,6 +201,112 @@ describe('AuthService', () => {
         message: 'AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY',
       });
       expect(axios.post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureFederatedUser', () => {
+    const issuer = 'https://portal.example.com';
+    const subject = 'portal-subject-123';
+
+    it('returns the bound user when a (iss, sub) link already exists, ignoring email', async () => {
+      const boundUser = { id: 7, username: 'old@example.com' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+
+      const result = await authService.ensureFederatedUser({
+        issuer,
+        subject,
+        email: 'changed@example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(boundUser);
+      // Existing binding is authoritative — must not re-provision or create a new link.
+      expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('links a new verified identity to a matched local user and records the binding', async () => {
+      const localUser = { id: 3, username: 'user@example.com', operator: true };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getUserByUsername.mockResolvedValue(localUser as never);
+
+      const result = await authService.ensureFederatedUser({
+        issuer,
+        subject,
+        email: 'User@Example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(localUser);
+      expect(federatedIdentityRepository.create).toHaveBeenCalledWith({
+        userId: 3,
+        issuer,
+        subject,
+        email: 'user@example.com',
+        emailVerified: true,
+      });
+    });
+
+    it('rejects a first login when the email claim is not verified', async () => {
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+
+      await expect(authService.ensureFederatedUser({ issuer, subject, email: 'user@example.com', emailVerified: false })).rejects.toMatchObject({
+        message: 'AUTH_ERROR_EMAIL_NOT_VERIFIED',
+      });
+
+      expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('allows an unverified email only when explicitly migrating a legacy operator', async () => {
+      const localUser = { id: 9, username: 'legacy@example.com', operator: true };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getUserByUsername.mockResolvedValue(localUser as never);
+
+      const result = await authService.ensureFederatedUser({
+        issuer,
+        subject,
+        email: 'legacy@example.com',
+        emailVerified: false,
+        allowUnverifiedEmailForMigration: true,
+      });
+
+      expect(result).toEqual(localUser);
+      expect(federatedIdentityRepository.create).toHaveBeenCalledWith({
+        userId: 9,
+        issuer,
+        subject,
+        email: 'legacy@example.com',
+        emailVerified: false,
+      });
+    });
+
+    it('returns the winner binding when concurrent first-logins race on create', async () => {
+      const localUser = { id: 3, username: 'user@example.com', operator: true };
+      const winnerUser = { id: 5, username: 'user@example.com' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce({ id: 2, userId: 5 } as never);
+      userRepository.getUserByUsername.mockResolvedValue(localUser as never);
+      federatedIdentityRepository.create.mockRejectedValue(
+        new Error('duplicate key value violates unique constraint "federated_identity_issuer_subject_idx"'),
+      );
+      userRepository.getUserById.mockResolvedValue(winnerUser as never);
+
+      const result = await authService.ensureFederatedUser({
+        issuer,
+        subject,
+        email: 'user@example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(winnerUser);
+      expect(federatedIdentityRepository.findByIssuerSubject).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects when issuer or subject is missing', async () => {
+      await expect(authService.ensureFederatedUser({ issuer: '', subject, email: 'user@example.com', emailVerified: true })).rejects.toMatchObject({
+        message: 'AUTH_ERROR_INVALID_CREDENTIALS',
+      });
+
+      expect(federatedIdentityRepository.findByIssuerSubject).not.toHaveBeenCalled();
     });
   });
 });

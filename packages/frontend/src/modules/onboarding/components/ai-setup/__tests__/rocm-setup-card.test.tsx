@@ -4,9 +4,14 @@ import type { HardwareProfile } from '@ci-hub/common/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RocmSetupCard } from '../rocm-setup-card';
 
-const mockApiFetch = vi.fn();
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+const mockFetchRocmInstallStatus = vi.fn();
+const mockRescanInferenceHardware = vi.fn();
+const mockSaveRocmInstallState = vi.fn();
+
+vi.mock('@/lib/inference/inference-api', () => ({
+  fetchRocmInstallStatus: (...args: unknown[]) => mockFetchRocmInstallStatus(...args),
+  rescanInferenceHardware: (...args: unknown[]) => mockRescanInferenceHardware(...args),
+  saveRocmInstallState: (...args: unknown[]) => mockSaveRocmInstallState(...args),
 }));
 
 const mockOpenExternal = vi.fn();
@@ -65,17 +70,13 @@ afterEach(() => {
 
 describe('RocmSetupCard', () => {
   it('shows ready state when host ROCm is available', async () => {
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          hostRocmAvailable: true,
-          hostRocmKfdAvailable: true,
-          runtimeRocmAvailable: true,
-          installPhase: 'completed',
-          canAutoInstall: false,
-          platformHint: 'linux-ubuntu',
-        }),
+    mockFetchRocmInstallStatus.mockResolvedValue({
+      hostRocmAvailable: true,
+      hostRocmKfdAvailable: true,
+      runtimeRocmAvailable: true,
+      installPhase: 'completed',
+      canAutoInstall: false,
+      platformHint: 'linux-ubuntu',
     });
 
     render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: true, hostRocmKfdAvailable: true })} onRescan={vi.fn()} />);
@@ -85,17 +86,13 @@ describe('RocmSetupCard', () => {
   });
 
   it('shows ready messaging from status when hardware scan is stale', async () => {
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          hostRocmAvailable: true,
-          hostRocmKfdAvailable: true,
-          runtimeRocmAvailable: true,
-          installPhase: 'completed',
-          canAutoInstall: false,
-          platformHint: 'linux-ubuntu',
-        }),
+    mockFetchRocmInstallStatus.mockResolvedValue({
+      hostRocmAvailable: true,
+      hostRocmKfdAvailable: true,
+      runtimeRocmAvailable: true,
+      installPhase: 'completed',
+      canAutoInstall: false,
+      platformHint: 'linux-ubuntu',
     });
 
     render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: false })} onRescan={vi.fn()} />);
@@ -106,13 +103,9 @@ describe('RocmSetupCard', () => {
   });
 
   it('shows reboot banner when install phase is reboot_required', async () => {
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          ...ubuntuMissingStatus,
-          installPhase: 'reboot_required',
-        }),
+    mockFetchRocmInstallStatus.mockResolvedValue({
+      ...ubuntuMissingStatus,
+      installPhase: 'reboot_required',
     });
 
     render(<RocmSetupCard hardware={makeHardware()} onRescan={vi.fn()} />);
@@ -124,10 +117,7 @@ describe('RocmSetupCard', () => {
 
   it('invokes install_rocm_command on Ubuntu desktop', async () => {
     setNavigatorPlatform('Mozilla/5.0 (X11; Linux x86_64)', 'Linux x86_64');
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(ubuntuMissingStatus),
-    });
+    mockFetchRocmInstallStatus.mockResolvedValue(ubuntuMissingStatus);
     const invoke = vi.fn().mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -147,14 +137,10 @@ describe('RocmSetupCard', () => {
   });
 
   it('shows Windows guidance without an install button', async () => {
-    mockApiFetch.mockResolvedValue({
-      ok: true,
-      json: () =>
-        Promise.resolve({
-          ...ubuntuMissingStatus,
-          canAutoInstall: false,
-          platformHint: 'windows',
-        }),
+    mockFetchRocmInstallStatus.mockResolvedValue({
+      ...ubuntuMissingStatus,
+      canAutoInstall: false,
+      platformHint: 'windows',
     });
 
     render(<RocmSetupCard hardware={makeHardware()} onRescan={vi.fn()} />);

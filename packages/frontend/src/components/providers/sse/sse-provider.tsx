@@ -42,7 +42,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
       const { appName, appStoreId } = extractAppUrn(appUrn as AppUrn);
 
-      if (appStoreId === '_user' && event === 'uninstall_success') {
+      if (appStoreId === '_user' && (event === 'uninstall_success' || event === 'install_cancelled')) {
         navigate('/store', { replace: true });
       }
 
@@ -86,6 +86,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
               />
             </span>
           ));
+          break;
+        case 'install_cancelled':
+          toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
           break;
         case 'start_success':
           toast.success(t('APP_START_SUCCESS', { id: appName }));

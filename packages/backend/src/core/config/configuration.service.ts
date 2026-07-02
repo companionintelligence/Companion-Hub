@@ -27,6 +27,11 @@ const envSchema = z
     INTERNAL_IP: z.string(),
     CI_HUB_VERSION: z.string(),
     JWT_SECRET: z.string(),
+    // Shared HMAC secret for signing the forward-auth X-CI-Hub-User identity header.
+    // Provisioned as a Hub<->consumer (CI-Server) shared secret. When unset, the
+    // forward-auth endpoint falls back to signing with JWT_SECRET so a lone Hub still
+    // produces valid signatures; a co-provisioned consumer should set this explicitly.
+    CI_HUB_FORWARD_AUTH_SECRET: z.string().optional(),
     APPS_REPO_URL: z.string().optional(),
     CI_CLOUD_URL: z.string(),
     DOMAIN: z.string(),
@@ -218,6 +223,8 @@ export class ConfigurationService {
       envFilePath: this.envPath,
       internalIp: env.data.INTERNAL_IP,
       jwtSecret: env.data.JWT_SECRET,
+      // Fall back to JWT_SECRET when a dedicated forward-auth secret is not provisioned.
+      forwardAuthSecret: env.data.CI_HUB_FORWARD_AUTH_SECRET || env.data.JWT_SECRET,
       __prod__: NODE_ENV === 'production',
     };
   }

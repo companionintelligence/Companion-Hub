@@ -59,6 +59,68 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
+  describe('app security sandbox', () => {
+    it('rejects a privileged service from a non-allowlisted app', async () => {
+      const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, privileged: true };
+      // `urn` is the nginx app (not in TRUSTED_APP_SECURITY_ALLOWLIST)
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('rejects a docker.sock host mount from a non-allowlisted app', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        internalPort: 80,
+        volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('rejects host network mode from a non-allowlisted app', async () => {
+      const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, networkMode: 'host' };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('allows a privileged service from an allowlisted app (home-assistant)', async () => {
+      const haUrn = createAppUrn('home-assistant', 'store-id');
+      const service: ServiceInput = { name: 'homeassistant', image: 'image', internalPort: 8123, privileged: true, networkMode: 'host' };
+      await expect(composeBuilder.getDockerCompose([service], {}, haUrn, subnet)).resolves.toContain('privileged: true');
+    });
+
+    it('allows granted host-path binds from an allowlisted app (netdata) but not ungranted ones', async () => {
+      const netdataUrn = createAppUrn('netdata', 'store-id');
+      const granted: ServiceInput = {
+        name: 'netdata',
+        image: 'image',
+        internalPort: 19999,
+        volumes: [{ hostPath: '/proc', containerPath: '/host/proc', readOnly: true }],
+      };
+      await expect(composeBuilder.getDockerCompose([granted], {}, netdataUrn, subnet)).resolves.toContain('services:');
+
+      // A path netdata is NOT granted (e.g. /etc) must still be rejected.
+      const ungranted: ServiceInput = {
+        name: 'netdata',
+        image: 'image',
+        internalPort: 19999,
+        volumes: [{ hostPath: '/etc/shadow', containerPath: '/host/etc/shadow' }],
+      };
+      await expect(composeBuilder.getDockerCompose([ungranted], {}, netdataUrn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('allows the benign /etc/localtime and /etc/timezone binds for any app', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        internalPort: 80,
+        volumes: [
+          { hostPath: '/etc/localtime', containerPath: '/etc/localtime', readOnly: true },
+          { hostPath: '/etc/timezone', containerPath: '/etc/timezone', readOnly: true },
+        ],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).resolves.toContain('services:');
+    });
+  });
+
   it('should correctly format entrypoint as string', async () => {
     const service: ServiceInput = {
       name: 'service',
@@ -166,7 +228,10 @@ describe('DockerComposeBuilder', () => {
       internalPort: 443,
     };
 
-    const compose = await composeBuilder.getDockerCompose([service1, service2], {}, urn, subnet);
+    // service1 exercises privileged formatting, so run it under an app that is granted
+    // privileged in TRUSTED_APP_SECURITY_ALLOWLIST (the sandbox rejects privileged otherwise).
+    const complexUrn = createAppUrn('home-assistant', 'store-id');
+    const compose = await composeBuilder.getDockerCompose([service1, service2], {}, complexUrn, subnet);
 
     expect(compose).toMatchSnapshot();
   });

@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/react';
 import { isChunkLoadError } from './chunk-load-error';
-import { apiFetch } from './api-fetch';
+import { fetchDeviceRegistrationInfoResult } from './registration-api';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -116,13 +116,13 @@ async function ensureHubSentryDeviceId(): Promise<void> {
     return deviceIdRequest;
   }
 
-  deviceIdRequest = apiFetch('/api/registration/device-id')
-    .then(async (response) => {
-      if (!response.ok) {
+  deviceIdRequest = fetchDeviceRegistrationInfoResult()
+    .then((result) => {
+      if (!result.ok) {
         return;
       }
 
-      const payload = (await response.json()) as { device_id?: string };
+      const payload = (result.data ?? {}) as { device_id?: string };
       applyDeviceId(payload.device_id);
     })
     .catch((error: unknown) => {

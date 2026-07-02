@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { agentConfigSchema, agentMcpConfigSchema, agentOpenApiAuthSchema, agentOpenApiConfigSchema, agentSkillConfigSchema } from '../agent-config';
+import {
+  agentConfigSchema,
+  agentIntentSchema,
+  agentMcpConfigSchema,
+  agentOpenApiAuthSchema,
+  agentOpenApiConfigSchema,
+  agentSkillConfigSchema,
+} from '../agent-config';
 
 describe('agent-config schemas', () => {
   describe('agentSkillConfigSchema', () => {
@@ -108,6 +115,50 @@ describe('agent-config schemas', () => {
     });
   });
 
+  describe('agentIntentSchema', () => {
+    it('should accept a full intent declaration', () => {
+      const result = agentIntentSchema.safeParse({
+        name: 'groceries.addItem',
+        domain: 'groceries',
+        title: 'Add a grocery item',
+        description: 'Add an item to the shopping list.',
+        parameters: { type: 'object', properties: { item: { type: 'string' } }, required: ['item'] },
+        privacy: { access: 'write', sensitivity: 'personal' },
+        phrases: ['Add $item to my groceries'],
+        binding: { kind: 'mcp', tool: 'add_item' },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject a name that is not "<domain>.<action>"', () => {
+      expect(agentIntentSchema.safeParse({ name: 'addItem', domain: 'groceries', title: 'x', description: 'y' }).success).toBe(false);
+    });
+
+    it('should accept a Hub-namespaced intent name with dotted domain segments', () => {
+      const result = agentIntentSchema.safeParse({
+        name: 'app.groceries.groceries.addItem',
+        domain: 'app.groceries.groceries',
+        title: 'Add grocery item',
+        description: 'Add an item to the grocery list',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should default privacy.access to read', () => {
+      const result = agentIntentSchema.safeParse({
+        name: 'recipes.find',
+        domain: 'recipes',
+        title: 'Find recipes',
+        description: 'Find a recipe.',
+        privacy: {},
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.privacy?.access).toBe('read');
+      }
+    });
+  });
+
   describe('agentConfigSchema', () => {
     it('should accept full agent config with all three layers', () => {
       const result = agentConfigSchema.safeParse({
@@ -121,6 +172,14 @@ describe('agent-config schemas', () => {
           transport: 'sse',
           url: 'http://localhost/mcp',
         },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept app-declared intents', () => {
+      const result = agentConfigSchema.safeParse({
+        skill: true,
+        intents: [{ name: 'groceries.addItem', domain: 'groceries', title: 'Add item', description: 'Add to list.' }],
       });
       expect(result.success).toBe(true);
     });

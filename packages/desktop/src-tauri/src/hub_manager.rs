@@ -4701,6 +4701,14 @@ fn start_database_first(
     )
 }
 
+/// Refresh host RAM/disk probe files under the data dir so the Hub backend reports
+/// physical host resources instead of the Docker Desktop VM when running in containers.
+pub fn refresh_host_metrics_probe_cache(data_dir: &Path) {
+    refresh_macos_host_probe_cache(data_dir);
+    refresh_windows_host_metrics_probe_cache(data_dir);
+    refresh_linux_host_metrics_probe_cache(data_dir);
+}
+
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.

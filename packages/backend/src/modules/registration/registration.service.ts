@@ -8,6 +8,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -35,6 +36,7 @@ import si from 'systeminformation';
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
+const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -45,11 +47,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private consecutiveValidationFailures = 0;
   private lastCloudValidationAt = 0;
   private cloudValidationInFlight: Promise<void> | null = null;
+  private phaseReadCachedAt = 0;
+  private phaseRefreshInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
     @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
+    @Inject(forwardRef(() => PortalClientService)) private readonly portalClient: PortalClientService,
     @Inject(forwardRef(() => TraefikConfigService)) private readonly traefikConfigService: TraefikConfigService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
@@ -73,6 +78,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async onApplicationBootstrap() {
+    setImmediate(() => {
+      void this.runDeferredBootstrap().catch((error) => {
+        this.logger.error('Deferred registration bootstrap failed', error);
+      });
+    });
+  }
+
+  private async runDeferredBootstrap() {
     // Before checking full registration status, try to recover the tunnel
     // token file from the database. isRegistered() requires both a DB record
     // AND the token file on disk, so we must restore the file first.
@@ -210,6 +223,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.warn('Failed to persist provisioning phase', e);
       });
     }
+
+    this.phaseReadCachedAt = Date.now();
   }
 
   /** Return the current in-memory registration status snapshot. */
@@ -218,13 +233,36 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Refresh registration state from the durable sources of truth (DB + disk)
-   * before returning the current status snapshot.
+   * Return the current in-memory registration status snapshot.
+   * Schedules a background refresh from durable sources (DB + disk) when the
+   * read cache is stale; callers get the cached phase immediately.
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
-    await this.refreshPhaseFromSources();
+    this.schedulePhaseRefreshFromSources();
     await this.maybeValidateWithCloud();
     return this.getRegistrationStatus();
+  }
+
+  /** Refresh phase from DB/disk in the background when the read cache is stale. */
+  private schedulePhaseRefreshFromSources(): void {
+    const now = Date.now();
+    if (this.phaseReadCachedAt > 0 && now - this.phaseReadCachedAt < PHASE_READ_CACHE_TTL_MS) {
+      return;
+    }
+
+    if (this.phaseRefreshInFlight) {
+      return;
+    }
+
+    this.phaseRefreshInFlight = this.refreshPhaseFromSources()
+      .catch((error) => {
+        this.logger.debug('Background registration phase refresh failed', error);
+      })
+      .finally(() => {
+        // Throttle retries even when refresh fails so status polls don't hammer DB/disk.
+        this.phaseReadCachedAt = Date.now();
+        this.phaseRefreshInFlight = null;
+      });
   }
 
   /**
@@ -522,12 +560,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Reset device registration to allow re-pairing.
    * Clears in-memory state, database records, tunnel token, and resolved env.
    */
-  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected'; deregisterFromPortal?: boolean }): Promise<void> {
     const reason = options?.reason ?? 'manual';
     if (reason === 'portal_rejected') {
       this.logger.info('Clearing local device registration after CI Portal rejected check-in');
     } else {
       this.logger.info('Resetting device registration...');
+    }
+
+    if (options?.deregisterFromPortal) {
+      try {
+        const deviceId = await this.getDeviceId();
+        await this.portalClient.postDeviceDeregister(deviceId);
+        this.logger.info('Requested Portal deregistration for paired reset');
+      } catch (error) {
+        this.logger.warn(
+          `Portal deregistration failed during reset (continuing local reset): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     // Transition via setPhase so the change is logged consistently.

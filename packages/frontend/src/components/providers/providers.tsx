@@ -1,5 +1,5 @@
 import { UserContextProvider } from '@/context/user-context';
-import { MutationCache, QueryClient, QueryClientProvider, QueryErrorResetBoundary } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryErrorResetBoundary } from '@tanstack/react-query';
 import { type PropsWithChildren, Suspense, useEffect } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
@@ -11,11 +11,6 @@ import { recoverFromChunkLoadError } from '@/lib/chunk-load-error';
 import { captureHubException } from '@/lib/sentry';
 
 const queryClient = new QueryClient({
-  mutationCache: new MutationCache({
-    onSuccess: () => {
-      queryClient.invalidateQueries();
-    },
-  }),
   defaultOptions: {
     queries: { retry: false, refetchOnWindowFocus: false },
   },

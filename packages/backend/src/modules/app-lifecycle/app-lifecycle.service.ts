@@ -7,7 +7,6 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -15,16 +14,17 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
-import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
+import { ExposureSyncService } from './exposure-sync.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
-import { RegistrationService } from '../registration/registration.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
+import { AppOperationRegistry, type OperationCommand } from './app-operation-registry';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
+import type { CommandExecutionContext } from './commands/command';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
@@ -33,9 +33,9 @@ import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
-import { didPublicRoutingIdentityChange, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
-import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
+import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -67,15 +67,6 @@ function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string,
   return normalizeLocalOpenPort(parsed.data) as Record<string, unknown>;
 }
 
-function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
-  return buildPublicWebIdentity({
-    appSubdomain: params.appSubdomain,
-    hubSubdomain: params.hubSubdomain,
-    orgSlug: params.orgSlug,
-    publicDomainRoot: params.publicDomainRoot,
-  }).hostname;
-}
-
 @Injectable()
 export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
   private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
@@ -99,13 +90,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     private readonly dockerService: DockerService,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
-    private readonly cloudflareClientService: CloudflareClientService,
-    private readonly registrationService: RegistrationService,
+    private readonly exposureSyncService: ExposureSyncService,
     private readonly repoHelpers: ReposHelpers,
     private readonly appStoreService: AppStoreService,
     private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
     private readonly installPipelineTracker: InstallPipelineTracker,
+    private readonly operationRegistry: AppOperationRegistry,
+    @Optional() private readonly appIntentSyncService?: AppIntentSyncService,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {
@@ -224,13 +216,56 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const release = await this.mutex.acquire(data.appUrn);
 
     try {
-      const command = this.commandFactory.createCommand(data);
-      const result = await command.execute(data.appUrn, data.form);
+      // Only treat the registry entry as ours when its requestId matches this message. A stale queued
+      // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
+      // into this command or mutate the newer entry's phase.
+      const registered = this.operationRegistry.get(data.appUrn);
+      const entry = registered && registered.requestId === data.requestId ? registered : undefined;
 
-      if (result.success) {
+      // Tier-A: the op was cancelled while queued (before this worker dequeued it). Skip execution
+      // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
+      if (entry && (entry.cancelRequestedWhileQueued || entry.abortController.signal.aborted)) {
+        this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued; skipping execution`);
+        await this.handleCancelledResult(data.command, data.appUrn, {
+          success: false,
+          cancelled: true,
+          message: 'Operation cancelled before it started',
+        });
+        await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        return;
+      }
+
+      // Build the cancellation context from our own registry entry so the cancel endpoint's abort()
+      // reaches the running command and its docker spawns/pulls. Phase updates are requestId-gated.
+      if (entry) {
+        this.operationRegistry.markPhase(data.appUrn, 'preparing', data.requestId);
+      }
+      const ctx: CommandExecutionContext | undefined = entry
+        ? {
+            signal: entry.abortController.signal,
+            setPhase: (phase) => this.operationRegistry.markPhase(data.appUrn, phase, data.requestId),
+          }
+        : undefined;
+
+      const command = this.commandFactory.createCommand(data);
+      // Only pass the context when there is one, so commands without cancellation see the original 2-arg call.
+      const result = (await (ctx ? command.execute(data.appUrn, data.form, ctx) : command.execute(data.appUrn, data.form))) as z.output<
+        typeof appEventResultSchema
+      >;
+
+      // Finalize the outcome worker-side so it does not depend on the RPC reply being delivered (the
+      // publisher may have already timed out). Success is finalized inside the command
+      // (markInstallSucceeded); here we cover cancellation and — crucially — failure, so an install
+      // that fails AFTER its RPC timed out still reaches 'install_failed' instead of being stranded
+      // in 'installing'.
+      if (result.cancelled) {
+        await this.handleCancelledResult(data.command, data.appUrn, result);
+      } else if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
+      } else {
+        await this.handleFailedResult(data.command, data.appUrn, result);
       }
 
       await reply(result);
@@ -238,6 +273,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.error('Error invoking command:', err);
       await reply(toAppCommandFailureResult(err));
     } finally {
+      // Clear the registry entry for this op (requestId-matched so a replacement op is preserved).
+      this.operationRegistry.clear(data.appUrn, data.requestId);
       release();
       if (isInstall) {
         this.installPipelineTracker.setActive(null);
@@ -245,6 +282,142 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         void this.emitInstallQueueUpdate();
       }
     }
+  }
+
+  /**
+   * Single authoritative finalization point for a cancelled operation. Runs worker-side from
+   * {@link invokeCommand}. For `install` it removes the partially-created app record and emits an
+   * `install_cancelled` SSE event so the UI returns to the not-installed (store) state. Other
+   * commands are wired in later phases; until then this is a safe no-op for them.
+   */
+  private async handleCancelledResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+    if (command === 'install') {
+      const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+      if (app) {
+        try {
+          await this.appRepository.deleteAppById(app.id);
+        } catch (e) {
+          this.logger.error(`Failed to delete cancelled install record for ${appUrn}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      this.logger.info(`[lifecycle] install of ${appUrn} cancelled${result.message ? `: ${result.message}` : ''}`);
+      // Use 'missing' (not 'uninstalled') to match uninstall_success — both delete the app record.
+      this.sseService.emit('app', { event: 'install_cancelled', appUrn, appStatus: 'missing' });
+      void this.emitInstallQueueUpdate();
+      return;
+    }
+
+    // Other commands report a cancelled-status resting state in later phases; nothing to do yet.
+    this.logger.info(`[lifecycle] '${command}' for ${appUrn} cancelled (no finalization wired yet)`);
+  }
+
+  /**
+   * Worker-side finalization for a FAILED operation. The install completion handler keeps the app in
+   * 'installing' across an RPC timeout (image pulls can outlast the RPC) and trusts the worker to
+   * finish — but the worker must then write the terminal status itself, otherwise a failure after the
+   * timeout strands the app in 'installing' forever. Wired for `install` (the op with that
+   * keep-installing-on-timeout behaviour); a no-op for other commands, which are finalized by their
+   * own completion handlers. Idempotent via the status guard in {@link finalizeFailedInstall}.
+   */
+  private async handleFailedResult(command: OperationCommand | string, appUrn: AppUrn, result: z.output<typeof appEventResultSchema>) {
+    if (command !== 'install') {
+      return;
+    }
+    const app = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+    // Worker path: invokeCommand's finally emits the install-queue update AFTER clearing the pipeline
+    // tracker, so suppress it here to avoid a duplicate (and stale, pre-clear) install_queue event.
+    await this.finalizeFailedInstall(app, appUrn, result, { emitQueueUpdate: false });
+  }
+
+  /**
+   * Transition a failed install to `install_failed` and emit `install_error`, but ONLY while the app
+   * is still `installing`. The status guard makes this safe to call from both the worker side
+   * ({@link handleFailedResult}) and the publisher-side fallback (when the publish never reached a
+   * worker) without ever double-finalizing. The status write is guarded so a missing enum migration
+   * still surfaces the failure over SSE instead of crashing the process.
+   *
+   * @param emitQueueUpdate - Whether to emit an install-queue SSE update. The worker path passes
+   *   `false` because invokeCommand's `finally` emits it after clearing the pipeline tracker (emitting
+   *   here would produce a duplicate, stale event still showing the failed app as active); the
+   *   publisher-side fallback passes `true` since it has no such `finally`.
+   */
+  private async finalizeFailedInstall(
+    app: { id: number; status: string } | null | undefined,
+    appUrn: AppUrn,
+    result: z.output<typeof appEventResultSchema>,
+    { emitQueueUpdate }: { emitQueueUpdate: boolean },
+  ) {
+    if (!app || app.status !== 'installing') {
+      return;
+    }
+    this.logger.error(`Failed to install app ${appUrn}: ${result.message}`);
+    try {
+      await this.appRepository.updateAppById(app.id, { status: 'install_failed' });
+    } catch (statusError) {
+      this.logger.error(
+        `Failed to persist 'install_failed' status for ${appUrn} (continuing without crashing): ${statusError instanceof Error ? statusError.message : String(statusError)}`,
+      );
+    }
+    this.sseService.emit('app', {
+      event: 'install_error',
+      appUrn,
+      appStatus: 'install_failed',
+      error: result.message,
+      errorCode: result.errorCode,
+      errorDetail: result.errorDetail,
+      settingsPath: result.settingsPath,
+    });
+    if (emitQueueUpdate) {
+      void this.emitInstallQueueUpdate();
+    }
+    this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
+    this.reportAppFailure(appUrn, 'install', result.message);
+  }
+
+  /**
+   * Request cancellation of the in-flight (or queued) operation for an app.
+   *
+   * Looks up the live registry entry and decides the outcome by cancellability tier and phase:
+   * - no entry / stale requestId → `not_found`
+   * - non-cancellable, or past the point of no return → `refused`
+   * - otherwise abort the controller → `cancelled_queued` (was still queued) or `cancelling` (in flight)
+   *
+   * Returns immediately; the actual `*_cancelled` SSE event arrives once the worker finishes
+   * compensation. In Phase 1 only `install` registers, so other ops return `not_found`.
+   */
+  async cancelOperation(
+    appUrn: AppUrn,
+    requestId?: string,
+  ): Promise<{ outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found'; status?: string; message?: string }> {
+    const entry = this.operationRegistry.get(appUrn);
+    if (!entry) {
+      return { outcome: 'not_found', message: 'No operation in progress for this app' };
+    }
+    if (requestId && entry.requestId !== requestId) {
+      return { outcome: 'not_found', message: 'Operation already completed or replaced' };
+    }
+
+    if (entry.tier === 'non_cancellable') {
+      return { outcome: 'refused', message: 'This operation cannot be cancelled.' };
+    }
+    if (entry.tier === 'before_ponr' && (entry.phase === 'finalizing' || entry.phase === 'committed')) {
+      return { outcome: 'refused', message: 'Operation has passed the point of no return.' };
+    }
+    if (entry.tier === 'safe' && (entry.phase === 'finalizing' || entry.phase === 'committed')) {
+      return { outcome: 'refused', message: 'Operation is finalizing and can no longer be cancelled.' };
+    }
+
+    // Derive the outcome and logging from the entry returned by abort() (its phase at abort time),
+    // not from the earlier read, so the result reflects the op's actual state when it was aborted.
+    const aborted = this.operationRegistry.abort(appUrn, requestId);
+    if (!aborted) {
+      return { outcome: 'not_found', message: 'Operation already completed or replaced' };
+    }
+    const wasQueued = aborted.phase === 'queued';
+    this.logger.info(`[lifecycle] cancel requested for ${aborted.command} ${appUrn} (phase=${aborted.phase})`);
+    return wasQueued
+      ? { outcome: 'cancelled_queued', message: 'Operation cancelled before it started' }
+      : { outcome: 'cancelling', message: 'Cancellation requested' };
   }
 
   /**
@@ -374,10 +547,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // (registry/network couldn't be inspected) does not block the install.
     const archCheck = await this.imageSizeService.verifyAppArchitecture(appUrn, architecture);
     if (archCheck && !archCheck.ok) {
-      this.logger.warn(
-        `App ${appUrn} image ${archCheck.image} does not publish a ${architecture} manifest (available: ${archCheck.available.join(', ') || 'none'})`,
+      const canEmulateAmd64 = architecture === 'arm64' && archCheck.available.includes('amd64') && appInfo.supported_architectures?.includes('amd64');
+
+      if (!canEmulateAmd64) {
+        this.logger.warn(
+          `App ${appUrn} image ${archCheck.image} does not publish a ${architecture} manifest (available: ${archCheck.available.join(', ') || 'none'})`,
+        );
+        throw new TranslatableError('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED', { id: appUrn, arch: architecture });
+      }
+
+      this.logger.info(
+        `App ${appUrn} will run amd64 images via platform emulation on ${architecture} host (image ${archCheck.image} lacks native ${architecture} manifest)`,
       );
-      throw new TranslatableError('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED', { id: appUrn, arch: architecture });
     }
 
     if (!appInfo.exposable) {
@@ -485,10 +666,19 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const appId = installRecord.id;
     const recordExposedLocal = exposedLocal ?? existingApp?.exposedLocal ?? !!appInfo.exposable;
 
+    // Register the operation BEFORE publishing so a cancel arriving during the publish->dequeue
+    // window (tier-A) can be honoured. Cleared in invokeCommand's finally.
+    this.operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
       .then(async (raw) => {
-        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
+        const { success, message, cancelled } = raw as z.output<typeof appEventResultSchema>;
+        // Cancellation is finalized worker-side in invokeCommand (record deleted + install_cancelled
+        // emitted), independent of this RPC reply. Nothing to do here — avoids a double delete/SSE/toast.
+        if (cancelled) {
+          return;
+        }
         if (success) {
           this.logger.info(`App ${appUrn} installed successfully`);
           const latest = await this.appRepository.getAppById(appId);
@@ -498,44 +688,45 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
           void this.emitInstallQueueUpdate();
 
+          // Sync any app-declared intents (agents.intents[]) into CI-Server's
+          // catalog so installing the app grows the assistant's vocabulary.
+          // Best-effort and detached: never fails the install (mirrors the #843
+          // install-sink pattern for side-effects hanging off the lifecycle).
+          const appIntentSyncService = this.appIntentSyncService;
+          if (appIntentSyncService) {
+            this.fireAndForgetLifecycle('register-intents', appUrn, () => appIntentSyncService.registerAppIntents(appUrn, appInfo));
+          }
+
           if (recordExposedLocal || (appInfo.exposable && !exposedLocal)) {
             await this.syncExposure();
           }
         } else {
           const isRpcTimeout = /timed out|RPC_TIMEOUT/i.test(message);
           if (isRpcTimeout) {
+            // The image pull/compose can outlast the RPC. Keep 'installing' and let the worker finalize
+            // the terminal status itself (markInstallSucceeded on success, handleFailedResult on failure).
             this.logger.warn(
-              `Install RPC timed out for ${appUrn}; the worker may still be pulling images or starting containers. Keeping the app in 'installing' until the worker finishes.`,
+              `Install RPC timed out for ${appUrn}; the worker is still finishing and will finalize the result. Keeping the app in 'installing' for now.`,
             );
             return;
           }
 
-          this.logger.error(`Failed to install app ${appUrn}: ${message}`);
-          // Guard the status write specifically: if the DB rejects the
-          // 'install_failed' enum (e.g. a migration hasn't applied yet), we must
-          // still surface the failure over SSE instead of crashing the process.
-          try {
-            await this.appRepository.updateAppById(appId, { status: 'install_failed' });
-          } catch (statusError) {
-            this.logger.error(
-              `Failed to persist 'install_failed' status for ${appUrn} (continuing without crashing): ${statusError instanceof Error ? statusError.message : String(statusError)}`,
-            );
-          }
-          this.sseService.emit('app', {
-            event: 'install_error',
-            appUrn,
-            appStatus: 'install_failed',
-            error: message,
-            errorCode,
-            errorDetail,
-            settingsPath,
-          });
-          void this.emitInstallQueueUpdate();
-          this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'install', message);
+          // Publish failed without the command running (queue unavailable/overflow/invalid event), so
+          // the worker never finalized — clear the registry and finalize here. finalizeFailedInstall is
+          // guarded on status, so it's a no-op if the worker already finalized.
+          this.operationRegistry.clear(appUrn, requestId);
+          const latest = await this.appRepository.getAppById(appId).catch(() => null);
+          // Publisher fallback: no invokeCommand `finally` ran, so emit the install-queue update here.
+          await this.finalizeFailedInstall(latest, appUrn, raw as z.output<typeof appEventResultSchema>, { emitQueueUpdate: true });
         }
       })
-      .catch((err) => this.logLifecycleHandlerError('install', appUrn, err));
+      .catch((err) => {
+        // A publish rejection (invalid event data, etc.) or a throw inside the completion handler
+        // means invokeCommand never ran (or didn't finish) for this op — clear the registry entry so
+        // a stale 'queued' operation can't linger and keep /cancel returning 'cancelled_queued'.
+        this.operationRegistry.clear(appUrn, requestId);
+        this.logLifecycleHandlerError('install', appUrn, err);
+      });
 
     return { requestId };
   }
@@ -685,6 +876,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
           await this.appRepository.deleteAppById(app.id);
+
+          // Drop the app's declared intents from CI-Server's catalog. Best-effort
+          // and detached; never fails the uninstall.
+          const appIntentSyncService = this.appIntentSyncService;
+          if (appIntentSyncService) {
+            this.fireAndForgetLifecycle('unregister-intents', appUrn, () => appIntentSyncService.unregisterAppIntents(appUrn));
+          }
 
           // Release Portal DNS/tunnel routes before telling the UI uninstall is done,
           // so reinstalling the same hostname does not hit stale "domain in use" checks.
@@ -899,7 +1097,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
   private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
-    await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
+    await this.exposureSyncService.syncExposurePublic(options);
   }
 
   /**
@@ -908,347 +1106,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * reconfigured app so the old record is released, then sync the full state.
    */
   private async syncExposureAfterRoutingChange(appUrn: AppUrn, routingChanged: boolean) {
-    if (routingChanged) {
-      this.logger.info(`[Cloudflare] Public routing changed for ${appUrn} — releasing previous DNS before applying new hostname`);
-      await this.syncExposure({ excludeAppUrns: [appUrn] });
-    }
-    await this.syncExposure();
+    await this.exposureSyncService.syncExposureAfterRoutingChange(appUrn, routingChanged);
   }
 
   /**
    * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
    */
-  public async syncExposurePublic() {
-    return this.syncExposure();
+  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+    return this.exposureSyncService.syncExposurePublic(options);
   }
 
   /** Reconcile Tailscale Serve for all Private VPN apps (no Cloudflare sync). */
   public async syncTailscaleExposurePublic() {
-    return this.triggerTailscaleSync();
-  }
-
-  /**
-   * Sync Tailscale Serve state for apps with exposureMode='tailscale'
-   */
-  private async triggerTailscaleSync() {
-    try {
-      const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
-      if (!tailscaleService) return;
-
-      const status = await tailscaleService.getStatus().catch(() => null);
-      if (!status?.connected) return;
-
-      const apps = await this.appRepository.getApps();
-
-      // Apps that should be Tailscale-served
-      const shouldServe = apps.filter(
-        (app) => (app as Record<string, unknown>).exposureMode === 'tailscale' && ['running', 'starting', 'restarting'].includes(app.status),
-      );
-
-      const serveStatus = await tailscaleService.getServeStatus();
-      const desiredPorts = new Map<
-        number,
-        {
-          appName: string;
-          appUrn: AppUrn;
-          port: number;
-          upstreamUrl: string;
-        }
-      >();
-
-      for (const app of shouldServe) {
-        if (!app.port) {
-          this.logger.error(`[Tailscale] Skipping ${app.appName}:${app.appStoreSlug}: missing app port for Private VPN publishing`);
-          continue;
-        }
-
-        const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-        const target = await this.dockerService.getAppNetworkTarget(appUrn);
-
-        if (!target) {
-          this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
-          continue;
-        }
-
-        desiredPorts.set(app.port, {
-          appName: app.localSubdomain || app.appName,
-          appUrn,
-          port: app.port,
-          upstreamUrl: target.url,
-        });
-      }
-
-      const currentlyServedByPort = new Map(
-        serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
-      );
-
-      for (const desired of desiredPorts.values()) {
-        const currentEntry = currentlyServedByPort.get(desired.port);
-        if (!currentEntry || currentEntry.dest !== desired.upstreamUrl || currentEntry.mountPoint !== '/') {
-          await tailscaleService
-            .serveApp({
-              appName: desired.appName,
-              httpsPort: desired.port,
-              upstreamUrl: desired.upstreamUrl,
-            })
-            .catch((e) => this.surfaceTailscaleServeFailure(desired.appUrn, e));
-        }
-      }
-
-      for (const served of serveStatus.entries) {
-        if (served.rawServiceName) {
-          await tailscaleService
-            .clearService(served.rawServiceName)
-            .catch((e) => this.logger.error(`[Tailscale] Failed to clear ${served.rawServiceName}: ${e}`));
-          continue;
-        }
-
-        const listenPort = served.listenPort;
-        if (!listenPort || desiredPorts.has(listenPort)) {
-          continue;
-        }
-
-        await tailscaleService.unservePort(listenPort).catch((e) => this.logger.error(`[Tailscale] Failed to unserve :${listenPort}: ${e}`));
-      }
-
-      this.logger.debug(`[Tailscale] Sync complete: ${desiredPorts.size} apps served`);
-    } catch (error) {
-      this.logger.error(`[Tailscale] Sync failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Triggers a full sync of all exposed apps to Cloudflare via CI-Cloud
-   */
-  private lastPublicDnsFailureReportAt = 0;
-  private readonly lastPublicDnsToastAt = new Map<string, number>();
-  private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
-
-  /**
-   * Surface a public-DNS sync failure so it is never silent: always logs an
-   * error, reports to Sentry, and emits a per-app SSE event the frontend turns
-   * into a toast. Sentry and toasts are cooldown-guarded to avoid flooding when
-   * availability remediation re-triggers the sync for a still-broken app.
-   */
-  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: Array<{ appUrn: AppUrn; hostname: string }> = []): void {
-    this.logger.error(message);
-
-    const now = Date.now();
-    if (now - this.lastPublicDnsFailureReportAt >= AppLifecycleService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
-      this.lastPublicDnsFailureReportAt = now;
-      this.errorReportingService?.captureMessage(message, 'error', { failedApps: failedAppNames });
-    }
-
-    for (const target of toastTargets) {
-      const lastToast = this.lastPublicDnsToastAt.get(target.appUrn) ?? 0;
-      if (now - lastToast < AppLifecycleService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
-        continue;
-      }
-      this.lastPublicDnsToastAt.set(target.appUrn, now);
-      this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
-    }
-  }
-
-  private readonly lastTailscaleServeToastAt = new Map<string, number>();
-  private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
-
-  /**
-   * Surface a Tailscale Serve failure so Private VPN publishing is never silent.
-   * Always logs the error; when the failure is because HTTPS/Serve is not enabled
-   * on the tailnet (an account-wide setting the Hub cannot toggle), it also emits
-   * a per-app SSE event the frontend turns into a toast with the enable link.
-   * Cooldown-guarded so repeated syncs for a still-broken app don't flood toasts.
-   */
-  private surfaceTailscaleServeFailure(appUrn: AppUrn, error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    this.logger.error(`[Tailscale] Failed to serve ${appUrn}: ${message}`);
-
-    // Tailscale returns this when HTTPS Certificates / Serve are not enabled for
-    // the tailnet. This is the only serve failure the user can fix themselves.
-    const serveNotEnabled = /serve is not enabled|not enabled on your tailnet|HTTPS.*not enabled/i.test(message);
-    if (!serveNotEnabled) {
-      return;
-    }
-
-    const now = Date.now();
-    const lastToast = this.lastTailscaleServeToastAt.get(appUrn) ?? 0;
-    if (now - lastToast < AppLifecycleService.TAILSCALE_SERVE_FAILURE_COOLDOWN_MS) {
-      return;
-    }
-    this.lastTailscaleServeToastAt.set(appUrn, now);
-    this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn }, appUrn);
+    return this.exposureSyncService.syncTailscaleExposurePublic();
   }
 
   public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
-    try {
-      if (await hasRestoreIntent()) {
-        const rehydrationState = await readRehydrationState();
-        if (!rehydrationState?.completedAt) {
-          this.logger.debug('[Cloudflare] Skipping sync during device restore until rehydration completes');
-          return;
-        }
-      }
-
-      const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
-
-      if (!orgInfo) {
-        this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
-        return;
-      }
-
-      if (!orgInfo.tunnelId) {
-        this.logger.warn(
-          `[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`,
-        );
-        return;
-      }
-
-      const apps = await this.appRepository.getApps();
-      const userSettings = this.config.getConfig().userSettings;
-      const defaultPublicDomain = userSettings.domain || this.config.getConfig().domain;
-      const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
-
-      type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
-      const exclude = new Set(options?.excludeAppUrns ?? []);
-
-      const exposedApps: AppInfo[] = await Promise.all(
-        apps
-          .filter((app: AppFromDb) => {
-            const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-            if (exclude.has(appUrn)) {
-              return false;
-            }
-            return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
-          })
-          .map(async (app: AppFromDb) => {
-            const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-            const appPublicDomain = app.publicDomain || defaultPublicDomain;
-            return {
-              name: app.appName,
-              subdomain,
-              publicDomain: appPublicDomain,
-              localPort: 80,
-              protocol: 'http' as const,
-              hostname: 'traefik',
-              originServerName: buildOriginServerName({
-                appSubdomain: subdomain,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                localDomain,
-              }),
-            };
-          }),
-      );
-
-      // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
-      // `hubSubdomain` (from device_registration) is the canonical source for Hub route identity.
-      // Do NOT use `DOMAIN` / `userSettings.domain` to derive the Hub subdomain — DOMAIN is the
-      // root domain for app hostname construction, not the Hub prefix.
-      // When hubSubdomain is null (e.g. pre-migration records), the Hub entry is omitted from sync.
-      const hubSub = orgInfo.hubSubdomain;
-      if (hubSub && defaultPublicDomain) {
-        const orgSlug = orgInfo.slug;
-        const orgSuffix = `-${orgSlug}`;
-        const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
-        const hubHostname = `${hubSub}.${defaultPublicDomain}`;
-
-        exposedApps.unshift({
-          name: 'OS Hub',
-          subdomain: deviceName,
-          publicDomain: defaultPublicDomain,
-          localPort: 80,
-          protocol: 'http' as const,
-          hostname: 'traefik',
-          originServerName: hubHostname,
-          privilegedKind: 'hub',
-        });
-      }
-
-      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
-
-      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
-
-      if (!result.ok) {
-        // A full sync failure means none of the exposed apps were updated, so
-        // raise a per-app toast for every exposed app — not only the partial
-        // per-app failures handled below. Without this, full failures (e.g.
-        // CI-Cloud unreachable / non-success response) would be silent in the
-        // UI. Cooldowns in surfacePublicDnsFailure prevent flooding on repeated
-        // syncs.
-        const toastTargets = appEntries
-          .map((entry) => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === entry.name);
-            if (!dbApp) {
-              return null;
-            }
-            return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
-            };
-          })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
-        this.surfacePublicDnsFailure(
-          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
-          appEntries.map((entry) => entry.name),
-          toastTargets,
-        );
-      } else if (result.failed.length > 0) {
-        // Map CI-Cloud's failed app names back to their URN + hostname so the
-        // frontend can raise a per-app toast (privileged Hub entry excluded).
-        const toastTargets = result.failed
-          .map((name) => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === name);
-            const entry = exposedApps.find((candidate) => candidate.name === name && candidate.privilegedKind !== 'hub');
-            if (!dbApp || !entry) {
-              return null;
-            }
-            return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
-            };
-          })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
-        const failedHostnames = toastTargets.map((target) => target.hostname);
-        this.surfacePublicDnsFailure(
-          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${(failedHostnames.length > 0 ? failedHostnames : result.failed).join(', ')}. ` +
-            `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
-          result.failed,
-          toastTargets,
-        );
-      } else if (appEntries.length > 0) {
-        // Only log success once the sync fully completed (ok and no per-app
-        // failures); otherwise the failure branches above own the messaging.
-        this.logger.info(
-          `[Cloudflare] Public hostnames synced: ${appEntries
-            .map(
-              (entry) =>
-                `${entry.name} -> ${buildPublicHostname({
-                  appSubdomain: entry.subdomain,
-                  hubSubdomain: orgInfo.hubSubdomain,
-                  orgSlug: orgInfo.slug,
-                  publicDomainRoot: entry.publicDomain || defaultPublicDomain,
-                })}`,
-            )
-            .join(', ')}`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
-      } else {
-        this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
-      }
-    }
+    return this.exposureSyncService.triggerCloudflareSync(options);
   }
 
   public async updateApp(params: { appUrn: AppUrn; performBackup: boolean }) {

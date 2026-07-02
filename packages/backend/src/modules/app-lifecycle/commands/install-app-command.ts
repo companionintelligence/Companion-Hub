@@ -14,8 +14,9 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
-import { AppLifecycleCommand } from './command';
+import { AppLifecycleCommand, type CommandExecutionContext } from './command';
 import { createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
@@ -122,7 +123,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
   }
 
-  public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<AppCommandResult> {
+  public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const _config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
@@ -159,6 +160,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     try {
+      ctx?.setPhase('preparing');
       const appImages = extractComposeImages(composeToInstallContent);
       await emitProgress(5);
       if (process.getuid && process.getgid) {
@@ -425,10 +427,18 @@ export class InstallAppCommand extends AppLifecycleCommand {
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
       }
 
+      // Entering the killable phase: from here a cancel aborts the pull/compose and runs compensation.
+      ctx?.setPhase('pulling');
+      throwIfAborted(ctx?.signal);
+
       await emitProgress(55);
       try {
-        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
-      } catch (_) {
+        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans', ctx?.signal);
+      } catch (downErr) {
+        // A cancellation during this preparatory down must propagate, not be swallowed as "no prior containers".
+        if (isAbortError(downErr)) {
+          throw downErr;
+        }
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
@@ -439,6 +449,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         dockerService.pullImages
           ? await dockerService.pullImages(appImages, {
               forcePull,
+              signal: ctx?.signal,
               onProgress: ({ completedBytes, totalBytes, completedImages, totalImages }) => {
                 const nextProgress =
                   totalBytes > 0
@@ -462,9 +473,22 @@ export class InstallAppCommand extends AppLifecycleCommand {
           : logger.warn(`Docker pull progress tracking is unavailable for ${appUrn}; falling back to compose up progress`);
       }
 
+      // Entering compose-up. This remains cancellable; the abort kills `compose up` and compensation
+      // tears down whatever was partially created.
+      ctx?.setPhase('composing');
+      throwIfAborted(ctx?.signal);
+
       await emitProgress(99);
-      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans');
+      await this.composeAppWithNetworkRecovery(appUrn, form, 'up --detach --force-recreate --remove-orphans', 3, ctx?.signal);
       await appFilesManager.setAppDataDirPermissions(appUrn);
+
+      // Honor a cancel that landed while `compose up` was running but still completed: install is a
+      // "safe" tier op, so we abort + compensate (remove the just-created app) rather than finish.
+      throwIfAborted(ctx?.signal);
+
+      // Containers are up and the cancel window is closed — past the point of no return. Cancel is
+      // refused beyond this phase (see AppLifecycleService.cancelOperation).
+      ctx?.setPhase('finalizing');
 
       const containerVerification = await dockerService.waitForManagedAppContainersReady(appUrn);
       if (!containerVerification.ok) {
@@ -560,8 +584,72 @@ export class InstallAppCommand extends AppLifecycleCommand {
       await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
+      // A user-requested cancel: tear down whatever was partially created and report a cancellation
+      // (not a failure). The service finalizes the cancel (deletes the record + emits install_cancelled).
+      if (isAbortError(err)) {
+        const message = await this.compensateInstallCancel(appUrn);
+        return { success: false, cancelled: true, message };
+      }
       return this.handleAppError(err, appUrn, 'install');
     }
+  }
+
+  /**
+   * Best-effort cleanup after an install is cancelled mid-flight: tears down containers, the app's own
+   * volumes, project networks, port allocations, the agent webhook, and the app/data directories so no
+   * orphaned resources are left behind. Pulled images are intentionally kept (faster re-install, and so
+   * we never force-remove an image another installed app might share). Every step is individually
+   * guarded and idempotent; the compose-down runs WITHOUT the (now-aborted) signal so cleanup completes.
+   * Does NOT delete the DB record — the service owns that (see AppLifecycleService.handleCancelledResult).
+   *
+   * @returns A human-readable summary message for the cancellation result.
+   */
+  private async compensateInstallCancel(appUrn: AppUrn): Promise<string> {
+    const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const dockerService = this.moduleRef.get(DockerService, { strict: false });
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+
+    logger.info(`[install-cancel] compensating cancelled install for ${appUrn}`);
+
+    // Release allocated ports.
+    try {
+      const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+      if (portManager) {
+        const released = await portManager.releaseAll(appUrn);
+        if (released > 0) {
+          logger.info(`[install-cancel] released ${released} port allocation(s) for ${appUrn}`);
+        }
+      }
+    } catch (err) {
+      logger.warn(`[install-cancel] failed to release ports for ${appUrn}: ${err}`);
+    }
+
+    // Tear down whatever was partially created. `--rmi local` only removes locally-built images and
+    // `-v` removes the app's own anonymous volumes — pulled images are intentionally kept (faster
+    // re-install, and we never force-remove an image another installed app might share). This mirrors
+    // the ticket's cleanup intent for install cancel.
+    try {
+      await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi local');
+    } catch (err) {
+      logger.warn(`[install-cancel] compose down failed for ${appUrn} (continuing): ${err}`);
+    }
+
+    // Safety net for partial-teardown states: remove any leftover project networks.
+    await dockerService.removeAppNetworks(appUrn).catch((err) => logger.warn(`[install-cancel] removeAppNetworks failed for ${appUrn}: ${err}`));
+
+    // Deregister any agent webhook that may have been registered before the abort.
+    try {
+      const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+      agentNotifyService?.unregisterWebhook(appUrn);
+    } catch {
+      // AgentNotifyService may be unavailable; ignore.
+    }
+
+    await appFilesManager.deleteAppFolder(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppFolder failed for ${appUrn}: ${err}`));
+    await appFilesManager.deleteAppDataDir(appUrn).catch((err) => logger.warn(`[install-cancel] deleteAppDataDir failed for ${appUrn}: ${err}`));
+
+    logger.info(`[install-cancel] compensation complete for ${appUrn}`);
+    return `Install of ${appUrn} was cancelled and cleaned up`;
   }
 
   private async markInstallSucceeded(
