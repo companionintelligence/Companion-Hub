@@ -550,6 +550,9 @@ pub fn run() {
             });
 
             if stack_dev_mode_enabled() {
+                // Stack was started externally (e.g. `cihub up dev`); still refresh host
+                // metrics so the dashboard shows physical disk/RAM, not the Docker VM.
+                hub_manager::refresh_host_metrics_probe_cache(&data_dir);
                 let _ = hub_manager::append_desktop_log_for(
                     &data_dir,
                     "setup",
