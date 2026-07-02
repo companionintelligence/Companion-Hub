@@ -470,22 +470,26 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Re-sync CloudflareClientService from disk so getTunnelToken() stays correct
     await this.ensureCloudflareClientHasTunnelToken();
 
-    const { ciCloudUrl } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
     if (!ciCloudUrl) return;
 
     try {
       const deviceId = await this.getDeviceId();
 
-      // Use the existing unauthenticated check-in endpoint to confirm the
-      // device is still active in CI Portal. A 400 means the device is no
-      // longer active; network errors are counted toward the failure threshold.
+      // Confirm the device is still active in CI Portal via the check-in endpoint.
+      // The endpoint is device-authenticated, so present this device's API key
+      // (x-device-key) — a registered device always holds one. A 400 means the
+      // device is no longer active; network errors count toward the failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 5_000,
           validateStatus: () => true,
-          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
+            'Content-Type': 'application/json',
+            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+          }),
         },
       );
 
@@ -704,16 +708,26 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     };
   }
 
-  /** Unauthenticated Portal probe — true when hardware device_id is active in CI Portal. */
+  /**
+   * Portal probe — true when hardware device_id is active in CI Portal. Runs only while the
+   * Hub is locally unregistered (drift detection), so a device API key is usually absent; the
+   * check-in endpoint is device-authenticated, so without a valid key this returns null
+   * (unknown) rather than a definitive active/inactive answer. A stale-but-valid key, when
+   * present, still yields a definitive result.
+   */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
     try {
+      const { ciHubApiKey } = this.config.getConfig();
       const response = await axios.post(
         `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 10_000,
           validateStatus: () => true,
-          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
+            'Content-Type': 'application/json',
+            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+          }),
         },
       );
 
