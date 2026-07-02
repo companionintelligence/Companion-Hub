@@ -21,7 +21,7 @@ export const AddAppStoreDialog = () => {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">{t('APP_STORE_ADD_COMING_SOON_DETAIL')}</p>
           <DialogFooter>
-            <Button disabled intent="success">
+            <Button disabled variant="outline">
               {t('APP_STORE_ADD_FORM_SUBMIT')}
             </Button>
           </DialogFooter>

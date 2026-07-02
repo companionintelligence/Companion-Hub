@@ -10,8 +10,8 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (59 LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.length).toBe(59);
+  it('decodes the full catalog (60 LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.length).toBe(60);
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(4);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
@@ -60,6 +60,14 @@ describe('curated-models (TOON catalog)', () => {
       // Reasoning capability mirrors the runtime flag.
       expect(m.metadata?.capabilities?.reasoning).toBe(m.runtime.reasoning);
     }
+  });
+
+  it('includes GLM 5.2 in the large-models browse group', () => {
+    const glm = byId.get('glm-5-2-cloud');
+    expect(glm).toBeDefined();
+    expect(glm?.backendModelId).toBe('glm-5.2:cloud');
+    expect(glm?.parameterScale).toBeGreaterThan(70);
+    expect(glm?.tiers.high).toBe('recommended');
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {

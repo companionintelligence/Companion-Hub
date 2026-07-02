@@ -1,6 +1,13 @@
-import { dynamicComposeSchema, serviceSchema, MIN_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION } from './dynamic-compose.js';
+import {
+  dynamicComposeSchema,
+  serviceSchema,
+  MIN_SCHEMA_VERSION,
+  CURRENT_SCHEMA_VERSION,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from './dynamic-compose.js';
 import { parseComposeJson } from './utils/convert-legacy-schema.js';
-import type { DependsOn, DynamicCompose, Service, ServiceInput } from './dynamic-compose.js';
+import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
 
 import {
   APP_CATEGORIES,
@@ -43,6 +50,8 @@ export {
   parseComposeJson,
   serviceSchema,
   toJsonSchema,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
   APP_CATEGORIES,
@@ -73,6 +82,8 @@ export {
   type ServiceInput,
   type DependsOn,
   type Service,
+  type AppSecurityGrants,
+  type ServiceSecurityViolation,
   type DynamicCompose,
   type AppInfo,
   type AppInfoInput,

@@ -1,6 +1,7 @@
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { getRehydrateStatus } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 import { getStoredDriftChoice } from '@/lib/registration-state-drift';
 import { GuestDashboard } from '@/modules/dashboard/pages/guest-dashboard';
 import { QueryErrorResetBoundary } from '@tanstack/react-query';
@@ -34,8 +35,8 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const res = await apiFetch('/api/app-lifecycle/rehydrate/status');
-        if (!res.ok) {
+        const statusResult = await sdkResult(getRehydrateStatus());
+        if (!statusResult.ok) {
           if (!cancelled) {
             setShouldRestoreApps(false);
             setRestoreRedirectChecked(true);
@@ -43,7 +44,7 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const status = (await res.json()) as { completed?: boolean; restoreIntent?: boolean };
+        const status = statusResult.data as { completed?: boolean; restoreIntent?: boolean };
         const pendingRestore = !status.completed && (driftChoice === 'restore' || Boolean(status.restoreIntent));
         if (!cancelled) {
           setShouldRestoreApps(pendingRestore);

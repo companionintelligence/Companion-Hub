@@ -27,6 +27,7 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
+  getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -106,6 +107,35 @@ describe('AppDetailsPage', () => {
     expect(image).toHaveAttribute('src', 'http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
   });
 
+  it('prefers the portal icon URL from metadata when available', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: { totalBytes: 1234, formatted: '1.2 KB' }, isLoading: false };
+      }
+
+      return {
+        data: {
+          info: {
+            urn: 'test-app:community',
+            name: 'Test App',
+            author: 'CI',
+            short_desc: 'A clean desktop summary for installs.',
+            categories: ['utilities'],
+          },
+          app: { status: 'running' },
+          metadata: { iconUrl: 'https://cdn.example.com/test-app.png' },
+        },
+        isLoading: false,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    const image = screen.getByRole('img', { name: 'Test App' });
+    expect(getMarketplaceAppImageUrl).not.toHaveBeenCalled();
+    expect(image).toHaveAttribute('src', 'https://cdn.example.com/test-app.png');
+  });
+
   it('falls back to the placeholder image when the details logo fails to load', () => {
     render(<AppDetailsPage />);
 
@@ -122,6 +152,26 @@ describe('AppDetailsPage', () => {
     expect(screen.getByTestId('app-actions')).toBeInTheDocument();
     expect(screen.getByTestId('app-status')).toBeInTheDocument();
     expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
+  });
+
+  it('shows a not-found message when app details fail to load', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
+      if (options.queryKey?.[0] === 'app-image-size') {
+        return { data: null, isLoading: false };
+      }
+
+      return {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+      };
+    });
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByText('APP_ERROR_APP_NOT_FOUND')).toBeInTheDocument();
+    expect(screen.getByText('APP_DETAILS_LOAD_FAILED')).toBeInTheDocument();
+    expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
   });
 
   it('keeps the status and action bar in the shared header row layout', () => {

@@ -8,6 +8,7 @@ import axios from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import path from 'node:path';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
@@ -34,6 +35,7 @@ describe('CloudflareClientService', () => {
   let configService: MockProxy<ConfigurationService>;
   let moduleRef: MockProxy<ModuleRef>;
   let dockerService: MockProxy<DockerService>;
+  let portalClient: MockProxy<PortalClientService>;
   const originalNodeEnv = process.env.NODE_ENV;
   const originalLocal = process.env.LOCAL;
 
@@ -48,6 +50,9 @@ describe('CloudflareClientService', () => {
     configService = mock<ConfigurationService>();
     moduleRef = mock<ModuleRef>();
     dockerService = mock<DockerService>();
+    portalClient = mock<PortalClientService>();
+    portalClient.getDeviceAuthHeaders.mockReturnValue({ Authorization: 'Bearer api-key', 'x-device-key': 'api-key' });
+    portalClient.postTunnelState.mockResolvedValue({ success: true, failed: [], synced: 1 });
 
     configService.get.mockImplementation((key) => {
       if (key === 'ciCloudUrl') return 'http://api.cloud';
@@ -59,7 +64,12 @@ describe('CloudflareClientService', () => {
     (mockedAxios.create as any).mockReturnValue(mockAxiosInstance);
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [CloudflareClientService, { provide: ConfigurationService, useValue: configService }, { provide: ModuleRef, useValue: moduleRef }],
+      providers: [
+        CloudflareClientService,
+        { provide: ConfigurationService, useValue: configService },
+        { provide: ModuleRef, useValue: moduleRef },
+        { provide: PortalClientService, useValue: portalClient },
+      ],
     }).compile();
 
     service = module.get<CloudflareClientService>(CloudflareClientService);
@@ -145,20 +155,16 @@ describe('CloudflareClientService', () => {
 
   describe('syncState', () => {
     it('should post apps to cloud', async () => {
-      mockAxiosInstance.post.mockResolvedValue({ data: { success: true } });
+      portalClient.postTunnelState.mockResolvedValue({ success: true });
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
       expect(result).toEqual({ ok: true, failed: [], synced: 0 });
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        'tunnels/state',
-        expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }),
-        expect.anything(),
-      );
+      expect(portalClient.postTunnelState).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }));
     });
 
     it('should surface apps CI-Cloud could not create a DNS record for', async () => {
-      mockAxiosInstance.post.mockResolvedValue({ data: { success: true, failed: ['anything-llm'], synced: 1 } });
+      portalClient.postTunnelState.mockResolvedValue({ success: true, failed: ['anything-llm'], synced: 1 });
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
@@ -171,7 +177,7 @@ describe('CloudflareClientService', () => {
     });
 
     it('should handle axios error', async () => {
-      mockAxiosInstance.post.mockRejectedValue(new Error('Network Error'));
+      portalClient.postTunnelState.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
       expect(result).toEqual({ ok: false, failed: [], synced: 0 });
     });

@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { completeOnboarding, detectServices } from '@/api-client/sdk.gen';
+import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
@@ -15,6 +16,9 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
+import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
+import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
+import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
@@ -98,6 +102,7 @@ function OnboardingWizard() {
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
+  const [companionApps, setCompanionApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
 
@@ -105,10 +110,9 @@ function OnboardingWizard() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await apiFetch('/api/system/detect-services');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setDetectedServices(identifyServices(data.services || []));
+        const data = (await unwrapSdkOrNull(detectServices())) as { services?: Array<{ name: string; image: string; status: string }> } | null;
+        if (!data) return;
+        if (!cancelled) setDetectedServices(identifyServices(data.services ?? []));
       } catch {
         // Non-fatal — recommendations fall back to popular apps.
       }
@@ -118,9 +122,22 @@ function OnboardingWizard() {
     };
   }, []);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void refetchCatalog();
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [refetchCatalog]);
+
   const catalogReady = !isCatalogLoading && !isCatalogError;
   const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && catalogReady;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+  const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
+
+  const agentSlugs = useMemo(
+    () => (aiSetupConfig?.agentFrameworks ?? []).map((framework) => AGENT_APP_SLUG[framework]),
+    [aiSetupConfig?.agentFrameworks],
+  );
 
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
   const agentApps = useMemo(
@@ -129,8 +146,16 @@ function OnboardingWizard() {
   );
   const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
   const installApps = useMemo(() => {
-    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...selectedApps]);
-  }, [includedAgentApps, selectedApps]);
+    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...companionApps, ...selectedApps]);
+  }, [includedAgentApps, companionApps, selectedApps]);
+
+  const modelPullEnabled = aiSetupConfig !== undefined && !aiSetupConfig.skipped;
+  const modelPullState = useModelPullOrchestrator({
+    selectedModelIds: aiSetupConfig?.selectedModels ?? [],
+    installedCatalogIds: aiSetupConfig?.installedCatalogIds ?? [],
+    enabled: modelPullEnabled,
+    bestEffort: true,
+  });
 
   if (user.hasCompletedOnboarding) {
     return <Navigate to="/home" replace />;
@@ -147,7 +172,7 @@ function OnboardingWizard() {
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
             try {
-              await apiFetch('/api/complete-onboarding', { method: 'PATCH' });
+              await sdkResult(completeOnboarding());
             } catch {
               // Non-fatal — navigate anyway.
             }
@@ -176,22 +201,34 @@ function OnboardingWizard() {
           onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
           cloudflareAvailable={cloudflareAvailable}
           tailscaleAvailable={tailscaleAvailable}
+          afterHarness={<CompanionAppsCard publicExposureMode={publicExposureMode} onChange={setCompanionApps} />}
         >
           <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
-            <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
+            <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
 
+        {modelPullEnabled && (
+          <ModelDownloadStatus
+            selectedModelIds={aiSetupConfig.selectedModels}
+            installedCatalogIds={aiSetupConfig.installedCatalogIds}
+            pullState={modelPullState}
+          />
+        )}
+
         <div aria-hidden className="h-2" />
 
-        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {isCatalogLoading
-              ? t('COMMON_LOADING')
-              : isCatalogError
-                ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
-                : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
-          </p>
+        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <ModelDownloadFooterSummary pullState={modelPullState} />
+            <p className="text-sm text-muted-foreground">
+              {isCatalogLoading
+                ? t('COMMON_LOADING')
+                : isCatalogError
+                  ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
+                  : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
+            </p>
+          </div>
           <div className="flex gap-2 sm:justify-end">
             {isCatalogError && (
               <Button variant="outline" size="lg" onClick={() => void refetchCatalog()}>

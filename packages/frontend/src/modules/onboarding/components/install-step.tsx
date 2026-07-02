@@ -1,4 +1,7 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
+import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
+import { sdkResult } from '@/lib/sdk-unwrap';
+import { fetchTrackedModels, parsePullProgress } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -79,11 +82,12 @@ export const InstallStep = ({
   const queryClient = useQueryClient();
 
   const buildInstallBody = (app: OnboardingApp) => {
+    const mode = app.exposureMode ?? defaultExposureMode;
     const body: Record<string, unknown> = {
       localSubdomain: app.localSubdomain || app.appSlug,
-      exposureMode: defaultExposureMode,
-      exposedLocal: defaultExposureMode === 'cloudflare',
-      openPort: defaultExposureMode === 'local',
+      exposureMode: mode,
+      exposedLocal: mode === 'cloudflare',
+      openPort: mode === 'local',
     };
 
     if (app.appSlug === 'ci-hermes' && operatorUsername?.trim()) {
@@ -116,19 +120,12 @@ export const InstallStep = ({
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
           for (const cp of aiSetupConfig.cloudProviders) {
             try {
-              const res = await apiFetch('/api/inference/cloud-providers', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
-              });
-              if (!res.ok) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: res.status }),
-                }));
-              }
+              await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
             } catch {
-              // Non-fatal — continue with other providers
+              setAiPhase((prev) => ({
+                ...prev,
+                error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: 0 }),
+              }));
             }
           }
           setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
@@ -140,129 +137,58 @@ export const InstallStep = ({
 
         if (aiSetupConfig.selectedModels.length > 0) {
           const modelErrors: Record<string, string> = {};
+          const modelProgress: Record<string, number> = {};
 
-          for (const modelId of modelsToPull) {
-            try {
-              const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`);
-              if (!preflightRes.ok) {
-                modelErrors[modelId] = `Preflight check failed (HTTP ${preflightRes.status})`;
-                continue;
-              }
-              const preflight = (await preflightRes.json()) as { canPull?: boolean; alreadyInstalled?: boolean; reason?: string };
-              if (!preflight.canPull && !preflight.alreadyInstalled) {
-                modelErrors[modelId] = preflight.reason ?? `Cannot download model ${modelId}.`;
-              }
-            } catch {
-              modelErrors[modelId] = `Cannot verify download safety for model ${modelId}.`;
-            }
-          }
-
-          const pullableModels = modelsToPull.filter((id) => !modelErrors[id]);
-
-          if (pullableModels.length > 0) {
+          if (modelsToPull.length > 0) {
             setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
-            for (const modelId of pullableModels) {
-              try {
-                const res = await apiFetch('/api/inference/models/pull', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ modelId, bestEffort: true }),
-                });
-                const data = (await res.json().catch(() => ({}))) as { success?: boolean; skipped?: boolean; message?: string };
-                if (!res.ok || data.skipped || data.success === false) {
-                  modelErrors[modelId] = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
-                  setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
-                } else {
-                  availablePreferenceModelIds.add(modelId);
-                }
-              } catch {
-                modelErrors[modelId] = `Failed to pull model ${modelId}.`;
-                setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
+
+            const pullWaitMs = 60_000;
+            const pullWaitStart = Date.now();
+            while (Date.now() - pullWaitStart < pullWaitMs) {
+              const tracked = await fetchTrackedModels();
+              const parsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], tracked);
+              Object.assign(modelProgress, parsed.progressById);
+              for (const [id, msg] of Object.entries(parsed.errorsById)) {
+                modelErrors[id] = msg;
               }
+              for (const id of parsed.pulledIds) {
+                availablePreferenceModelIds.add(id);
+              }
+              setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+              if (parsed.allDone) break;
+              await minDelay(1000);
             }
 
-            const modelProgress: Record<string, number> = {};
-
-            const pollPullProgress = async (): Promise<boolean> => {
-              try {
-                const res = await apiFetch('/api/inference/models/tracked');
-                if (!res.ok) return false;
-                const tracked = await res.json();
-                let allDone = true;
-                for (const model of tracked) {
-                  if (pullableModels.includes(model.catalogId)) {
-                    modelProgress[model.catalogId] =
-                      model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
-                    if (model.state === 'error') {
-                      modelErrors[model.catalogId] = model.error ?? modelErrors[model.catalogId] ?? t('ONBOARDING_INSTALL_DOWNLOAD_FAILED');
-                      modelProgress[model.catalogId] = modelProgress[model.catalogId] ?? 0;
-                    }
-                    if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
-                      allDone = false;
-                    }
-                  }
-                }
-                for (const modelId of pullableModels) {
-                  if (modelErrors[modelId]) continue;
-                  if (modelProgress[modelId] === undefined) {
-                    allDone = false;
-                  }
-                }
-                setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
-                return allDone;
-              } catch {
-                return false;
-              }
-            };
-
-            const pullTimeout = 600_000;
-            const pullStart = Date.now();
-            let pullsComplete = false;
-            while (Date.now() - pullStart < pullTimeout) {
-              await minDelay(2000);
-              if (await pollPullProgress()) {
-                pullsComplete = true;
-                break;
-              }
+            const finalTracked = await fetchTrackedModels();
+            const finalParsed = parsePullProgress(modelsToPull, aiSetupConfig.installedCatalogIds ?? [], finalTracked);
+            Object.assign(modelProgress, finalParsed.progressById);
+            for (const [id, msg] of Object.entries(finalParsed.errorsById)) {
+              modelErrors[id] = msg;
+            }
+            for (const id of finalParsed.pulledIds) {
+              availablePreferenceModelIds.add(id);
             }
 
-            if (!pullsComplete) {
-              for (const modelId of pullableModels) {
-                if (!modelErrors[modelId] && (modelProgress[modelId] ?? 0) < 100) {
-                  modelErrors[modelId] = 'Download timed out';
-                }
-              }
+            if (Object.keys(modelErrors).length > 0) {
               setAiPhase((prev) => ({
                 ...prev,
-                modelErrors: { ...modelErrors },
-                error:
-                  Object.keys(modelErrors).length > 0
-                    ? t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_DID_NOT_FINISH', { count: Object.keys(modelErrors).length })
-                    : t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_TIMED_OUT'),
-              }));
-            } else if (Object.keys(modelErrors).length > 0) {
-              setAiPhase((prev) => ({
-                ...prev,
+                modelProgress: { ...modelProgress },
                 modelErrors: { ...modelErrors },
                 error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: Object.keys(modelErrors).length }),
               }));
             }
-          } else if (Object.keys(modelErrors).length > 0) {
-            setAiPhase((prev) => ({
-              ...prev,
-              modelErrors,
-              error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_COULD_NOT_START', { count: Object.keys(modelErrors).length }),
-            }));
           }
 
           setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
+          const pinTracked = await fetchTrackedModels();
+          const pinableIds = new Set(
+            pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
+          );
+
           for (const modelId of aiSetupConfig.selectedModels) {
+            if (!pinableIds.has(modelId)) continue;
             try {
-              await apiFetch('/api/inference/models/pin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ modelId }),
-              });
+              await pinInferenceModel(modelId);
             } catch {
               // Non-fatal
             }
@@ -274,22 +200,15 @@ export const InstallStep = ({
         const resolvedVisionPreference = aiSetupConfig.preferredVisionModelId;
 
         try {
-          const preferenceRes = await apiFetch('/api/inference/preferences', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              backend: aiSetupConfig.backend,
-              model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
-              embeddingModel:
-                resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
-              visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
-            }),
+          await saveInferencePreferences({
+            backend: aiSetupConfig.backend,
+            model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
+            embeddingModel:
+              resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
+            visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
           });
-          if (!preferenceRes.ok) {
-            setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: preferenceRes.status }) }));
-          }
         } catch {
-          // Non-fatal — do not block onboarding install progress
+          setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
         }
 
         setAiPhase((prev) => ({ ...prev, status: 'done', modelsDone: true }));
@@ -325,18 +244,20 @@ export const InstallStep = ({
         }
 
         try {
-          const [res] = await Promise.all([
-            apiFetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(buildInstallBody(app)),
-            }),
+          const installBody = buildInstallBody(app);
+          const [installResult] = await Promise.all([
+            sdkResult(
+              installApp({
+                path: { urn: app.urn },
+                body: installBody,
+              } as Parameters<typeof installApp>[0]),
+            ),
             minDelay(500),
           ]);
 
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(data.message || `HTTP ${res.status}`);
+          if (!installResult.ok) {
+            const data = (installResult.data ?? {}) as { message?: string };
+            throw new Error(data.message || `HTTP ${installResult.status}`);
           }
 
           // Poll to confirm the app shows up in the installed apps list with
@@ -347,9 +268,9 @@ export const InstallStep = ({
 
           const checkRunning = async (): Promise<'running' | 'installing' | 'install_failed' | false> => {
             try {
-              const installedRes = await apiFetch('/api/apps/installed');
-              if (!installedRes.ok) return false;
-              const data = await installedRes.json().catch(() => ({}));
+              const installedResult = await sdkResult(getInstalledApps());
+              if (!installedResult.ok) return false;
+              const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
               const installed = data.installed || [];
               const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
               if (!match) return false;
@@ -573,7 +494,9 @@ export const InstallStep = ({
               ) : (
                 aiPhase.status === 'pulling-models' &&
                 (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
-                  <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
+                  <span className="text-xs text-muted-foreground">
+                    {(aiPhase.modelProgress[modelId] ?? 0) > 0 ? `${aiPhase.modelProgress[modelId]}%` : t('ONBOARDING_INSTALL_STATUS_DOWNLOADING')}
+                  </span>
                 )
               )}
             </div>

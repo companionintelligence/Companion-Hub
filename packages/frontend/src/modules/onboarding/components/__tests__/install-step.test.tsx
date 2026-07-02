@@ -2,14 +2,38 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
+import { sdkOk, sdkFail } from '@/tests/sdk-mock-helpers';
 
-const mockApiFetch = vi.fn();
 const mockInvalidateQueries = vi.fn();
 const mockSetQueryData = vi.fn();
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+const { installApp, getInstalledApps, saveInferencePreferences, pinInferenceModel, saveCloudProviderConfig, fetchTrackedModels } = vi.hoisted(() => ({
+  installApp: vi.fn(),
+  getInstalledApps: vi.fn(),
+  saveInferencePreferences: vi.fn(),
+  pinInferenceModel: vi.fn(),
+  saveCloudProviderConfig: vi.fn(),
+  fetchTrackedModels: vi.fn(),
 }));
+
+vi.mock('@/api-client/sdk.gen', () => ({
+  installApp,
+  getInstalledApps,
+}));
+
+vi.mock('@/lib/inference/inference-api', () => ({
+  saveInferencePreferences,
+  pinInferenceModel,
+  saveCloudProviderConfig,
+}));
+
+vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/inference/tracked-models')>();
+  return {
+    ...actual,
+    fetchTrackedModels,
+  };
+});
 
 vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
@@ -38,7 +62,12 @@ describe('InstallStep', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    installApp.mockResolvedValue(sdkOk({}));
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
+    saveInferencePreferences.mockResolvedValue(undefined);
+    pinInferenceModel.mockResolvedValue(undefined);
+    saveCloudProviderConfig.mockResolvedValue(undefined);
+    fetchTrackedModels.mockResolvedValue([]);
     mockInvalidateQueries.mockResolvedValue(undefined);
   });
 
@@ -96,7 +125,7 @@ describe('InstallStep', () => {
   });
 
   it('flags continuedInBackground when Continue is clicked before installs finish', async () => {
-    mockApiFetch.mockImplementation(() => new Promise(() => {}));
+    installApp.mockImplementation(() => new Promise(() => {}));
 
     render(<InstallStep apps={[makeApp('app1', 'App One', 'app1:store1')]} onComplete={onComplete} />);
 
@@ -106,20 +135,8 @@ describe('InstallStep', () => {
   });
 
   it('flags continuedInBackground when installs end incomplete but are still converging', async () => {
-    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
-      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
-        return { ok: true, json: async () => ({}) };
-      }
-      if (url === '/api/apps/installed') {
-        return {
-          ok: true,
-          json: async () => ({
-            installed: [{ info: { urn: 'app1:store1' }, app: { status: 'installing' } }],
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    installApp.mockResolvedValue(sdkOk({}));
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [{ info: { urn: 'app1:store1' }, app: { status: 'installing' } }] }));
 
     vi.useFakeTimers();
 
@@ -185,39 +202,21 @@ describe('InstallStep', () => {
     );
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/preferences',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ backend: 'vllm', model: null, embeddingModel: null, visionModel: null }),
-        }),
-      );
+      expect(saveInferencePreferences).toHaveBeenCalledWith({
+        backend: 'vllm',
+        model: null,
+        embeddingModel: null,
+        visionModel: null,
+      });
     });
   });
 
   it('persists the preferred model alongside the backend during AI setup', async () => {
-    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull-preflight')) {
-        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
-      }
-      if (url.includes('/api/inference/models/pull')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
-        if (body.modelId === 'bad-model') {
-          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'connect ECONNREFUSED' }) };
-        }
-        return { ok: true, json: async () => ({ success: true }) };
-      }
-      if (url.includes('/api/inference/models/tracked')) {
-        return {
-          ok: true,
-          json: async () => [
-            { catalogId: 'llama3-3-70b', state: 'pulled' },
-            { catalogId: 'bad-model', state: 'error', error: 'connect ECONNREFUSED' },
-          ],
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    fetchTrackedModels.mockResolvedValue([
+      { catalogId: 'llama3-3-70b', state: 'pulled' },
+      { catalogId: 'bad-model', state: 'error', errorMessage: 'connect ECONNREFUSED' },
+    ] as never);
+    getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
 
     render(
       <InstallStep
@@ -238,64 +237,30 @@ describe('InstallStep', () => {
 
     await waitFor(
       () => {
-        expect(mockApiFetch).toHaveBeenCalledWith(
-          '/api/inference/models/pull',
-          expect.objectContaining({
-            body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
-          }),
-        );
+        expect(saveInferencePreferences).toHaveBeenCalledWith({
+          backend: 'ollama',
+          model: 'llama3-3-70b',
+          embeddingModel: null,
+          visionModel: null,
+        });
       },
       { timeout: 5000 },
     );
 
-    // App install should still proceed after a model pull failure
     await waitFor(
       () => {
-        expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/app-lifecycle/'), expect.anything());
+        expect(installApp).toHaveBeenCalled();
       },
       { timeout: 10000 },
     );
-
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/preferences',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({
-            backend: 'ollama',
-            model: 'llama3-3-70b',
-            embeddingModel: null,
-            visionModel: null,
-          }),
-        }),
-      );
-    });
   });
 
   it('persists embedding and vision defaults only when those models are installed or pulled successfully', async () => {
-    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.includes('/api/inference/models/pull-preflight')) {
-        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
-      }
-      if (url.includes('/api/inference/models/pull')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
-        if (body.modelId === 'vision-model') {
-          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'download failed' }) };
-        }
-        return { ok: true, json: async () => ({ success: true }) };
-      }
-      if (url.includes('/api/inference/models/tracked')) {
-        return {
-          ok: true,
-          json: async () => [
-            { catalogId: 'chat-model', state: 'pulled' },
-            { catalogId: 'embedding-model', state: 'pulled' },
-            { catalogId: 'vision-model', state: 'error', error: 'download failed' },
-          ],
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    fetchTrackedModels.mockResolvedValue([
+      { catalogId: 'chat-model', state: 'pulled' },
+      { catalogId: 'embedding-model', state: 'pulled' },
+      { catalogId: 'vision-model', state: 'error', errorMessage: 'download failed' },
+    ] as never);
 
     render(
       <InstallStep
@@ -318,30 +283,86 @@ describe('InstallStep', () => {
 
     await waitFor(
       () => {
-        expect(mockApiFetch).toHaveBeenCalledWith(
-          '/api/inference/preferences',
-          expect.objectContaining({
-            method: 'PATCH',
-            body: JSON.stringify({
-              backend: 'ollama',
-              model: 'chat-model',
-              embeddingModel: 'embedding-model',
-              visionModel: null,
-            }),
-          }),
-        );
+        expect(saveInferencePreferences).toHaveBeenCalledWith({
+          backend: 'ollama',
+          model: 'chat-model',
+          embeddingModel: 'embedding-model',
+          visionModel: null,
+        });
       },
       { timeout: 5000 },
     );
   });
 
-  it('invalidates installed apps on HTTP install failure (server truth)', async () => {
-    mockApiFetch.mockImplementation(async (url: string) => {
-      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
-        return { ok: false, json: async () => ({ message: 'Server error' }) };
-      }
-      return { ok: true, json: async () => ({}) };
+  it('polls tracked models without restarting pulls started on the form page', async () => {
+    fetchTrackedModels.mockResolvedValue([{ catalogId: 'llama3-3-70b', state: 'pulled' }] as never);
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(
+      () => {
+        expect(pinInferenceModel).toHaveBeenCalledWith('llama3-3-70b');
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  it('only pins models that finished pulling', async () => {
+    vi.useFakeTimers();
+
+    fetchTrackedModels.mockResolvedValue([
+      { catalogId: 'llama3-3-70b', state: 'pulled' },
+      { catalogId: 'still-pulling', state: 'pulling', pullProgress: 50 },
+    ] as never);
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b', 'still-pulling'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
     });
+
+    vi.useRealTimers();
+
+    await waitFor(
+      () => {
+        expect(pinInferenceModel).toHaveBeenCalledWith('llama3-3-70b');
+      },
+      { timeout: 5000 },
+    );
+
+    expect(pinInferenceModel).not.toHaveBeenCalledWith('still-pulling');
+  });
+
+  it('invalidates installed apps on HTTP install failure (server truth)', async () => {
+    installApp.mockResolvedValue(sdkFail(500, { message: 'Server error' }));
 
     render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
 
@@ -351,25 +372,17 @@ describe('InstallStep', () => {
   });
 
   it('marks app failed when poll sees install_failed', async () => {
-    mockApiFetch.mockImplementation(async (url: string) => {
-      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
-        return { ok: true, json: async () => ({ requestId: '1' }) };
-      }
-      if (url === '/api/apps/installed') {
-        return {
-          ok: true,
-          json: async () => ({
-            installed: [
-              {
-                info: { urn: 'plane:store1', name: 'Plane' },
-                app: { status: 'install_failed' },
-              },
-            ],
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
+    getInstalledApps.mockResolvedValue(
+      sdkOk({
+        installed: [
+          {
+            info: { urn: 'plane:store1', name: 'Plane' },
+            app: { status: 'install_failed' },
+          },
+        ],
+      }),
+    );
 
     render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
 
@@ -380,79 +393,98 @@ describe('InstallStep', () => {
   });
 
   it('defaults Hermes allowed users to the operator username during onboarding installs', async () => {
-    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
-      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
-        return { ok: true, json: async () => ({ requestId: '1' }) };
-      }
-      if (url === '/api/apps/installed') {
-        return {
-          ok: true,
-          json: async () => ({
-            installed: [
-              {
-                info: { urn: 'ci-hermes:store1', name: 'Hermes' },
-                app: { status: 'running' },
-              },
-            ],
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
+    getInstalledApps.mockResolvedValue(
+      sdkOk({
+        installed: [
+          {
+            info: { urn: 'ci-hermes:store1', name: 'Hermes' },
+            app: { status: 'running' },
+          },
+        ],
+      }),
+    );
 
     render(
       <InstallStep apps={[makeApp('ci-hermes', 'Hermes', 'ci-hermes:store1')]} operatorUsername="operator@example.com" onComplete={onComplete} />,
     );
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/app-lifecycle/ci-hermes%3Astore1/install',
+      expect(installApp).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: JSON.stringify({
+          path: { urn: 'ci-hermes:store1' },
+          body: {
             localSubdomain: 'ci-hermes',
             exposureMode: 'cloudflare',
             exposedLocal: true,
             openPort: false,
             GATEWAY_ALLOWED_USERS: 'operator@example.com',
-          }),
+          },
+        }),
+      );
+    });
+  });
+
+  it('uses per-app exposureMode override when set on the app', async () => {
+    installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
+    getInstalledApps.mockResolvedValue(
+      sdkOk({
+        installed: [
+          {
+            info: { urn: 'ci-memory:store1', name: 'Companion Memory' },
+            app: { status: 'running' },
+          },
+        ],
+      }),
+    );
+
+    const app: OnboardingApp = {
+      ...makeApp('ci-memory', 'Companion Memory', 'ci-memory:store1'),
+      exposureMode: 'cloudflare',
+    };
+
+    render(<InstallStep apps={[app]} defaultExposureMode="tailscale" onComplete={onComplete} />);
+
+    await waitFor(() => {
+      expect(installApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: { urn: 'ci-memory:store1' },
+          body: {
+            localSubdomain: 'ci-memory',
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+          },
         }),
       );
     });
   });
 
   it('does not inject Hermes defaults for other apps', async () => {
-    mockApiFetch.mockImplementation(async (url: string, _init?: RequestInit) => {
-      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
-        return { ok: true, json: async () => ({ requestId: '1' }) };
-      }
-      if (url === '/api/apps/installed') {
-        return {
-          ok: true,
-          json: async () => ({
-            installed: [
-              {
-                info: { urn: 'plane:store1', name: 'Plane' },
-                app: { status: 'running' },
-              },
-            ],
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({}) };
-    });
+    installApp.mockResolvedValue(sdkOk({ requestId: '1' }));
+    getInstalledApps.mockResolvedValue(
+      sdkOk({
+        installed: [
+          {
+            info: { urn: 'plane:store1', name: 'Plane' },
+            app: { status: 'running' },
+          },
+        ],
+      }),
+    );
 
     render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} operatorUsername="operator@example.com" onComplete={onComplete} />);
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/app-lifecycle/plane%3Astore1/install',
+      expect(installApp).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: JSON.stringify({
+          path: { urn: 'plane:store1' },
+          body: {
             localSubdomain: 'plane',
             exposureMode: 'cloudflare',
             exposedLocal: true,
             openPort: false,
-          }),
+          },
         }),
       );
     });

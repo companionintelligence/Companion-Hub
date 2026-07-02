@@ -1,9 +1,11 @@
 api:
   dashboard: true
-  insecure: true
-  # In Traefik v3, when insecure is true, dashboard listens on port 8080 by default
-  # Access at http://localhost:9091/dashboard/ (note the trailing slash)
-  # The API is available at http://localhost:9091/api/
+  # SECURITY: keep the insecure API/dashboard OFF by default. When `insecure` is
+  # true, Traefik serves the unauthenticated dashboard + API on :8080, which the
+  # prod compose publishes to the host — an unauthenticated control-plane leak.
+  # It is only re-enabled for local development at config-copy time (see
+  # AppService.copyAssets); production/staging/test all keep it disabled.
+  insecure: false
 
 providers:
   docker:

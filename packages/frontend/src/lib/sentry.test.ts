@@ -6,17 +6,19 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { apiFetch, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
-  captureException: vi.fn(),
-  captureMessage: vi.fn(),
-  init: vi.fn(),
-  setLevel: vi.fn(),
-  setTag: vi.fn(),
-  setExtra: vi.fn(),
-  setUser: vi.fn(),
-  withScope: vi.fn(),
-}));
+const { fetchDeviceRegistrationInfoResult, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(
+  () => ({
+    fetchDeviceRegistrationInfoResult: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    init: vi.fn(),
+    setLevel: vi.fn(),
+    setTag: vi.fn(),
+    setExtra: vi.fn(),
+    setUser: vi.fn(),
+    withScope: vi.fn(),
+  }),
+);
 
 vi.mock('@sentry/react', () => ({
   captureMessage,
@@ -27,8 +29,8 @@ vi.mock('@sentry/react', () => ({
   withScope,
 }));
 
-vi.mock('./api-fetch', () => ({
-  apiFetch,
+vi.mock('./registration-api', () => ({
+  fetchDeviceRegistrationInfoResult,
 }));
 
 describe('frontend sentry', () => {
@@ -52,7 +54,7 @@ describe('frontend sentry', () => {
     testEnv.CI_HUB_ENVIRONMENT = 'development';
     testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
     testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
-    apiFetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ device_id: 'device-123' }), { status: 200 })));
+    fetchDeviceRegistrationInfoResult.mockImplementation(() => Promise.resolve({ ok: true, status: 200, data: { device_id: 'device-123' } }));
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
@@ -81,7 +83,7 @@ describe('frontend sentry', () => {
     expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
     await vi.waitFor(() => expect(setTag).toHaveBeenCalledWith('device_id', 'device-123'));
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
-    expect(apiFetch).toHaveBeenCalledWith('/api/registration/device-id');
+    expect(fetchDeviceRegistrationInfoResult).toHaveBeenCalled();
   }, 30_000);
 
   it('tags Tauri errors as desktop-web', async () => {

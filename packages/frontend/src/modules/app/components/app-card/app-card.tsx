@@ -10,7 +10,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
-type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'>;
+type AppCardApp = Pick<AppInfoSimple, 'urn' | 'name' | 'short_desc'> & { icon?: string | null };
 
 interface AppCardProps {
   app: AppCardApp;
@@ -19,17 +19,21 @@ interface AppCardProps {
   imageUrlOverride?: string | null;
 }
 
+function resolveAppCardImageUrl(app: AppCardApp, imageUrlOverride?: string | null): string {
+  return imageUrlOverride ?? app.icon ?? getMarketplaceAppImageUrl(app.urn);
+}
+
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, imageUrlOverride }) => {
   const { t } = useTranslation();
   const [appId, storeId] = app.urn.split(':');
-  const logoUrl = imageUrlOverride ?? getMarketplaceAppImageUrl(app.urn);
+  const logoUrl = resolveAppCardImageUrl(app, imageUrlOverride);
   const [imgSrc, setImgSrc] = useState(logoUrl);
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
 
   useEffect(() => {
-    setImgSrc(imageUrlOverride ?? getMarketplaceAppImageUrl(app.urn));
+    setImgSrc(imageUrlOverride ?? app.icon ?? getMarketplaceAppImageUrl(app.urn));
     setShowAvatarFallback(false);
-  }, [app.urn, imageUrlOverride]);
+  }, [app.urn, app.icon, imageUrlOverride]);
 
   const handleImageError = () => {
     if (imgSrc !== '/app-not-found.jpg') {
@@ -44,7 +48,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
     return (
       <GlassContainer className="h-full p-4 flex flex-col min-h-[220px]" intensity="low">
         <div className="flex items-start justify-between mb-4">
-          <Skeleton className="w-16 h-16 rounded-xl" />
+          <Skeleton className="w-16 h-16 rounded-md" />
           <Skeleton className="w-12 h-6 rounded-full" />
         </div>
         <Skeleton className="h-6 w-3/4 mb-2" />
@@ -62,14 +66,14 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
       >
         <div className="flex items-start justify-between mb-3 sm:mb-4">
           {showAvatarFallback ? (
-            <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg">
+            <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-md bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg">
               {app.name.charAt(0)}
             </div>
           ) : (
             <img
               src={imgSrc}
               alt={app.name}
-              className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl shadow-lg object-cover"
+              className="w-12 h-12 sm:w-16 sm:h-16 rounded-md shadow-lg object-cover"
               width={64}
               height={64}
               loading="lazy"

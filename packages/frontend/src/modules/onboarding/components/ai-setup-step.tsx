@@ -1,4 +1,4 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, rescanInferenceHardware } from '@/lib/inference/inference-api';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
 import {
@@ -51,6 +51,8 @@ interface AiSetupStepProps {
   onConfigChange?: (config: AiSetupConfig) => void;
   /** Extra sections rendered between VPN (step 3) and Advanced (step 5) — used for step 4 on the one-page form. */
   children?: React.ReactNode;
+  /** Rendered immediately below the agent harness card (step 1). */
+  afterHarness?: React.ReactNode;
 }
 
 interface OllamaStatus {
@@ -84,6 +86,7 @@ export const AiSetupStep = ({
   embedded = false,
   onConfigChange,
   children,
+  afterHarness,
 }: AiSetupStepProps) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -140,9 +143,7 @@ export const AiSetupStep = ({
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/api/inference/onboarding-profile');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: HardwareProfileResponse = await res.json();
+      const data = await fetchInferenceOnboardingProfile();
       setProfile(data);
       const defaultSelected = getDefaultSelectedModelIds(data, ONBOARDING_BACKEND);
       setSelectedModelIds(defaultSelected);
@@ -159,9 +160,7 @@ export const AiSetupStep = ({
   const checkOllamaStatus = async () => {
     setCheckingOllama(true);
     try {
-      const res = await apiFetch('/api/inference/ollama/status');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: OllamaStatus = await res.json();
+      const data = (await fetchOllamaInstallStatus()) as OllamaStatus;
       setOllamaStatus(data);
     } catch (_e) {
       // Silently fail - Ollama status is optional
@@ -180,8 +179,7 @@ export const AiSetupStep = ({
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await rescanInferenceHardware();
       await fetchProfile(true);
     } catch (e) {
       setError((e as Error).message);
@@ -206,7 +204,15 @@ export const AiSetupStep = ({
 
   // Agent frameworks are multi-select; deselecting all is allowed (run no agent, add one later).
   const toggleFramework = (framework: AgentFramework) => {
-    setAgentFrameworks((prev) => (prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework]));
+    setAgentFrameworks((prev) => {
+      const next = prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework];
+      if (next.length === 0) {
+        setRemoteAccess([]);
+      } else if (prev.length === 0 && next.length > 0) {
+        setRemoteAccess(defaultRemoteAccess(cloudflareAvailable, tailscaleAvailable));
+      }
+      return next;
+    });
   };
 
   // Remote access is multi-select and optional (empty = local-only).
@@ -292,9 +298,9 @@ export const AiSetupStep = ({
           <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
         </div>
-        <Skeleton className="h-24 w-full rounded-3xl" />
-        <Skeleton className="h-48 w-full rounded-3xl" />
-        <Skeleton className="h-32 w-full rounded-3xl" />
+        <Skeleton className="h-24 w-full rounded-lg" />
+        <Skeleton className="h-48 w-full rounded-lg" />
+        <Skeleton className="h-32 w-full rounded-lg" />
       </div>
     );
   }
@@ -348,6 +354,8 @@ export const AiSetupStep = ({
             cloudflareAvailable={cloudflareAvailable}
             tailscaleAvailable={tailscaleAvailable}
           />
+
+          {afterHarness}
 
           {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 

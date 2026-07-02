@@ -52,6 +52,17 @@ Best when the Hub is healthy but auth/setup is stuck after a partial reset.
 - **Does not** delete the operator account
 - Use when you only need to pair again with CI Portal, not wipe local users/apps
 
+### Paired reset (Hub + Portal)
+
+When the device is still registered in CI Portal but Hub local pairing is broken (or you need a clean re-pair without wiping apps/users):
+
+1. **Settings → Network → Re-register Device** — clears Hub-side pairing artifacts only
+2. Complete device registration again at `/device-registration`
+
+The API is `POST /api/registration/reset`. For a full Portal deregister during factory reset flows, the backend supports `deregisterFromPortal: true` on the registration reset path used by operator tooling — local Settings re-register does **not** remove the Portal device record automatically.
+
+If you need the device removed from Portal as well, delete it from **Account Management** in CI Portal, or use operator/CLI reset tooling that passes `deregisterFromPortal`.
+
 ## Desktop tray: Clear Tunnel Token
 
 **Tray menu → Clear Tunnel Token (not full reset)**

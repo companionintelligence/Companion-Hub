@@ -6,7 +6,10 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppInfo } from '@ci-hub/common/schemas';
 import MiniSearch from 'minisearch';
+import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
+import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreFilesManager } from '../app-stores/app-store-files-manager';
 import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-store.service';
 
@@ -39,6 +42,7 @@ export class MarketplaceService {
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly logger: LoggerService,
+    private readonly portalCatalog: PortalCatalogService,
     @Inject(forwardRef(() => AppStoreService)) private readonly appStoreService: AppStoreService,
   ) {}
 
@@ -70,8 +74,8 @@ export class MarketplaceService {
       }
     }
 
-    await this.appStoreService.pullRepositories();
     this.invalidateCache();
+    void this.portalCatalog.warmCacheInBackground();
 
     this.logger.debug('Marketplace service initialized with stores', Array.from(this.stores.keys()).join(', '));
   }
@@ -88,16 +92,42 @@ export class MarketplaceService {
     return { store };
   }
 
-  async getAppInfoFromAppStore(appUrn: AppUrn) {
+  public async getAppInfoFromAppStore(appUrn: AppUrn): Promise<AppInfo | null> {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
-    return store.getAppInfoFromAppStore(appUrn);
+    const local = await store.getAppInfoFromAppStore(appUrn);
+    const info = local ?? (await this.portalCatalog.getAppInfoForUrn(appUrn));
+    if (!info) return null;
+    return this.enrichAppInfoDescription(appUrn, info, store);
   }
 
-  async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn) {
+  async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn): Promise<AppInfo | undefined> {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
-    return store.getAppInfoFromAppStoreOrInstalled(appUrn);
+    const local = await store.getAppInfoFromAppStoreOrInstalled(appUrn);
+    const info = local ?? (await this.portalCatalog.getAppInfoForUrn(appUrn));
+    if (!info) return undefined;
+    return this.enrichAppInfoDescription(appUrn, info, store);
+  }
+
+  async getPortalIconUrl(appUrn: AppUrn): Promise<string | null> {
+    if (!this.portalCatalog.isCiMarketplaceUrn(appUrn)) return null;
+    return this.portalCatalog.getIconUrlForUrn(appUrn);
+  }
+
+  async resolveAppDescription(appUrn: AppUrn, info: AppInfo): Promise<AppInfo> {
+    const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) return info;
+    return this.enrichAppInfoDescription(appUrn, info, store);
+  }
+
+  private async enrichAppInfoDescription(appUrn: AppUrn, info: AppInfo, store: AppStoreFilesManager): Promise<AppInfo> {
+    const localMarkdown = await store.readDescriptionMarkdown(appUrn);
+    const { appName } = extractAppUrn(appUrn);
+    const portalMarkdown =
+      localMarkdown || !this.portalCatalog.isCiMarketplaceUrn(appUrn) ? null : await this.portalCatalog.fetchDescriptionMarkdown(appName);
+    const description = localMarkdown?.trim() || portalMarkdown?.trim() || '';
+    return { ...info, description };
   }
 
   async getAvailableAppUrns(): Promise<AppUrn[]> {
@@ -150,6 +180,7 @@ export class MarketplaceService {
     if (this.miniSearch) {
       this.miniSearch.removeAll();
     }
+    this.portalCatalog.invalidateCache();
   }
 
   /**
@@ -190,7 +221,17 @@ export class MarketplaceService {
    * @returns The search results
    */
   public async searchApps(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
-    const { search, category, pageSize, cursor, storeId } = params;
+    const { storeId } = params;
+    const usePortalCatalog = !storeId || storeId === CI_MARKETPLACE_STORE_SLUG;
+
+    if (usePortalCatalog) {
+      const portalResult = await this.portalCatalog.searchCatalog(params);
+      if (portalResult && portalResult.data.length > 0) {
+        return portalResult;
+      }
+    }
+
+    const { search, category, pageSize, cursor } = params;
 
     let filteredApps = await this.getAvailableApps();
 
@@ -230,6 +271,16 @@ export class MarketplaceService {
   public async getAppImage(appUrn: AppUrn) {
     try {
       const { store } = this.getStoreFromUrn(appUrn);
+      if (this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+        const hasLocalLogo = store ? await store.hasAppLogo(appUrn) : false;
+        if (!hasLocalLogo) {
+          const portalImage = await this.portalCatalog.fetchIconImage(appUrn);
+          if (portalImage?.image) {
+            return portalImage;
+          }
+        }
+      }
+
       if (!store) return { image: null, etag: '', contentType: 'image/jpeg' };
       return await store.getAppImage(appUrn);
     } catch (e) {

@@ -43,6 +43,17 @@ describe('AppCard', () => {
     expect(image).toHaveAttribute('src', 'http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
   });
 
+  it('prefers portal icon URLs from search results', () => {
+    render(
+      <MemoryRouter>
+        <AppCard app={{ ...appFixture, urn: 'ghost:ci-marketplace', name: 'Ghost', icon: 'https://cdn.example.com/ghost.png' }} />
+      </MemoryRouter>,
+    );
+
+    expect(getMarketplaceAppImageUrl).not.toHaveBeenCalled();
+    expect(screen.getByRole('img', { name: 'Ghost' })).toHaveAttribute('src', 'https://cdn.example.com/ghost.png');
+  });
+
   it('falls back to the placeholder image and then the avatar tile when image loading fails twice', () => {
     render(
       <MemoryRouter>
