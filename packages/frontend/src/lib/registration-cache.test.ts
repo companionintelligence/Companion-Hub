@@ -9,9 +9,7 @@ vi.mock('./registration-api', () => ({
   fetchRegistrationStatus,
 }));
 
-const { cacheRegistrationStatus, clearRegistrationCache, getCachedRegistrationStatus, resolveRegistrationStatus } = await import(
-  './registration-cache'
-);
+const { cacheRegistrationStatus, getCachedRegistrationStatus, resolveRegistrationStatus } = await import('./registration-cache');
 
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {

@@ -2,15 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import {
-  HttpStatus,
-  Injectable,
-  Inject,
-  forwardRef,
-  OnApplicationBootstrap,
-  type OnApplicationShutdown,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { MarketplaceService } from '../marketplace/marketplace.service';

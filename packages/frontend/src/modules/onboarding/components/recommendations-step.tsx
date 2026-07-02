@@ -82,7 +82,6 @@ export const RecommendationsStep = ({
 
   const prevAgentSlugs = useRef<string[]>([]);
   // Keep recommended-apps selection aligned with the agent harness toggles.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sync only when agentSlugs or storeApps change
   useEffect(() => {
     const prev = new Set(prevAgentSlugs.current);
     const next = new Set(agentSlugs);

@@ -50,6 +50,8 @@ import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/c
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
+import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -93,6 +95,8 @@ describe('App lifecycle', () => {
   const registrationService = mock<RegistrationService>();
   const imageSizeService = mock<ImageSizeService>();
   const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
+  const portalCatalogService = mock<PortalCatalogService>();
+  const portalClientService = mock<PortalClientService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -136,6 +140,14 @@ describe('App lifecycle', () => {
 
   beforeEach(async () => {
     await cleanTestData(db);
+    portalCatalogService.warmCacheInBackground.mockReturnValue(undefined);
+    portalCatalogService.invalidateCache.mockReturnValue(undefined);
+    portalCatalogService.getAppInfoForUrn.mockResolvedValue(null);
+    portalCatalogService.fetchDescriptionMarkdown.mockResolvedValue(null);
+    portalCatalogService.isCiMarketplaceUrn.mockReturnValue(false);
+    portalCatalogService.searchCatalog.mockResolvedValue(null);
+    portalClientService.fetchStoreAlternatives.mockResolvedValue([]);
+    portalClientService.fetchStoreListings.mockResolvedValue([]);
     // Best-effort arch check: null = registry unreachable, do not block install in tests.
     imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
@@ -262,6 +274,14 @@ describe('App lifecycle', () => {
         {
           provide: InferenceEnvResolver,
           useValue: mock<InferenceEnvResolver>(),
+        },
+        {
+          provide: PortalCatalogService,
+          useValue: portalCatalogService,
+        },
+        {
+          provide: PortalClientService,
+          useValue: portalClientService,
         },
       ],
     }).compile();

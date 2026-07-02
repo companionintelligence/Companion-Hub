@@ -63,16 +63,6 @@ vi.mock('./api-client/client.gen', () => ({
 const { clientLoader, ErrorBoundary } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
 
-function jsonResponse(body: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-}
-
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {
     phase,

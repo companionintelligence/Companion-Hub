@@ -40,19 +40,6 @@ interface RehydrationStatus {
   restoreIntent: boolean;
 }
 
-async function readApiJson<T>(response: Response): Promise<T | null> {
-  const text = await response.text();
-  if (!text.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
-
 function RestoreAppsContent() {
   const { t } = useTranslation();
   const navigate = useNavigate();

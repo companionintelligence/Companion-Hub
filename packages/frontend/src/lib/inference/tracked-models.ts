@@ -81,11 +81,9 @@ export async function waitForModelPulls(
   const timeoutMs = options?.timeoutMs ?? 60_000;
   const pollIntervalMs = options?.pollIntervalMs ?? 1000;
   const deadline = Date.now() + timeoutMs;
-  let latest = parsePullProgress(modelIds, installedCatalogIds, []);
-
   while (Date.now() < deadline) {
     const tracked = await fetchTrackedModels();
-    latest = parsePullProgress(modelIds, installedCatalogIds, tracked);
+    const latest = parsePullProgress(modelIds, installedCatalogIds, tracked);
     if (latest.allDone) {
       return latest;
     }

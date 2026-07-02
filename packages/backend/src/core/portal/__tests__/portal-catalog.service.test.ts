@@ -1,6 +1,6 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { PortalCatalogService } from '../portal-catalog.service';
 import { PortalClientService } from '../portal-client.service';
