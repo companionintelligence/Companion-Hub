@@ -90,7 +90,7 @@ function CpuUsageHistoryChart({ history, apps }: { history: AppRuntimeHistorySam
       <div className="overflow-x-auto">
         <svg
           viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-          className="h-80 min-w-[720px] w-full rounded-xl border border-border/60 bg-card/40 p-3"
+          className="h-80 min-w-[720px] w-full rounded-lg border border-border/60 bg-card/40 p-3"
           role="img"
           aria-label={t('RESOURCE_MONITOR_CHART_TITLE')}
         >
@@ -251,7 +251,7 @@ export default function ResourceMonitorPage() {
         <CardContent>
           <div className="space-y-4 md:hidden">
             {apps.map((app) => (
-              <div key={app.appUrn} className="rounded-xl border border-border/60 bg-background/60 p-4">
+              <div key={app.appUrn} className="rounded-md border border-border/60 bg-background/60 p-4">
                 <div className="min-w-0">
                   <div className="font-medium">{app.appName}</div>
                   <div className="truncate text-xs text-muted-foreground">{app.appUrn}</div>
