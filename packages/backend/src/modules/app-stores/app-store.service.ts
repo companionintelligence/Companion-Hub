@@ -1,4 +1,5 @@
 import { TranslatableError } from '@/common/error/translatable-error';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import {
@@ -29,13 +30,15 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     @Inject(forwardRef(() => ReposHelpers)) private readonly repoHelpers: ReposHelpers,
     private readonly config: ConfigurationService,
     private readonly appStoreRepository: AppStoreRepository,
+    private readonly portalClient: PortalClientService,
     @Inject(forwardRef(() => MarketplaceService)) private readonly marketplaceService: MarketplaceService,
   ) {
     this.repoQueue.onEvent(async (data, reply) => {
       switch (data.command) {
         case 'update_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
-          const results = await Promise.allSettled(stores.map((store) => this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git')));
+          const gitStores = stores.filter((store) => store.type !== 'ci_cloud_api');
+          const results = await Promise.allSettled(gitStores.map((store) => this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git')));
           // Log failures but don't fail the entire operation
           results.forEach((result, index) => {
             if (result.status === 'rejected') {
@@ -50,7 +53,8 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
         }
         case 'clone_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
-          const results = await Promise.allSettled(stores.map((store) => this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git')));
+          const gitStores = stores.filter((store) => store.type !== 'ci_cloud_api');
+          const results = await Promise.allSettled(gitStores.map((store) => this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git')));
           // Log failures but don't fail the entire operation
           results.forEach((result, index) => {
             if (result.status === 'rejected') {
@@ -79,7 +83,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   onApplicationBootstrap() {
-    this.logger.info('Scheduling app store updates every 1 hour');
+    this.logger.info('Scheduling legacy git app store updates every 1 hour (deprecated — catalog is Portal-first via ci_cloud_api)');
     this.pullInterval = setInterval(
       () => {
         this.pullRepositories().catch((e) => this.logger.error('Failed to scheduled pull repositories', e));
@@ -95,11 +99,15 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     }
   }
 
+  /** @deprecated Git-backed stores are legacy; product catalog is Portal-first (`ci_cloud_api`). Only git stores are pulled. */
   public async pullRepositories() {
     const repositories = await this.appStoreRepository.getEnabledAppStores();
 
     for (const repo of repositories) {
-      this.logger.debug(`Pulling repo ${repo.url}`);
+      if (repo.type === 'ci_cloud_api') {
+        continue;
+      }
+      this.logger.debug(`Pulling legacy git repo ${repo.url}`);
       await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git');
     }
 
@@ -142,52 +150,14 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     });
   }
 
-  /** Proxies CI Cloud `GET /api/store/alternatives` (used by onboarding / app store UI). */
+  /** Proxies Portal `GET /api/store/alternatives` (used by onboarding / app store UI). */
   public async fetchCiCloudStoreAlternatives(): Promise<unknown> {
-    const { ciCloudUrl } = this.config.getConfig();
-    const base = ciCloudUrl?.trim().replace(/\/$/, '');
-    if (!base) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
-    }
-    const url = `${base}/api/store/alternatives`;
-    let res: Response;
-    try {
-      res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'unknown error';
-      throw new ServiceUnavailableException(`Could not reach CI Cloud store catalog (${msg}).`);
-    }
-    if (!res.ok) {
-      throw new ServiceUnavailableException(`CI Cloud store catalog returned HTTP ${res.status}.`);
-    }
-    return res.json() as Promise<unknown>;
+    return this.portalClient.fetchStoreAlternatives();
   }
 
-  /** Proxies CI Cloud `GET /api/store` (featured/trending/newest listings for the app store UI). */
+  /** Proxies Portal `GET /api/store` (featured/trending/newest listings for the app store UI). */
   public async fetchCiCloudStoreListings(params: { category?: string; tags?: string; sort?: 'newest' | 'trending'; q?: string }): Promise<unknown> {
-    const { ciCloudUrl } = this.config.getConfig();
-    const base = ciCloudUrl?.trim().replace(/\/$/, '');
-    if (!base) {
-      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
-    }
-    const searchParams = new URLSearchParams();
-    if (params.category) searchParams.set('category', params.category);
-    if (params.tags) searchParams.set('tags', params.tags);
-    if (params.sort) searchParams.set('sort', params.sort);
-    if (params.q) searchParams.set('q', params.q);
-    const qs = searchParams.toString();
-    const url = `${base}/api/store${qs ? `?${qs}` : ''}`;
-    let res: Response;
-    try {
-      res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'unknown error';
-      throw new ServiceUnavailableException(`Could not reach CI Cloud store catalog (${msg}).`);
-    }
-    if (!res.ok) {
-      throw new ServiceUnavailableException(`CI Cloud store catalog returned HTTP ${res.status}.`);
-    }
-    return res.json() as Promise<unknown>;
+    return this.portalClient.fetchStoreListings(params);
   }
 
   public async getEnabledAppStores() {
