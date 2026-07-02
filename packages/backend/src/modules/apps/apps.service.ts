@@ -100,6 +100,27 @@ export class AppsService {
     return this.populateAppInfo(apps);
   }
 
+  /** DB-only installed app rows — no marketplace compose fan-out. */
+  public async getInstalledAppsLite() {
+    return this.appsRepository.getApps();
+  }
+
+  public async countUpdatesAvailable(): Promise<number> {
+    const apps = await this.appsRepository.getApps();
+    const limit = pLimit(5);
+    const flags = await Promise.all(
+      apps.map((app) =>
+        limit(async () => {
+          if (app.status === 'updating') return false;
+          const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          const updateInfo = await this.marketplaceService.getAppUpdateInfo(appUrn).catch(() => null);
+          return Boolean(updateInfo && Number(app.version) < Number(updateInfo.latestVersion ?? 0));
+        }),
+      ),
+    );
+    return flags.filter(Boolean).length;
+  }
+
   /** Active install (Docker pipeline) and apps waiting in the install queue. */
   public async getInstallQueueState() {
     const installing = await this.appsRepository.getAppsByStatus('installing');
@@ -150,13 +171,17 @@ export class AppsService {
     const userEnv = await this.appFilesManager.getUserEnv(appUrn);
     const hasCustomConfig = Boolean(userCompose.content) || Boolean(userEnv.content);
 
-    if (!info) {
+    if (info) {
+      info = await this.marketplaceService.resolveAppDescription(appUrn, info);
+    } else {
       info = (await this.marketplaceService.getAppInfoFromAppStore(appUrn)) ?? null;
     }
 
     if (!info) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
     }
+
+    const iconUrl = await this.marketplaceService.getPortalIconUrl(appUrn);
 
     let composeSchemaVersion: number | undefined;
     try {
@@ -172,6 +197,7 @@ export class AppsService {
     const metadata = {
       hasCustomConfig,
       composeSchemaVersion: composeSchemaVersion ?? CURRENT_SCHEMA_VERSION,
+      iconUrl: iconUrl ?? undefined,
       ...updateInfo,
     };
 

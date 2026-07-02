@@ -4,11 +4,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const mockApiFetch = vi.fn();
-const mockResponse = <T,>(data: T, ok = true, status = ok ? 200 : 500) => Promise.resolve({ ok, status, json: () => Promise.resolve(data) });
+const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
+  fetchInferenceOnboardingProfile: vi.fn(),
+  fetchOllamaInstallStatus: vi.fn(),
+  rescanInferenceHardware: vi.fn(),
+}));
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+vi.mock('@/lib/inference/inference-api', () => ({
+  fetchInferenceOnboardingProfile,
+  fetchOllamaInstallStatus,
+  rescanInferenceHardware,
 }));
 
 vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
@@ -152,19 +157,19 @@ describe('AiSetupStep', () => {
       rescanOk: true,
     };
 
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === '/api/inference/onboarding-profile') {
-        if (api.profileReject) return Promise.reject(new Error('Network error'));
-        return mockResponse(api.profile, api.profileOk);
-      }
-      if (url === '/api/inference/ollama/status') return mockResponse(api.ollama);
-      if (url === '/api/inference/hardware/rescan') return mockResponse({}, api.rescanOk);
-      return mockResponse({});
+    fetchInferenceOnboardingProfile.mockImplementation(() => {
+      if (api.profileReject) return Promise.reject(new Error('Network error'));
+      if (!api.profileOk) return Promise.reject(new Error('Failed'));
+      return Promise.resolve(api.profile);
+    });
+    fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
+    rescanInferenceHardware.mockImplementation(async () => {
+      if (!api.rescanOk) throw new Error('HTTP 503');
     });
   });
 
   it('shows loading skeleton while fetching profile', () => {
-    mockApiFetch.mockImplementation(() => new Promise(() => {}));
+    fetchInferenceOnboardingProfile.mockImplementation(() => new Promise(() => {}));
     renderStep();
     expect(screen.getByTestId('ai-setup-loading')).toBeInTheDocument();
   });
@@ -605,6 +610,49 @@ describe('AiSetupStep', () => {
     expect(screen.queryByTestId('agent-access-hint')).not.toBeInTheDocument();
   });
 
+  it('clears remote access when all agent harnesses are deselected', async () => {
+    const user = userEvent.setup();
+    const { onComplete } = renderStep({ cloudflareAvailable: true });
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByTestId('agent-openclaw'));
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [], exposureMode: 'local' }));
+  });
+
+  it('restores default remote access when re-selecting a harness from zero', async () => {
+    const user = userEvent.setup();
+    const { onComplete } = renderStep({ cloudflareAvailable: true });
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('agent-openclaw'));
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+
+    await user.click(screen.getByTestId('agent-openclaw'));
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'cloudflare' }));
+  });
+
+  it('does not restore remote access when re-selecting a harness while another remains selected', async () => {
+    const user = userEvent.setup();
+    renderStep({ cloudflareAvailable: true });
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('agent-hermes'));
+    await user.click(screen.getByTestId('agent-access-cloudflare'));
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+
+    await user.click(screen.getByTestId('agent-openclaw'));
+    await user.click(screen.getByTestId('agent-openclaw'));
+    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('agent-hermes')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('calls onSkip when Skip button is clicked', async () => {
     const user = userEvent.setup();
     const { onSkip } = renderStep();
@@ -726,7 +774,7 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     await user.click(screen.getByTestId('rescan-btn'));
-    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/hardware/rescan', expect.objectContaining({ method: 'POST' })));
+    await waitFor(() => expect(rescanInferenceHardware).toHaveBeenCalled());
   });
 
   it('shows an error when rescan returns non-OK', async () => {

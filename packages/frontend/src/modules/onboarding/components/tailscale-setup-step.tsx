@@ -1,8 +1,9 @@
+import { getStatus4Options, getStatus4QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { Shield, Loader2, Check, ExternalLink, AlertCircle, Smartphone } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
@@ -51,16 +52,10 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
     data: status,
     isLoading,
     isError,
-  } = useQuery<TailscaleApiStatus>({
-    queryKey: ['tailscale-status'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/status');
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-      }
-      return res.json();
-    },
-    refetchInterval: 5_000, // Poll every 5s during onboarding for real-time updates
+  } = useQuery({
+    ...getStatus4Options(),
+    select: (payload) => payload as unknown as TailscaleApiStatus,
+    refetchInterval: 5_000,
     // Re-check the moment the user returns to the Hub after authenticating in the
     // external browser, so the section flips to "connected" without waiting for the poll.
     refetchOnWindowFocus: true,
@@ -70,8 +65,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
 
   const browserAuthMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST' });
-      return res.json() as Promise<AuthStartResponse>;
+      const result = await startAuth();
+      if (result.error) {
+        throw result.error instanceof Error ? result.error : new Error(String(result.error));
+      }
+      return result.data as unknown as AuthStartResponse;
     },
     onSuccess: (payload) => {
       if (!payload.success) {
@@ -81,14 +79,14 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       if (payload.alreadyAuthenticated) {
         toast.success(t('SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED'));
         setHasAttemptedConnection(true);
-        void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });
+        void queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() });
         return;
       }
       if (payload.authUrl) {
         openExternal(payload.authUrl);
         toast.success(t('ONBOARDING_TAILSCALE_AUTH_OPENING'));
         setHasAttemptedConnection(true);
-        void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });
+        void queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() });
       }
     },
     onError: () => toast.error(t('ONBOARDING_TAILSCALE_AUTH_FAILED')),
@@ -217,7 +215,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       </div>
 
       {/* Benefits */}
-      <div className="grid gap-3 rounded-2xl border border-border bg-foreground/[0.02] p-4">
+      <div className="grid gap-3 rounded-md border border-border bg-foreground/[0.02] p-4">
         <p className="text-sm font-medium">{t('ONBOARDING_TAILSCALE_BENEFITS_TITLE')}</p>
         <ul className="space-y-2 text-sm text-muted-foreground">
           <li className="flex items-start gap-2">

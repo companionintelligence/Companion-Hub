@@ -22,6 +22,8 @@ const appSchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
   enableAuth: z.boolean().optional(),
   localSubdomain: z.string().nullable().optional(),
+  exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
+  publicDomain: z.string().nullable().optional(),
   pendingRestart: z.boolean(),
   ignoredVersion: z.number().nullable(),
 });

@@ -1,7 +1,7 @@
 .rt-Skeleton {
   --skeleton-radius: var(--skeleton-radius-override);
   --skeleton-height: var(--skeleton-height-override);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   /* biome-ignore lint/complexity/noImportantStyles: Override */
   animation: rt-skeleton-pulse 1000ms infinite alternate-reverse !important;
   /* biome-ignore lint/complexity/noImportantStyles: Override */

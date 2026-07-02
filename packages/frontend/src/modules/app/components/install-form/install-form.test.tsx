@@ -23,12 +23,14 @@ vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
 }));
 
-const { apiFetch } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
+const { fetchDnsAvailability, fetchPublicWebDiagnostics } = vi.hoisted(() => ({
+  fetchDnsAvailability: vi.fn(),
+  fetchPublicWebDiagnostics: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch,
+vi.mock('@/lib/cloudflare-api', () => ({
+  fetchDnsAvailability,
+  fetchPublicWebDiagnostics,
 }));
 
 const { toast } = vi.hoisted(() => ({
@@ -112,6 +114,7 @@ vi.mock('@tanstack/react-query', () => ({
 // Mock API client if needed
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getRandomPortMutation: () => ({ mutationFn: vi.fn() }),
+  getDomainsOptions: () => ({ queryKey: ['getDomains'], queryFn: vi.fn() }),
 }));
 
 describe('InstallForm', () => {
@@ -336,7 +339,7 @@ describe('InstallForm', () => {
 
   it('surfaces the full hostname from the DNS availability response', async () => {
     vi.useFakeTimers();
-    apiFetch.mockResolvedValue(
+    fetchDnsAvailability.mockResolvedValue(
       new Response(
         JSON.stringify({
           available: false,
@@ -385,7 +388,7 @@ describe('InstallForm', () => {
 
   it('passes the current app urn when validating DNS inside the settings dialog flow', async () => {
     vi.useFakeTimers();
-    apiFetch.mockResolvedValue(
+    fetchDnsAvailability.mockResolvedValue(
       new Response(JSON.stringify({ available: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -426,12 +429,12 @@ describe('InstallForm', () => {
       await Promise.resolve();
     });
 
-    expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('appUrn=ci-openclaw%3Astore'));
+    expect(fetchDnsAvailability).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ appUrn: 'ci-openclaw:store' }));
   });
 
   it('does not keep rechecking DNS availability after a successful response', async () => {
     vi.useFakeTimers();
-    apiFetch.mockResolvedValue(
+    fetchDnsAvailability.mockResolvedValue(
       new Response(JSON.stringify({ available: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -472,7 +475,7 @@ describe('InstallForm', () => {
       await Promise.resolve();
     });
 
-    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(fetchDnsAvailability).toHaveBeenCalledTimes(1);
   });
 
   it('shows optional fields by default and hides toggle in advanced mode', () => {
@@ -534,7 +537,7 @@ describe('InstallForm', () => {
       await Promise.resolve();
     });
 
-    expect(apiFetch).not.toHaveBeenCalled();
+    expect(fetchDnsAvailability).not.toHaveBeenCalled();
   });
 
   it('hides the subdomain field for Private VPN exposure mode', () => {
@@ -885,7 +888,7 @@ describe('InstallForm', () => {
     vi.useFakeTimers();
     const onSubmit = vi.fn();
     const dnsMessage = 'DNS record already exists for ci-openclaw-blaptop-bc.companionintelligence.com';
-    apiFetch.mockResolvedValue(
+    fetchDnsAvailability.mockResolvedValue(
       new Response(
         JSON.stringify({
           available: false,

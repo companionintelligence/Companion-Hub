@@ -18,9 +18,24 @@ const baseRoutes: RouteMap = {
 };
 
 /** Registered (default) — everything works. */
+const sampleStoreApps = [
+  { id: 'ci-openclaw', name: 'OpenClaw', short_desc: 'Agent framework', categories: ['development'], icon: null },
+  { id: 'n8n', name: 'n8n', short_desc: 'Workflow automation', categories: ['automation'], icon: null },
+];
+
+const sampleAlternatives = {
+  productivity: [
+    {
+      proprietary: [{ name: 'Notion', icon: '', url: 'https://notion.so' }],
+      alternatives: [{ name: 'AppFlowy', icon: '', url: '', appSlug: 'appflowy' }],
+    },
+  ],
+};
+
 const registeredRoutes: RouteMap = {
   ...baseRoutes,
-  'GET /api/store': () => ({ body: [], status: 200 }),
+  'GET /api/store': () => ({ body: sampleStoreApps, status: 200 }),
+  'GET /api/store/alternatives': () => ({ body: sampleAlternatives, status: 200 }),
   'GET /api/devices/registration-status': () => ({ body: { registered: true }, status: 200 }),
   'POST /api/devices/register': () => ({
     body: { success: true, device_id: 'test-device' },
@@ -45,7 +60,8 @@ const registeredRoutes: RouteMap = {
 /** Unregistered — portal says device is unknown. */
 const unregisteredRoutes: RouteMap = {
   ...baseRoutes,
-  'GET /api/store': () => ({ body: [], status: 200 }),
+  'GET /api/store': () => ({ body: sampleStoreApps, status: 200 }),
+  'GET /api/store/alternatives': () => ({ body: sampleAlternatives, status: 200 }),
   'GET /api/devices/registration-status': () => ({ body: { registered: false }, status: 200 }),
   'POST /api/devices/register': () => ({
     body: { success: false, error: 'Device not found' },
@@ -70,7 +86,8 @@ const unregisteredRoutes: RouteMap = {
 /** Delayed — registered in DB but public domain is not propagated yet. */
 const delayedRoutes: RouteMap = {
   ...baseRoutes,
-  'GET /api/store': () => ({ body: [], status: 200 }),
+  'GET /api/store': () => ({ body: sampleStoreApps, status: 200 }),
+  'GET /api/store/alternatives': () => ({ body: sampleAlternatives, status: 200 }),
   'GET /api/devices/registration-status': () => ({
     body: { registered: true, public_ready: false, message: 'DNS propagation pending' },
     status: 200,
@@ -100,6 +117,7 @@ const delayedRoutes: RouteMap = {
 const degradedRoutes: RouteMap = {
   ...baseRoutes,
   'GET /api/store': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
+  'GET /api/store/alternatives': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
   'GET /api/devices/registration-status': () => ({
     body: { error: 'Internal server error' },
     status: 500,

@@ -3,18 +3,24 @@ import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ResetPasswordPage from './reset-password-page';
 
-const { mockApiFetch, mockNavigate, mockSearchParams, toast } = vi.hoisted(() => ({
-  mockApiFetch: vi.fn(),
-  mockNavigate: vi.fn(),
-  mockSearchParams: vi.fn(),
-  toast: {
-    success: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+const { mockVerifyResetPasswordToken, mockRequestResetPassword, mockCompleteResetPassword, mockNavigate, mockSearchParams, toast } = vi.hoisted(
+  () => ({
+    mockVerifyResetPasswordToken: vi.fn(),
+    mockRequestResetPassword: vi.fn(),
+    mockCompleteResetPassword: vi.fn(),
+    mockNavigate: vi.fn(),
+    mockSearchParams: vi.fn(),
+    toast: {
+      success: vi.fn(),
+      error: vi.fn(),
+    },
+  }),
+);
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+vi.mock('@/lib/auth-password-reset-api', () => ({
+  verifyResetPasswordToken: (...args: unknown[]) => mockVerifyResetPasswordToken(...args),
+  requestResetPassword: (...args: unknown[]) => mockRequestResetPassword(...args),
+  completeResetPassword: (...args: unknown[]) => mockCompleteResetPassword(...args),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -33,18 +39,13 @@ vi.mock('react-hot-toast', () => ({
   default: toast,
 }));
 
-function jsonResponse(body: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 describe('ResetPasswordPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSearchParams.mockReturnValue(new URLSearchParams());
-    mockApiFetch.mockResolvedValue(new Response(null, { status: 200 }));
+    mockVerifyResetPasswordToken.mockResolvedValue(false);
+    mockRequestResetPassword.mockResolvedValue({ ok: true });
+    mockCompleteResetPassword.mockResolvedValue({ ok: true });
   });
 
   it('renders email request flow and removes demo credentials copy', () => {
@@ -56,7 +57,7 @@ describe('ResetPasswordPage', () => {
   });
 
   it('shows generic success message after requesting a reset', async () => {
-    mockApiFetch.mockResolvedValue(jsonResponse({ success: true, message: 'ok' }));
+    mockRequestResetPassword.mockResolvedValue({ ok: true });
 
     render(<ResetPasswordPage />);
 
@@ -64,14 +65,14 @@ describe('ResetPasswordPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'AUTH_RESET_PASSWORD_REQUEST_SUBMIT' }));
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith('/api/auth/password-reset/request', expect.objectContaining({ method: 'POST' }));
+      expect(mockRequestResetPassword).toHaveBeenCalledWith('me@example.com');
     });
 
     expect(screen.getByText('AUTH_RESET_PASSWORD_REQUEST_SUCCESS')).toBeInTheDocument();
   });
 
   it('shows an error when the reset request is rejected', async () => {
-    mockApiFetch.mockResolvedValue(jsonResponse({ message: 'Rate limited' }, { status: 429 }));
+    mockRequestResetPassword.mockResolvedValue({ ok: false, message: 'Rate limited' });
 
     render(<ResetPasswordPage />);
 
@@ -87,7 +88,7 @@ describe('ResetPasswordPage', () => {
 
   it('shows invalid-link state when verify returns valid:false', async () => {
     mockSearchParams.mockReturnValue(new URLSearchParams('token=expired-token'));
-    mockApiFetch.mockResolvedValue(jsonResponse({ valid: false }));
+    mockVerifyResetPasswordToken.mockResolvedValue(false);
 
     await act(async () => {
       render(<ResetPasswordPage />);

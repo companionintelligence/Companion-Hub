@@ -61,7 +61,7 @@
   gap: 0.375rem;
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   background: color-mix(in srgb, var(--color-muted) 35%, transparent);
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
   padding: 0.25rem;
 }
 
@@ -75,7 +75,7 @@
 }
 
 .hero-action-icon {
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: var(--radius-sm);
   width: 2.5rem;
   height: 2.5rem;
 }

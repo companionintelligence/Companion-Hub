@@ -125,7 +125,7 @@ sequenceDiagram
 
 ### Integration Layer
 - **DockerModule**: Wrapper around `dockerode` to interact with the Docker daemon.
-- **GithubModule**: Utilities for interacting with GitHub APIs (for app stores/updates).
+- **RegistryModule**: Container registry tag resolution for version checks.
 
 ### App Management Domain
 - **AppsModule**: Manages the `App` entities, persistent state of installed applications.
