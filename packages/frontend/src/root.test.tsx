@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from './lib/registration-status';
 
 const {
-  apiFetch,
+  resolveRegistrationStatus,
   userContext,
   requestUse,
   responseUse,
@@ -12,7 +12,7 @@ const {
   refreshHubSessionIfDue,
   clearStaleServerSession,
 } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
+  resolveRegistrationStatus: vi.fn(),
   userContext: vi.fn(),
   requestUse: vi.fn(),
   responseUse: vi.fn(),
@@ -29,10 +29,18 @@ vi.mock('./lib/sentry', () => ({
 }));
 
 vi.mock('./lib/api-fetch', () => ({
-  apiFetch,
   getTauriSessionId: vi.fn(() => null),
   clearStaleServerSession,
 }));
+
+vi.mock('./lib/registration-cache', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./lib/registration-cache')>();
+  return {
+    ...actual,
+    resolveRegistrationStatus,
+    getCachedRegistrationStatus: vi.fn(() => null),
+  };
+});
 
 vi.mock('./lib/hub-session-refresh', () => ({
   refreshHubSessionIfDue,
@@ -53,16 +61,7 @@ vi.mock('./api-client/client.gen', () => ({
 }));
 
 const { clientLoader, ErrorBoundary } = await import('./root');
-
-function jsonResponse(body: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-}
+import { cacheRegistrationStatus } from './lib/registration-cache';
 
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {
@@ -86,7 +85,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('redirects non-registration routes when the Hub is explicitly unregistered', async () => {
-    apiFetch.mockResolvedValue(jsonResponse(makeStatus('unregistered')));
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('unregistered'));
 
     const result = (await clientLoader({ request: new Request('http://localhost/app-store') } as never)) as Response;
 
@@ -95,7 +94,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('keeps the device-registration route available during paired and provisioning phases', async () => {
-    apiFetch.mockResolvedValueOnce(jsonResponse(makeStatus('paired'))).mockResolvedValueOnce(jsonResponse(makeStatus('provisioning')));
+    resolveRegistrationStatus.mockResolvedValueOnce(makeStatus('paired')).mockResolvedValueOnce(makeStatus('provisioning'));
 
     const pairedResult = await clientLoader({ request: new Request('http://localhost/device-registration') } as never);
     const provisioningResult = await clientLoader({ request: new Request('http://localhost/device-registration') } as never);
@@ -105,7 +104,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('redirects root to device registration when registration status is unavailable during startup', async () => {
-    apiFetch.mockRejectedValue(new Error('temporary outage'));
+    resolveRegistrationStatus.mockResolvedValue(null);
     userContext.mockRejectedValue(new Error('backend unavailable'));
 
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
@@ -115,7 +114,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('redirects bootstrap routes to device registration when status is temporarily unavailable', async () => {
-    apiFetch.mockRejectedValue(new Error('temporary outage'));
+    resolveRegistrationStatus.mockResolvedValue(null);
 
     const rootResult = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
     const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
@@ -126,7 +125,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('allows login when registration status is temporarily unavailable', async () => {
-    apiFetch.mockRejectedValue(new Error('temporary outage'));
+    resolveRegistrationStatus.mockResolvedValue(null);
 
     const loginWithPortalError = (await clientLoader({
       request: new Request('http://localhost/login?portal_error=callback_error'),
@@ -136,7 +135,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('allows login while device registration is still pending', async () => {
-    apiFetch.mockResolvedValue(jsonResponse(makeStatus('unregistered')));
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('unregistered'));
 
     const result = await clientLoader({ request: new Request('http://localhost/login') } as never);
 
@@ -151,7 +150,7 @@ describe('root clientLoader registration gating', () => {
         isGuestDashboardEnabled: false,
       },
     };
-    apiFetch.mockRejectedValue(new Error('temporary outage'));
+    resolveRegistrationStatus.mockResolvedValue(null);
     userContext.mockResolvedValue(userResult);
 
     const result = await clientLoader({ request: new Request('http://localhost/app-store') } as never);
@@ -161,7 +160,11 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('redirects away from device registration when the Hub is already operational', async () => {
-    apiFetch.mockResolvedValue(jsonResponse(makeStatus('degraded', true)));
+    resolveRegistrationStatus.mockImplementation(async () => {
+      const status = makeStatus('degraded', true);
+      cacheRegistrationStatus(status);
+      return status;
+    });
 
     const result = (await clientLoader({ request: new Request('http://localhost/device-registration') } as never)) as Response;
 
@@ -175,7 +178,7 @@ describe('root clientLoader session continuity', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
-    apiFetch.mockResolvedValue(jsonResponse(makeStatus('locally_ready', true)));
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
   });
 
   it('refreshes hub session when user is logged in', async () => {

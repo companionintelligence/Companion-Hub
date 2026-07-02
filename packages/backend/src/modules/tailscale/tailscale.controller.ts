@@ -1,11 +1,14 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { AuthGuard } from '../auth/auth.guard';
 import { TailscaleService } from './tailscale.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
 @UseGuards(AuthGuard)
+@ApiTags('Tailscale')
 @Controller('tailscale')
 export class TailscaleController {
   constructor(
@@ -33,60 +36,43 @@ export class TailscaleController {
   }
 
   @Post('sync')
-  @ApiResponse({ type: Object })
+  @UseGuards(DemoModeGuard)
+  @ApiOperation({ summary: 'Reconcile Tailscale Serve routes for Private VPN apps' })
+  @ApiResponse({ status: 200, description: 'Sync triggered' })
   async syncExposure() {
     await this.triggerTailscaleExposureSync();
     return { success: true };
   }
 
   @Post('auth/start')
+  @UseGuards(DemoModeGuard)
   @ApiResponse({ type: Object })
   async startAuth() {
     const cliAvailable = await this.tailscaleService.isCliAvailable();
     if (!cliAvailable) {
-      return {
-        success: false,
-        error:
-          'Tailscale CLI is not available. Start the hub-tailscale sidecar (private-vpn compose profile) or install Tailscale on the host with the daemon socket mounted into the Hub container.',
-      };
+      throw new TranslatableError('TAILSCALE_ERROR_CLI_UNAVAILABLE');
     }
 
-    try {
-      const result = await this.tailscaleService.startAuth();
-      if (result.authUrl === '') {
-        await this.triggerTailscaleExposureSync();
-        return { success: true, alreadyAuthenticated: true };
-      }
-      return { success: true, authUrl: result.authUrl };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to start Tailscale auth',
-      };
+    const result = await this.tailscaleService.startAuth();
+    if (result.authUrl === '') {
+      await this.triggerTailscaleExposureSync();
+      return { success: true, alreadyAuthenticated: true };
     }
+    return { success: true, authUrl: result.authUrl };
   }
 
   @Post('auth/key')
+  @UseGuards(DemoModeGuard)
   @ApiResponse({ type: Object })
   async connectWithAuthKey(@Body() body: { authKey?: string }) {
     const cliAvailable = await this.tailscaleService.isCliAvailable();
     if (!cliAvailable) {
-      return {
-        success: false,
-        error: 'Tailscale CLI is not available. Start the hub-tailscale sidecar (private-vpn compose profile) or install Tailscale on the host.',
-      };
+      throw new TranslatableError('TAILSCALE_ERROR_CLI_UNAVAILABLE');
     }
 
-    try {
-      await this.tailscaleService.connectWithAuthKey(body?.authKey || '');
-      await this.triggerTailscaleExposureSync();
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to connect with auth key',
-      };
-    }
+    await this.tailscaleService.connectWithAuthKey(body?.authKey || '');
+    await this.triggerTailscaleExposureSync();
+    return { success: true };
   }
 
   @Get('auth/check')
@@ -97,17 +83,11 @@ export class TailscaleController {
   }
 
   @Post('disconnect')
+  @UseGuards(DemoModeGuard)
   @ApiResponse({ type: Object })
   async disconnect() {
-    try {
-      await this.tailscaleService.disconnect();
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to disconnect',
-      };
-    }
+    await this.tailscaleService.disconnect();
+    return { success: true };
   }
 
   @Get('serve')

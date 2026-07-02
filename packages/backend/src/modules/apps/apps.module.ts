@@ -11,6 +11,7 @@ import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsController } from './apps.controller';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
+import { AppIntentSyncService } from './app-intent-sync.service';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
 
@@ -24,7 +25,16 @@ import { RegistrationModule } from '../registration/registration.module';
     forwardRef(() => RegistrationModule),
   ],
   controllers: [AppsController],
-  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, AppRuntimeMonitorService, PortAllocationRepository, InstallPipelineTracker],
-  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, AppRuntimeMonitorService, InstallPipelineTracker],
+  providers: [
+    AppFilesManager,
+    AppsRepository,
+    AppHelpers,
+    AppsService,
+    AppIntentSyncService,
+    AppRuntimeMonitorService,
+    PortAllocationRepository,
+    InstallPipelineTracker,
+  ],
+  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, AppIntentSyncService, AppRuntimeMonitorService, InstallPipelineTracker],
 })
 export class AppsModule {}

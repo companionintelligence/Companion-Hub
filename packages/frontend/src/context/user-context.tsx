@@ -1,7 +1,7 @@
 import type { UserContextDto } from '@/api-client';
 import { userContextOptions, userContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { createContext, useContext } from 'react';
+import { createContext, useCallback, useContext, useMemo } from 'react';
 
 interface UserContextValue extends UserContextDto {
   refreshUserContext: () => Promise<void>;
@@ -50,20 +50,23 @@ export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }
 
-  const refreshUserContext = async () => {
+  const refreshUserContext = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey });
-  };
+  }, [queryClient, queryKey]);
 
   const resolvedContext = userContext ?? USER_CONTEXT_DEFAULTS;
 
-  const value = {
-    ...resolvedContext,
-    isLoading,
-    refreshUserContext: refreshUserContext,
-    setUserContext: (newUserContext: Partial<UserContextDto>) => {
-      queryClient.setQueryData(['userContext'], { ...resolvedContext, ...newUserContext });
-    },
-  };
+  const value = useMemo(
+    () => ({
+      ...resolvedContext,
+      isLoading,
+      refreshUserContext,
+      setUserContext: (newUserContext: Partial<UserContextDto>) => {
+        queryClient.setQueryData(queryKey, { ...resolvedContext, ...newUserContext });
+      },
+    }),
+    [resolvedContext, isLoading, refreshUserContext, queryClient, queryKey],
+  );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
 };

@@ -1,33 +1,13 @@
 import type { AltAlternative, AltEntry, AltProprietary, AltsCategory } from '@/modules/onboarding/helpers/types';
-import { apiFetch } from '@/lib/api-fetch';
-import { captureHubWarning } from '@/lib/sentry';
+import { getStoreAlternatives } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 
-/**
- * Public CI Cloud catalog (no trailing slash). Used when the Hub image predates `GET /api/store/alternatives`.
- */
-async function resolveCiCloudCatalogBaseUrl(): Promise<string> {
-  const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
-  if (baked) return baked.replace(/\/$/, '');
-
-  const res = await apiFetch('/api/registration/device-id');
-  if (!res.ok) {
-    throw new Error(
-      `Could not resolve CI Cloud URL for alternatives (${res.status}). Set CI_CLOUD_URL on the Hub and restart, or update the Hub image.`,
-    );
-  }
-  const data = (await res.json()) as { ci_cloud_url?: string | null };
-  const fromApi = data.ci_cloud_url?.trim();
-  if (!fromApi) {
-    throw new Error('CI_CLOUD_URL is not set on this Hub. Add it to your env file and restart.');
-  }
-  return fromApi.replace(/\/$/, '');
-}
-
-async function fetchAlternativesFromCiCloud(): Promise<AltsCategory> {
-  const base = await resolveCiCloudCatalogBaseUrl();
+/** Direct Portal fetch — dev-only when VITE_DEV_DIRECT_PORTAL=true. */
+async function fetchAlternativesDirectFromPortal(portalUrl: string): Promise<AltsCategory> {
+  const base = portalUrl.replace(/\/+$/, '');
   const res = await fetch(`${base}/api/store/alternatives`, { credentials: 'omit' });
   if (!res.ok) {
-    throw new Error(`CI Cloud returned HTTP ${res.status} for the alternatives catalog.`);
+    throw new Error(`Portal returned HTTP ${res.status} for the alternatives catalog.`);
   }
   const json: unknown = await res.json();
   return normalizeAlternativesPayload(json);
@@ -84,42 +64,32 @@ export function normalizeAlternativesPayload(raw: unknown): AltsCategory {
 }
 
 export async function fetchPortalAlternatives(): Promise<AltsCategory> {
-  const res = await apiFetch('/api/store/alternatives');
-  if (res.ok) {
-    const json: unknown = await res.json();
-    return normalizeAlternativesPayload(json);
+  const result = await sdkResult(getStoreAlternatives());
+  if (result.ok) {
+    return normalizeAlternativesPayload(result.data);
   }
 
-  /** Desktop releases pull `ghcr.io/.../ci-hub:*` by default; older tags have no proxy route. */
-  if (res.status === 404) {
-    console.warn('[alternatives] Hub returned 404 for /api/store/alternatives (older image or missing route); trying CI Cloud directly.');
-    captureHubWarning(
-      'Hub alternatives endpoint missing; falling back to CI Cloud catalog',
-      {
-        status: res.status,
-        endpoint: '/api/store/alternatives',
-      },
-      { dedupeKey: 'portal-alternatives-hub-404-fallback' },
-    );
-    try {
-      return await fetchAlternativesFromCiCloud();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      throw new Error(
-        `This Hub build does not expose /api/store/alternatives yet, and loading the catalog from CI Cloud failed: ${msg}. Update CI_HUB_IMAGE / rebuild the Hub container, or check network access to your CI Cloud URL.`,
-      );
+  const devDirect = import.meta.env.DEV && import.meta.env.VITE_DEV_DIRECT_PORTAL === 'true';
+  if (devDirect) {
+    const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
+    if (baked) {
+      return fetchAlternativesDirectFromPortal(baked);
     }
   }
 
   let detail = '';
   try {
-    const body = (await res.json()) as { message?: string | string[] };
-    const m = body?.message;
-    detail = Array.isArray(m) ? m.join(' ') : typeof m === 'string' ? `: ${m}` : '';
+    const body = result.data as { message?: string | string[]; messageKey?: string } | undefined;
+    if (body?.messageKey) {
+      detail = `: ${body.messageKey}`;
+    } else {
+      const m = body?.message;
+      detail = Array.isArray(m) ? `: ${m.join(' ')}` : typeof m === 'string' ? `: ${m}` : '';
+    }
   } catch {
     /* ignore */
   }
-  throw new Error(`Failed to load alternatives (${res.status})${detail}`);
+  throw new Error(`Failed to load alternatives (${result.status})${detail}`);
 }
 
 export const portalAlternativesQueryKey = ['portal', 'store-alternatives'] as const;

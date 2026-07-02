@@ -1,6 +1,13 @@
-import { dynamicComposeSchema, serviceSchema, MIN_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION } from './dynamic-compose.js';
+import {
+  dynamicComposeSchema,
+  serviceSchema,
+  MIN_SCHEMA_VERSION,
+  CURRENT_SCHEMA_VERSION,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from './dynamic-compose.js';
 import { parseComposeJson } from './utils/convert-legacy-schema.js';
-import type { DependsOn, DynamicCompose, Service, ServiceInput } from './dynamic-compose.js';
+import type { AppSecurityGrants, DependsOn, DynamicCompose, Service, ServiceInput, ServiceSecurityViolation } from './dynamic-compose.js';
 
 import {
   APP_CATEGORIES,
@@ -15,8 +22,24 @@ import {
 } from './app-info.js';
 import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, RandomEncoding } from './app-info.js';
 
-import { agentConfigSchema, agentMcpConfigSchema, agentOpenApiAuthSchema, agentOpenApiConfigSchema, agentSkillConfigSchema } from './agent-config.js';
-import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AgentOpenApiConfig, AgentSkillConfig } from './agent-config.js';
+import {
+  agentConfigSchema,
+  agentIntentPrivacySchema,
+  agentIntentSchema,
+  agentMcpConfigSchema,
+  agentOpenApiAuthSchema,
+  agentOpenApiConfigSchema,
+  agentSkillConfigSchema,
+} from './agent-config.js';
+import type {
+  AgentConfig,
+  AgentIntent,
+  AgentIntentPrivacy,
+  AgentMcpConfig,
+  AgentOpenApiAuth,
+  AgentOpenApiConfig,
+  AgentSkillConfig,
+} from './agent-config.js';
 
 import { type SSE, type Topic, sseSchema } from './sse.js';
 
@@ -27,6 +50,8 @@ export {
   parseComposeJson,
   serviceSchema,
   toJsonSchema,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
   APP_CATEGORIES,
@@ -37,6 +62,8 @@ export {
   appInfoSchema,
   appInfoObjectSchema,
   agentConfigSchema,
+  agentIntentPrivacySchema,
+  agentIntentSchema,
   agentMcpConfigSchema,
   agentOpenApiAuthSchema,
   agentOpenApiConfigSchema,
@@ -45,6 +72,8 @@ export {
   sseSchema,
   frontmatterSchema,
   type AgentConfig,
+  type AgentIntent,
+  type AgentIntentPrivacy,
   type AgentMcpConfig,
   type AgentOpenApiAuth,
   type AgentOpenApiConfig,
@@ -53,6 +82,8 @@ export {
   type ServiceInput,
   type DependsOn,
   type Service,
+  type AppSecurityGrants,
+  type ServiceSecurityViolation,
   type DynamicCompose,
   type AppInfo,
   type AppInfoInput,

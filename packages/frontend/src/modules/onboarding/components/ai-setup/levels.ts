@@ -24,11 +24,11 @@ export const LEVEL_BG: Record<LevelColor, string> = {
 
 /** Bordered tag (border + tinted bg + text) per level — for tier chips and group headers. */
 export const LEVEL_TAG: Record<LevelColor, string> = {
-  red: 'border-red-500/30 bg-red-500/15 text-red-300',
-  orange: 'border-orange-500/30 bg-orange-500/15 text-orange-300',
-  gold: 'border-amber-500/30 bg-amber-500/15 text-amber-300',
+  red: 'border-red-500/30 bg-red-500/15 text-red-800 dark:text-red-300',
+  orange: 'border-orange-500/30 bg-orange-500/15 text-orange-800 dark:text-orange-300',
+  gold: 'border-amber-500/30 bg-amber-500/15 text-amber-900 dark:text-amber-300',
   green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-800 dark:text-emerald-300',
-  blue: 'border-sky-500/30 bg-sky-500/15 text-sky-300',
+  blue: 'border-sky-500/30 bg-sky-500/15 text-sky-900 dark:text-sky-300',
 };
 
 // Tier tag color: a heavier hardware requirement is warmer (green = runs anywhere → red = high-end only).

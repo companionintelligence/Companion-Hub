@@ -7,7 +7,7 @@
 
 .otp-input {
   width: 100%;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   text-align: center;
   font-size: 32px;
   font-weight: bold;

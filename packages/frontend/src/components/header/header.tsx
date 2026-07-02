@@ -157,17 +157,17 @@ export const Header = (props: HeaderProps) => {
                     {t('COMMON_APP_STORE')}
                   </Link>
                 </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
+                    <Activity className="mr-2 size-4" />
+                    {t('RESOURCE_MONITOR_NAV')}
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
                     {t('COMMON_SETTINGS', 'Settings')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
-                    <Activity className="mr-2 size-4" />
-                    {t('RESOURCE_MONITOR_NAV')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />

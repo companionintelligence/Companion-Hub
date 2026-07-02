@@ -48,10 +48,17 @@ export const agentIntentPrivacySchema = z.object({
  * A typed semantic action an app contributes to the CI Intent catalog. Installing
  * an app that declares intents EXPANDS the agent's vocabulary — the assistant gains
  * new capabilities when you install the app. `name` is the dotted
- * `<domain>.<action>` id; `parameters` is a JSON Schema object.
+ * `<domain>.<action>` id (manifests use a single domain segment; Hub sync may
+ * rewrite to a dotted namespaced path like `app.<slug>.<domain>.<action>`);
+ * `parameters` is a JSON Schema object.
  */
 export const agentIntentSchema = z.object({
-  name: z.string().regex(/^[a-z][a-z0-9]*\.[a-zA-Z][a-zA-Z0-9]*$/, 'intent name must be "<domain>.<action>"'),
+  name: z
+    .string()
+    .regex(
+      /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)*\.[a-zA-Z][a-zA-Z0-9]*$/,
+      'intent name must be "<domain>.<action>" (domain segments may be dotted when namespaced)',
+    ),
   domain: z.string().min(1),
   title: z.string().min(1),
   description: z.string().min(1),

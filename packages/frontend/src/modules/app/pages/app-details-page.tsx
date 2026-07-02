@@ -57,13 +57,22 @@ export default () => {
 
   const { userSettings } = useAppContext();
 
-  if (getApp.isLoading || !getApp.data) {
+  if (getApp.isLoading) {
     return <PageLoadingSpinner />;
+  }
+
+  if (getApp.isError || !getApp.data) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-16 text-center">
+        <h1 className="text-2xl font-semibold">{t('APP_ERROR_APP_NOT_FOUND', { id: appUrn })}</h1>
+        <p className="mt-2 text-muted-foreground">{t('APP_DETAILS_LOAD_FAILED')}</p>
+      </div>
+    );
   }
 
   const { info, app, metadata, appDataHostPath } = getApp.data;
   const logoUrn = info?.urn ?? appUrn;
-  const logoUrl = getMarketplaceAppImageUrl(logoUrn);
+  const logoUrl = metadata?.iconUrl ?? getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
   const headerStats = [
     {
@@ -110,7 +119,7 @@ export default () => {
                 <img
                   src={logoUrl}
                   alt={info?.name}
-                  className="h-24 w-24 rounded-[2rem] object-cover bg-white/10 shadow-xl sm:h-28 sm:w-28 md:h-32 md:w-32"
+                  className="h-24 w-24 rounded-md object-cover bg-white/10 shadow-lg sm:h-28 sm:w-28 md:h-32 md:w-32"
                   onError={(e) => {
                     e.currentTarget.src = '/app-not-found.jpg';
                   }}

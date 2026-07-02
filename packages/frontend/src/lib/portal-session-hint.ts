@@ -1,4 +1,5 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { portalSessionHint } from '@/api-client/sdk.gen';
+import { unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
 const PORTAL_ACCOUNT_EMAIL_KEY = 'ci-hub.portalAccountEmail';
 
@@ -34,16 +35,14 @@ export function readRememberedPortalAccountEmail(): string | null {
 
 async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
   try {
-    const res = await apiFetch('/api/auth/portal/session-hint');
-    if (!res.ok) {
-      return { email: null, portalBaseUrl: null, source: null };
-    }
-
-    const data = (await res.json()) as {
+    const data = (await unwrapSdkOrNull(portalSessionHint())) as {
       email?: string | null;
       portalBaseUrl?: string | null;
       source?: 'hub_operator' | 'portal_session' | null;
-    };
+    } | null;
+    if (!data) {
+      return { email: null, portalBaseUrl: null, source: null };
+    }
 
     const email = data.email?.trim() || null;
     const portalBaseUrl = data.portalBaseUrl?.trim().replace(/\/$/, '') || null;

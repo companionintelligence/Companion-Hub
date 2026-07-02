@@ -28,7 +28,7 @@ export class SubnetManagerService {
    * @param appUrn The URN of the app to allocate a subnet for
    * @returns The allocated subnet with mask (e.g., 10.128.10.0/24)
    */
-  public async allocateSubnet(appUrn: AppUrn, retryCount = 0): Promise<string> {
+  public async allocateSubnet(appUrn: AppUrn, retryCount = 0, excludeSubnets: string[] = []): Promise<string> {
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!existingApp) {
@@ -51,7 +51,7 @@ export class SubnetManagerService {
     }
 
     const occupied = await this.listOccupiedSubnets(appUrn);
-    const nextSubnet = this.findNextAvailableSubnet(occupied);
+    const nextSubnet = this.findNextAvailableSubnet(occupied, excludeSubnets);
 
     if (!nextSubnet) {
       throw new TranslatableError('NETWORK_ERROR_NO_AVAILABLE_SUBNETS');
@@ -62,7 +62,7 @@ export class SubnetManagerService {
     } catch (error) {
       if (error instanceof Error && retryCount < MAX_RETRIES) {
         this.logger.error(`Subnet ${nextSubnet} failed to be allocated, retrying...`);
-        return this.allocateSubnet(appUrn, retryCount + 1);
+        return this.allocateSubnet(appUrn, retryCount + 1, excludeSubnets);
       }
       throw error;
     }
@@ -126,9 +126,22 @@ export class SubnetManagerService {
    * @param occupied Unified DB + Docker occupancy entries
    * @returns The next available subnet or null if all are used
    */
-  private findNextAvailableSubnet(occupied: OccupiedSubnet[]): string | null {
+  private findNextAvailableSubnet(occupied: OccupiedSubnet[], excludeSubnets: string[] = []): string | null {
     const occupiedCidrs = occupiedCidrStrings(occupied);
+    const excludedPairs = new Set(
+      excludeSubnets
+        .map((subnet) => normalizeIpv4Cidr(subnet))
+        .filter((subnet): subnet is string => Boolean(subnet))
+        .map((subnet) => {
+          const hubMatch = subnet.match(HUB_SUBNET_REGEX);
+          return hubMatch ? `${hubMatch[1]}.${hubMatch[2]}` : null;
+        })
+        .filter((pair): pair is string => Boolean(pair)),
+    );
     const blockedOctetPairs = this.blockedHubOctetPairs(occupiedCidrs);
+    for (const pair of excludedPairs) {
+      blockedOctetPairs.add(pair);
+    }
 
     for (let y = STARTING_OCTET_2; y <= MAX_OCTET_VALUE; y++) {
       const startOctet3 = y === STARTING_OCTET_2 ? RESERVED_SUBNET_MAX_OCTET_3 + 1 : 0;

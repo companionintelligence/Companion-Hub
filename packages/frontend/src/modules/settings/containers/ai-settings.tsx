@@ -1,4 +1,17 @@
-import { apiFetch } from '@/lib/api-fetch';
+import {
+  fetchConfiguredCloudProviders,
+  fetchInferenceOnboardingProfile,
+  fetchInferencePreferences,
+  fetchInferenceRuntimeModels,
+  fetchInferenceTrackedModels,
+  pinInferenceModel,
+  rescanInferenceHardware,
+  saveCloudProviderConfig,
+  saveInferencePreferences,
+  unpinInferenceModel,
+} from '@/lib/inference/inference-api';
+import { POLLING } from '@/lib/polling-budget';
+import { ensurePullsStarted, waitForModelPulls } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
@@ -6,14 +19,8 @@ import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
-import type {
-  CloudProviderInput,
-  HardwareProfileResponse,
-  InferencePreferencesResponse,
-  RuntimeModelInfo,
-  RuntimeModelsResponse,
-} from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CloudProviderType, CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -84,13 +91,7 @@ export const AiSettingsContainer = () => {
   }, []);
 
   const fetchTrackedModels = useCallback(async () => {
-    const trackedRes = await apiFetch('/api/inference/models/tracked');
-    if (!trackedRes.ok) {
-      applyTrackedModels([]);
-      return [] as TrackedModel[];
-    }
-
-    const tracked: TrackedModel[] = await trackedRes.json();
+    const tracked = await fetchInferenceTrackedModels();
     applyTrackedModels(tracked);
     return tracked;
   }, [applyTrackedModels]);
@@ -98,13 +99,7 @@ export const AiSettingsContainer = () => {
   const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType) => {
     setRuntimeModelsLoading(true);
     try {
-      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${encodeURIComponent(backend)}`);
-      if (!runtimeRes.ok) {
-        throw new Error(`HTTP ${runtimeRes.status}`);
-      }
-
-      const runtimeData: RuntimeModelsResponse = await runtimeRes.json();
-
+      const runtimeData = await fetchInferenceRuntimeModels(backend);
       setRuntimeModels(runtimeData.models);
       setRuntimeDiscoveryUnavailable(runtimeData.discoveryUnavailable);
     } catch {
@@ -119,15 +114,12 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/api/inference/onboarding-profile');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: HardwareProfileResponse = await res.json();
+      const data = await fetchInferenceOnboardingProfile();
       setProfile(data);
 
       let preferredBackend = data.backends.recommended;
-      const prefRes = await apiFetch('/api/inference/preferences');
-      if (prefRes.ok) {
-        const prefData: InferencePreferencesResponse = await prefRes.json();
+      const prefData = await fetchInferencePreferences();
+      if (prefData) {
         preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
       }
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
@@ -137,20 +129,9 @@ export const AiSettingsContainer = () => {
       await fetchTrackedModels();
       await fetchRuntimeModels(preferredBackend);
 
-      // Load configured cloud providers
-      const cloudRes = await apiFetch('/api/inference/cloud-providers');
-      if (cloudRes.ok) {
-        const providers = await cloudRes.json();
-        const configured: CloudProviderInput[] = providers
-          .filter((p: { configured: boolean }) => p.configured)
-          .map((p: { provider: CloudProviderType; enabled: boolean }) => ({
-            provider: p.provider,
-            apiKey: '••••••••', // Don't expose the actual key
-            enabled: p.enabled,
-          }));
-        if (configured.length > 0) {
-          setCloudProviders(configured);
-        }
+      const configured = await fetchConfiguredCloudProviders();
+      if (configured.length > 0) {
+        setCloudProviders(configured);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -173,8 +154,7 @@ export const AiSettingsContainer = () => {
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await rescanInferenceHardware();
       await fetchProfile(true);
     } catch (e) {
       toast.error(t('AI_SETTINGS_RESCAN_FAILED', { error: (e as Error).message }));
@@ -204,7 +184,7 @@ export const AiSettingsContainer = () => {
     void fetchTrackedModels();
     const intervalId = window.setInterval(() => {
       void fetchTrackedModels();
-    }, 2000);
+    }, POLLING.MODEL_PULL_MS);
 
     return () => {
       window.clearInterval(intervalId);
@@ -228,71 +208,47 @@ export const AiSettingsContainer = () => {
       const preferredEmbeddingModel = resolvePreferredModelId(profile, selectedBackend, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
-      const backendRes = await apiFetch('/api/inference/preferences', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          backend: selectedBackend,
-          model: preferredModel,
-          embeddingModel: preferredEmbeddingModel,
-          visionModel: preferredVisionModel,
-        }),
+      await saveInferencePreferences({
+        backend: selectedBackend,
+        model: preferredModel,
+        embeddingModel: preferredEmbeddingModel,
+        visionModel: preferredVisionModel,
       });
-      if (!backendRes.ok) {
-        throw new Error(`Failed to save preferred backend: HTTP ${backendRes.status}`);
-      }
 
       // Save cloud providers — for already-configured providers (masked key),
       // always persist enabled state; for new/changed keys, send the full config.
       for (const cp of cloudProviders) {
         if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
-          await apiFetch('/api/inference/cloud-providers', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
-          });
+          await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
         } else if (cp.apiKey.startsWith('••')) {
-          // Already-configured provider — update enabled state without re-sending key
-          await apiFetch('/api/inference/cloud-providers', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: cp.provider, enabled: cp.enabled }),
-          });
+          await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
         }
       }
 
       const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
       const modelOperationErrors: string[] = [];
+      const modelsToPull = compatibleSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
-      // Pull and pin newly selected models
-      for (const modelId of compatibleSelectedModelIds) {
-        if (compatiblePinnedModelIds.includes(modelId)) {
-          continue;
+      if (modelsToPull.length > 0) {
+        await ensurePullsStarted(modelsToPull, false);
+
+        const pullResult = await waitForModelPulls(modelsToPull, profile.installedCatalogIds ?? [], { timeoutMs: 600_000 });
+        for (const [modelId, message] of Object.entries(pullResult.errorsById)) {
+          modelOperationErrors.push(`Failed to pull ${modelId}: ${message}`);
         }
 
-        try {
-          const pullRes = await apiFetch('/api/inference/models/pull', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId }),
-          });
-
-          if (!pullRes.ok) {
-            modelOperationErrors.push(`Failed to pull ${modelId}: HTTP ${pullRes.status}`);
+        for (const modelId of modelsToPull) {
+          if (pullResult.errorsById[modelId]) continue;
+          if (!pullResult.pulledIds.has(modelId) && pullResult.progressById[modelId] !== 100) {
+            modelOperationErrors.push(`Failed to pull ${modelId}: timed out`);
             continue;
           }
 
-          const pinRes = await apiFetch('/api/inference/models/pin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId }),
-          });
-
-          if (!pinRes.ok) {
-            modelOperationErrors.push(`Failed to pin ${modelId}: HTTP ${pinRes.status}`);
+          try {
+            await pinInferenceModel(modelId);
+          } catch (e) {
+            modelOperationErrors.push(`Failed to pin ${modelId}: ${(e as Error).message}`);
           }
-        } catch (e) {
-          modelOperationErrors.push(`Failed to pull/pin ${modelId}: ${(e as Error).message}`);
         }
       }
 
@@ -300,14 +256,7 @@ export const AiSettingsContainer = () => {
       for (const modelId of compatiblePinnedModelIds) {
         if (!compatibleSelectedModelIds.includes(modelId)) {
           try {
-            const unpinRes = await apiFetch('/api/inference/models/unpin', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ modelId }),
-            });
-            if (!unpinRes.ok) {
-              modelOperationErrors.push(`Failed to unpin ${modelId}: HTTP ${unpinRes.status}`);
-            }
+            await unpinInferenceModel(modelId);
           } catch (e) {
             modelOperationErrors.push(`Failed to unpin ${modelId}: ${(e as Error).message}`);
           }
@@ -331,17 +280,17 @@ export const AiSettingsContainer = () => {
   if (loading) {
     return (
       <div className="space-y-5">
-        <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
             <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
             <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
           </div>
           <div className="space-y-4 mt-2">
-            <Skeleton className="h-40 w-full rounded-2xl" />
+            <Skeleton className="h-40 w-full rounded-md" />
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {Array.from({ length: 3 }).map((_, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton count never changes
-                <Skeleton key={`sk-${i}`} className="h-40 w-full rounded-2xl" />
+                <Skeleton key={`sk-${i}`} className="h-40 w-full rounded-md" />
               ))}
             </div>
           </div>
@@ -353,7 +302,7 @@ export const AiSettingsContainer = () => {
   if (error || !profile) {
     return (
       <div className="space-y-5">
-        <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
+        <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
           <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
             <RefreshCw className="mr-2" size={16} />
@@ -389,7 +338,7 @@ export const AiSettingsContainer = () => {
       {!isInsufficient && (
         <>
           {/* Recommended Models — FTUE ModelCard grid */}
-          <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
             <h2 className="text-base font-bold uppercase tracking-wide">{t('COMMON_RECOMMENDED_MODELS')}</h2>
             <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
@@ -460,14 +409,14 @@ export const AiSettingsContainer = () => {
           </section>
 
           {/* Downloaded Models */}
-          <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+          <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
             <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
             <p className="text-xs text-muted-foreground mb-4">{t('AI_SETTINGS_DOWNLOADED_MODELS_SUBTITLE')}</p>
 
             {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
 
             {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
                 {t('AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE')}
               </div>
             )}
@@ -479,7 +428,7 @@ export const AiSettingsContainer = () => {
             {!runtimeModelsLoading && runtimeModels.length > 0 && (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {runtimeModels.map((model) => (
-                  <div key={model.id} className="flex items-center gap-3 rounded-2xl border border-border bg-foreground/[0.015] p-4">
+                  <div key={model.id} className="flex items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
                     <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
                       <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
                     </span>

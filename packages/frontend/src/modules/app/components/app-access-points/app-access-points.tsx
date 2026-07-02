@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { useAppContext } from '@/context/app-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
@@ -63,18 +63,32 @@ export function isTailscalePortPublished(port: number | null | undefined, served
   return port != null && servedPorts.has(port);
 }
 
-function hasDirectLocalAccess(record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean }): boolean {
-  // Exposure is a single-choice install option (local | tailscale | cloudflare).
-  // When a mode is recorded it is the source of truth, so direct-local access is
-  // ONLY for `local`. The legacy `exposedLocal` flag is set to (mode ===
-  // 'cloudflare') for back-compat (see install-form submit), so treating it as
-  // local would re-light the Local card for public apps — the three routes must
-  // stay mutually exclusive.
-  if (record.exposureMode) {
-    return record.exposureMode === 'local';
+function hasDirectLocalAccess(
+  record: { exposureMode?: string | null; exposedLocal?: boolean; openPort?: boolean },
+  options: { hasHostPort: boolean; dynamicConfig: boolean },
+): boolean {
+  if (!options.hasHostPort) return false;
+
+  const mode = record.exposureMode;
+  // Tailscale-only installs may skip publishing a host port unless explicitly requested.
+  if (mode === 'tailscale') return Boolean(record.openPort);
+  // Public-web and local installs still bind the app port on the host — localhost stays valid.
+  if (mode === 'cloudflare' || mode === 'local') return true;
+
+  // Pre-exposureMode installs: match guest-dashboard heuristics.
+  return Boolean(record.openPort) || Boolean(record.exposedLocal) || !options.dynamicConfig;
+}
+
+function getEffectiveExposureMode(record: { exposureMode?: string | null; exposedLocal?: boolean }): 'local' | 'cloudflare' | 'tailscale' {
+  if (record.exposureMode === 'local' || record.exposureMode === 'cloudflare' || record.exposureMode === 'tailscale') {
+    return record.exposureMode;
   }
-  // Pre-exposureMode installs: fall back to the old boolean flags.
-  return Boolean(record.exposedLocal) || Boolean(record.openPort);
+
+  return record.exposedLocal ? 'cloudflare' : 'local';
+}
+
+function publishesPublicWebAccess(record: { exposureMode?: string | null; exposedLocal?: boolean }): boolean {
+  return getEffectiveExposureMode(record) === 'cloudflare' || Boolean(record.exposedLocal);
 }
 
 export function buildAppAccessPoints(input: {
@@ -90,6 +104,7 @@ export function buildAppAccessPoints(input: {
   tailscaleServedPorts?: ReadonlySet<number>;
   organizationSlug?: string;
   deviceSlug?: string;
+  hubSubdomain?: string | null;
 }): AppAccessPoint[] {
   const {
     app,
@@ -104,6 +119,7 @@ export function buildAppAccessPoints(input: {
     tailscaleServedPorts = new Set<number>(),
     organizationSlug,
     deviceSlug,
+    hubSubdomain,
   } = input;
 
   if (!app || info.no_gui) {
@@ -126,18 +142,19 @@ export function buildAppAccessPoints(input: {
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
-  const localEnabled = hasDirectLocalAccess(record);
+  const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
   const directUrl = directPort && localEnabled ? `http://${browserHost}:${directPort}${urlSuffix}` : null;
   const vpnHost = buildTailscalePortHost(tailscaleNodeFqdn, directPort);
   const vpnUrl = buildTailscalePortUrl(tailscaleNodeFqdn, directPort, urlSuffix);
 
   const configuredPublicDomain = record.domain?.trim() || null;
   const resolvedPublicDomain = (record.publicDomain?.trim() || publicDomain || '').trim();
+  const resolvedHubSubdomain = hubSubdomain?.trim() || (deviceSlug && organizationSlug ? `hub-${deviceSlug}-${organizationSlug}` : undefined);
   const derivedPublicIdentity =
     !configuredPublicDomain && cleanSubdomain && resolvedPublicDomain
       ? buildPublicWebIdentity({
           appSubdomain: cleanSubdomain,
-          hubSubdomain: deviceSlug ? `hub-${deviceSlug}${organizationSlug ? `-${organizationSlug}` : ''}` : undefined,
+          hubSubdomain: resolvedHubSubdomain,
           orgSlug: organizationSlug,
           publicDomainRoot: resolvedPublicDomain,
         })
@@ -146,9 +163,7 @@ export function buildAppAccessPoints(input: {
   const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
-  // Only legacy (pre-exposureMode) apps fall back to these heuristics; modern
-  // installs rely solely on `exposureMode === 'tailscale'` so exactly one route
-  // can be active at a time.
+  // Legacy (pre-exposureMode) installs may still infer VPN from older flags.
   const legacyVpnActive = !record.exposureMode && (Boolean(record.exposedLocal) || !info.dynamic_config);
   const vpnPortPublished = isTailscalePortPublished(directPort, tailscaleServedPorts);
   const tailscalePublishReady = tailscaleAvailable && tailscaleHttpsEnabled && vpnPortPublished;
@@ -161,11 +176,8 @@ export function buildAppAccessPoints(input: {
         ? 'available'
         : 'unavailable'
     : 'unavailable';
-  // Modern installs: public is active only when cloudflare is the chosen mode.
-  // Legacy installs: fall back to the exposed/configured-domain heuristic.
-  const publicActive = record.exposureMode
-    ? record.exposureMode === 'cloudflare' && Boolean(publicUrl)
-    : Boolean(publicUrl && (record.exposed || configuredPublicDomain));
+  const publicWebConfigured = publishesPublicWebAccess(record) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
+  const publicActive = Boolean(publicUrl && publicWebConfigured);
   const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
 
   return [
@@ -233,14 +245,8 @@ export const AppAccessPoints = ({ app, info }: Props) => {
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
 
   const { data: serveStatus } = useQuery({
-    queryKey: ['tailscale-serve'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/tailscale/serve');
-      if (!res.ok) {
-        throw new Error(`Failed to fetch Tailscale Serve status: ${res.status}`);
-      }
-      return res.json() as Promise<{ entries: Array<{ listenPort?: number }> }>;
-    },
+    ...getServeStatusOptions(),
+    select: (payload) => payload as { entries: Array<{ listenPort?: number }> },
     enabled: tailscaleAvailable,
     refetchInterval: 30_000,
   });
@@ -260,6 +266,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     tailscaleServedPorts,
     organizationSlug: userSettings.ciHubOrganizationSlug,
     deviceSlug: userSettings.ciHubDeviceSlug,
+    hubSubdomain: userSettings.ciHubHubSubdomain,
   });
 
   const supportsAccessPanel = Boolean(
@@ -304,7 +311,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
             const isActive = entry.state === 'active';
 
             return (
-              <div key={entry.key} className="min-w-0 rounded-xl border border-border/60 bg-muted/20 p-3 sm:p-4">
+              <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
                 <div className="flex min-w-0 items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-3">
                     <div className="mt-0.5 rounded-lg border border-border/60 bg-background/70 p-1.5 sm:p-2">
