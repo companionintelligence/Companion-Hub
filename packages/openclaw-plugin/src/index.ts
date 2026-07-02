@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi, PluginConfig, HubInferenceStatus } from './types';
-import { McpClient } from './mcp-client';
+import { fetchWithTimeout, McpClient } from './mcp-client';
 import { createWakeEndpointHandler } from './wake-endpoint';
 import { SseListenerService } from './sse-listener';
 
@@ -45,9 +45,10 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
 
   api.log.info(`CI-Hub plugin initializing (hub: ${hubUrl})`);
 
-  // Validate Hub is reachable
+  // Validate Hub is reachable — with a timeout, so a half-open Hub can't wedge plugin startup here
+  // before McpClient (which guards its own requests) is even constructed.
   try {
-    const healthResponse = await fetch(`${hubUrl.replace(/\/$/, '')}/api/health`);
+    const healthResponse = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/health`, {});
     if (!healthResponse.ok) {
       api.log.warn(`Hub health check failed: ${healthResponse.status}`);
     }
@@ -117,10 +118,10 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
       }
     }
 
-    // REST fallback
+    // REST fallback (timeout-guarded like every other Hub metadata call)
     if (!inferenceStatus) {
       try {
-        const response = await fetch(`${hubUrl.replace(/\/$/, '')}/api/inference/status`);
+        const response = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/inference/status`, {});
         if (response.ok) {
           inferenceStatus = (await response.json()) as HubInferenceStatus;
         }
@@ -152,7 +153,7 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     const isEmbeddingModel = (id: string) => /embed/i.test(id);
     let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
     try {
-      const response = await fetch(`${ollamaNativeUrl}/api/tags`);
+      const response = await fetchWithTimeout(`${ollamaNativeUrl}/api/tags`, {});
       if (response.ok) {
         const payload = (await response.json()) as { models?: Array<{ name?: string }> };
         localModels = (payload.models ?? [])

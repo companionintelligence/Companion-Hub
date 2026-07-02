@@ -36,7 +36,8 @@ export class McpSessionRegistry implements OnModuleDestroy {
   onModuleDestroy() {
     clearInterval(this.reaper);
     for (const { transport } of this.sessions.values()) {
-      void transport.close();
+      // Best-effort close: swallow rejections so shutdown can't die on an unhandledRejection.
+      transport.close().catch(() => undefined);
     }
     this.sessions.clear();
   }
@@ -59,7 +60,13 @@ export class McpSessionRegistry implements OnModuleDestroy {
   async createConnectedTransport(): Promise<StreamableHTTPServerTransport> {
     const transport = this.buildTransport();
     const server = this.serverFactory.create();
-    await server.connect(transport);
+    try {
+      await server.connect(transport);
+    } catch (error) {
+      // Release the half-constructed pair so a failed connect doesn't leak the transport/server.
+      transport.close().catch(() => undefined);
+      throw error;
+    }
     return transport;
   }
 
@@ -72,15 +79,20 @@ export class McpSessionRegistry implements OnModuleDestroy {
     this.logger.info('MCP session created', transport.sessionId);
   }
 
-  /** Terminate and forget a session (client DELETE). */
+  /** Terminate and forget a session (client DELETE). The registry entry is removed even when the
+   *  transport's close fails — a client-requested teardown must never leave a dead session behind
+   *  (the close error still propagates so the caller can log it). */
   async remove(sessionId: string): Promise<void> {
     const entry = this.sessions.get(sessionId);
     if (!entry) {
       return;
     }
-    await entry.transport.close();
-    this.sessions.delete(sessionId);
-    this.logger.info('MCP session terminated', sessionId);
+    try {
+      await entry.transport.close();
+    } finally {
+      this.sessions.delete(sessionId);
+      this.logger.info('MCP session terminated', sessionId);
+    }
   }
 
   /** Live session count — surfaced to operators by the MCP admin status endpoint (ENH-MCP-4). */
@@ -163,7 +175,8 @@ export class McpSessionRegistry implements OnModuleDestroy {
     const now = Date.now();
     for (const [sessionId, entry] of this.sessions) {
       if (now - entry.lastActivity > SESSION_TTL_MS) {
-        void entry.transport.close();
+        // Best-effort close: swallow rejections so the reaper can't die on an unhandledRejection.
+        entry.transport.close().catch(() => undefined);
         this.sessions.delete(sessionId);
         this.logger.info('MCP session reaped (idle timeout)', sessionId);
       }

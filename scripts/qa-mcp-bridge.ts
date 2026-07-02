@@ -93,7 +93,13 @@ async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
       // keep scanning earlier data lines
     }
   }
-  throw new Error(`no JSON-RPC payload in response (content-type ${contentType})`);
+  // Last resort: an intermediary may strip/rewrite the content-type on a plain JSON body — try the
+  // raw text before giving up. Mirrored in the openclaw plugin's McpClient.readRpcBody.
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`no JSON-RPC payload in response (content-type ${contentType})`);
+  }
 }
 
 /** A `__`-containing tool name must be a bridged app tool: `<appName>_<storeSlug>__<tool>`. */

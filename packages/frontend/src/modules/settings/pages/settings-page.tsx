@@ -120,9 +120,11 @@ export default () => {
                 )}
               </TabsContent>
               <TabsContent value="mcp">
-                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
-                  <McpSettingsContainer />
-                </Suspense>
+                {currentTab === 'mcp' && (
+                  <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
+                    <McpSettingsContainer />
+                  </Suspense>
+                )}
               </TabsContent>
               <TabsContent value="system">
                 {currentTab === 'system' && (

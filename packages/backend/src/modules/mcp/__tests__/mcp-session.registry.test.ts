@@ -82,3 +82,20 @@ describe('McpSessionRegistry.resolveAllowedHosts', () => {
     expect(r.logger.warn).not.toHaveBeenCalled();
   });
 });
+
+describe('McpSessionRegistry.remove', () => {
+  it('deregisters the session even when the transport close fails', async () => {
+    const r = Object.create(McpSessionRegistry.prototype) as unknown as {
+      logger: { warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      sessions: Map<string, { transport: { close: ReturnType<typeof vi.fn> }; lastActivity: number }>;
+      remove: (sessionId: string) => Promise<void>;
+    };
+    r.logger = { warn: vi.fn(), info: vi.fn() };
+    r.sessions = new Map([['s1', { transport: { close: vi.fn().mockRejectedValue(new Error('teardown failed')) }, lastActivity: 0 }]]);
+
+    // The close error still propagates (the controller logs it), but the entry must be gone: a
+    // client-requested teardown must never leave a dead session registered.
+    await expect(r.remove('s1')).rejects.toThrow('teardown failed');
+    expect(r.sessions.size).toBe(0);
+  });
+});

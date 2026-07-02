@@ -50,7 +50,15 @@ export class McpController {
         this.sendJsonRpcError(res, 400, -32000, 'Missing Mcp-Session-Id header; send an initialize request first.');
         return;
       }
-      transport = await this.sessions.createConnectedTransport();
+      try {
+        transport = await this.sessions.createConnectedTransport();
+      } catch (error) {
+        // Transport/server construction failed before anything was written — envelope it instead of
+        // leaking Nest's generic 500 (the registry releases its half-constructed pair on failure).
+        this.logger.error('MCP session creation failed', error);
+        this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
+        return;
+      }
     }
 
     try {
@@ -58,7 +66,7 @@ export class McpController {
     } catch (error) {
       this.logger.error('MCP request handling failed', error);
       if (isNewTransport) {
-        void transport.close();
+        transport.close().catch(() => undefined);
       }
       // handleRequest may have already streamed a partial response; only send an envelope if not.
       if (!res.headersSent) {
@@ -73,7 +81,7 @@ export class McpController {
       if (transport.sessionId) {
         this.sessions.store(transport);
       } else {
-        void transport.close();
+        transport.close().catch(() => undefined);
       }
     }
   }
@@ -90,15 +98,32 @@ export class McpController {
       this.sendJsonRpcError(res, 404, -32001, 'Session not found.');
       return;
     }
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      // Mirror handlePost: log + envelope instead of leaking Nest's generic 500. The transport
+      // belongs to the registry (an existing session); one failed stream open doesn't invalidate the
+      // session, so it is NOT closed here.
+      this.logger.error('MCP stream handling failed', error);
+      if (!res.headersSent) {
+        this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
+      }
+    }
   }
 
   /** DELETE /api/mcp — terminate a session and close its transport. */
   @Delete()
   @HttpCode(204)
   async handleDelete(@Headers('mcp-session-id') sessionId: string | undefined): Promise<void> {
-    if (sessionId) {
+    if (!sessionId) {
+      return;
+    }
+    try {
       await this.sessions.remove(sessionId);
+    } catch (error) {
+      // remove() deregisters the session even when the transport's close fails, so from the client's
+      // perspective the teardown succeeded — log the close failure and keep the 204.
+      this.logger.warn('MCP session close failed during DELETE', error);
     }
   }
 

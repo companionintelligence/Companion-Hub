@@ -71,6 +71,7 @@ describe('McpController (Streamable HTTP)', () => {
     it('closes the transport and returns a JSON-RPC 500 when handleRequest throws on a new session', async () => {
       const transport = mock<StreamableHTTPServerTransport>();
       transport.handleRequest.mockRejectedValue(new Error('boom'));
+      transport.close.mockResolvedValue(undefined); // real SDK close() returns a Promise
       sessions.createConnectedTransport.mockResolvedValue(transport);
       const res = fakeRes();
 
@@ -86,6 +87,7 @@ describe('McpController (Streamable HTTP)', () => {
     it('closes the transport without storing when initialize does not establish a session', async () => {
       const transport = mock<StreamableHTTPServerTransport>();
       (transport as { sessionId?: string }).sessionId = undefined;
+      transport.close.mockResolvedValue(undefined); // real SDK close() returns a Promise
       sessions.createConnectedTransport.mockResolvedValue(transport);
 
       const req = { headers: {}, body: INITIALIZE_BODY } as unknown as Request;
@@ -93,6 +95,18 @@ describe('McpController (Streamable HTTP)', () => {
 
       expect(sessions.store).not.toHaveBeenCalled();
       expect(transport.close).toHaveBeenCalled();
+    });
+
+    it('returns a JSON-RPC 500 when transport construction itself fails', async () => {
+      sessions.createConnectedTransport.mockRejectedValue(new Error('server.connect exploded'));
+      const res = fakeRes();
+
+      const req = { headers: {}, body: INITIALIZE_BODY } as unknown as Request;
+      await controller.handlePost(req, res);
+
+      // Envelope instead of Nest's generic 500; nothing stored.
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(sessions.store).not.toHaveBeenCalled();
     });
 
     it('routes a follow-up request to the existing session transport', async () => {
@@ -144,6 +158,19 @@ describe('McpController (Streamable HTTP)', () => {
       await controller.handleGet({ headers: {} } as unknown as Request, res);
       expect(res.status).toHaveBeenCalledWith(404);
     });
+
+    it('returns a JSON-RPC 500 (and keeps the session) when the stream open fails', async () => {
+      const transport = mock<StreamableHTTPServerTransport>();
+      transport.handleRequest.mockRejectedValue(new Error('stream exploded'));
+      sessions.get.mockReturnValue(transport);
+      const res = fakeRes();
+
+      await controller.handleGet({ headers: { 'mcp-session-id': 'sid-1' } } as unknown as Request, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      // The session's transport is registry-owned; one failed stream open must not close it.
+      expect(transport.close).not.toHaveBeenCalled();
+    });
   });
 
   describe('DELETE /api/mcp', () => {
@@ -155,6 +182,12 @@ describe('McpController (Streamable HTTP)', () => {
     it('no-ops without a session id', async () => {
       await controller.handleDelete(undefined);
       expect(sessions.remove).not.toHaveBeenCalled();
+    });
+
+    it('keeps the 204 contract when the transport close fails during removal', async () => {
+      sessions.remove.mockRejectedValue(new Error('close failed'));
+      // remove() always deregisters the session, so DELETE must not surface a 500.
+      await expect(controller.handleDelete('sid-1')).resolves.toBeUndefined();
     });
   });
 });

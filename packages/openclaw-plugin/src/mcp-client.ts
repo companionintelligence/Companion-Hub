@@ -8,6 +8,35 @@ const MCP_CLIENT_PROTOCOL_VERSION = '2025-11-25';
 /** Default per-request timeout so a hung/half-open Hub connection can't wedge the plugin. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
+/**
+ * Transport-level failure: the Hub was unreachable or stopped responding (network fault, connection
+ * refused/reset, request or body-read timeout). Distinguished from an HTTP error a LIVE server
+ * returned, so callers can decide between entering the reconnect loop (transport dead) and surfacing
+ * a tool-level fault (server alive, session likely still valid).
+ */
+export class McpTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpTransportError';
+  }
+}
+
+/**
+ * fetch with a hard timeout via AbortController so a hung/half-open connection can't block a call
+ * indefinitely. The timer is always cleared. Exported so the plugin's other Hub/inference metadata
+ * calls (index.ts) share the same guard. NOTE: the timeout spans the request up to response headers;
+ * McpClient.post() manages its own controller so the timeout also covers the response body read.
+ */
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface JsonRpcResponse {
   jsonrpc: '2.0';
   id: string | number;
@@ -60,6 +89,13 @@ export class McpClient {
       if (body.error || !body.result || !sessionId) {
         throw new Error(body.error ? body.error.message : 'initialize did not establish a session');
       }
+      if (this.disposed) {
+        // disconnect() ran while initialize was in flight — release the session we just created and
+        // stay torn down instead of reviving the client (the teardown already saw a null sessionId).
+        await fetchWithTimeout(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(sessionId) }).catch(() => undefined);
+        this.log.info('MCP connect aborted (client disconnected during initialize)');
+        return;
+      }
       this.sessionId = sessionId;
       this.connected = true;
       this.backoffMs = 1000;
@@ -81,7 +117,7 @@ export class McpClient {
     }
     if (this.sessionId) {
       try {
-        await this.fetchWithTimeout(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(this.sessionId) });
+        await fetchWithTimeout(this.endpoint, { method: 'DELETE', headers: this.buildHeaders(this.sessionId) });
       } catch {
         // best-effort session teardown
       }
@@ -106,10 +142,11 @@ export class McpClient {
       }
       return (body.result as { tools: McpToolDefinition[] }).tools;
     } catch (error) {
-      // If the session was lost (sendMessage cleared `connected` on a 404), kick off the backoff
-      // reconnect loop before propagating — otherwise a tools/list failure would leave the client
-      // permanently disconnected with no reconnect scheduled (unlike callTool).
-      if (!this.connected) {
+      // Hub unreachable (transport fault/timeout) or session lost (sendMessage's 404) — arm the
+      // backoff reconnect loop before propagating, so a tools/list failure can't leave the client
+      // stuck reporting connected with no reconnect scheduled.
+      if (error instanceof McpTransportError || !this.connected) {
+        this.connected = false;
         this.scheduleReconnect();
       }
       throw error;
@@ -128,13 +165,15 @@ export class McpClient {
       return body.result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (this.connected) {
-        // Transport/parse/5xx fault while the session is still alive: surface the REAL cause instead
-        // of masquerading it as "not connected", and don't tear down a session that may still work.
-        this.log.warn(`MCP tool call '${name}' failed: ${message}`);
-      } else {
-        // Genuine session loss (sendMessage cleared `connected`/`sessionId` on a 404) — reconnect.
+      if (error instanceof McpTransportError || !this.connected) {
+        // Hub unreachable (network fault/timeout) or session lost (sendMessage's 404) — mark
+        // disconnected and enter the backoff loop so the client self-recovers when the Hub returns.
+        this.connected = false;
         this.scheduleReconnect();
+      } else {
+        // HTTP/parse fault from a LIVE server: surface the REAL cause instead of masquerading it as
+        // "not connected", and don't tear down a session that may still work.
+        this.log.warn(`MCP tool call '${name}' failed: ${message}`);
       }
       return { error: message };
     }
@@ -151,28 +190,48 @@ export class McpClient {
     return body;
   }
 
-  /** POST a JSON-RPC request to the single MCP endpoint and parse the JSON or SSE response body. */
+  /**
+   * POST a JSON-RPC request to the single MCP endpoint and parse the JSON or SSE response body.
+   * ONE AbortController spans both the request and the body read, so a Hub that hangs after sending
+   * headers still trips the timeout (a headers-only guard would leave `response.text()` unbounded).
+   * Network faults and timeouts throw {@link McpTransportError}; an HTTP error status from a live
+   * server stays a plain Error (the session may still be valid).
+   */
   private async post(method: string, params: Record<string, unknown>, sessionId?: string): Promise<{ response: Response; body: JsonRpcResponse }> {
     const id = ++this.requestId;
-    const response = await this.fetchWithTimeout(this.endpoint, {
-      method: 'POST',
-      headers: this.buildHeaders(sessionId),
-      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-    });
-    // 404 (expired session) is handled by the caller; other non-2xx are hard failures.
-    if (!response.ok && response.status !== 404) {
-      throw new Error(`MCP request failed: ${response.status} ${response.statusText}`);
-    }
-    return { response, body: await this.readRpcBody(response) };
-  }
-
-  /** fetch with a hard timeout via AbortController, so a hung/half-open connection can't block a
-   *  tool call indefinitely. The timer is always cleared. */
-  private async fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      return await fetch(url, { ...init, signal: controller.signal });
+      let response: Response;
+      try {
+        response = await fetch(this.endpoint, {
+          method: 'POST',
+          headers: this.buildHeaders(sessionId),
+          body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        // fetch rejects only on a network fault or an abort — both mean the Hub is unreachable.
+        throw new McpTransportError(
+          controller.signal.aborted
+            ? `MCP request timed out after ${REQUEST_TIMEOUT_MS}ms`
+            : `MCP request failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      // 404 (expired session) is handled by the caller; other non-2xx are hard failures — but from a
+      // LIVE server, so deliberately NOT McpTransportError (no reconnect churn for a server-side 5xx).
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`MCP request failed: ${response.status} ${response.statusText}`);
+      }
+      try {
+        return { response, body: await this.readRpcBody(response) };
+      } catch (error) {
+        if (controller.signal.aborted) {
+          // Half-open connection: headers arrived but the body stream stalled until the timeout.
+          throw new McpTransportError(`MCP response timed out after ${REQUEST_TIMEOUT_MS}ms`);
+        }
+        throw error; // malformed body from a live server — not a transport fault
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -211,7 +270,13 @@ export class McpClient {
         // keep scanning earlier data lines
       }
     }
-    throw new Error('no JSON-RPC payload in MCP response');
+    // Last resort: an intermediary (reverse proxy/gateway) may strip or rewrite the content-type on
+    // a plain JSON body — try the raw text before giving up. Mirrored in scripts/qa-mcp-bridge.ts.
+    try {
+      return JSON.parse(text) as JsonRpcResponse;
+    } catch {
+      throw new Error('no JSON-RPC payload in MCP response');
+    }
   }
 
   private scheduleReconnect(): void {

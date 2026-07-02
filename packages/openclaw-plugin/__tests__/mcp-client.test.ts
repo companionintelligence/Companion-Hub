@@ -138,7 +138,7 @@ describe('McpClient (Streamable HTTP)', () => {
     expect(await client.callTool('hub_list_installed_apps', {})).toEqual(toolResult);
   });
 
-  it('surfaces the real error and stays connected when a tool call hits a transport fault (5xx)', async () => {
+  it('surfaces the real error and stays connected when a tool call hits a live-server fault (5xx)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
@@ -156,6 +156,81 @@ describe('McpClient (Streamable HTTP)', () => {
     expect(res.error).not.toContain('not connected');
     expect(client.isConnected()).toBe(true);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("tool call 'x' failed"));
+  });
+
+  it('marks the client disconnected and arms a reconnect when a tool call hits a dead Hub', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+      const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+      if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+      throw new Error('ECONNREFUSED'); // Hub died after the session was established
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await client.connect();
+    expect(client.isConnected()).toBe(true);
+
+    const res = (await client.callTool('x', {})) as { error?: string };
+    // A transport-dead Hub (fetch reject) must flip connected and enter the backoff loop — unlike a
+    // live-server 5xx. The real cause is still surfaced.
+    expect(res.error).toContain('ECONNREFUSED');
+    expect(client.isConnected()).toBe(false);
+    const before = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(before); // reconnect attempted
+  });
+
+  it('times out a response body that never arrives (half-open connection)', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+      const method = (JSON.parse(opts?.body as string) as { method: string }).method;
+      if (method === 'initialize') return mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' });
+      // Headers arrive but the body stream stalls forever; reject only when the request signal aborts.
+      const signal = opts?.signal as AbortSignal;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null) },
+        text: () =>
+          new Promise((_resolve, reject) =>
+            signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted', 'AbortError'))),
+          ),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await client.connect();
+
+    const pending = client.callTool('x', {}) as Promise<{ error?: string }>;
+    await vi.advanceTimersByTimeAsync(15_100); // trip REQUEST_TIMEOUT_MS mid-body-read
+    const res = await pending;
+    // The timeout covers the body read (not just headers) and reports a descriptive message.
+    expect(res.error).toContain('timed out');
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('does not revive after disconnect() races an in-flight connect', async () => {
+    let resolveInit!: (r: unknown) => void;
+    const deferred = new Promise((resolve) => {
+      resolveInit = resolve;
+    });
+    const methods: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        const method = opts?.body ? (JSON.parse(opts.body as string) as { method: string }).method : (opts?.method ?? 'GET');
+        methods.push(method);
+        if (method === 'initialize') return deferred;
+        return mcpResponse({ jsonrpc: '2.0', id: 1, result: {} });
+      }),
+    );
+
+    const connecting = client.connect(); // initialize in flight
+    await client.disconnect(); // teardown while awaiting (sessionId still null → no DELETE yet)
+    resolveInit(mcpResponse({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }, { sessionId: 's1' }));
+    await connecting;
+
+    // The client must NOT revive, and the freshly-minted session must be torn down best-effort.
+    expect(client.isConnected()).toBe(false);
+    expect(methods).toContain('DELETE');
   });
 
   it('schedules a reconnect when listTools hits an expired session (404)', async () => {
