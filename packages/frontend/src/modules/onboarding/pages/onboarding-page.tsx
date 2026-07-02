@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { completeOnboarding, detectServices } from '@/api-client/sdk.gen';
+import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
@@ -109,9 +110,8 @@ function OnboardingWizard() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await apiFetch('/api/system/detect-services');
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = (await unwrapSdkOrNull(detectServices())) as { services?: unknown[] } | null;
+        if (!data) return;
         if (!cancelled) setDetectedServices(identifyServices(data.services || []));
       } catch {
         // Non-fatal — recommendations fall back to popular apps.
@@ -121,6 +121,13 @@ function OnboardingWizard() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void refetchCatalog();
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [refetchCatalog]);
 
   const catalogReady = !isCatalogLoading && !isCatalogError;
   const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && catalogReady;
@@ -165,7 +172,7 @@ function OnboardingWizard() {
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
             try {
-              await apiFetch('/api/complete-onboarding', { method: 'PATCH' });
+              await sdkResult(completeOnboarding());
             } catch {
               // Non-fatal — navigate anyway.
             }
@@ -211,7 +218,7 @@ function OnboardingWizard() {
 
         <div aria-hidden className="h-2" />
 
-        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-0.5 min-w-0">
             <ModelDownloadFooterSummary pullState={modelPullState} />
             <p className="text-sm text-muted-foreground">

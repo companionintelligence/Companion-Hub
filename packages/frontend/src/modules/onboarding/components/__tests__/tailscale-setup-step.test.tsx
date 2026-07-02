@@ -22,6 +22,15 @@ vi.mock('@tanstack/react-query', () => ({
   }),
 }));
 
+vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getStatus4Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getStatus4QueryKey: () => ['tailscale-status'],
+}));
+
+vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
+  useTailscaleReadinessSync: vi.fn(),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: {
     error: vi.fn(),

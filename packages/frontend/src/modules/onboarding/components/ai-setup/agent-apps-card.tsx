@@ -79,7 +79,7 @@ export const AgentFrameworkCard = ({
           </p>
         )}
 
-        <fieldset className={cn('rounded-2xl border border-border bg-foreground/[0.015] p-4', remoteAccessDisabled && 'opacity-60')}>
+        <fieldset className={cn('rounded-md border border-border bg-foreground/[0.015] p-4', remoteAccessDisabled && 'opacity-60')}>
           <legend className="px-1 text-xs font-medium">{t('ONBOARDING_REMOTE_ACCESS')}</legend>
           <div className="mt-1 grid grid-cols-2 gap-2">
             {ACCESS_OPTIONS.map(({ mode, labelKey, transportKey, Icon }) => {
