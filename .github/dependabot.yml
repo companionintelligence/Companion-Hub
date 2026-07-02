@@ -16,3 +16,15 @@ updates:
     schedule:
       interval: 'daily'
     rebase-strategy: 'auto'
+
+  # Rust/Tauri desktop app crates
+  - package-ecosystem: 'cargo'
+    directory: '/packages/desktop/src-tauri'
+    schedule:
+      interval: 'daily'
+    rebase-strategy: 'auto'
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
