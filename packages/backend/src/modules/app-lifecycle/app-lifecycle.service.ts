@@ -35,6 +35,7 @@ import { ErrorReportingService, type AppFailurePhase } from '@/core/error-report
 import { publishesHostPort } from '../apps/app-exposure.helpers';
 import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
+import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -96,6 +97,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
     private readonly installPipelineTracker: InstallPipelineTracker,
     private readonly operationRegistry: AppOperationRegistry,
+    @Optional() private readonly appIntentSyncService?: AppIntentSyncService,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {
@@ -686,6 +688,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
           void this.emitInstallQueueUpdate();
 
+          // Sync any app-declared intents (agents.intents[]) into CI-Server's
+          // catalog so installing the app grows the assistant's vocabulary.
+          // Best-effort and detached: never fails the install (mirrors the #843
+          // install-sink pattern for side-effects hanging off the lifecycle).
+          const appIntentSyncService = this.appIntentSyncService;
+          if (appIntentSyncService) {
+            this.fireAndForgetLifecycle('register-intents', appUrn, () => appIntentSyncService.registerAppIntents(appUrn, appInfo));
+          }
+
           if (recordExposedLocal || (appInfo.exposable && !exposedLocal)) {
             await this.syncExposure();
           }
@@ -865,6 +876,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
           await this.appRepository.deleteAppById(app.id);
+
+          // Drop the app's declared intents from CI-Server's catalog. Best-effort
+          // and detached; never fails the uninstall.
+          const appIntentSyncService = this.appIntentSyncService;
+          if (appIntentSyncService) {
+            this.fireAndForgetLifecycle('unregister-intents', appUrn, () => appIntentSyncService.unregisterAppIntents(appUrn));
+          }
 
           // Release Portal DNS/tunnel routes before telling the UI uninstall is done,
           // so reinstalling the same hostname does not hit stale "domain in use" checks.

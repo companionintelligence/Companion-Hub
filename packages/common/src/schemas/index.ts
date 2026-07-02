@@ -22,8 +22,24 @@ import {
 } from './app-info.js';
 import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, RandomEncoding } from './app-info.js';
 
-import { agentConfigSchema, agentMcpConfigSchema, agentOpenApiAuthSchema, agentOpenApiConfigSchema, agentSkillConfigSchema } from './agent-config.js';
-import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AgentOpenApiConfig, AgentSkillConfig } from './agent-config.js';
+import {
+  agentConfigSchema,
+  agentIntentPrivacySchema,
+  agentIntentSchema,
+  agentMcpConfigSchema,
+  agentOpenApiAuthSchema,
+  agentOpenApiConfigSchema,
+  agentSkillConfigSchema,
+} from './agent-config.js';
+import type {
+  AgentConfig,
+  AgentIntent,
+  AgentIntentPrivacy,
+  AgentMcpConfig,
+  AgentOpenApiAuth,
+  AgentOpenApiConfig,
+  AgentSkillConfig,
+} from './agent-config.js';
 
 import { type SSE, type Topic, sseSchema } from './sse.js';
 
@@ -46,6 +62,8 @@ export {
   appInfoSchema,
   appInfoObjectSchema,
   agentConfigSchema,
+  agentIntentPrivacySchema,
+  agentIntentSchema,
   agentMcpConfigSchema,
   agentOpenApiAuthSchema,
   agentOpenApiConfigSchema,
@@ -54,6 +72,8 @@ export {
   sseSchema,
   frontmatterSchema,
   type AgentConfig,
+  type AgentIntent,
+  type AgentIntentPrivacy,
   type AgentMcpConfig,
   type AgentOpenApiAuth,
   type AgentOpenApiConfig,

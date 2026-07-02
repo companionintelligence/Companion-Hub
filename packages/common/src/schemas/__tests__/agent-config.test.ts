@@ -134,6 +134,16 @@ describe('agent-config schemas', () => {
       expect(agentIntentSchema.safeParse({ name: 'addItem', domain: 'groceries', title: 'x', description: 'y' }).success).toBe(false);
     });
 
+    it('should accept a Hub-namespaced intent name with dotted domain segments', () => {
+      const result = agentIntentSchema.safeParse({
+        name: 'app.groceries.groceries.addItem',
+        domain: 'app.groceries.groceries',
+        title: 'Add grocery item',
+        description: 'Add an item to the grocery list',
+      });
+      expect(result.success).toBe(true);
+    });
+
     it('should default privacy.access to read', () => {
       const result = agentIntentSchema.safeParse({
         name: 'recipes.find',
