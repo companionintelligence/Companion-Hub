@@ -105,6 +105,7 @@ export interface BuilderService {
   sysctls?: Record<string, number>;
   dns?: string | string[];
   env_file?: string[];
+  platform?: string;
 }
 
 export type BuiltService = ReturnType<typeof ServiceBuilder.prototype.build>;
@@ -531,6 +532,11 @@ export class ServiceBuilder {
     return this;
   }
 
+  setPlatform(platform?: string) {
+    this.service.platform = platform;
+    return this;
+  }
+
   /**
    * Sets the env_file for the service.
    * @param {string[]} envFiles The env files to use for the service.
@@ -631,6 +637,7 @@ export class ServiceBuilder {
       sysctls: this.service.sysctls,
       dns: this.service.dns,
       env_file: this.service.env_file,
+      platform: this.service.platform,
     };
 
     // Delete any undefined properties

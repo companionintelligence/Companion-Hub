@@ -173,7 +173,7 @@ export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
   };
 }
 
-async function main() {
+export async function initHostProbe(): Promise<HostMetricsProbeFile> {
   const stateDir = resolveStateDir();
   const outPath = path.join(stateDir, 'hardware', 'host_metrics.json');
   mkdirSync(path.dirname(outPath), { recursive: true });
@@ -183,6 +183,11 @@ async function main() {
   console.log(
     `init-host-probe: wrote ${outPath} (${probe.host.totalRamMb} MB RAM, ${probe.host.diskUsedGb}/${probe.host.diskTotalGb} GB disk on ${probe.host.diskMount})`,
   );
+  return probe;
+}
+
+async function main() {
+  await initHostProbe();
 }
 
 const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);

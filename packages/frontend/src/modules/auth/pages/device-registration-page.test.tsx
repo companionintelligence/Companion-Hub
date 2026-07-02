@@ -3,15 +3,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
-const { captureHubWarning, navigate, apiFetch, setHubSentryDeviceId, toast } = vi.hoisted(() => ({
+const {
+  captureHubWarning,
+  navigate,
+  setHubSentryDeviceId,
+  toast,
+  fetchRegistrationStatusResult,
+  fetchDeviceRegistrationInfoResult,
+  fetchRegistrationStateDrift,
+  pairWithCode,
+  markRegistrationRestoreIntentDetailed,
+  prepareFreshRegistrationDetailed,
+  probeRegistrationDomain,
+} = vi.hoisted(() => ({
   captureHubWarning: vi.fn(),
   navigate: vi.fn(),
-  apiFetch: vi.fn(),
   setHubSentryDeviceId: vi.fn(),
   toast: {
     success: vi.fn(),
     error: vi.fn(),
   },
+  fetchRegistrationStatusResult: vi.fn(),
+  fetchDeviceRegistrationInfoResult: vi.fn(),
+  fetchRegistrationStateDrift: vi.fn(),
+  pairWithCode: vi.fn(),
+  markRegistrationRestoreIntentDetailed: vi.fn(),
+  prepareFreshRegistrationDetailed: vi.fn(),
+  probeRegistrationDomain: vi.fn(),
 }));
 
 vi.mock('react-router', async () => {
@@ -22,8 +40,14 @@ vi.mock('react-router', async () => {
   };
 });
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch,
+vi.mock('@/lib/registration-api', () => ({
+  fetchRegistrationStatusResult,
+  fetchDeviceRegistrationInfoResult,
+  fetchRegistrationStateDrift,
+  pairWithCode,
+  markRegistrationRestoreIntentDetailed,
+  prepareFreshRegistrationDetailed,
+  probeRegistrationDomain,
 }));
 
 vi.mock('@/lib/sentry', () => ({
@@ -35,21 +59,27 @@ vi.mock('react-hot-toast', () => ({
   default: toast,
 }));
 
-function jsonResponse(body: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-}
-
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {
     phase,
     registered,
     degradedReasons: [],
+  };
+}
+
+function statusOk(phase: RegistrationStatus['phase'], registered = false) {
+  return { ok: true, status: 200, data: makeStatus(phase, registered) };
+}
+
+function deviceInfo(overrides: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    status: 200,
+    data: {
+      device_id: 'device-123',
+      ci_cloud_url: 'https://portal.example.com/',
+      ...overrides,
+    },
   };
 }
 
@@ -65,28 +95,16 @@ describe('DeviceRegistrationPage', () => {
     vi.clearAllMocks();
     vi.useRealTimers();
     sessionStorage.clear();
-    apiFetch.mockImplementation(async (url: string) => {
-      if (url === '/api/registration/status') {
-        return jsonResponse(makeStatus('unregistered'));
-      }
-      if (url === '/api/registration/device-id') {
-        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
-      }
-      if (url === '/api/registration/state-drift') {
-        return jsonResponse({ detected: false, signals: [] });
-      }
-      return jsonResponse({});
-    });
+    fetchRegistrationStatusResult.mockResolvedValue(statusOk('unregistered'));
+    fetchDeviceRegistrationInfoResult.mockResolvedValue(deviceInfo());
+    fetchRegistrationStateDrift.mockResolvedValue({ detected: false, signals: [] });
+    pairWithCode.mockResolvedValue({ ok: true, status: 200, data: { success: true, domain: 'example.com', subdomain: 'hub' } });
+    markRegistrationRestoreIntentDetailed.mockResolvedValue({ ok: true, data: { success: true } });
+    prepareFreshRegistrationDetailed.mockResolvedValue({ ok: true, data: { success: true } });
+    probeRegistrationDomain.mockResolvedValue({ ready: true });
   });
 
   it('shows the pairing form only after confirming the Hub is unregistered', async () => {
-    apiFetch.mockResolvedValueOnce(jsonResponse(makeStatus('unregistered'))).mockResolvedValueOnce(
-      jsonResponse({
-        device_id: 'device-123',
-        ci_cloud_url: 'https://portal.example.com/',
-      }),
-    );
-
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
@@ -105,10 +123,8 @@ describe('DeviceRegistrationPage', () => {
   });
 
   it('uses the device-scoped registration URL for login when the backend provides one', async () => {
-    apiFetch.mockResolvedValueOnce(jsonResponse(makeStatus('unregistered'))).mockResolvedValueOnce(
-      jsonResponse({
-        device_id: 'device-123',
-        ci_cloud_url: 'https://portal.example.com/',
+    fetchDeviceRegistrationInfoResult.mockResolvedValue(
+      deviceInfo({
         registration_url:
           'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
       }),
@@ -123,7 +139,7 @@ describe('DeviceRegistrationPage', () => {
   });
 
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {
-    apiFetch.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
 
     render(<DeviceRegistrationPage />);
 
@@ -133,27 +149,23 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('submits pairing without immediate navigation when status remains unregistered', async () => {
-    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/api/registration/status') {
-        return jsonResponse(makeStatus('unregistered'));
-      }
+  it('does not keep polling registration status after a failed lookup', async () => {
+    fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
 
-      if (url === '/api/registration/device-id') {
-        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com' });
-      }
+    render(<DeviceRegistrationPage />);
+    expect(await screen.findByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
+    const initialCalls = fetchRegistrationStatusResult.mock.calls.length;
 
-      if (url === '/api/registration/state-drift') {
-        return jsonResponse({ detected: false, signals: [] });
-      }
-
-      if (url === '/api/registration/pair' && init?.method === 'POST') {
-        return jsonResponse({ success: true, domain: 'example.com', subdomain: 'hub' });
-      }
-
-      throw new Error(`Unexpected apiFetch call: ${url}`);
+    vi.useFakeTimers();
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
     });
 
+    expect(fetchRegistrationStatusResult.mock.calls.length).toBe(initialCalls);
+    vi.useRealTimers();
+  });
+
+  it('submits pairing without immediate navigation when status remains unregistered', async () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
@@ -163,32 +175,16 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith(
-        '/api/registration/pair',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ pairing_code: 'ABC123' }) }),
-      );
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
     });
 
     expect(navigate).not.toHaveBeenCalled();
   });
 
   it('does not show the state drift dialog while pairing is in progress', async () => {
-    let paired = false;
-
-    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/api/registration/status') {
-        return jsonResponse(makeStatus('unregistered'));
-      }
-
-      if (url === '/api/registration/device-id') {
-        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com' });
-      }
-
-      if (url === '/api/registration/state-drift') {
-        if (!paired) {
-          return jsonResponse({ detected: false, signals: [] });
-        }
-        return jsonResponse({
+    fetchRegistrationStateDrift.mockImplementation(async () => {
+      if (pairWithCode.mock.calls.length > 0) {
+        return {
           detected: true,
           hardwareDeviceId: 'device-123',
           localRegistered: false,
@@ -196,15 +192,9 @@ describe('DeviceRegistrationPage', () => {
           staleAppEnvDeviceIds: [],
           hasStaleTunnelToken: false,
           signals: [{ reason: 'local_unregistered_portal_active' }],
-        });
+        };
       }
-
-      if (url === '/api/registration/pair' && init?.method === 'POST') {
-        paired = true;
-        return jsonResponse({ success: true, domain: 'example.com', subdomain: 'hub' });
-      }
-
-      throw new Error(`Unexpected apiFetch call: ${url}`);
+      return { detected: false, signals: [] };
     });
 
     render(<DeviceRegistrationPage />);
@@ -214,32 +204,21 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith('/api/registration/pair', expect.objectContaining({ method: 'POST' }));
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
     });
 
     expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
   });
 
   it('shows the state drift dialog when local and portal registration disagree', async () => {
-    apiFetch.mockImplementation(async (url: string) => {
-      if (url === '/api/registration/status') {
-        return jsonResponse(makeStatus('unregistered'));
-      }
-      if (url === '/api/registration/device-id') {
-        return jsonResponse({ device_id: 'device-123', ci_cloud_url: 'https://portal.example.com/' });
-      }
-      if (url === '/api/registration/state-drift') {
-        return jsonResponse({
-          detected: true,
-          hardwareDeviceId: 'device-123',
-          localRegistered: false,
-          portalDeviceActive: true,
-          staleAppEnvDeviceIds: ['old-device-id'],
-          hasStaleTunnelToken: false,
-          signals: [{ reason: 'local_unregistered_portal_active' }],
-        });
-      }
-      return jsonResponse({});
+    fetchRegistrationStateDrift.mockResolvedValue({
+      detected: true,
+      hardwareDeviceId: 'device-123',
+      localRegistered: false,
+      portalDeviceActive: true,
+      staleAppEnvDeviceIds: ['old-device-id'],
+      hasStaleTunnelToken: false,
+      signals: [{ reason: 'local_unregistered_portal_active' }],
     });
 
     render(<DeviceRegistrationPage />);
@@ -250,44 +229,28 @@ describe('DeviceRegistrationPage', () => {
   });
 
   it('points the login button at Portal home (not the Add Device intent URL) after choosing restore', async () => {
-    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/api/registration/status') {
-        return jsonResponse(makeStatus('unregistered'));
-      }
-      if (url === '/api/registration/device-id') {
-        return jsonResponse({
-          device_id: 'device-123',
-          ci_cloud_url: 'https://portal.example.com/',
-          // Even with an Add Device intent URL available, restore should bypass it.
-          registration_url:
-            'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
-        });
-      }
-      if (url === '/api/registration/state-drift') {
-        return jsonResponse({
-          detected: true,
-          hardwareDeviceId: 'device-123',
-          localRegistered: false,
-          portalDeviceActive: true,
-          staleAppEnvDeviceIds: ['old-device-id'],
-          hasStaleTunnelToken: false,
-          signals: [{ reason: 'local_unregistered_portal_active' }],
-        });
-      }
-      if (url === '/api/registration/mark-restore-intent' && init?.method === 'POST') {
-        return jsonResponse({ success: true });
-      }
-      return jsonResponse({});
+    fetchDeviceRegistrationInfoResult.mockResolvedValue(
+      deviceInfo({
+        registration_url:
+          'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
+      }),
+    );
+    fetchRegistrationStateDrift.mockResolvedValue({
+      detected: true,
+      hardwareDeviceId: 'device-123',
+      localRegistered: false,
+      portalDeviceActive: true,
+      staleAppEnvDeviceIds: ['old-device-id'],
+      hasStaleTunnelToken: false,
+      signals: [{ reason: 'local_unregistered_portal_active' }],
     });
 
     render(<DeviceRegistrationPage />);
 
-    // The drift dialog opens first (it makes the page behind it inert/aria-hidden,
-    // so the login link is only queryable once a choice closes the dialog).
     fireEvent.click(await screen.findByTestId('drift-restore'));
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith('/api/registration/mark-restore-intent', expect.objectContaining({ method: 'POST' }));
+      expect(markRegistrationRestoreIntentDetailed).toHaveBeenCalled();
     });
 
     await waitFor(() => {

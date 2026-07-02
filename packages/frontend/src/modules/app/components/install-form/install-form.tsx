@@ -1,7 +1,6 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { fetchDnsAvailability, fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
 import type { GetRandomPortResponse } from '@/api-client';
-import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
-import { getAvailableDomainsQueryOptions } from '@/api-client/domains-query';
+import { getRandomPortMutation, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
@@ -167,7 +166,7 @@ export const InstallForm: React.FC<IProps> = ({
         ? tailscalePreviewHost || `${tailscaleNodeFqdn || 'tailnet'}${watchPort ? `:${watchPort}` : ''}`
         : localPreviewHost;
 
-  const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
+  const { data: availableDomainsData } = useQuery(getDomainsOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
   const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
@@ -182,15 +181,10 @@ export const InstallForm: React.FC<IProps> = ({
 
   const checkDnsAvailability = useCallback(
     async (subdomain: string, selectedDomain?: string) => {
-      const query = new URLSearchParams({ subdomain });
-      if (selectedDomain) {
-        query.set('domain', selectedDomain);
-      }
-      if (editingAppUrn) {
-        query.set('appUrn', editingAppUrn);
-      }
-
-      return apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`);
+      return fetchDnsAvailability(subdomain, {
+        domain: selectedDomain,
+        appUrn: editingAppUrn,
+      }) as Promise<Response>;
     },
     [editingAppUrn],
   );
@@ -351,11 +345,8 @@ export const InstallForm: React.FC<IProps> = ({
     let cancelled = false;
     void (async () => {
       try {
-        const response = await apiFetch('/api/public-web/diagnostics');
-        if (!response.ok) return;
-        const data = (await response.json()) as {
-          apps: { appUrn: string; envMismatch: boolean; computedPublicUrl: string }[];
-        };
+        const data = await fetchPublicWebDiagnostics();
+        if (!data) return;
         const entry = data.apps.find((app) => app.appUrn === info.urn);
         if (!cancelled && entry?.envMismatch) {
           setPublicWebExpectedUrl(entry.computedPublicUrl);

@@ -36,7 +36,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
         {apps.map((app) => (
           <div
             key={app.appSlug}
-            className="flex items-center gap-3 rounded-xl border border-border bg-foreground/[0.015] p-3 transition-colors hover:border-primary/40"
+            className="flex items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-3 transition-colors hover:border-primary/40"
           >
             <OnboardingAppIcon app={app} size={36} />
             <div className="min-w-0 flex-1">
@@ -61,7 +61,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
 
         {apps.length === 0 && (
           <div className="flex flex-col items-center py-10 text-center">
-            <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-foreground/[0.02] text-muted-foreground">
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-md border border-border bg-foreground/[0.02] text-muted-foreground">
               <Package className="h-6 w-6" />
             </span>
             <p className="mt-3 text-sm text-muted-foreground">{t('ONBOARDING_NO_APPS_SELECTED_DESC')}</p>

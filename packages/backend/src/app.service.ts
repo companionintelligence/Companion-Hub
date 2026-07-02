@@ -99,10 +99,6 @@ export class AppService implements OnApplicationShutdown {
 
       await this.appStoreService.registerCloudAppStore();
 
-      this.logger.info('Publishing clone_all command...');
-      this.repoQueue.publish({ command: 'clone_all' });
-      this.logger.info('Clone command published');
-
       this.logger.info('Initializing marketplace...');
       await this.marketplaceService.initialize();
       this.logger.info('Marketplace initialized');

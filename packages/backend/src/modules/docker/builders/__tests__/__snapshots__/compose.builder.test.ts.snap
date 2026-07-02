@@ -104,7 +104,7 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     command: node index.js
     restart: unless-stopped
     networks:
-      nginx_store-id_network:
+      home-assistant_store-id_network:
         gw_priority: 0
     extra_hosts:
       - host1
@@ -131,7 +131,7 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       - service2
     labels:
       ci-os-hub.managed: true
-      ci-os-hub.appurn: nginx:store-id
+      ci-os-hub.appurn: home-assistant:store-id
     cap_add:
       - SYS_ADMIN
       - NET_ADMIN
@@ -181,17 +181,17 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     image: image2
     restart: unless-stopped
     networks:
-      nginx_store-id_network:
+      home-assistant_store-id_network:
         gw_priority: 0
     labels:
       ci-os-hub.managed: true
-      ci-os-hub.appurn: nginx:store-id
+      ci-os-hub.appurn: home-assistant:store-id
 networks:
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
-  nginx_store-id_network:
-    name: nginx_store-id_network
+  home-assistant_store-id_network:
+    name: home-assistant_store-id_network
     external: false
     ipam:
       config:

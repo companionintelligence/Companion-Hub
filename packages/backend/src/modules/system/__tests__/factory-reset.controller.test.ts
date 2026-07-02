@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { FactoryResetController } from '../factory-reset.controller';
 import { FactoryResetService } from '../factory-reset.service';
 
@@ -16,6 +17,8 @@ describe('FactoryResetController', () => {
       providers: [{ provide: FactoryResetService, useValue: mock<FactoryResetService>() }],
     })
       .overrideGuard(AuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(DemoModeGuard)
       .useValue({ canActivate: () => true })
       .compile();
 

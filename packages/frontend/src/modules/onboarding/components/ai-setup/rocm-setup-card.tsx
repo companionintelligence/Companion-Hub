@@ -1,4 +1,4 @@
-import { apiFetch } from '@/lib/api-fetch';
+import { fetchRocmInstallStatus, rescanInferenceHardware, saveRocmInstallState } from '@/lib/inference/inference-api';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { openExternal } from '@/lib/helpers/open-external';
@@ -50,10 +50,8 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await apiFetch('/api/inference/rocm/status');
-      if (!res.ok) return;
-      const data = (await res.json()) as RocmInstallStatus;
-      if (!unmounted.current) setStatus(data);
+      const data = await fetchRocmInstallStatus<RocmInstallStatus>();
+      if (data && !unmounted.current) setStatus(data);
     } catch {
       // best effort
     }
@@ -79,11 +77,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
     setInstallBusy(true);
     setInstallError('');
     try {
-      await apiFetch('/api/inference/rocm/install-state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phase: 'downloading', message: t('AI_ROCM_INSTALLING') }),
-      });
+      await saveRocmInstallState({ phase: 'downloading', message: t('AI_ROCM_INSTALLING') });
       const result = (await invoke('install_rocm_command')) as { state?: string; detail?: string };
       await fetchStatus();
       if (result?.state === 'failed') {
@@ -93,11 +87,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
       if (unmounted.current) return;
       const message = err instanceof Error ? err.message : String(err);
       setInstallError(message);
-      await apiFetch('/api/inference/rocm/install-state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phase: 'failed', message }),
-      });
+      await saveRocmInstallState({ phase: 'failed', message });
     } finally {
       if (!unmounted.current) setInstallBusy(false);
     }
@@ -111,7 +101,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
       if (invoke) {
         await invoke('verify_rocm_command');
       }
-      await apiFetch('/api/inference/hardware/rescan', { method: 'POST' });
+      await rescanInferenceHardware();
       await onRescan();
       await fetchStatus();
     } catch (err) {

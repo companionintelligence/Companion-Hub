@@ -332,12 +332,13 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
   }
 
   try {
-    const { apiFetch } = await import('@/lib/api-fetch');
-    const tokenRes = await apiFetch('/api/system/update/host-listener-token');
-    if (!tokenRes.ok) {
+    const { getHostListenerToken } = await import('@/api-client/sdk.gen');
+    const { sdkResult } = await import('@/lib/sdk-unwrap');
+    const tokenResult = await sdkResult(getHostListenerToken());
+    if (!tokenResult.ok) {
       return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
     }
-    const { token } = (await tokenRes.json()) as { token?: string };
+    const { token } = (tokenResult.data ?? {}) as { token?: string };
     if (!token) {
       return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
     }
@@ -358,13 +359,10 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
 /** Stack-only update via backend API (browser / in-container fallback). */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
-    const { apiFetch } = await import('@/lib/api-fetch');
-    const res = await apiFetch('/api/system/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetVersion }),
-    });
-    if (res.ok) {
+    const { performUpdate } = await import('@/api-client/sdk.gen');
+    const { sdkResult } = await import('@/lib/sdk-unwrap');
+    const result = await sdkResult(performUpdate({ body: { targetVersion } } as Parameters<typeof performUpdate>[0]));
+    if (result.ok) {
       return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' };
     }
     return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };

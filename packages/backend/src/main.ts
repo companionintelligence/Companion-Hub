@@ -1,6 +1,6 @@
 import './instrument';
 
-import { type INestApplication, Logger, ValidationPipe } from '@nestjs/common';
+import { type INestApplication, Logger } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
@@ -88,7 +88,6 @@ async function bootstrap() {
   await appService.bootstrap();
 
   app.setGlobalPrefix('/api');
-  app.useGlobalPipes(new ValidationPipe());
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, origin?: string | boolean) => void) => {
       const allowed = resolveAllowedCorsOrigin(origin);

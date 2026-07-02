@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
@@ -41,7 +41,7 @@ interface MacOsHostProbe {
 }
 
 @Injectable()
-export class HardwareInspectorService implements OnModuleInit {
+export class HardwareInspectorService {
   private cachedProfile: HardwareProfile | null = null;
   private lastIncompleteDiscreteGpuRefreshAt = 0;
   private hostProbeRefreshResolved = false;
@@ -52,17 +52,6 @@ export class HardwareInspectorService implements OnModuleInit {
     private readonly filesystem: FilesystemService,
     private readonly hostMetrics: HostMetricsService,
   ) {}
-
-  async onModuleInit() {
-    try {
-      this.updateCachedProfile(await this.detect());
-      this.logger.info(
-        `[HardwareInspector] Detected tier: ${this.cachedProfile?.tier}, GPU: ${this.cachedProfile?.gpu.vendor} ${this.cachedProfile?.gpu.model}`,
-      );
-    } catch (err) {
-      this.logger.error(`[HardwareInspector] Failed to detect hardware: ${err}`);
-    }
-  }
 
   /** Get the cached hardware profile, or re-detect if not available */
   async getProfile(): Promise<HardwareProfile> {

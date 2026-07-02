@@ -14,8 +14,8 @@ vi.mock('@tanstack/react-query', () => ({
   }),
 }));
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: vi.fn(),
+vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -115,6 +115,46 @@ describe('buildAppAccessPoints', () => {
     });
   });
 
+  it('marks local access active for cloudflare-exposed apps that still publish a host port', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 18789,
+        localSubdomain: 'openclaw',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        domain: 'openclaw-studio-companion.companionintelligence.com',
+        exposed: true,
+      } as any,
+      info: { ...info, urn: 'openclaw:ci-marketplace' },
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      publicDomain: 'companionintelligence.com',
+      cloudflareAvailable: true,
+      tailscaleAvailable: true,
+      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleHttpsEnabled: true,
+      tailscaleServedPorts: new Set([18789]),
+      organizationSlug: 'companion',
+      deviceSlug: 'studio',
+    });
+
+    expect(accessPoints[0]).toMatchObject({
+      key: 'public',
+      state: 'active',
+    });
+    expect(accessPoints[1]).toMatchObject({
+      key: 'vpn',
+      state: 'available',
+    });
+    expect(accessPoints[2]).toMatchObject({
+      key: 'local',
+      url: 'http://127.0.0.1:18789/login',
+      state: 'active',
+    });
+  });
+
   it('does not mark local access active for tailscale-only apps without a published host port', () => {
     const accessPoints = buildAppAccessPoints({
       app: {
@@ -145,6 +185,61 @@ describe('buildAppAccessPoints', () => {
       url: null,
       host: null,
       state: 'unavailable',
+    });
+  });
+
+  it('marks public web active for cloudflare apps with a derived public URL', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 3000,
+        localSubdomain: 'anything-llm',
+        exposureMode: 'cloudflare',
+        exposed: false,
+        exposedLocal: false,
+      } as any,
+      info,
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      publicDomain: 'companionintelligence.com',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+      organizationSlug: 'macbook-devben',
+      deviceSlug: 'macbook-devben',
+      hubSubdomain: 'hub-macbook-devben-macbook-devben',
+    });
+
+    expect(accessPoints[0]).toMatchObject({
+      key: 'public',
+      url: 'https://anything-llm-macbook-devben.companionintelligence.com/login',
+      state: 'active',
+      stateLabel: 'APP_DETAILS_ACCESS_ENABLED',
+    });
+  });
+
+  it('marks public web active for legacy exposedLocal installs without exposureMode', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 3000,
+        localSubdomain: 'openwebui',
+        exposedLocal: true,
+        exposed: false,
+      } as any,
+      info,
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      publicDomain: 'companionintelligence.com',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+      organizationSlug: 'companion',
+      deviceSlug: 'studio',
+      hubSubdomain: 'hub-studio-companion',
+    });
+
+    expect(accessPoints[0]).toMatchObject({
+      key: 'public',
+      state: 'active',
     });
   });
 

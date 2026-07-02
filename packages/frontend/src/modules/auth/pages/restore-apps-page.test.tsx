@@ -1,9 +1,11 @@
 import { act, render, screen, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RestoreAppsPage from './restore-apps-page';
+import { sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { apiFetch, navigate } = vi.hoisted(() => ({
-  apiFetch: vi.fn(),
+const { executeRehydrate, getRehydrateStatus, navigate } = vi.hoisted(() => ({
+  executeRehydrate: vi.fn(),
+  getRehydrateStatus: vi.fn(),
   navigate: vi.fn(),
 }));
 
@@ -16,8 +18,9 @@ vi.mock('react-router', async () => {
   };
 });
 
-vi.mock('@/lib/api-fetch', () => ({
-  apiFetch,
+vi.mock('@/api-client/sdk.gen', () => ({
+  executeRehydrate,
+  getRehydrateStatus,
 }));
 
 vi.mock('@/context/user-context', () => ({
@@ -47,13 +50,6 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
-function jsonResponse(body: unknown, init?: ResponseInit) {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 describe('RestoreAppsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,38 +57,33 @@ describe('RestoreAppsPage', () => {
   });
 
   it('auto-triggers rehydrate and renders progress UI', async () => {
-    apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/api/app-lifecycle/rehydrate/status') {
-        return jsonResponse({ completed: false, restoreIntent: true });
-      }
-      if (url === '/api/app-lifecycle/rehydrate' && init?.method === 'POST') {
-        return jsonResponse({
-          success: true,
-          message: 'Queued 1 install(s)',
-          plan: {
-            portalAppCount: 1,
-            items: [
-              {
-                portalApp: { name: 'nextcloud', slug: 'nextcloud-official' },
-                action: 'install',
-                hasExistingData: true,
-              },
-            ],
-          },
-          queued: ['nextcloud:official'],
-          started: [],
-          skipped: [],
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
+    getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: true }));
+    executeRehydrate.mockResolvedValue(
+      sdkOk({
+        success: true,
+        message: 'Queued 1 install(s)',
+        plan: {
+          portalAppCount: 1,
+          items: [
+            {
+              portalApp: { name: 'nextcloud', slug: 'nextcloud-official' },
+              action: 'install',
+              hasExistingData: true,
+            },
+          ],
+        },
+        queued: ['nextcloud:official'],
+        started: [],
+        skipped: [],
+      }),
+    );
 
     await act(async () => {
       render(<RestoreAppsPage />);
     });
 
     await waitFor(() => {
-      expect(apiFetch).toHaveBeenCalledWith('/api/app-lifecycle/rehydrate', expect.objectContaining({ method: 'POST' }));
+      expect(executeRehydrate).toHaveBeenCalled();
     });
 
     expect(screen.getByTestId('restore-apps-page')).toBeInTheDocument();
@@ -101,7 +92,7 @@ describe('RestoreAppsPage', () => {
 
   it('redirects home when drift choice is not restore', async () => {
     sessionStorage.setItem('ci-hub-registration-drift-choice', 'fresh');
-    apiFetch.mockResolvedValue(jsonResponse({ completed: false, restoreIntent: false }));
+    getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: false }));
 
     await act(async () => {
       render(<RestoreAppsPage />);

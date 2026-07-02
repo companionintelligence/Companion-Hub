@@ -3,7 +3,15 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
-import { apiFetch } from '@/lib/api-fetch';
+import {
+  fetchDeviceRegistrationInfoResult,
+  fetchRegistrationStateDrift,
+  fetchRegistrationStatusResult,
+  markRegistrationRestoreIntentDetailed,
+  pairWithCode,
+  prepareFreshRegistrationDetailed,
+  probeRegistrationDomain,
+} from '@/lib/registration-api';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
@@ -111,6 +119,7 @@ export default function DeviceRegistrationPage() {
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const pairingInProgressRef = useRef(false);
   const completionStartedRef = useRef(false);
+  const lastStatusFetchSucceededRef = useRef(false);
   const deepLinkPairAttemptRef = useRef<string | null>(null);
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
@@ -122,20 +131,24 @@ export default function DeviceRegistrationPage() {
 
   const loadDeviceInfo = useCallback(async () => {
     try {
-      const deviceRes = await apiFetch('/api/registration/device-id');
-      if (!deviceRes.ok) {
+      const deviceResult = await fetchDeviceRegistrationInfoResult();
+      if (!deviceResult.ok) {
         captureHubWarning(
           'Device registration page could not load device info',
           {
-            status: deviceRes.status,
+            status: deviceResult.status,
           },
-          { dedupeKey: `device-registration-device-info:${deviceRes.status}` },
+          { dedupeKey: `device-registration-device-info:${deviceResult.status}` },
         );
         setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
         return;
       }
 
-      const deviceData = (await deviceRes.json()) as { device_id?: string; ci_cloud_url?: string; registration_url?: string | null };
+      const deviceData = (deviceResult.data ?? {}) as {
+        device_id?: string;
+        ci_cloud_url?: string;
+        registration_url?: string | null;
+      };
       setDeviceId(deviceData.device_id ?? null);
       setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
@@ -160,11 +173,10 @@ export default function DeviceRegistrationPage() {
 
   const loadStateDrift = useCallback(async () => {
     try {
-      const res = await apiFetch('/api/registration/state-drift');
-      if (!res.ok) {
+      const drift = await fetchRegistrationStateDrift();
+      if (!drift) {
         return null;
       }
-      const drift = (await res.json()) as RegistrationStateDrift;
       setStateDrift(drift);
       return drift;
     } catch (error) {
@@ -175,19 +187,20 @@ export default function DeviceRegistrationPage() {
 
   const refreshRegistrationStatus = useCallback(async () => {
     try {
-      const res = await apiFetch('/api/registration/status');
-      if (!res.ok) {
+      const statusResult = await fetchRegistrationStatusResult();
+      if (!statusResult.ok) {
         captureHubWarning(
           'Device registration status temporarily unavailable',
           {
-            status: res.status,
+            status: statusResult.status,
           },
-          { dedupeKey: `device-registration-status:${res.status}` },
+          { dedupeKey: `device-registration-status:${statusResult.status}` },
         );
         throw new Error(t('DEVICE_REGISTRATION_FETCH_STATUS_FAILED'));
       }
 
-      const status = (await res.json()) as RegistrationStatus;
+      const status = statusResult.data as RegistrationStatus;
+      lastStatusFetchSucceededRef.current = true;
       setRegistrationStatus(status);
       setStatusError(null);
 
@@ -226,6 +239,7 @@ export default function DeviceRegistrationPage() {
       return status;
     } catch (error) {
       console.error(error);
+      lastStatusFetchSucceededRef.current = false;
       captureHubWarning(
         'Device registration status temporarily unavailable',
         {
@@ -234,6 +248,18 @@ export default function DeviceRegistrationPage() {
         { dedupeKey: 'device-registration-status:exception' },
       );
       setStatusError(t('DEVICE_REGISTRATION_STATUS_TEMPORARY_UNAVAILABLE'));
+      setRegistrationStatus((previous) => {
+        if (!previous) {
+          return null;
+        }
+
+        // Avoid acting on stale operational status while the API is unreachable.
+        if (isRegistrationOperational(previous) && !requiresDeviceRegistration(previous)) {
+          return null;
+        }
+
+        return previous;
+      });
       return null;
     } finally {
       setIsLoading(false);
@@ -268,19 +294,15 @@ export default function DeviceRegistrationPage() {
         let consecutiveSuccesses = 0;
         for (let attempt = 1; attempt <= MAX_DOMAIN_PROBE_ATTEMPTS; attempt++) {
           try {
-            const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
-            if (probeRes.ok) {
-              const probeData = (await probeRes.json()) as { ready: boolean };
-              if (probeData.ready) {
-                consecutiveSuccesses++;
-                if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
-                  setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING');
-                  window.location.href = `${fullUrl}/login`;
-                  return;
-                }
-                // Don't sleep — immediately re-probe for the next confirmation.
-                continue;
+            const probeData = await probeRegistrationDomain(fullUrl);
+            if (probeData?.ready) {
+              consecutiveSuccesses++;
+              if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
+                setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING');
+                window.location.href = `${fullUrl}/login`;
+                return;
               }
+              continue;
             }
           } catch {
             // Keep retrying while the tunnel and DNS settle.
@@ -322,7 +344,7 @@ export default function DeviceRegistrationPage() {
     // - phase is in-progress (paired/provisioning)
     // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
     const isUnregistered = registrationStatus?.phase === 'unregistered';
-    const shouldPoll = (registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered;
+    const shouldPoll = !statusError && ((registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered);
 
     if (!shouldPoll) {
       return;
@@ -336,10 +358,15 @@ export default function DeviceRegistrationPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [refreshRegistrationStatus, registrationStatus]);
+  }, [refreshRegistrationStatus, registrationStatus, statusError]);
 
   useEffect(() => {
-    if (!registrationStatus || !isRegistrationOperational(registrationStatus) || completionStartedRef.current) {
+    if (
+      !registrationStatus ||
+      !lastStatusFetchSucceededRef.current ||
+      !isRegistrationOperational(registrationStatus) ||
+      completionStartedRef.current
+    ) {
       return;
     }
 
@@ -374,15 +401,9 @@ export default function DeviceRegistrationPage() {
       completionStartedRef.current = false;
 
       try {
-        const res = await apiFetch('/api/registration/pair', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pairing_code: code }),
-        });
+        const { ok, data } = await pairWithCode(code);
 
-        const data = (await res.json()) as { success?: boolean; message?: string; domain?: string; subdomain?: string };
-
-        if (res.ok && data.success) {
+        if (ok && data.success) {
           pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
           setPairingCode('');
           setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
@@ -461,12 +482,8 @@ export default function DeviceRegistrationPage() {
   const handleSetupNewDevice = async () => {
     setIsPreparingFresh(true);
     try {
-      const res = await apiFetch('/api/registration/prepare-fresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = (await res.json()) as { success?: boolean; message?: string };
-      if (!res.ok || !data.success) {
+      const { ok, data } = await prepareFreshRegistrationDetailed();
+      if (!ok || !data.success) {
         toast.error(data.message ?? t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARE_FAILED'));
         return;
       }
@@ -487,12 +504,8 @@ export default function DeviceRegistrationPage() {
 
   const handleRestoreExistingDevice = async () => {
     try {
-      const res = await apiFetch('/api/registration/mark-restore-intent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = (await res.json()) as { success?: boolean; message?: string };
-      if (!res.ok || !data.success) {
+      const { ok, data } = await markRegistrationRestoreIntentDetailed();
+      if (!ok || !data.success) {
         toast.error(data.message ?? t('DEVICE_REGISTRATION_STATE_DRIFT_RESTORE_INTENT_FAILED'));
         return;
       }
@@ -625,7 +638,7 @@ export default function DeviceRegistrationPage() {
     );
   }
 
-  if (registrationStatus && isRegistrationOperational(registrationStatus) && !pendingPairTargetRef.current) {
+  if (registrationStatus && isRegistrationOperational(registrationStatus) && !pendingPairTargetRef.current && lastStatusFetchSucceededRef.current) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
@@ -650,7 +663,7 @@ export default function DeviceRegistrationPage() {
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
 
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
-        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
+        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <div className="flex items-start gap-1 flex-wrap">
             <HintText
               id="reg-account"
@@ -680,7 +693,7 @@ export default function DeviceRegistrationPage() {
           <ChevronRight className="h-5 w-5" />
         </div>
 
-        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
+        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-5">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_STEP_2_SUBTITLE')}</p>
 

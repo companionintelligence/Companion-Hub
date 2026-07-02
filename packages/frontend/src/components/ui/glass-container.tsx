@@ -16,7 +16,7 @@ export const GlassContainer: React.FC<GlassContainerProps> = ({ children, classN
   return (
     <div
       className={cn(
-        'rounded-xl transition-colors duration-200',
+        'rounded-lg transition-colors duration-200',
         intensityClasses[intensity],
         border && 'border border-white/20 dark:border-white/10',
         className,

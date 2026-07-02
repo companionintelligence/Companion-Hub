@@ -29,7 +29,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // (artificialanalysis.ai, snapshot 2026-05); perf numbers are AA's cloud-hosted measurements and are
 // indicative only — real local speed depends on the user's hardware and quantization.
 const CATALOG_TOON = `
-llms[59|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[60|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|12.1|7.4|0|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|14.8|8.7|0|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|27.1|28.9|0|1|1|0|78|1.59|8
@@ -89,6 +89,7 @@ llms[59|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|18.4|7.2|0|1|1|0|111|0.98|5.5
   glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI|||0|0|1|0|||
   minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|36.1|47.5|1|0|1|0|||
+  glm-5-2-cloud|glm-5.2:cloud|GLM 5.2|reasoning|756|1|high|976|Z AI|||1|0|1|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -150,6 +151,7 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'deepseek-coder-v2-236b': 21, // DeepSeek-Coder-V2 (MoE)
   'deepseek-r1-671b': 37, // DeepSeek-R1 (MoE)
   'minimax-m2-community-230b': 10, // MiniMax M2 (MoE)
+  'glm-5-2-cloud': 40, // GLM-5.2 MoE active params (cloud tag)
 };
 
 const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map((row): CuratedModel => {

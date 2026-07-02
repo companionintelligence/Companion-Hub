@@ -68,7 +68,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const ready = tier !== 'insufficient';
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Monitor className="h-6 w-6 text-primary" />

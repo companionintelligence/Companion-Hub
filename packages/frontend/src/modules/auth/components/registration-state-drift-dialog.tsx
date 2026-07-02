@@ -54,7 +54,7 @@ function DriftOptionCard({
   return (
     <div
       className={cn(
-        'flex flex-col rounded-xl border bg-card p-5 sm:p-6 transition-colors',
+        'flex flex-col rounded-lg border bg-card p-5 sm:p-6 transition-colors',
         highlighted ? 'border-primary/50 ring-1 ring-primary/20 shadow-sm' : 'border-border/60',
       )}
     >

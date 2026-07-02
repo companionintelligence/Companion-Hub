@@ -1,9 +1,10 @@
+import { findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
 import { AGENT_APP_SLUG, type AgentFramework, type ExposureMode } from './ai-setup-types';
 import type { OnboardingApp } from './types';
 
 /** Minimal shape of a store app entry (from AppContextDto.apps) needed to resolve the agent. */
 export interface StoreAppLite {
-  id: string;
+  id?: string | null;
   name: string;
   urn: string;
 }
@@ -25,7 +26,7 @@ const AGENT_ICON_URL: Record<AgentFramework, string> = {
  */
 export function buildAgentApp(framework: AgentFramework, storeApps: StoreAppLite[]): OnboardingApp {
   const slug = AGENT_APP_SLUG[framework];
-  const store = storeApps.find((a) => a.id === slug);
+  const store = findCatalogAppBySlug(storeApps, slug);
   return {
     appSlug: slug,
     name: store?.name ?? AGENT_FALLBACK_NAME[framework],

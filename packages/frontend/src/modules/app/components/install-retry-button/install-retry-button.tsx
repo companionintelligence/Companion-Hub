@@ -49,7 +49,7 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
         data-testid={`retry-install-${slug}`}
         className={
           className ??
-          'absolute inset-0 flex items-center justify-center rounded-xl bg-background/25 hover:bg-background/35 dark:bg-background/15 dark:hover:bg-background/25 transition-colors'
+          'absolute inset-0 flex items-center justify-center rounded-md bg-background/25 hover:bg-background/35 dark:bg-background/15 dark:hover:bg-background/25 transition-colors'
         }
         disabled={retryMutation.isPending}
         onClick={(event) => {

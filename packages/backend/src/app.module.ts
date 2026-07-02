@@ -35,7 +35,6 @@ import { UserModule } from './modules/user/user.module';
 import { UserConfigModule } from './modules/user-config/user-config.module';
 import { MutexModule } from './utils/mutex/mutex.module';
 import { DockerModule } from './modules/docker/docker.module';
-import { GithubModule } from './utils/github/github.module';
 import { ZodValidationPipe } from './common/zod-dto';
 import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
 import { RegistrationModule } from './modules/registration/registration.module';
@@ -44,6 +43,7 @@ import { SystemUpdateModule } from './modules/system-update/system-update.module
 import { McpModule } from './modules/mcp/mcp.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 import { InferenceModule } from './modules/inference/inference.module';
+import { PortalModule } from './core/portal/portal.module';
 import { ErrorReportingModule } from './core/error-reporting/error-reporting.module';
 import { SentryModule } from '@sentry/nestjs/setup';
 
@@ -56,6 +56,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AuthModule,
   UserModule,
   ConfigurationModule,
+  PortalModule,
   DatabaseModule,
   CacheModule,
   LoggerModule,
@@ -76,7 +77,6 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   UserConfigModule,
   MutexModule,
   DockerModule,
-  GithubModule,
   RegistryModule,
   CustomAppsModule,
   SystemUpdateModule,

@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { apiFetch } from '@/lib/api-fetch';
+import { completeResetPassword, requestResetPassword, verifyResetPasswordToken } from '@/lib/auth-password-reset-api';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -53,12 +53,11 @@ export default () => {
     const verifyToken = async () => {
       setTokenStatus('loading');
       try {
-        const response = await apiFetch(`/api/auth/password-reset/verify/${encodeURIComponent(token)}`);
+        const valid = await verifyResetPasswordToken(token);
         if (!active) {
           return;
         }
-        const body = (await response.json().catch(() => ({}))) as { valid?: boolean };
-        setTokenStatus(response.ok && body.valid === true ? 'valid' : 'invalid');
+        setTokenStatus(valid ? 'valid' : 'invalid');
       } catch {
         if (!active) {
           return;
@@ -77,15 +76,9 @@ export default () => {
   const submitRequest = handleSubmit(async ({ email }) => {
     setIsRequestPending(true);
     try {
-      const response = await apiFetch('/api/auth/password-reset/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { message?: string };
-        throw new Error(body.message ?? t('AUTH_RESET_PASSWORD_REQUEST_FAILED'));
+      const result = await requestResetPassword(email);
+      if (!result.ok) {
+        throw new Error(result.message ?? t('AUTH_RESET_PASSWORD_REQUEST_FAILED'));
       }
 
       setRequestSubmitted(true);
@@ -100,15 +93,9 @@ export default () => {
   const submitCompletion = async ({ password }: { password: string }) => {
     setIsCompletionPending(true);
     try {
-      const response = await apiFetch('/api/auth/password-reset/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, newPassword: password }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { message?: string };
-        throw new Error(body.message ?? t('AUTH_RESET_PASSWORD_COMPLETE_FAILED'));
+      const result = await completeResetPassword(token, password);
+      if (!result.ok) {
+        throw new Error(result.message ?? t('AUTH_RESET_PASSWORD_COMPLETE_FAILED'));
       }
 
       setIsCompleteSuccess(true);
