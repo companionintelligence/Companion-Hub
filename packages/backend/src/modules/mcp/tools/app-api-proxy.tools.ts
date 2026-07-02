@@ -17,6 +17,7 @@ export class AppApiProxyTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'App API Proxy',
       name: 'hub_call_app_api',
       // ISSUE-MCP-2: this proxy can mutate app data. A read-only GET/HEAD stays ungated, but any
       // mutating verb (POST/PUT/PATCH/DELETE) is treated as destructive so it requires

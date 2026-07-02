@@ -69,8 +69,8 @@ const STATUS = {
 };
 const TOOLS = {
   tools: [
-    { name: 'hub_list_installed_apps', description: 'List apps', inputSchema: { type: 'object' }, destructive: false },
-    { name: 'hub_uninstall_app', description: 'Uninstall an app', inputSchema: { type: 'object' }, destructive: true },
+    { name: 'hub_list_installed_apps', description: 'List apps', inputSchema: { type: 'object' }, destructive: false, category: 'App Discovery' },
+    { name: 'hub_uninstall_app', description: 'Uninstall an app', inputSchema: { type: 'object' }, destructive: true, category: 'App Lifecycle' },
   ],
 };
 
@@ -105,6 +105,17 @@ describe('McpSettingsContainer', () => {
     expect(el.tagName).toBe('BUTTON'); // clickable-to-copy
     expect(el.getAttribute('title')).toBe(expected); // full URL legible even when truncated
     expect(screen.queryByText('/api/mcp')).toBeNull(); // no longer shows the bare path
+  });
+
+  it('groups the tool catalog by category', async () => {
+    render(<McpSettingsContainer />);
+    await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
+    // Each tool's backend category becomes a section header.
+    expect(screen.getByText('App Discovery')).toBeTruthy();
+    expect(screen.getByText('App Lifecycle')).toBeTruthy();
+    // Tools still render under their group.
+    expect(screen.getByText('hub_list_installed_apps')).toBeTruthy();
+    expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
   });
 
   it('filters the tool list by search', async () => {

@@ -58,6 +58,14 @@ describe('McpAdminService', () => {
       expect(tools.find((t) => t.name === 'safe')?.destructive).toBe(false);
       expect(tools.find((t) => t.name === 'danger')?.destructive).toBe(true);
     });
+
+    it('exposes each tool category, defaulting to Other when untagged', () => {
+      registry.register({ name: 'tagged', category: 'App Lifecycle', description: '', inputSchema: {}, handler: async () => ({}) });
+      registry.register({ name: 'untagged', description: '', inputSchema: {}, handler: async () => ({}) });
+      const tools = service.listTools();
+      expect(tools.find((t) => t.name === 'tagged')?.category).toBe('App Lifecycle');
+      expect(tools.find((t) => t.name === 'untagged')?.category).toBe('Other');
+    });
   });
 
   describe('callTool', () => {

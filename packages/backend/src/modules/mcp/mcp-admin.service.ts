@@ -7,12 +7,14 @@ import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
 
-/** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate). */
+/** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate
+ *  and a `category` for grouping the catalog). */
 export interface McpAdminToolInfo {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
   destructive: boolean;
+  category: string;
 }
 
 /**
@@ -53,6 +55,8 @@ export class McpAdminService {
       // A tool with an arg-based predicate (e.g. hub_call_app_api) is flagged destructive here so the
       // UI prompts for confirmation; the registry's predicate still decides per-call at execution.
       destructive: Boolean(tool.destructive) || typeof tool.isDestructive === 'function',
+      // Grouping for the catalog UI; bridged/untagged tools fall back to 'Other'.
+      category: tool.category ?? 'Other',
     }));
   }
 

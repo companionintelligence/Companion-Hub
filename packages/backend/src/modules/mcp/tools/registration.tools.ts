@@ -14,24 +14,28 @@ export class RegistrationTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Registration',
       name: 'hub_registration_status',
       description: 'Get the live registration status including phase and degraded reasons.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getRegistrationStatus(),
     });
     this.registry.register({
+      category: 'Registration',
       name: 'hub_cloudflare_status',
       description: 'Get Cloudflare tunnel and DNS status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getCloudflareStatus(),
     });
     this.registry.register({
+      category: 'Registration',
       name: 'hub_probe_domain',
       description: 'Probe whether a URL is reachable and responding OK.',
       inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to probe (http or https only)' } }, required: ['url'] },
       handler: (p) => this.probeDomain(p as { url: string }),
     });
     this.registry.register({
+      category: 'Registration',
       name: 'hub_check_url_availability',
       description: 'Check URL availability with detailed error info including DNS status.',
       inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to check (http or https only)' } }, required: ['url'] },

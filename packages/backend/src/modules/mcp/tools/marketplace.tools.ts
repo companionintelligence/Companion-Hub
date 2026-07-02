@@ -13,6 +13,7 @@ export class MarketplaceTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_search_apps',
       description: 'Search the app marketplace by keyword, category, or store. Returns paginated results.',
       inputSchema: {
@@ -29,18 +30,21 @@ export class MarketplaceTools implements OnModuleInit {
       handler: (p) => this.searchApps(p as { search?: string; category?: string; storeId?: string; pageSize?: number; cursor?: string }),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_list_app_stores',
       description: 'List all configured app stores.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listAppStores(),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_list_enabled_stores',
       description: 'List only enabled app stores.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listEnabledStores(),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_add_app_store',
       description: 'Add a new app store by name and URL.',
       inputSchema: {
@@ -54,6 +58,7 @@ export class MarketplaceTools implements OnModuleInit {
       handler: (p) => this.addAppStore(p as { name: string; url: string }),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_update_app_store',
       description: 'Update an app store name and enabled state.',
       inputSchema: {
@@ -68,6 +73,7 @@ export class MarketplaceTools implements OnModuleInit {
       handler: (p) => this.updateAppStore(p as { storeId: string; name: string; enabled: boolean }),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_delete_app_store',
       destructive: true, // ISSUE-MCP-2: deletes a configured app store.
       description: 'Delete an app store. Installed apps from this store are not removed.',
@@ -75,6 +81,7 @@ export class MarketplaceTools implements OnModuleInit {
       handler: (p) => this.deleteAppStore(p as { storeId: string }),
     });
     this.registry.register({
+      category: 'Marketplace',
       name: 'hub_pull_app_stores',
       description: 'Pull latest app definitions from all enabled stores.',
       inputSchema: { type: 'object', properties: {}, required: [] },

@@ -6,6 +6,12 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
   handler: (params: Record<string, unknown>) => Promise<unknown>;
   /**
+   * ENH-MCP-4: human-readable grouping (the tool's provider domain, e.g. 'App Lifecycle',
+   * 'Inference & Models') used ONLY to organize the admin Tool-catalog UI. Not part of the MCP wire
+   * (the spec's tools/list has no category) — surfaced only via the admin listTools endpoint.
+   */
+  category?: string;
+  /**
    * ISSUE-MCP-2: marks a tool that can cause data loss, delete resources, or change all apps at
    * once (e.g. hub_uninstall_app, hub_reset_app, hub_delete_*, hub_*_all_apps, hub_perform_update).
    * Destructive tools are refused unless destructive calls are explicitly allowed — either the

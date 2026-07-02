@@ -12,12 +12,14 @@ export class LinkTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Links',
       name: 'hub_list_links',
       description: 'List all dashboard links.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listLinks(),
     });
     this.registry.register({
+      category: 'Links',
       name: 'hub_create_link',
       description: 'Create a new dashboard link. Returns the created link.',
       inputSchema: {
@@ -35,6 +37,7 @@ export class LinkTools implements OnModuleInit {
         this.createLink(p as { title: string; url: string; description?: string; iconUrl?: string; isVisibleOnGuestDashboard?: boolean }),
     });
     this.registry.register({
+      category: 'Links',
       name: 'hub_edit_link',
       description: 'Update an existing dashboard link.',
       inputSchema: {
@@ -55,6 +58,7 @@ export class LinkTools implements OnModuleInit {
         ),
     });
     this.registry.register({
+      category: 'Links',
       name: 'hub_delete_link',
       destructive: true, // ISSUE-MCP-2: permanently deletes a dashboard link.
       description: 'Delete a dashboard link by ID.',

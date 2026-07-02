@@ -25,6 +25,7 @@ export class OperationsTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Operations',
       name: 'hub_get_operation_status',
       description:
         'Check progress of an async app operation (the lifecycle tools that return a requestId). Returns the ' +
@@ -42,6 +43,7 @@ export class OperationsTools implements OnModuleInit {
     });
 
     this.registry.register({
+      category: 'Operations',
       name: 'hub_cancel_operation',
       description: 'Request cancellation of an in-flight app lifecycle operation. Returns the cancellation outcome.',
       inputSchema: {
