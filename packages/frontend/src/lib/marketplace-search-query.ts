@@ -1,7 +1,7 @@
 import { infiniteQueryOptions } from '@tanstack/react-query';
 import { searchAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { searchApps, type Options } from '@/api-client/sdk.gen';
-import type { SearchAppsData } from '@/api-client/types.gen';
+import type { SearchAppsData, SearchAppsDto } from '@/api-client/types.gen';
 
 type MarketplaceSearchQuery = {
   search?: string;
@@ -11,11 +11,7 @@ type MarketplaceSearchQuery = {
   cursor?: string | null;
 };
 
-type SearchAppsPage = {
-  data?: Array<{ id: string; available?: boolean; [key: string]: unknown }>;
-  nextCursor?: string | null;
-  total?: number;
-};
+type SearchAppsPage = SearchAppsDto;
 
 export const searchAppsInfiniteOptions = (options?: Options<SearchAppsData> & { query?: MarketplaceSearchQuery }) => {
   return infiniteQueryOptions({
@@ -25,11 +21,11 @@ export const searchAppsInfiniteOptions = (options?: Options<SearchAppsData> & { 
     queryFn: async ({ pageParam, queryKey, signal }) => {
       const key = queryKey[0] as { query?: MarketplaceSearchQuery };
       const { data } = await searchApps({
-        ...options,
+        ...(options ?? {}),
         ...key,
         query: {
-          ...options?.query,
-          ...key.query,
+          ...(options?.query ?? {}),
+          ...(key.query ?? {}),
           cursor: pageParam ?? undefined,
         },
         signal,

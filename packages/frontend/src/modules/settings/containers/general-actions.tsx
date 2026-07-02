@@ -1,4 +1,9 @@
-import { checkForUpdates as checkHubForUpdates, getAutoUpdates, restartOnboarding, type setAutoUpdates } from '@/api-client/sdk.gen';
+import {
+  checkForUpdates as checkHubForUpdates,
+  getAutoUpdates,
+  restartOnboarding,
+  setAutoUpdates as updateAutoUpdatesSetting,
+} from '@/api-client/sdk.gen';
 import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { Markdown } from '@/components/markdown/markdown';
@@ -194,7 +199,7 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
     try {
-      const result = await sdkResult(setAutoUpdates({ body: { enabled: newValue } } as Parameters<typeof setAutoUpdates>[0]));
+      const result = await sdkResult(updateAutoUpdatesSetting({ body: { enabled: newValue } }));
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
       setAutoUpdates(newValue);
     } catch {

@@ -373,18 +373,18 @@ describe('OnboardingPage (single vertical form)', () => {
     const { apiFetch } = await import('@/lib/api-fetch');
     vi.mocked(apiFetch).mockImplementation(async (url: string) => {
       if (url === '/api/system/detect-services') {
-        return { ok: true, json: async () => ({ services: [] }) };
+        return new Response(JSON.stringify({ services: [] }), { status: 200 });
       }
       if (url === '/api/inference/ollama/status') {
-        return { ok: true, json: async () => ({ ready: true, running: true }) };
+        return new Response(JSON.stringify({ ready: true, running: true }), { status: 200 });
       }
       if (url === '/api/inference/models/pull/start') {
-        return { ok: true, json: async () => ({ status: 'queued' }) };
+        return new Response(JSON.stringify({ status: 'queued' }), { status: 200 });
       }
       if (url === '/api/inference/models/tracked') {
-        return { ok: true, json: async () => [{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 34 }] };
+        return new Response(JSON.stringify([{ catalogId: 'llama3-3-70b', state: 'pulling', pullProgress: 34 }]), { status: 200 });
       }
-      return { ok: true, json: async () => ({}) };
+      return new Response(JSON.stringify({}), { status: 200 });
     });
 
     const user = userEvent.setup();

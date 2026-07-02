@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
+import type { OnboardingApp } from '../../helpers/types';
 import { sdkOk, sdkFail } from '@/tests/sdk-mock-helpers';
 
 const mockInvalidateQueries = vi.fn();

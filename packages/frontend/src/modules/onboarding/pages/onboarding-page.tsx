@@ -110,9 +110,9 @@ function OnboardingWizard() {
     let cancelled = false;
     void (async () => {
       try {
-        const data = (await unwrapSdkOrNull(detectServices())) as { services?: unknown[] } | null;
+        const data = (await unwrapSdkOrNull(detectServices())) as { services?: Array<{ name: string; image: string; status: string }> } | null;
         if (!data) return;
-        if (!cancelled) setDetectedServices(identifyServices(data.services || []));
+        if (!cancelled) setDetectedServices(identifyServices(data.services ?? []));
       } catch {
         // Non-fatal — recommendations fall back to popular apps.
       }

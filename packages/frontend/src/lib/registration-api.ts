@@ -1,16 +1,12 @@
 import { getDeviceId, getStateDrift, getStatus, markRestoreIntent, pairDevice, prepareFreshSetup, probeDomain } from '@/api-client/sdk.gen';
 import type { RegistrationStatus } from '@/lib/registration-status';
+import type { RegistrationStateDrift } from '@/lib/registration-state-drift';
 import { sdkResult, unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
 export type DeviceRegistrationInfo = {
   device_id?: string;
   ci_cloud_url?: string;
   registration_url?: string | null;
-};
-
-export type RegistrationStateDrift = {
-  detected?: boolean;
-  [key: string]: unknown;
 };
 
 export type PairDeviceResult = {

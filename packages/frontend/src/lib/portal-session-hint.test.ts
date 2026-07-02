@@ -29,6 +29,8 @@ describe('portal-session-hint', () => {
         portalBaseUrl: 'https://ci-portal.localhost',
         source: 'hub_operator',
       },
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,
     });
 
@@ -47,6 +49,8 @@ describe('portal-session-hint', () => {
         portalBaseUrl: 'https://ci-portal.localhost',
         source: null,
       },
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,
     });
 
@@ -68,6 +72,8 @@ describe('portal-session-hint', () => {
         portalBaseUrl: 'https://ci-portal.localhost',
         source: null,
       },
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,
     });
 

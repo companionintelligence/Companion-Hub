@@ -209,7 +209,7 @@ const CloudflareSection = () => {
 
   const { data: status, isLoading } = useQuery({
     ...getStatus2Options(),
-    select: (payload) => payload as CloudflareStatus,
+    select: (payload) => payload as unknown as CloudflareStatus,
     refetchInterval: 30_000,
   });
 
