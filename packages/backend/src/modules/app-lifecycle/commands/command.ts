@@ -88,7 +88,7 @@ export class AppLifecycleCommand {
       // Merge architecture-specific overrides with base services
       let mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
 
-      const appInfo = await marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn).catch(() => null);
+      const appInfo = await Promise.resolve(marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn)).catch(() => null);
       if (appInfo?.runtime_platform) {
         mergedServices = mergedServices.map((service) => (service.platform ? service : { ...service, platform: appInfo.runtime_platform }));
       }

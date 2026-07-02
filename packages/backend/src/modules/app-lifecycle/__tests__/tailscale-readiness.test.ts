@@ -16,9 +16,7 @@ describe('AppLifecycleService Tailscale readiness watcher', () => {
         get: vi.fn().mockReturnValue({ getStatus }),
       },
       logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
-      exposureSyncService: {
-        syncTailscaleExposurePublic: triggerTailscaleSync,
-      },
+      syncTailscaleExposurePublic: triggerTailscaleSync,
       tailscaleReadinessInitialized: false,
       lastTailscaleConnected: false,
       lastTailscaleHttpsAvailable: false,

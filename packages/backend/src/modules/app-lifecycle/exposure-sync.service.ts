@@ -67,8 +67,8 @@ export class ExposureSyncService {
   /**
    * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
    */
-  public async syncExposurePublic() {
-    return this.syncExposure();
+  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+    return this.syncExposure(options);
   }
 
   /** Reconcile Tailscale Serve for all Private VPN apps (no Cloudflare sync). */
