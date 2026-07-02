@@ -72,7 +72,7 @@ async function fetchT(url: string, init: RequestInit, timeoutMs = TIMEOUT_MS): P
 
 /** Extract the JSON-RPC payload from a Streamable HTTP response — either a plain JSON body or the
  *  last `data:` line of an SSE stream. Convention (gate on `application/json`, else SSE) is mirrored
- *  by the openclaw plugin's McpClient.readRpcBody; kept as a standalone copy here on purpose so this
+ *  by the openclaw plugin's McpClient.parseRpcBody; kept as a standalone copy here on purpose so this
  *  QA script stays dependency-free and ships to fleet nodes unchanged. */
 async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
   const contentType = res.headers.get('content-type') ?? '';
@@ -94,7 +94,7 @@ async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
     }
   }
   // Last resort: an intermediary may strip/rewrite the content-type on a plain JSON body — try the
-  // raw text before giving up. Mirrored in the openclaw plugin's McpClient.readRpcBody.
+  // raw text before giving up. Mirrored in the openclaw plugin's McpClient.parseRpcBody.
   try {
     return JSON.parse(text) as Record<string, unknown>;
   } catch {

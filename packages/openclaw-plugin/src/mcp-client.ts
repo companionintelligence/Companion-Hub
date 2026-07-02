@@ -229,22 +229,29 @@ export class McpClient {
             : `MCP request failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      // On paths that never parse the body, discard it so undici can recycle the socket instead of
+      // stranding it until the Response is GC'd.
+      const discardBody = () => void response.body?.cancel().catch(() => undefined);
       // 502/504 are proxy-generated (bad gateway / gateway timeout): the Hub behind Traefik/CI-Gateway
       // is unreachable — a transport fault in all but name, so classify it for the reconnect loop.
       // 503 is deliberately EXCLUDED: a live server emits it under load/maintenance, and tearing down a
       // valid session then would add initialize churn at the worst possible time.
       if (response.status === 502 || response.status === 504) {
+        discardBody();
         throw new McpTransportError(`MCP request failed: ${response.status} ${response.statusText}`);
       }
-      // 404: the caller (sendMessage) decides on status alone and never reads the body — synthesize
-      // the envelope instead of parsing it. This also covers a gateway "no route" 404 whose HTML body
-      // would otherwise fail parsing and mask the 404 from the session-loss recovery path.
+      // 404: no consumer needs the body — sendMessage decides on status alone, and connect() only
+      // needs an error envelope — so synthesize one instead of parsing. This also covers a gateway
+      // "no route" 404 whose HTML body would otherwise fail parsing and mask the 404 from the
+      // session-loss recovery path.
       if (response.status === 404) {
+        discardBody();
         return { response, body: { jsonrpc: '2.0', id, error: { code: -32001, message: 'Session not found (HTTP 404)' } } };
       }
       // Other non-2xx are hard failures — but from a LIVE server, so deliberately NOT
       // McpTransportError (no reconnect churn for a server-side 5xx).
       if (!response.ok) {
+        discardBody();
         throw new Error(`MCP request failed: ${response.status} ${response.statusText}`);
       }
       // Read the body under the same timeout. A body-read failure is transport-level either way:
