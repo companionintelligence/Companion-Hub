@@ -1,6 +1,9 @@
-import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards, BadRequestException } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -31,6 +34,7 @@ import { resolveInstalledCatalogIds } from './model-availability.util';
  * stores the operator's cloud-provider keys, and distributes connection info to
  * apps via the credentials endpoints below.
  */
+@ApiTags('Inference')
 @Controller('inference')
 export class InferenceController {
   constructor(
@@ -208,16 +212,16 @@ export class InferenceController {
     return this.modelRegistry.getTrackedModels();
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, DemoModeGuard)
   @Post('models/pull/start')
   async startPullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     if (!body.modelId?.trim()) {
-      throw new BadRequestException('modelId is required');
+      throw new TranslatableError('INFERENCE_ERROR_MODEL_ID_REQUIRED');
     }
     return this.modelPuller.startPull(body.modelId.trim(), { bestEffort: body.bestEffort });
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, DemoModeGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     const result = await this.modelPuller.startPull(body.modelId, { bestEffort: body.bestEffort });
