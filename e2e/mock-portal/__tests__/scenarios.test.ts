@@ -70,12 +70,21 @@ describe('buildRoutes', () => {
       assert.ok(body.tunnel_id);
     });
 
-    it('returns empty app store', () => {
+    it('returns sample app store catalog', () => {
       const handler = routes['GET /api/store'];
       assert.ok(handler);
       const result = handler(dummyUrl);
       assert.strictEqual(result.status, 200);
-      assert.deepStrictEqual(result.body, []);
+      assert.ok(Array.isArray(result.body));
+      assert.ok((result.body as unknown[]).length > 0);
+    });
+
+    it('returns store alternatives', () => {
+      const handler = routes['GET /api/store/alternatives'];
+      assert.ok(handler);
+      const result = handler(dummyUrl);
+      assert.strictEqual(result.status, 200);
+      assert.ok(typeof result.body === 'object');
     });
   });
 
