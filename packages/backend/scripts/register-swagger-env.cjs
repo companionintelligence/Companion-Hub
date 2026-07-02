@@ -35,3 +35,25 @@ if (!process.env.ROOT_FOLDER_HOST) {
 if (!process.env.CI_CLOUD_URL) {
   process.env.CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 }
+
+// generateSystemEnvFile resolves most vars but never mints POSTGRES_PASSWORD (deploy-time secret).
+// Seed openapi-only defaults so ConfigurationService can boot for swagger generation.
+const openapiDefaults = {
+  POSTGRES_PASSWORD: 'openapi-gen',
+};
+for (const [key, value] of Object.entries(openapiDefaults)) {
+  if (!process.env[key]) {
+    process.env[key] = value;
+  }
+}
+
+fs.mkdirSync(path.join(openapiDataDir, 'state'), { recursive: true });
+const openapiEnvPath = path.join(openapiDataDir, '.env');
+if (!fs.existsSync(openapiEnvPath)) {
+  fs.writeFileSync(
+    openapiEnvPath,
+    [`ROOT_FOLDER_HOST=${openapiDataDir}`, `CI_CLOUD_URL=${process.env.CI_CLOUD_URL}`, `POSTGRES_PASSWORD=${process.env.POSTGRES_PASSWORD}`].join(
+      '\n',
+    ) + '\n',
+  );
+}
