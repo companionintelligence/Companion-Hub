@@ -1,5 +1,6 @@
 import { useAppContext } from '@/context/app-context';
-import { apiFetch } from '@/lib/api-fetch';
+import { getFullInspectionOptions } from '@/api-client/@tanstack/react-query.gen';
+import { POLLING } from '@/lib/polling-budget';
 import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { useQuery } from '@tanstack/react-query';
@@ -160,14 +161,14 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
   const { t } = useTranslation();
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Server className="h-6 w-6 text-primary" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_HOST_CONTAINER_RESOURCES')}</h2>
         {hostResources.hasVmWedge && <Badge variant="warning">{t('SYSTEM_INSPECTOR_VM_WEDGE_DETECTED')}</Badge>}
       </div>
 
-      <div className="rounded-xl border border-border bg-muted/30 p-4 mb-4">
+      <div className="rounded-md border border-border bg-muted/30 p-4 mb-4">
         <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
           {t('SYSTEM_INSPECTOR_DOCKER_RESOURCE_LIMITS')}
         </div>
@@ -180,7 +181,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
-        <div className="rounded-xl border border-border p-4">
+        <div className="rounded-md border border-border p-4">
           <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_PHYSICAL_HOST')}</div>
           <div className="text-sm">
             {t('COMMON_MEMORY')}: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
@@ -190,7 +191,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
           </div>
         </div>
         {hostResources.hasVmWedge && (
-          <div className="rounded-xl border border-border p-4">
+          <div className="rounded-md border border-border p-4">
             <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
               {t('SYSTEM_INSPECTOR_DOCKER_VM_ALLOCATED')}
             </div>
@@ -225,7 +226,7 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
   const { t } = useTranslation();
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Activity className="h-6 w-6 text-primary" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_SYSTEM_HEALTH')}</h2>
@@ -300,7 +301,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
   const sorted = [...running, ...stopped];
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Container className="h-6 w-6 text-primary shrink-0" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_DOCKER_CONTAINERS')}</h2>
@@ -310,7 +311,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
       </div>
 
       {sorted.length === 0 ? (
-        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">{t('SYSTEM_INSPECTOR_NO_CONTAINERS')}</div>
+        <div className="text-sm text-muted-foreground rounded-md border border-dashed p-4 text-center">{t('SYSTEM_INSPECTOR_NO_CONTAINERS')}</div>
       ) : (
         <div className="rounded-lg border overflow-hidden">
           <div className="overflow-x-auto">
@@ -380,7 +381,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
   const [showUntracked, setShowUntracked] = useState(true);
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5 flex-wrap">
         <Network className="h-6 w-6 text-primary shrink-0" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_PORT_ALLOCATIONS')}</h2>
@@ -397,7 +398,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
       </div>
 
       {ports.allocations.length === 0 && ports.untracked.length === 0 ? (
-        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">
+        <div className="text-sm text-muted-foreground rounded-md border border-dashed p-4 text-center">
           {t('SYSTEM_INSPECTOR_NO_PORT_ALLOCATIONS')}
         </div>
       ) : (
@@ -525,7 +526,7 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
   const { t } = useTranslation();
 
   return (
-    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <HardDrive className="h-6 w-6 text-primary" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_STORAGE')}</h2>
@@ -560,14 +561,10 @@ export const SystemInspectorContainer = () => {
   // Native open-folder action: only meaningful inside the desktop app on the
   // same machine as the data.
   const canOpenAppDataFolder = Boolean(getTauriInvoke()) && Boolean(appDataRootHostPath);
-  const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery<InspectionData>({
-    queryKey: ['system-inspector'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/system-inspector');
-      if (!res.ok) throw new Error(t('SYSTEM_INSPECTOR_FETCH_FAILED'));
-      return res.json();
-    },
-    refetchInterval: 5000,
+  const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery({
+    ...getFullInspectionOptions(),
+    select: (payload) => payload as InspectionData,
+    refetchInterval: POLLING.SYSTEM_INSPECTOR_MS,
   });
 
   if (isLoading) {

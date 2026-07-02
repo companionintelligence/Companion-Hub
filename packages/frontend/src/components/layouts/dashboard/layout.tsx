@@ -9,14 +9,14 @@ import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
 import { detectClientPlatform, shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
-import { apiFetch } from '@/lib/api-fetch';
+import { getDeviceIdOptions } from '@/api-client/@tanstack/react-query.gen';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={false} allowAutoThemes={false} />
-      <div className="flex flex-1 flex-col pt-16 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
-        <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
+      <div className="flex flex-1 flex-col pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
+        <div className="rounded-lg border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
     </div>
   );
@@ -36,13 +36,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   });
 
   const { data: deviceId } = useQuery({
-    queryKey: ['registration', 'device-id'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/registration/device-id');
-      if (!res.ok) return undefined;
-      const data = (await res.json()) as { device_id?: string };
-      return data.device_id;
-    },
+    ...getDeviceIdOptions(),
+    select: (payload) => (payload as { device_id?: string }).device_id,
     staleTime: 300_000,
   });
 
@@ -114,7 +109,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
-      <main className="relative flex flex-1 flex-col gap-4 pt-16 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+      <main className="relative flex flex-1 flex-col gap-4 pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div

@@ -411,7 +411,7 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
   const { t } = useTranslation();
 
   return (
-    <div className="mt-4 rounded-2xl border border-border bg-foreground/[0.015] p-4">
+    <div className="mt-4 rounded-md border border-border bg-foreground/[0.015] p-4">
       <div className="mb-3 flex items-center gap-3">
         <span className="text-primary [&_svg]:h-5 [&_svg]:w-5">
           <CubeModelsIcon />

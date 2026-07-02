@@ -159,7 +159,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
 
   return (
     <form className="flex flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
-      <div className="main-container bg-card border rounded-3 mt-4 m-0">
+      <div className="main-container bg-card border rounded-lg mt-4 m-0">
         {jsonEditorOpen && <JsonComposeEditor onChange={(json, jsonError) => setJson({ value: json, error: jsonError })} />}
         {!jsonEditorOpen && (
           <div className="row ms-0 me-0">

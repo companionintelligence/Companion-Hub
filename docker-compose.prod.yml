@@ -106,8 +106,8 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
       # Allow Hub to configure Tunnel — resolves to the sibling tunnel/ directory
       # relative to ROOT_FOLDER_HOST (e.g. /home/user/ci-hub/.internal → /home/user/ci-hub/tunnel).
-      # When ROOT_FOLDER_HOST is unset, defaults to .internal/../tunnel (relative CWD).
-      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/app/tunnel
+      # When ROOT_FOLDER_HOST is unset, the tunnel bind uses .internal/tunnel under the compose CWD.
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel
       - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
       - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
@@ -136,8 +136,8 @@ services:
           - host.docker.internal
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
-      VLLM_URL: ${VLLM_URL:-http://ci-hub-vllm:8000}
-      LEMONADE_URL: ${LEMONADE_URL:-http://ci-hub-lemonade:13305}
+      VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
+      LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
@@ -211,7 +211,7 @@ services:
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
-      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
     extra_hosts:

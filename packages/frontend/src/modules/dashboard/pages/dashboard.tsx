@@ -51,8 +51,8 @@ export default () => {
   return (
     <div className="h-full overflow-y-auto">
       <div className="flex flex-col gap-4 py-4 px-1">
-        {/* System stats — full width, 3 equal columns */}
-        <div className="grid grid-cols-3 gap-3">
+        {/* System stats — stacked on mobile, three columns from sm */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {isLoading ? (
             <div className="col-span-3 flex justify-center py-4">
               <LoadingSpinner />
@@ -88,7 +88,7 @@ export default () => {
         </div>
 
         {/* Apps section */}
-        <div className="rounded-2xl border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
+        <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading && installingCount > 0} />
           {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
         </div>

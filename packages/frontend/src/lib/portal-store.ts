@@ -1,7 +1,7 @@
 import type { AppCategory, AppInfoSimple } from '@/types/app.types';
 import { APP_CATEGORIES } from '@ci-hub/common/schemas';
-import { apiFetch } from '@/lib/api-fetch';
-import { captureHubWarning } from '@/lib/sentry';
+import { getStoreListings } from '@/api-client/sdk.gen';
+import { sdkResult } from '@/lib/sdk-unwrap';
 
 const APP_CATEGORY_SET = new Set<string>(APP_CATEGORIES);
 
@@ -68,82 +68,59 @@ function normalizeStoreListingsPayload(raw: unknown): HubStoreApp[] {
   return out;
 }
 
-async function resolveCiCloudCatalogBaseUrl(): Promise<string> {
-  const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
-  if (baked) return baked.replace(/\/$/, '');
-
-  const res = await apiFetch('/api/registration/device-id');
-  if (!res.ok) {
-    throw new Error(
-      `Could not resolve CI Cloud URL for store listings (${res.status}). Set CI_CLOUD_URL on the Hub and restart, or update the Hub image.`,
-    );
-  }
-  const data = (await res.json()) as { ci_cloud_url?: string | null };
-  const fromApi = data.ci_cloud_url?.trim();
-  if (!fromApi) {
-    throw new Error('CI_CLOUD_URL is not set on this Hub. Add it to your env file and restart.');
-  }
-  return fromApi.replace(/\/$/, '');
-}
-
-async function fetchListingsFromCiCloud(params: PortalStoreListingsParams): Promise<HubStoreApp[]> {
-  const base = await resolveCiCloudCatalogBaseUrl();
+/** Direct Portal fetch — dev-only escape hatch when Hub proxy is unavailable locally. */
+async function fetchListingsDirectFromPortal(params: PortalStoreListingsParams, portalUrl: string): Promise<HubStoreApp[]> {
   const searchParams = new URLSearchParams();
   if (params.category) searchParams.set('category', params.category);
   if (params.tags) searchParams.set('tags', params.tags);
   if (params.sort) searchParams.set('sort', params.sort);
   if (params.q) searchParams.set('q', params.q);
   const qs = searchParams.toString();
+  const base = portalUrl.replace(/\/+$/, '');
   const res = await fetch(`${base}/api/store${qs ? `?${qs}` : ''}`, { credentials: 'omit' });
   if (!res.ok) {
-    throw new Error(`CI Cloud returned HTTP ${res.status} for the store catalog.`);
+    throw new Error(`Portal returned HTTP ${res.status} for the store catalog.`);
   }
   const json: unknown = await res.json();
   return normalizeStoreListingsPayload(json);
 }
 
 export async function fetchPortalStoreListings(params: PortalStoreListingsParams): Promise<HubStoreApp[]> {
-  const searchParams = new URLSearchParams();
-  if (params.category) searchParams.set('category', params.category);
-  if (params.tags) searchParams.set('tags', params.tags);
-  if (params.sort) searchParams.set('sort', params.sort);
-  if (params.q) searchParams.set('q', params.q);
-  const qs = searchParams.toString();
-  const res = await apiFetch(`/api/store/listings${qs ? `?${qs}` : ''}`);
-  if (res.ok) {
-    const json: unknown = await res.json();
-    return normalizeStoreListingsPayload(json);
+  const result = await sdkResult(
+    getStoreListings({
+      query: {
+        category: params.category ?? '',
+        tags: params.tags ?? '',
+        sort: params.sort ?? '',
+        q: params.q ?? '',
+      },
+    } as Parameters<typeof getStoreListings>[0]),
+  );
+  if (result.ok) {
+    return normalizeStoreListingsPayload(result.data);
   }
 
-  if (res.status === 404) {
-    console.warn('[store-listings] Hub returned 404 for /api/store/listings; trying CI Cloud directly.');
-    captureHubWarning(
-      'Hub store listings endpoint missing; falling back to CI Cloud catalog',
-      {
-        status: res.status,
-        endpoint: '/api/store/listings',
-      },
-      { dedupeKey: 'portal-store-listings-hub-404-fallback' },
-    );
-    try {
-      return await fetchListingsFromCiCloud(params);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      throw new Error(
-        `This Hub build does not expose /api/store/listings yet, and loading the catalog from CI Cloud failed: ${msg}. Update CI_HUB_IMAGE / rebuild the Hub container, or check network access to your CI Cloud URL.`,
-      );
+  const devDirect = import.meta.env.DEV && import.meta.env.VITE_DEV_DIRECT_PORTAL === 'true';
+  if (devDirect) {
+    const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
+    if (baked) {
+      return fetchListingsDirectFromPortal(params, baked);
     }
   }
 
   let detail = '';
   try {
-    const body = (await res.json()) as { message?: string | string[] };
-    const m = body?.message;
-    detail = Array.isArray(m) ? m.join(' ') : typeof m === 'string' ? `: ${m}` : '';
+    const body = result.data as { message?: string | string[]; messageKey?: string } | undefined;
+    if (body?.messageKey) {
+      detail = `: ${body.messageKey}`;
+    } else {
+      const m = body?.message;
+      detail = Array.isArray(m) ? `: ${m.join(' ')}` : typeof m === 'string' ? `: ${m}` : '';
+    }
   } catch {
     /* ignore */
   }
-  throw new Error(`Failed to load store listings (${res.status})${detail}`);
+  throw new Error(`Failed to load store listings (${result.status})${detail}`);
 }
 
 export function portalStoreListingsQueryKey(params: PortalStoreListingsParams, storeId = CI_MARKETPLACE_STORE_ID) {

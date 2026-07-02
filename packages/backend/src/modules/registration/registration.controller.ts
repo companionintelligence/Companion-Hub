@@ -6,6 +6,7 @@ import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 
 interface RegisterDeviceDto {
   organization_id: string;
@@ -43,11 +44,13 @@ export class RegistrationController {
   ) {}
 
   @Post('reset')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Reset device registration to allow re-pairing' })
   @ApiResponse({ status: 200, description: 'Registration reset successfully' })
-  async resetRegistration() {
-    await this.registrationService.resetRegistration();
+  async resetRegistration(@Body() body?: { deregisterFromPortal?: boolean }) {
+    await this.registrationService.resetRegistration({
+      deregisterFromPortal: body?.deregisterFromPortal === true,
+    });
     return { success: true, message: 'Registration reset. You can now re-pair this device.' };
   }
 
@@ -66,6 +69,7 @@ export class RegistrationController {
   }
 
   @Post('prepare-fresh')
+  @UseGuards(DemoModeGuard)
   @ApiOperation({ summary: 'Clear local registration artifacts for a fresh device pairing' })
   @ApiResponse({ status: 200, description: 'Local registration artifacts cleared' })
   async prepareFreshSetup() {

@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ModuleRef } from '@nestjs/core';
 import { AppLifecycleService } from '../app-lifecycle.service';
+import { AppInstallValidator } from '../app-install-validator.service';
+import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
 import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
@@ -26,6 +29,7 @@ import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
+  let exposureSyncService: ExposureSyncService;
   let logger: MockProxy<LoggerService>;
   let appEventsQueue: MockProxy<AppEventsQueue>;
   let commandFactory: MockProxy<AppLifecycleCommandFactory>;
@@ -77,6 +81,8 @@ describe('AppLifecycleService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
+        ExposureSyncService,
+        AppInstallValidator,
         { provide: LoggerService, useValue: logger },
         { provide: AppEventsQueue, useValue: appEventsQueue },
         { provide: AppLifecycleCommandFactory, useValue: commandFactory },
@@ -97,6 +103,7 @@ describe('AppLifecycleService', () => {
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: AppOperationRegistry, useValue: operationRegistry },
+        { provide: ModuleRef, useValue: { get: vi.fn() } },
       ],
     }).compile();
 
@@ -121,6 +128,7 @@ describe('AppLifecycleService', () => {
     } as any);
 
     service = module.get<AppLifecycleService>(AppLifecycleService);
+    exposureSyncService = module.get<ExposureSyncService>(ExposureSyncService);
   });
 
   afterEach(() => {
@@ -453,7 +461,30 @@ describe('AppLifecycleService', () => {
       imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     });
 
-    it('throws when image manifest does not include host architecture', async () => {
+    it('throws when image manifest does not include host architecture and amd64 is not supported', async () => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'arm64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        ...baseAppInfo,
+        supported_architectures: ['arm64'],
+      } as any);
+      imageSizeService.verifyAppArchitecture.mockResolvedValue({
+        ok: false,
+        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        available: ['amd64'],
+      });
+
+      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('allows install on arm64 when amd64-only images are declared for amd64 emulation', async () => {
       configService.getConfig.mockReturnValue({
         isProduction: false,
         architecture: 'arm64',
@@ -466,14 +497,13 @@ describe('AppLifecycleService', () => {
       } as any);
       imageSizeService.verifyAppArchitecture.mockResolvedValue({
         ok: false,
-        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        image: 'ghcr.io/companionintelligence/companion/gateway:2026.7.1',
         available: ['amd64'],
       });
 
-      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+      await service.installApp({ appUrn, form: {} });
 
-      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
-      expect(appsRepository.createApp).not.toHaveBeenCalled();
+      expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
     it('does not block install when manifest architecture inspection is unavailable', async () => {
@@ -818,7 +848,7 @@ describe('AppLifecycleService', () => {
         domain: 'example.com',
       } as any);
       vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
-      const syncSpy = vi.spyOn(service, 'triggerCloudflareSync').mockResolvedValue(undefined);
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
 
       await service.updateAppConfig({
         appUrn,
@@ -896,7 +926,7 @@ describe('AppLifecycleService', () => {
       // Default: commands succeed
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
 
-      vi.spyOn(service as any, 'syncExposure').mockImplementation(async () => {
+      vi.spyOn(exposureSyncService, 'syncExposurePublic').mockImplementation(async () => {
         callOrder.push('sync_exposure');
       });
 
@@ -1138,6 +1168,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1158,6 +1189,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1210,7 +1242,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appsRepository.getApps.mockResolvedValue([]);
-      const syncSpy = vi.spyOn(service as any, 'syncExposure').mockResolvedValue(undefined);
+      const syncSpy = vi.spyOn(exposureSyncService, 'syncExposurePublic').mockResolvedValue(undefined);
 
       await service.installApp({ appUrn, form: { exposedLocal: true } });
       await flushMicrotasks();
@@ -1222,6 +1254,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
@@ -1238,6 +1271,7 @@ describe('AppLifecycleService', () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);

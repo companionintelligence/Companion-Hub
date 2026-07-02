@@ -64,9 +64,12 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getEnabledAppStoresOptions: () => ({ queryKey: ['enabledStores'] }),
-  searchAppsInfiniteOptions: mockSearchAppsInfiniteOptions,
   searchAppsOptions: () => ({ queryKey: ['searchAppsAll'] }),
   getInstalledAppsOptions: () => ({ queryKey: ['installed'] }),
+}));
+
+vi.mock('@/lib/marketplace-search-query', () => ({
+  searchAppsInfiniteOptions: mockSearchAppsInfiniteOptions,
 }));
 
 vi.mock('@/api-client/sdk.gen', () => ({
@@ -75,6 +78,16 @@ vi.mock('@/api-client/sdk.gen', () => ({
 
 vi.mock('@/lib/hooks/use-infinite-scroll', () => ({
   useInfiniteScroll: () => ({ lastElementRef: vi.fn() }),
+}));
+
+vi.mock('@/lib/hooks/use-portal-catalog', () => ({
+  usePortalCatalog: () => ({
+    alternatives: {},
+    isLoading: false,
+    isError: false,
+    alternativesError: undefined,
+    refetchAlternatives: vi.fn(),
+  }),
 }));
 
 vi.mock('@/lib/portal-alternatives', () => ({

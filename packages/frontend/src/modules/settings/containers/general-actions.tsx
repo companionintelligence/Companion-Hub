@@ -1,9 +1,17 @@
-import { apiFetch } from '@/lib/api-fetch';
+import {
+  checkForUpdates as checkHubForUpdates,
+  getAutoUpdates,
+  restartOnboarding,
+  setAutoUpdates as updateAutoUpdatesSetting,
+} from '@/api-client/sdk.gen';
+import { factoryReset } from '@/api-client/sdk.gen';
+import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useAppContext } from '@/context/app-context';
+import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -27,6 +35,7 @@ const FACTORY_RESET_CONFIRMATION = 'factory-reset';
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
   const { version, refreshAppContext } = useAppContext();
+  const demoMode = useDemoMode();
 
   const [updating, setUpdating] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -53,8 +62,8 @@ export const GeneralActionsContainer = () => {
   const handleRestartWizard = useCallback(async () => {
     setRestartingWizard(true);
     try {
-      const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = await sdkResult(restartOnboarding());
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
       window.location.href = '/onboarding';
     } catch {
       setRestartingWizard(false);
@@ -63,6 +72,10 @@ export const GeneralActionsContainer = () => {
   }, [t]);
 
   const handleFactoryReset = useCallback(async () => {
+    if (demoMode) {
+      toast.error(t('SERVER_ERROR_NOT_ALLOWED_IN_DEMO'));
+      return;
+    }
     if (factoryResetPhrase.trim() !== FACTORY_RESET_CONFIRMATION) {
       toast.error(t('SETTINGS_FACTORY_RESET_CONFIRMATION_MISMATCH'));
       return;
@@ -70,12 +83,10 @@ export const GeneralActionsContainer = () => {
 
     setFactoryResetting(true);
     try {
-      const res = await apiFetch('/api/system/factory-reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmation: FACTORY_RESET_CONFIRMATION }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const result = await factoryReset({ body: { confirmation: FACTORY_RESET_CONFIRMATION } });
+      if (result.error) {
+        throw result.error instanceof Error ? result.error : new Error(String(result.error));
+      }
       clearClientHubState();
       toast.success(t('SETTINGS_FACTORY_RESET_SUCCESS'));
       window.location.href = '/login';
@@ -83,7 +94,7 @@ export const GeneralActionsContainer = () => {
       setFactoryResetting(false);
       toast.error(t('SETTINGS_FACTORY_RESET_ERROR'));
     }
-  }, [factoryResetPhrase, t]);
+  }, [demoMode, factoryResetPhrase, t]);
 
   const refreshUpdateState = useCallback(async () => {
     if (!desktop) {
@@ -110,12 +121,10 @@ export const GeneralActionsContainer = () => {
   }, [desktop, refreshUpdateState]);
 
   useEffect(() => {
-    apiFetch('/api/system/update/auto-updates')
-      .then((res) => res.json())
-      .then((data) => setAutoUpdates(data.enabled))
-      .catch(() => {
-        // Best-effort load; keep the default toggle state if unavailable.
-      });
+    void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
+      const enabled = (data as { enabled?: boolean } | null)?.enabled;
+      if (typeof enabled === 'boolean') setAutoUpdates(enabled);
+    });
   }, []);
 
   const handleCheckForUpdates = useCallback(async () => {
@@ -134,9 +143,9 @@ export const GeneralActionsContainer = () => {
         return;
       }
 
-      const res = await apiFetch('/api/system/update/check');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { updateAvailable?: boolean; latest?: string };
+      const result = await sdkResult(checkHubForUpdates());
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
+      const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
@@ -190,11 +199,8 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
     try {
-      await apiFetch('/api/system/update/auto-updates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: newValue }),
-      });
+      const result = await sdkResult(updateAutoUpdatesSetting({ body: { enabled: newValue } }));
+      if (!result.ok) throw new Error(`HTTP ${result.status}`);
       setAutoUpdates(newValue);
     } catch {
       // ignore
@@ -319,7 +325,7 @@ export const GeneralActionsContainer = () => {
           <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
         </CardHeader>
         <CardContent>
-          <Button onClick={handleRestartWizard} disabled={restartingWizard} data-testid="restart-wizard-btn">
+          <Button onClick={handleRestartWizard} disabled={demoMode || restartingWizard} data-testid="restart-wizard-btn">
             {restartingWizard ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -342,7 +348,7 @@ export const GeneralActionsContainer = () => {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">{t('SETTINGS_FACTORY_RESET_DESCRIPTION')}</p>
-          <Button intent="danger" variant="outline" onClick={() => setFactoryResetOpen(true)} data-testid="factory-reset-btn">
+          <Button intent="danger" variant="outline" disabled={demoMode} onClick={() => setFactoryResetOpen(true)} data-testid="factory-reset-btn">
             {t('SETTINGS_FACTORY_RESET_BUTTON')}
           </Button>
         </CardContent>
