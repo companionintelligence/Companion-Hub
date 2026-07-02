@@ -232,13 +232,37 @@ export class AuthService {
     // then bind (iss, sub) so subsequent logins are email-independent.
     const localUser = await this.ensureLocalCompanionUser(email);
 
-    await this.federatedIdentityRepository.create({
-      userId: localUser.id,
-      issuer,
-      subject,
-      email,
-      emailVerified: params.emailVerified,
-    });
+    try {
+      await this.federatedIdentityRepository.create({
+        userId: localUser.id,
+        issuer,
+        subject,
+        email,
+        emailVerified: params.emailVerified,
+      });
+    } catch (err) {
+      const isConstraintViolation =
+        err instanceof Error && (err.message.includes('unique') || err.message.includes('duplicate') || err.message.includes('23505'));
+
+      if (!isConstraintViolation) {
+        throw err;
+      }
+
+      // Concurrent first-logins can race on the unique (issuer, subject) index.
+      const racedLink = await this.federatedIdentityRepository.findByIssuerSubject(issuer, subject);
+
+      if (!racedLink) {
+        throw err;
+      }
+
+      const linkedUser = await this.userRepository.getUserById(racedLink.userId);
+
+      if (!linkedUser) {
+        throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
+      }
+
+      return linkedUser;
+    }
 
     return localUser;
   }

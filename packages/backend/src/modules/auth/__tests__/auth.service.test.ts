@@ -280,6 +280,27 @@ describe('AuthService', () => {
       });
     });
 
+    it('returns the winner binding when concurrent first-logins race on create', async () => {
+      const localUser = { id: 3, username: 'user@example.com', operator: true };
+      const winnerUser = { id: 5, username: 'user@example.com' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValueOnce(undefined as never).mockResolvedValueOnce({ id: 2, userId: 5 } as never);
+      userRepository.getUserByUsername.mockResolvedValue(localUser as never);
+      federatedIdentityRepository.create.mockRejectedValue(
+        new Error('duplicate key value violates unique constraint "federated_identity_issuer_subject_idx"'),
+      );
+      userRepository.getUserById.mockResolvedValue(winnerUser as never);
+
+      const result = await authService.ensureFederatedUser({
+        issuer,
+        subject,
+        email: 'user@example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(winnerUser);
+      expect(federatedIdentityRepository.findByIssuerSubject).toHaveBeenCalledTimes(2);
+    });
+
     it('rejects when issuer or subject is missing', async () => {
       await expect(authService.ensureFederatedUser({ issuer: '', subject, email: 'user@example.com', emailVerified: true })).rejects.toMatchObject({
         message: 'AUTH_ERROR_INVALID_CREDENTIALS',
