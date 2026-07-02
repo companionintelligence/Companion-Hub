@@ -133,6 +133,7 @@ describe('AppCredentialsService', () => {
       return undefined;
     });
     modelPuller.startPull.mockResolvedValue({ catalogId: 'hermes4-70b', status: 'queued' });
+    modelPuller.waitForPullCompletion.mockResolvedValue(undefined);
     cloudFallback.getEnabledProviders.mockReturnValue([]);
 
     const module: TestingModule = await Test.createTestingModule({

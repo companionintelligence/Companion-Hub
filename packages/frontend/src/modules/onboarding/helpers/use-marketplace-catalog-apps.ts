@@ -16,6 +16,7 @@ export function useMarketplaceCatalogApps() {
     ...queryOptions,
     staleTime: cachedHasApps ? CATALOG_STALE_MS : 0,
     refetchInterval: (query) => {
+      if (query.state.status === 'error' || query.state.error) return false;
       const apps = query.state.data?.data ?? [];
       if (apps.length > 0) return false;
       if (query.state.dataUpdateCount >= EMPTY_CATALOG_MAX_REFETCHES) return false;

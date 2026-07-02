@@ -42,7 +42,7 @@ export const LogsContainer = () => {
   const downloadHubLogs = async () => {
     try {
       setIsDownloading(true);
-      const result = await downloadHubLogsSdk({ parseAs: 'blob' });
+      const result = await downloadHubLogsSdk({ parseAs: 'stream' });
       const response = result.response;
       if (!response?.ok) {
         throw new Error(`Hub log download failed with status ${response?.status ?? 'unknown'}`);

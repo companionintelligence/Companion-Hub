@@ -79,7 +79,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
   async onApplicationBootstrap() {
     setImmediate(() => {
-      void this.runDeferredBootstrap();
+      void this.runDeferredBootstrap().catch((error) => {
+        this.logger.error('Deferred registration bootstrap failed', error);
+      });
     });
   }
 

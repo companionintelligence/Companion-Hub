@@ -31,9 +31,9 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
 
   useEffect(() => {
-    setImgSrc(resolveAppCardImageUrl(app, imageUrlOverride));
+    setImgSrc(imageUrlOverride ?? app.icon ?? getMarketplaceAppImageUrl(app.urn));
     setShowAvatarFallback(false);
-  }, [app, imageUrlOverride]);
+  }, [app.urn, app.icon, imageUrlOverride]);
 
   const handleImageError = () => {
     if (imgSrc !== '/app-not-found.jpg') {
