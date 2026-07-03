@@ -283,7 +283,9 @@ export class ConfigurationService {
         (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
       }
     } catch (error) {
-      this.logger.error(`Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(safeSettings).join(',') || '(none)'}`);
+      this.logger.error(
+        `Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(safeSettings).join(',') || '(none)'}`,
+      );
       throw new InternalServerErrorException('Failed to set user settings');
     }
   }

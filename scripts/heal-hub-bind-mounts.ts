@@ -29,7 +29,7 @@ function isMsysDockerPath(value: string): boolean {
   return value.length >= 3 && value[0] === '/' && value[2] === '/' && /[a-zA-Z]/.test(value[1] ?? '');
 }
 
-/** Already-canonical Docker Desktop bind-mount form (`/mnt/<drive>/...`). */
+/** Legacy WSL-style Docker bind-mount input (`/mnt/<drive>/...`). */
 function isMntDockerPath(value: string): boolean {
   return value.length >= 7 && value.startsWith('/mnt/') && /[a-zA-Z]/.test(value[5] ?? '') && value[6] === '/';
 }

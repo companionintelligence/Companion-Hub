@@ -6251,10 +6251,10 @@ fn powershell_authenticode_helper() -> &'static str {
     r#"function Get-CompanionHubAuthenticodeSignature {
     param([Parameter(Mandatory=$true)][string]$Path)
     try {
-    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
-    return Microsoft.PowerShell.Security\Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+        Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+        return Microsoft.PowerShell.Security\Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
     } catch {
-    throw "Windows PowerShell could not load Microsoft.PowerShell.Security for Authenticode validation: $($_.Exception.Message)"
+        throw "Windows PowerShell could not load Microsoft.PowerShell.Security for Authenticode validation: $($_.Exception.Message)"
     }
 }
 "#

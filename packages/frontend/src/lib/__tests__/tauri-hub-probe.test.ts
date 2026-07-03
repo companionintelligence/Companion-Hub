@@ -1,6 +1,6 @@
 import { client } from '@/api-client/client.gen';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, isLocalTauriDevOrigin, isTauriReleaseBuild, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 
 describe('tauri-hub-probe', () => {
   beforeEach(() => {
@@ -64,7 +64,7 @@ describe('tauri-hub-probe', () => {
     const port = await probeHealthyHubApiPort();
     expect(port).toBe(5012);
     expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:5012/api/health/live', expect.any(Object));
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it('treats 127 loopback origins as local Tauri dev', () => {
@@ -77,6 +77,13 @@ describe('tauri-hub-probe', () => {
     };
 
     expect(isTauriReleaseBuild()).toBe(false);
+  });
+
+  it('does not treat localhost subdomains as local Tauri dev', () => {
+    expect(isLocalTauriDevOrigin('http://localhost.example.com:5002')).toBe(false);
+    expect(isLocalTauriDevOrigin('http://127.0.0.1.example.com:5002')).toBe(false);
+    expect(isLocalTauriDevOrigin('http://localhost:5002')).toBe(true);
+    expect(isLocalTauriDevOrigin('http://127.0.0.1:5002')).toBe(true);
   });
 
   it('configureHubApiPort omits credentials in release builds', () => {

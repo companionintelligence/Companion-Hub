@@ -15,7 +15,12 @@ export function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>)
 }
 
 export function isLocalTauriDevOrigin(origin = window.location.origin): boolean {
-  return origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1');
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
+  } catch {
+    return false;
+  }
 }
 
 export function isTauriReleaseBuild(): boolean {
@@ -29,17 +34,19 @@ function healthProbePorts(): number[] {
 }
 
 async function probeWithFetch(): Promise<number | null> {
-  for (const port of healthProbePorts()) {
-    try {
-      const res = await fetch(`http://${LOCAL_HUB_API_HOST}:${port}/api/health/live`, {
-        signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
-      });
-      if (res.ok) return port;
-    } catch {
-      // try next port
-    }
-  }
-  return null;
+  const outcomes = await Promise.all(
+    healthProbePorts().map(async (port) => {
+      try {
+        const res = await fetch(`http://${LOCAL_HUB_API_HOST}:${port}/api/health/live`, {
+          signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
+        });
+        return res.ok ? port : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return outcomes.find((port) => port !== null) ?? null;
 }
 
 async function probeWithTauriInvoke(): Promise<number | null> {
