@@ -32,9 +32,12 @@ describe('docker-compose.prod.yml sync', () => {
     expect(extractEnvDefault(content, 'LEMONADE_URL')).toBe('http://host.docker.internal:13305');
   });
 
-  it('tunnel mount uses ROOT_FOLDER_HOST/tunnel not parent path', () => {
+  it('tunnel mount uses sibling ../tunnel beside ROOT_FOLDER_HOST (not .internal/tunnel)', () => {
     const content = readCompose(rootCompose);
-    expect(content).toContain('${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel');
-    expect(content).not.toContain('/../tunnel');
+    // ROOT_FOLDER_HOST is .internal; tunnel token lives at <repo>/tunnel (sibling), matching
+    // scripts/heal-hub-bind-mounts.ts resolveTunnelDir() and cihub-cli token paths.
+    expect(content).toContain('${ROOT_FOLDER_HOST:-.internal}/../tunnel:/app/tunnel');
+    expect(content).toContain('${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro');
+    expect(content).not.toContain('${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel');
   });
 });
