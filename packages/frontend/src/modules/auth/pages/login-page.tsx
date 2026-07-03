@@ -3,7 +3,7 @@ import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-
 import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
-import { rememberPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
