@@ -78,7 +78,7 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
-            handler: async (args) => mcpClient!.callTool(tool.name, args),
+            handler: async (args) => mcpClient?.callTool(tool.name, args),
           });
         }
         api.log.info(`Registered ${tools.length} Hub MCP tools (legacy client)`);
@@ -123,7 +123,7 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     // the REST fallback below (GET /api/inference/status).
     let inferenceStatus: HubInferenceStatus | null = null;
 
-    if (mcpClient && mcpClient.isConnected()) {
+    if (mcpClient?.isConnected()) {
       try {
         // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
         // A null result (error/unparseable) falls through to the REST fallback below.
