@@ -14,6 +14,7 @@ import { AppsService } from './apps.service';
 import { AppIntentSyncService } from './app-intent-sync.service';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
+import { McpApiKeyModule } from '../mcp/mcp-api-key.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { RegistrationModule } from '../registration/registration.module';
     forwardRef(() => InferenceModule),
     MarketplaceModule,
     forwardRef(() => RegistrationModule),
+    McpApiKeyModule,
   ],
   controllers: [AppsController],
   providers: [
