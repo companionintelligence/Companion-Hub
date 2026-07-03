@@ -63,6 +63,48 @@ function resolveChromiumBinary(): string | null {
   if (_chromiumBin === undefined) _chromiumBin = computeChromiumBinary();
   return _chromiumBin;
 }
+/** Headless Chromium's page-load-timeout fallback PNG is always 4714 bytes (1280×800 white). */
+const BLANK_SCREENSHOT_MAX_BYTES = 8000;
+
+function isBlankScreenshot(path: string): boolean {
+  try {
+    return statSync(path).size <= BLANK_SCREENSHOT_MAX_BYTES;
+  } catch {
+    return true;
+  }
+}
+
+function captureScreenshot(
+  chromeBin: string,
+  screenshotPath: string,
+  url: string,
+  opts: { virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number },
+): { ok: boolean; diag: string } {
+  const ss = spawnSync(
+    chromeBin,
+    [
+      '--headless=new',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--hide-scrollbars',
+      `--screenshot=${screenshotPath}`,
+      '--window-size=1280,800',
+      `--virtual-time-budget=${opts.virtualTimeBudgetMs}`,
+      `--timeout=${opts.timeoutMs}`,
+      url,
+    ],
+    { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'pipe' },
+  );
+  const ok = ss.status === 0 && existsSync(screenshotPath) && !isBlankScreenshot(screenshotPath);
+  if (ok) return { ok: true, diag: '' };
+  const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
+  const blank = existsSync(screenshotPath) && isBlankScreenshot(screenshotPath);
+  const diag = blank
+    ? 'screenshot blank (page load timed out before paint)'
+    : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+  return { ok: false, diag };
+}
+
 function computeChromiumBinary(): string | null {
   const envBin = process.env.QA_CHROMIUM_PATH;
   if (envBin && existsSync(envBin)) return envBin;
@@ -729,40 +771,21 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Let a just-became-ready app settle before shooting: heavy SPAs serve their first request
         // mid-bootstrap, and a request that hangs >45s gets the chromium SIGKILLed → no PNG → false warn.
         await new Promise((r) => setTimeout(r, 4000));
-        // Retry once: headless chromium occasionally races the app's first paint, or hiccups, and
-        // writes no PNG — which made a healthy app score a false `warn`. A single retry recovers most.
+        // Two-tier capture: Playwright's bundled headless Chromium on Linux fleet nodes often hits
+        // "Page load timed out" at the old 12s/20s budget and writes a 4714-byte white PNG that
+        // looked like a pass (hasScreenshot=true). A longer second attempt fixes gitea/arkanum and
+        // similar SSR/redirect apps without raising the default ceiling for websocket-hanging SPAs.
+        const shotUrl = `http://localhost:${hostPort}${uiPath}`;
+        const shotAttempts: Array<{ virtualTimeBudgetMs: number; timeoutMs: number; spawnTimeoutMs: number }> = [
+          { virtualTimeBudgetMs: 30_000, timeoutMs: 45_000, spawnTimeoutMs: 55_000 },
+          { virtualTimeBudgetMs: 60_000, timeoutMs: 60_000, spawnTimeoutMs: 70_000 },
+        ];
         let ssDiag = '';
-        for (let attempt = 0; attempt < 2 && !result.hasScreenshot; attempt++) {
-          const ss = spawnSync(
-            chromeBin,
-            [
-              '--headless=new',
-              '--no-sandbox',
-              '--disable-gpu',
-              '--hide-scrollbars',
-              `--screenshot=${screenshotPath}`,
-              '--window-size=1280,800',
-              // 12s virtual-time (was 4s): the recurring false-warn set (plex, jellyfin, element,
-              // libreoffice, …) are heavy SPAs that don't finish their first paint in 4s — they were
-              // healthy (http 200, backend ok) but scored warn for a missing PNG. 12s flips them to pass.
-              '--virtual-time-budget=12000',
-              // HARD capture deadline: apps holding persistent websocket/GCM connections never go
-              // network-idle, so the virtual-time budget never completes and chromium hangs until the
-              // 45s spawnSync SIGKILL → no PNG (diagnosed via the self-explaining `signal=SIGKILL`
-              // notes: jellyfin/element/plex/docmost/woodpecker all do this). `--timeout` forces the
-              // screenshot of whatever has rendered after 20s real time, ending the hang class.
-              '--timeout=20000',
-              `http://localhost:${hostPort}${uiPath}`,
-            ],
-            { timeout: 45_000, killSignal: 'SIGKILL', stdio: 'pipe' },
-          );
-          result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
-          if (!result.hasScreenshot) {
-            // Self-explaining failures: a missing PNG used to leave NO trace of why (exit code,
-            // SIGKILL-on-hang, chromium crash) — record it so a warn verdict carries its own diagnosis.
-            const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
-            ssDiag = `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
-          }
+        for (const attempt of shotAttempts) {
+          if (result.hasScreenshot) break;
+          const shot = captureScreenshot(chromeBin, screenshotPath, shotUrl, attempt);
+          result.hasScreenshot = shot.ok;
+          if (!shot.ok) ssDiag = shot.diag;
         }
         if (!result.hasScreenshot && ssDiag) {
           result.notes = result.notes ? `${result.notes} | ${ssDiag}` : ssDiag;
@@ -1118,6 +1141,21 @@ function seedSourceFor(appId: string, hostPath?: string): string | null {
   return existsSync(src) ? src : null;
 }
 
+/** Reserve a host port via Docker so ${APP_BASE_URL} can include the mapped port before compose up. */
+async function reserveHostPort(): Promise<number> {
+  const name = `qa-port-reserve-${randomBytes(4).toString('hex')}`;
+  const run = execQuiet(`docker run -d --name ${name} -p 0:80 alpine sleep 120`, 60_000);
+  if (!run.ok) return 0;
+  const portMap = execQuiet(`docker port ${name} 80/tcp`, 10_000);
+  execQuiet(`docker rm -f ${name}`, 30_000);
+  return portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+}
+
+function composeReferencesVar(services: DockerService[], varName: string): boolean {
+  const needle = `\${${varName}`;
+  return services.some((s) => (s.environment ?? []).some((e) => String(e.value ?? '').includes(needle)));
+}
+
 /**
  * Bring up a multi-service app's FULL compose stack (deps included) with consistent
  * ${VAR} substitution, publishing the main service on a Docker-assigned host port.
@@ -1139,10 +1177,17 @@ async function composeUp(
   wipeScratchTree(scratchBase);
   mkdirSync(scratchBase, { recursive: true });
   const cache = new Map<string, string>();
-  const subst = (s: string) =>
-    s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   const main = services.find((s) => s.isMain) ?? services[0];
   const mainPort = main?.internalPort ?? 80;
+  // Apps like Penpot embed ${APP_BASE_URL} as PENPOT_PUBLIC_URI — it must match the browser URL
+  // including the host port. Reserve the publish port up front so substitution is correct.
+  let reservedHostPort = 0;
+  if (composeReferencesVar(services, 'APP_BASE_URL')) {
+    reservedHostPort = await reserveHostPort();
+    if (reservedHostPort > 0) cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
+  }
+  const subst = (s: string) =>
+    s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
@@ -1272,7 +1317,10 @@ async function composeUp(
         }
       }
     }
-    if (s === main) y += `    ports:\n      - "0:${mainPort}"\n`;
+    if (s === main) {
+      const publish = reservedHostPort > 0 ? reservedHostPort : 0;
+      y += `    ports:\n      - "${publish}:${mainPort}"\n`;
+    }
   }
   writeFileSync(ymlPath, y);
   // NON-BLOCKING `compose up` (execAsync, not execSync): the pull+create can take many minutes for a
@@ -1288,7 +1336,7 @@ async function composeUp(
     await new Promise((r) => setTimeout(r, 3000));
     portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   }
-  const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+  const hostPort = reservedHostPort > 0 ? reservedHostPort : portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
   return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
 }
 
