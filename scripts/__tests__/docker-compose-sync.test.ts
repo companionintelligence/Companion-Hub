@@ -1,5 +1,6 @@
 /**
- * Ensures desktop bundled compose matches the canonical root docker-compose.prod.yml.
+ * Ensures desktop bundled compose is derived from root docker-compose.prod.yml
+ * with the ci-os-hub service switched to prebuilt image pulls (no local build).
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,9 +22,16 @@ function extractEnvDefault(content: string, key: string) {
 }
 
 describe('docker-compose.prod.yml sync', () => {
-  it('desktop bundle matches root after sync script', () => {
+  it('sync script patches ci-os-hub to pull CI_HUB_IMAGE instead of building', () => {
     execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
-    expect(readCompose(rootCompose)).toBe(readCompose(desktopCompose));
+    const root = readCompose(rootCompose);
+    const desktop = readCompose(desktopCompose);
+
+    expect(root).toContain('build:');
+    expect(root).toContain('dockerfile: Dockerfile');
+    expect(desktop).not.toContain('dockerfile: Dockerfile');
+    expect(desktop).toContain('image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}');
+    expect(desktop).toContain('pull_policy: if_not_present');
   });
 
   it('inference URLs default to host.docker.internal', () => {
