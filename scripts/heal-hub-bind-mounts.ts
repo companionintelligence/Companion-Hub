@@ -24,28 +24,28 @@ import path from 'node:path';
 import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
 
-/** MSYS/Git-Bash bind-mount input (`/c/...`); normalized to `/mnt/<drive>/...`. */
+/** MSYS/Git-Bash bind-mount input (`/c/...`). */
 function isMsysDockerPath(value: string): boolean {
   return value.length >= 3 && value[0] === '/' && value[2] === '/' && /[a-zA-Z]/.test(value[1] ?? '');
 }
 
-/** Already-canonical Docker Desktop bind-mount form (`/mnt/<drive>/...`). */
+/** Legacy WSL-style Docker bind-mount input (`/mnt/<drive>/...`). */
 function isMntDockerPath(value: string): boolean {
   return value.length >= 7 && value.startsWith('/mnt/') && /[a-zA-Z]/.test(value[5] ?? '') && value[6] === '/';
 }
 
-/** Normalize Windows host paths to `/mnt/<drive>/...` (lowercase drive). */
+/** Normalize Windows host paths to `/<drive>/...` (lowercase drive). */
 function normalizeWindowsDockerPath(value: string): string {
   const trimmed = value.trim().replace(/\\/g, '/');
 
   if (isMntDockerPath(trimmed)) {
     const drive = (trimmed[5] ?? 'c').toLowerCase();
-    return `/mnt/${drive}${trimmed.slice(6)}`;
+    return `/${drive}${trimmed.slice(6)}`;
   }
 
   if (isMsysDockerPath(trimmed)) {
     const drive = (trimmed[1] ?? 'c').toLowerCase();
-    return `/mnt/${drive}${trimmed.slice(2)}`;
+    return `/${drive}${trimmed.slice(2)}`;
   }
 
   const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
@@ -53,7 +53,7 @@ function normalizeWindowsDockerPath(value: string): string {
   if (driveLetter) {
     const drive = driveLetter.toLowerCase();
     const rest = driveMatch[2] ?? '';
-    return rest.length === 0 ? `/mnt/${drive}` : `/mnt/${drive}/${rest}`;
+    return rest.length === 0 ? `/${drive}` : `/${drive}/${rest}`;
   }
 
   return trimmed;
@@ -62,7 +62,7 @@ function normalizeWindowsDockerPath(value: string): string {
 /**
  * Host path for Docker bind mounts (`-v`, compose volume sources).
  *
- * On Windows the canonical form is `/mnt/<drive>/...` (lowercase drive), matching
+ * On Windows the canonical form is `/<drive>/...` (lowercase drive), matching
  * the desktop runtime (`hub_manager.rs`). Inputs `C:/...`, `C:\...`, and MSYS
  * `/c/...` are normalized to that form; native `C:/...` breaks compose parsing
  * because Docker treats the first `:` as the volume delimiter.

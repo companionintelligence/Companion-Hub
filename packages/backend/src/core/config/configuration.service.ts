@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
-import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
@@ -67,6 +68,14 @@ const envSchema = z
     // hardcoded LAN domain (ci.lan). DEFAULT_LOCAL_DOMAIN remains a last-resort fallback.
     LOCAL_DOMAIN: data.LOCAL_DOMAIN?.trim() || data.DOMAIN?.trim() || DEFAULT_LOCAL_DOMAIN,
   }));
+
+function describeSettingsError(error: unknown): string {
+  if (error instanceof Error) {
+    return scrubString(error.stack || error.message);
+  }
+
+  return scrubString(String(error));
+}
 
 @Injectable()
 export class ConfigurationService {
@@ -274,7 +283,9 @@ export class ConfigurationService {
         (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
       }
     } catch (error) {
-      this.logger.error('Failed to set user settings', error);
+      this.logger.error(
+        `Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(safeSettings).join(',') || '(none)'}`,
+      );
       throw new InternalServerErrorException('Failed to set user settings');
     }
   }
@@ -300,6 +311,7 @@ export class ConfigurationService {
    *  the in-memory config (callers that want the runtime change apply it separately). */
   private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+    await ensureSettingsJsonReady(settingsPath);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
     const currentSettingsResult = settingsSchema.partial().safeParse(JSON.parse(fileContent));
     if (!currentSettingsResult.success) {
