@@ -278,6 +278,6 @@ packages/desktop/
 | `error: no such command: tauri` | Install: `cargo install tauri-cli --version "^2" --locked` |
 | Windows build fails with "cannot compile" | Load VS env: `call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64` |
 | Linux build fails with missing headers | Install all deps listed in Prerequisites → Linux section |
-| App shows blank window | Ensure the frontend dev server is running on port 5005 (dev mode) or frontend was built (release mode) |
+| App shows blank window | **Vite dev** (`local:desktop`): ensure Vite is on port 5005. **Stack dev** (`dev:desktop`): ensure the Hub container is up and `API_PORT` in `.env.dev` matches the WebView URL — run `curl http://127.0.0.1:$API_PORT/api/health/live`. The launcher reads `API_PORT` automatically; restart `pnpm run dev:desktop` after port changes. **Release**: rebuild frontend (`pnpm run --filter=frontend build`) |
 | Docker credential errors on Windows SSH | Clear `credsStore` in `~/.docker/config.json` |
 | "Maximum number of active sessions" (WebDriver) | Kill stale `tauri-driver` and `WebKitWebDriver` processes |

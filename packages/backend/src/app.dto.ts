@@ -48,8 +48,10 @@ export const settingsSchema = z.object({
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
   // ISSUE-MCP-2 / ENH-MCP-4: MCP admin-managed settings, persisted so they survive restarts.
-  // mcpAllowDestructive gates destructive MCP tools; mcpApiKey holds an operator-rotated key
-  // (otherwise the key is derived — see env-helpers). Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
+  // mcpAllowDestructive gates destructive MCP tools. mcpApiKey overrides the derived MCP_API_KEY
+  // (see env-helpers) that seeds the key store's "Default" key on FIRST boot only — after that,
+  // keys are managed in Settings → MCP (SEC-MCP-8) and the env value is not a live credential.
+  // Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
   mcpAllowDestructive: z.boolean().optional(),
   mcpApiKey: z.string().trim().optional(),
 });

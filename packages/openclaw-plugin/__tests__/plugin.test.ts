@@ -66,6 +66,7 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_API_KEY;
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
+    delete process.env.HUB_MCP_LEGACY_CLIENT;
   });
 
   afterEach(() => {
@@ -74,6 +75,7 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_API_KEY;
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
+    delete process.env.HUB_MCP_LEGACY_CLIENT;
     delete process.env.CI_LLM_NUM_CTX;
     delete process.env.OLLAMA_HOST;
   });
@@ -82,7 +84,7 @@ describe('CI-Hub Plugin', () => {
     expect(typeof register).toBe('function');
   });
 
-  it('should register wake HTTP route on /hooks/hub-wake', async () => {
+  it('should register wake HTTP route on /hooks/hub-wake when a wake secret is set', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -93,9 +95,26 @@ describe('CI-Hub Plugin', () => {
       }),
     );
 
-    await register(api, baseConfig);
+    await register(api, { ...baseConfig, wakeSecret: 'test-wake-secret' });
 
     expect(api.registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/hooks/hub-wake' }));
+  });
+
+  it('does NOT register the wake route when no wake secret is set (avoids an unauthenticated trigger)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init);
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    await register(api, baseConfig); // no wakeSecret in config or env
+
+    expect(api.registerHttpRoute).not.toHaveBeenCalled();
+    expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('wake endpoint disabled'));
   });
 
   it('should log warning when Hub is unreachable', async () => {
@@ -107,7 +126,26 @@ describe('CI-Hub Plugin', () => {
     expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('Hub unreachable'));
   });
 
-  it('should register tools from MCP server', async () => {
+  it('does NOT register tools by default (tools come from native mcp.servers.ci-hub config)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init, { tools: [{ name: 'hub_list_apps', description: 'x', inputSchema: {} }] });
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    await register(api, baseConfig);
+
+    // Native OpenClaw MCP client owns tool registration now; the plugin must not.
+    expect(api.registerTool).not.toHaveBeenCalled();
+    expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('native OpenClaw mcp.servers.ci-hub'));
+  });
+
+  it('registers tools via the legacy in-plugin client when HUB_MCP_LEGACY_CLIENT=true', async () => {
+    process.env.HUB_MCP_LEGACY_CLIENT = 'true';
     const mockTools = [
       { name: 'hub_list_apps', description: 'List apps', inputSchema: { type: 'object' } },
       { name: 'hub_start_app', description: 'Start an app', inputSchema: { type: 'object' } },

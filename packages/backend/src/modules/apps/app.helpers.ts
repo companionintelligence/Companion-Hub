@@ -15,6 +15,7 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
+import { McpApiKeyService } from '../mcp/mcp-api-key.service';
 
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
@@ -37,6 +38,7 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
+    private readonly mcpApiKeys: McpApiKeyService,
   ) {}
 
   /**
@@ -391,10 +393,17 @@ export class AppHelpers {
       // MCP Streamable HTTP client here with the injected HUB_MCP_API_KEY as the Bearer token.
       envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp`);
 
-      // Inject MCP API key so the agent can authenticate with the Hub MCP endpoint
-      if (process.env.MCP_API_KEY) {
-        envMap.set('HUB_MCP_API_KEY', process.env.MCP_API_KEY);
-      }
+      // SEC-MCP-8: provision a DEDICATED managed key for this companion app rather than sharing the
+      // single Hub key. The app's existing key is preserved if it still validates (no churn, like
+      // HUB_WAKE_SECRET below); otherwise a fresh one is minted. The key is auto-revoked on uninstall,
+      // and the Hub stores only its hash — the raw is injected here into the app's env.
+      const existingMcpKey = existingAppEnvMap.get('HUB_MCP_API_KEY');
+      const mcpKey = await this.mcpApiKeys.provisionManagedKey({
+        appUrn,
+        appName: config.name ?? appUrn,
+        existingRawKey: existingMcpKey,
+      });
+      envMap.set('HUB_MCP_API_KEY', mcpKey);
 
       // Generate or preserve wake secret
       const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');

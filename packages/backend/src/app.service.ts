@@ -17,6 +17,7 @@ import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
+import { McpApiKeyService } from './modules/mcp/mcp-api-key.service';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -48,6 +49,7 @@ export class AppService implements OnApplicationShutdown {
     private readonly registryService: RegistryService,
     private readonly portManager: PortManagerService,
     private readonly appsRepository: AppsRepository,
+    private readonly mcpApiKeyService: McpApiKeyService,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
@@ -60,6 +62,10 @@ export class AppService implements OnApplicationShutdown {
       this.logger.info('Starting bootstrap...');
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
+
+      // SEC-MCP-8: seed the default MCP key when the store is empty (full rationale on the method).
+      // Must run after migrate() (api_key table) and before listen so agents can auth immediately.
+      await this.mcpApiKeyService.seedDefaultKeyIfEmpty();
 
       // Validate data directory integrity
       await this.validateDataDirectories();

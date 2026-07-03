@@ -5,6 +5,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { RegistrationController } from '../registration.controller';
 import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
 
 describe('RegistrationController', () => {
   let controller: RegistrationController;
@@ -17,6 +18,7 @@ describe('RegistrationController', () => {
       providers: [
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     })
       .overrideGuard(AuthGuard)

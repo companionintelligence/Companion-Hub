@@ -324,7 +324,7 @@ export class AuthController {
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
         };
         this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
-        return res.redirect(buildPortalDesktopDeepLink(desktopToken));
+        return res.redirect(buildPortalDesktopDeepLink(desktopToken, hubOrigin));
       }
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.

@@ -34,6 +34,10 @@ type PortalCatalogApp = {
   tipi_version?: number;
   exposable?: boolean;
   dynamic_config?: boolean;
+  form_fields?: unknown[];
+  force_pull?: boolean;
+  url_suffix?: string;
+  hub_integration?: unknown;
 };
 
 export type PortalCatalogEntry = {
@@ -212,6 +216,10 @@ export class PortalCatalogService {
       runtime_platform: typeof app.runtime_platform === 'string' ? app.runtime_platform : undefined,
       exposable: app.exposable !== false,
       dynamic_config: app.dynamic_config !== false,
+      form_fields: Array.isArray(app.form_fields) ? app.form_fields : undefined,
+      force_pull: app.force_pull === true ? true : undefined,
+      url_suffix: typeof app.url_suffix === 'string' ? app.url_suffix : undefined,
+      hub_integration: app.hub_integration,
     });
 
     if (!parsed.success) {

@@ -6,23 +6,24 @@ How marketplace agent apps connect to the **Hub MCP server** at runtime, and wha
 
 The Hub exposes a platform MCP server (not the per-app stdio bridge):
 
-| Endpoint | Method | Auth |
-|----------|--------|------|
-| `/api/mcp/sse` | GET (SSE) | `Authorization: Bearer $MCP_API_KEY` |
-| `/api/mcp/messages` | POST | Same Bearer key |
+| Endpoint   | Method                     | Auth                              |
+| ---------- | -------------------------- | --------------------------------- |
+| `/api/mcp` | POST/GET (Streamable HTTP) | `Authorization: Bearer <API key>` |
 
-Generate or rotate the key with `cihub mcp setup`. The key is stored in Hub env as `MCP_API_KEY`.
+`cihub mcp setup` writes an initial `MCP_API_KEY` into the Hub env; on the Hub's **first boot** that
+value is seeded into the key store as the revocable **Default** key (SEC-MCP-8). After that, keys are
+created / revoked / rotated in **Settings → MCP** (create the new key, roll it out, then revoke the
+old one) — the env value itself is no longer a live credential.
 
 At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
-| Env var | Purpose |
-|---------|---------|
-| `HUB_URL` | Hub base URL (health, inference REST) |
-| `HUB_MCP_URL` | MCP base (often same as `HUB_URL`) |
-| `HUB_MCP_MESSAGES_URL` | Optional explicit messages URL |
-| `HUB_MCP_API_KEY` | Bearer token for MCP SSE/messages |
-| `HUB_WAKE_SECRET` | Validates inbound wake webhooks (OpenClaw) |
-| `HUB_MCP_ENABLED` | Set `false` to skip MCP wiring |
+| Env var           | Purpose                                                                         |
+| ----------------- | ------------------------------------------------------------------------------- |
+| `HUB_URL`         | Hub base URL (health, inference REST)                                           |
+| `HUB_MCP_URL`     | MCP base (often same as `HUB_URL`)                                              |
+| `HUB_MCP_API_KEY` | Per-app **managed** MCP key, minted by the Hub key store (revoked on uninstall) |
+| `HUB_WAKE_SECRET` | Validates inbound wake webhooks (OpenClaw)                                      |
+| `HUB_MCP_ENABLED` | Set `false` to skip MCP wiring                                                  |
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 

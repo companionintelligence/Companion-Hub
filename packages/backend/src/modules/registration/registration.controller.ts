@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/comm
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
@@ -41,6 +42,7 @@ export class RegistrationController {
   constructor(
     private readonly registrationService: RegistrationService,
     private readonly config: ConfigurationService,
+    private readonly logger: LoggerService,
   ) {}
 
   @Post('reset')
@@ -366,6 +368,8 @@ export class RegistrationController {
   @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
   async pairDevice(@Body() body: PairDeviceDto) {
     const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    this.logger.info(`Received local pairing request: codeLength=${pairingCode?.length ?? 0} validShape=${pairingCode?.length === 6}`);
 
     if (!pairingCode || pairingCode.length !== 6) {
       return { success: false, message: 'A valid 6-character pairing code is required.' };

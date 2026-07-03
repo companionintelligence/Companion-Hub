@@ -49,14 +49,33 @@ export function toDesktopRedirectPath(redirectUrl: string | null | undefined, hu
 
 export type PortalSsoErrorCode = 'callback_error' | 'state_expired' | 'account_mismatch' | 'not_configured';
 
-export function buildPortalDesktopDeepLink(token: string): string {
-  const url = new URL('cihub://auth');
+/** True when Hub OIDC was initiated from a local loopback origin (stack-dev / local desktop). */
+export function isLoopbackHubOrigin(hubOrigin: string): boolean {
+  try {
+    const parsed = new URL(hubOrigin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/** Loopback desktop dev uses cihub-dev:// so macOS does not steal cihub:// from the installed app. */
+export function resolvePortalDesktopDeepLinkScheme(hubOrigin?: string | null): 'cihub' | 'cihub-dev' {
+  return hubOrigin && isLoopbackHubOrigin(hubOrigin) ? 'cihub-dev' : 'cihub';
+}
+
+export function buildPortalDesktopDeepLink(token: string, hubOrigin?: string | null): string {
+  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(hubOrigin)}://auth`);
   url.searchParams.set('token', token);
   return url.toString();
 }
 
-export function buildPortalDesktopErrorDeepLink(errorCode: PortalSsoErrorCode): string {
-  const url = new URL('cihub://auth');
+export function buildPortalDesktopErrorDeepLink(errorCode: PortalSsoErrorCode, hubOrigin?: string | null): string {
+  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(hubOrigin)}://auth`);
   url.searchParams.set('error', errorCode);
   return url.toString();
 }
@@ -76,7 +95,7 @@ export function buildPortalSsoErrorRedirectUrl(input: {
   fallbackOrigin: string;
 }): string {
   if (input.desktop) {
-    return buildPortalDesktopErrorDeepLink(input.errorCode);
+    return buildPortalDesktopErrorDeepLink(input.errorCode, input.hubOrigin ?? input.fallbackOrigin);
   }
 
   const base = input.hubOrigin || input.fallbackOrigin;

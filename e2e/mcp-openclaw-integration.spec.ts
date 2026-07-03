@@ -11,7 +11,11 @@
  *   7. GitHub Copilot LLM provider is configured via form fields
  *
  * Prerequisites:
- *   - Hub backend running with MCP_API_KEY set
+ *   - Hub backend running with MCP_API_KEY set — and present in the Hub's key store. SEC-MCP-8: the
+ *     store (Settings → MCP) is the sole auth authority; the env value is only auto-seeded into it
+ *     as the "Default" key when the store is empty at boot (i.e. a freshly-migrated DB). Against a
+ *     Hub whose store already has other keys, either boot it fresh or create a key matching
+ *     MCP_API_KEY first, or every request here 401s.
  *   - PostgreSQL + RabbitMQ available
  *   - Docker daemon accessible (for full install tests)
  *
@@ -532,10 +536,28 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     expect(secretMatch).toBeTruthy();
     expect(secretMatch?.[1]?.length).toBe(64);
 
-    // Verify the MCP API key matches what the Hub is configured with
+    // SEC-MCP-8: the injected key is a per-app MANAGED key minted by the Hub's key store — a fresh
+    // 64-hex secret, deliberately NOT the operator/env MCP_API_KEY (so revoking one app's key never
+    // affects another surface). Prove it authenticates by opening a real MCP session with it.
     const mcpKeyMatch = envContent.match(/HUB_MCP_API_KEY=(.+)/);
     expect(mcpKeyMatch).toBeTruthy();
-    expect(mcpKeyMatch?.[1]).toBe(MCP_API_KEY);
+    const managedKey = (mcpKeyMatch?.[1] ?? '').trim();
+    expect(managedKey).toMatch(/^[a-f0-9]{64}$/);
+    const initRes = await fetch(`${BACKEND_URL}/api/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${managedKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 900,
+        method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'e2e-managed-key', version: '1.0' } },
+      }),
+    });
+    expect(initRes.status).toBe(200);
   });
 
   test('verify MCP tools are accessible from agent perspective', async () => {

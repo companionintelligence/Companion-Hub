@@ -88,7 +88,7 @@
     "deep-link": {
       "mobile": [],
       "desktop": {
-        "schemes": ["cihub"]
+        "schemes": ["cihub", "cihub-dev"]
       }
     }
   }
