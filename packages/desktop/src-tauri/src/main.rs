@@ -237,7 +237,11 @@ fn validate_open_path(path: &Path) -> Result<(), String> {
 /// `create_if_missing` is `true` for the logs folder (preserving its prior
 /// behavior) and `false` for data folders, so a wrong or remote path surfaces as
 /// an error instead of silently creating a stray directory.
-fn open_directory(app: &tauri::AppHandle, path: &Path, create_if_missing: bool) -> Result<(), String> {
+fn open_directory(
+    app: &tauri::AppHandle,
+    path: &Path,
+    create_if_missing: bool,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 
     if create_if_missing {
@@ -254,7 +258,11 @@ fn open_directory(app: &tauri::AppHandle, path: &Path, create_if_missing: bool) 
         return Err(err);
     }
 
-    let _ = hub_manager::append_desktop_log_for(&data_dir, "open_folder", &format!("opening {}", path.display()));
+    let _ = hub_manager::append_desktop_log_for(
+        &data_dir,
+        "open_folder",
+        &format!("opening {}", path.display()),
+    );
 
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
@@ -283,7 +291,7 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
     // The backend resolves host paths from ROOT_FOLDER_HOST, which on Windows is
-    // stored in Docker bind-mount format (e.g. `/mnt/c/Users/...`). Convert it back
+    // stored in Docker bind-mount format (e.g. `/c/Users/...`). Convert it back
     // to a native host path (`C:\Users\...`) so the OS file explorer can open it;
     // otherwise `validate_open_path` rejects it as non-absolute. No-op on POSIX hosts.
     let native = hub_manager::host_path_from_docker_path(&path);
@@ -552,7 +560,20 @@ pub fn run() {
             if stack_dev_mode_enabled() {
                 // Stack was started externally (e.g. `cihub up dev`); still refresh host
                 // metrics so the dashboard shows physical disk/RAM, not the Docker VM.
-                hub_manager::refresh_host_metrics_probe_cache(&data_dir);
+                hub_manager::refresh_host_hardware_probe_cache(&data_dir);
+                if let Some(stack_data_dir) = hub_manager::host_data_dir_from_env_path(&env_path) {
+                    if stack_data_dir != data_dir {
+                        hub_manager::refresh_host_hardware_probe_cache(&stack_data_dir);
+                        let _ = hub_manager::append_desktop_log_for(
+                            &data_dir,
+                            "hw.probe",
+                            &format!(
+                                "stack-dev host hardware probes refreshed for mounted data root {}",
+                                stack_data_dir.display()
+                            ),
+                        );
+                    }
+                }
                 let _ = hub_manager::append_desktop_log_for(
                     &data_dir,
                     "setup",

@@ -223,13 +223,31 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
 
     #[cfg(target_os = "windows")]
     {
+        let script = "$smi = (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue).Source; 
+if (-not $smi) { 
+    $candidates = @($env:SystemRoot + '\\System32\\nvidia-smi.exe', $env:ProgramFiles + '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe', ${env:ProgramFiles(x86)} + '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe'); 
+    $smi = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1; 
+}; 
+if ($smi) { 
+    $rows = & $smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits 2>$null; 
+    $best = $rows | ForEach-Object { 
+        $parts = $_.Split(','); 
+        if ($parts.Length -ge 2) { 
+            [PSCustomObject]@{ Name = $parts[0].Trim(); VramMb = [int64]$parts[1].Trim(); DriverVersion = $(if ($parts.Length -ge 3) { $parts[2].Trim() } else { '' }); Source = 'desktop-host-windows-nvidia-smi' } 
+        } 
+    } | Sort-Object VramMb -Descending | Select-Object -First 1; 
+    if ($best -ne $null) { $best | ConvertTo-Json -Compress; exit 0 } 
+}; 
+$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; 
+if ($null -eq $gpu) { exit 3 }; 
+[PSCustomObject]@{ Name = $gpu.Name; AdapterRAM = [int64]$gpu.AdapterRAM; DriverVersion = $gpu.DriverVersion; Source = 'desktop-host-windows-wmi' } | ConvertTo-Json -Compress";
         let mut command = Command::new("powershell.exe");
         command
             .creation_flags(CREATE_NO_WINDOW)
             .arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-Command")
-            .arg("$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress");
+            .arg(script);
 
         let output = match command.output() {
             Ok(value) => value,
@@ -290,9 +308,18 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
         }
 
         let vram_mb = parsed
-            .get("AdapterRAM")
-            .and_then(|value| value.as_u64())
-            .map(|bytes| bytes / (1024 * 1024))
+            .get("VramMb")
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+            })
+            .or_else(|| {
+                parsed
+                    .get("AdapterRAM")
+                    .and_then(|value| value.as_u64())
+                    .map(|bytes| bytes / (1024 * 1024))
+            })
             .unwrap_or(0);
         let driver_version = parsed
             .get("DriverVersion")
@@ -300,12 +327,16 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
             .unwrap_or("")
             .trim()
             .to_string();
+        let source = parsed
+            .get("Source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("desktop-host-windows-wmi");
 
         let payload = serde_json::json!({
             "model": model,
             "vramMb": vram_mb,
             "driverVersion": driver_version,
-            "source": "desktop-host-windows-wmi"
+            "source": source
         });
 
         let serialized = match serde_json::to_string_pretty(&payload) {
@@ -3555,7 +3586,12 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
                 ),
             );
-            heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
+            heal_bind_mount_permissions_via_docker(
+                data_dir,
+                "state",
+                container_uid,
+                container_gid,
+            )?;
         }
 
         if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
@@ -3565,8 +3601,10 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     format!("Failed to recreate {}: {}", settings_path.display(), error)
                 })?;
                 #[cfg(unix)]
-                let _ =
-                    std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+                let _ = std::fs::set_permissions(
+                    &settings_path,
+                    std::fs::Permissions::from_mode(0o666),
+                );
             }
         }
 
@@ -4710,6 +4748,15 @@ pub fn refresh_host_metrics_probe_cache(data_dir: &Path) {
     refresh_linux_host_metrics_probe_cache(data_dir);
 }
 
+pub fn refresh_host_hardware_probe_cache(data_dir: &Path) {
+    refresh_nvidia_host_probe_cache(data_dir);
+    #[cfg(target_os = "linux")]
+    refresh_rocm_host_probe_cache(data_dir);
+    #[cfg(target_os = "windows")]
+    refresh_amd_host_probe_cache(data_dir);
+    refresh_host_metrics_probe_cache(data_dir);
+}
+
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
@@ -5522,6 +5569,12 @@ fn get_non_empty_env_value(
         .map(|value| value.to_string())
 }
 
+pub fn host_data_dir_from_env_path(env_path: &Path) -> Option<PathBuf> {
+    let values = parse_env_file(env_path);
+    get_non_empty_env_value(&values, "ROOT_FOLDER_HOST")
+        .map(|value| host_path_from_docker_path(&value))
+}
+
 fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
@@ -5669,7 +5722,7 @@ fn generate_hex(bytes: usize) -> String {
 }
 
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
-/// On Windows the canonical form is `/mnt/<drive>/...` (lowercase drive); `C:/...`,
+/// On Windows the canonical form is `/<drive>/...` (lowercase drive); `C:/...`,
 /// `C:\...`, and MSYS `/c/...` are normalized to that form (Docker Desktop rejects
 /// `C:/...` because the drive colon is parsed as the host/container delimiter).
 fn docker_bind_mount_path(path: &Path) -> String {
@@ -5717,40 +5770,40 @@ pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
 }
 
 /// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
-/// Canonical output: `/mnt/<drive>/...` with lowercase drive letter.
+/// Canonical output: `/<drive>/...` with lowercase drive letter.
 #[cfg(any(windows, test))]
 fn normalize_windows_docker_host_path(value: &str) -> String {
     let trimmed = value.trim().replace('\\', "/");
 
-    // Already `/mnt/<drive>/...` — normalize drive letter to lowercase.
+    // Older generated configs used `/mnt/<drive>/...`; convert to Docker Desktop's
+    // Windows-drive form so binds map to the real host filesystem.
     if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
         let bytes = trimmed.as_bytes();
         if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
             let drive = (bytes[5] as char).to_ascii_lowercase();
-            return format!("/mnt/{drive}{}", &trimmed[6..]);
+            return format!("/{drive}{}", &trimmed[6..]);
         }
     }
 
-    // MSYS/Git-Bash `/c/...` — compose-safe but file binds can become directories;
-    // normalize to `/mnt/<drive>/...`.
+    // MSYS/Git-Bash `/c/...` — compose-safe and maps to Windows files.
     if trimmed.len() >= 3 {
         let bytes = trimmed.as_bytes();
         if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
             let drive = (bytes[1] as char).to_ascii_lowercase();
-            return format!("/mnt/{drive}{}", &trimmed[2..]);
+            return format!("/{drive}{}", &trimmed[2..]);
         }
     }
 
-    // `C:/...` or `C:\...` → `/mnt/<drive>/...`
+    // `C:/...` or `C:\...` → `/<drive>/...`
     if trimmed.len() >= 2 {
         let bytes = trimmed.as_bytes();
         if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
             let drive = (bytes[0] as char).to_ascii_lowercase();
             let rest = trimmed[2..].trim_start_matches('/');
             return if rest.is_empty() {
-                format!("/mnt/{drive}")
+                format!("/{drive}")
             } else {
-                format!("/mnt/{drive}/{rest}")
+                format!("/{drive}/{rest}")
             };
         }
     }
@@ -5843,9 +5896,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     } else {
         // No bundled resource was located — fall back to the compile-time embedded
         // copy so the data-dir compose file always exists and startup can proceed.
-        log_lines.push("  -> WARNING: no compose file found in any candidate path; writing embedded fallback".to_string());
+        log_lines.push(
+            "  -> WARNING: no compose file found in any candidate path; writing embedded fallback"
+                .to_string(),
+        );
         std::fs::write(&compose_dst, HUB_COMPOSE_SEED).map_err(|e| {
-            let message = format!("Failed to write embedded compose fallback to {:?}: {}", compose_dst, e);
+            let message = format!(
+                "Failed to write embedded compose fallback to {:?}: {}",
+                compose_dst, e
+            );
             let _ = append_desktop_log_for(&data_dir, "initialize", &message);
             with_view_logs_hint(message)
         })?;
@@ -6188,11 +6247,26 @@ pub fn install_docker() -> Result<DockerInstallResult, String> {
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn powershell_authenticode_helper() -> &'static str {
+    r#"function Get-CompanionHubAuthenticodeSignature {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try {
+    Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+    return Microsoft.PowerShell.Security\Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+    } catch {
+    throw "Windows PowerShell could not load Microsoft.PowerShell.Security for Authenticode validation: $($_.Exception.Message)"
+    }
+}
+"#
+}
+
+#[cfg(any(test, target_os = "windows"))]
 fn docker_desktop_windows_install_script(download_url: &str) -> String {
     format!(
         r#"param([string]$AppUser)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+{authenticode_helper}
 & wsl --status | Out-Null
 if ($LASTEXITCODE -ne 0) {{
   & wsl --install --no-distribution
@@ -6202,7 +6276,7 @@ $installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName
 Remove-Item $installer -Force -ErrorAction SilentlyContinue
 try {{
   Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
-  $signature = Get-AuthenticodeSignature $installer
+    $signature = Get-CompanionHubAuthenticodeSignature $installer
   if ($signature.Status -ne 'Valid') {{
     throw "Downloaded Docker Desktop installer signature validation failed: $($signature.Status)"
   }}
@@ -6225,6 +6299,7 @@ try {{
 }}
 exit 0
 "#,
+        authenticode_helper = powershell_authenticode_helper(),
         download_url = download_url,
     )
 }
@@ -6786,11 +6861,12 @@ fn ollama_windows_install_script(download_url: &str) -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+{authenticode_helper}
 $installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.exe')
 Remove-Item $installer -Force -ErrorAction SilentlyContinue
 try {{
   Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
-  $signature = Get-AuthenticodeSignature $installer
+    $signature = Get-CompanionHubAuthenticodeSignature $installer
   if ($signature.Status -ne 'Valid') {{
     throw "Downloaded Ollama installer signature validation failed: $($signature.Status)"
   }}
@@ -6806,6 +6882,7 @@ try {{
 }}
 exit 0
 "#,
+        authenticode_helper = powershell_authenticode_helper(),
         download_url = download_url,
     )
 }
@@ -7337,7 +7414,11 @@ fn install_rocm_linux() -> Result<RocmInstallResult, String> {
     })?;
 
     write_rocm_install_state(&data_dir, "downloading", "Downloading AMDGPU installer…");
-    let _ = append_desktop_log_for(&data_dir, "rocm.install", "Starting ROCm installation via pkexec");
+    let _ = append_desktop_log_for(
+        &data_dir,
+        "rocm.install",
+        "Starting ROCm installation via pkexec",
+    );
 
     let mut wrapper_script = NamedTempFile::new()
         .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
@@ -7655,7 +7736,10 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
 /// docker CLI into Program Files where `find_docker_binary()` looks.
 #[cfg(any(test, target_os = "windows"))]
 fn wsl2_engine_elevated_script() -> String {
-    r#"$ErrorActionPreference = 'Stop'
+    format!(
+        "{}{}",
+        powershell_authenticode_helper(),
+        r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
 
@@ -7691,7 +7775,7 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
     Expand-Archive -Path $zipPath -DestinationPath $extract
     # Validate authenticity beyond TLS, matching the Docker Desktop installer.
     $extractedExe = Join-Path $extract 'docker\docker.exe'
-    $signature = Get-AuthenticodeSignature $extractedExe
+    $signature = Get-CompanionHubAuthenticodeSignature $extractedExe
     if ($signature.Status -ne 'Valid') {
       throw "Downloaded docker CLI signature validation failed: $($signature.Status)"
     }
@@ -7707,7 +7791,7 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
 }
 exit 0
 "#
-    .to_string()
+    )
 }
 
 /// User phase: runs non-elevated as the logged-in user so all per-user state
@@ -8005,7 +8089,10 @@ mod tests {
         // Same version (normal relaunch) → keep cache, no cleanup.
         assert!(!super::webview_cache_clear_needed(Some("0.2.27"), "0.2.27"));
         // Tolerate trailing whitespace/newline from the marker file.
-        assert!(!super::webview_cache_clear_needed(Some("0.2.27\n"), "0.2.27"));
+        assert!(!super::webview_cache_clear_needed(
+            Some("0.2.27\n"),
+            "0.2.27"
+        ));
     }
 
     #[test]
@@ -8525,7 +8612,9 @@ mod tests {
         );
 
         assert!(script.contains("GetTempFileName()"));
-        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $installer"));
         assert!(script.contains("net.exe localgroup docker-users \"$AppUser\" /add"));
         assert!(!script.contains("CompanionHub-DockerDesktopInstaller.exe"));
         assert!(!script.contains("cmd /c"));
@@ -8549,7 +8638,9 @@ mod tests {
         let script = ollama_windows_install_script("https://ollama.com/download/OllamaSetup.exe");
 
         assert!(script.contains("GetTempFileName()"));
-        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $installer"));
         assert!(script.contains("-notmatch 'Ollama'"));
         assert!(script.contains("'/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES'"));
         // Per-user Inno Setup installer — must never request elevation.
@@ -8614,6 +8705,8 @@ mod tests {
         assert!(script.contains("PROCESSOR_ARCHITECTURE"));
         assert!(script.contains("aarch64"));
         assert!(script.contains("docker.exe"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $extractedExe"));
 
         // Per-user state must NOT be created in the elevated phase — that is the
         // core fix (it would otherwise land in the wrong profile under
@@ -9120,25 +9213,25 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             super::normalize_windows_docker_host_path(
                 r"C:\Users\hegem\AppData\Roaming\companion-hub\media"
             ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
         );
         assert_eq!(
             super::normalize_windows_docker_host_path(
                 "C:/Users/hegem/AppData/Roaming/companion-hub/media"
             ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
         );
         assert_eq!(
             super::normalize_windows_docker_host_path(
                 "/c/Users/hegem/AppData/Roaming/companion-hub"
             ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+            "/c/Users/hegem/AppData/Roaming/companion-hub"
         );
         assert_eq!(
             super::normalize_windows_docker_host_path(
                 "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
             ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+            "/c/Users/hegem/AppData/Roaming/companion-hub"
         );
     }
 
@@ -9157,11 +9250,11 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let env = super::render_runtime_env_content(&data_dir, &existing);
 
         assert!(
-            env.contains("ROOT_FOLDER_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub\n"),
+            env.contains("ROOT_FOLDER_HOST=/c/Users/hegem/AppData/Roaming/companion-hub\n"),
             "env should normalize ROOT_FOLDER_HOST for Docker: {env}"
         );
         assert!(
-            env.contains("COMPOSE_FILE_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"),
+            env.contains("COMPOSE_FILE_HOST=/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"),
             "env should expose a Docker-safe compose file mount: {env}"
         );
     }

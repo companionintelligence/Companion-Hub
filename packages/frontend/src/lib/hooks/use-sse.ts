@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
+import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 
 type Props<T> = {
   topic: T;
@@ -51,7 +52,7 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
       return;
     }
 
-    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
+    const isTauri = isTauriReleaseBuild();
     const baseUrl = isTauri ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
     const url = new URL(`${baseUrl}/api/sse/${topic}`);
 
