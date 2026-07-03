@@ -655,8 +655,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // Hub/Traefik (commonly on :80) or another app under test on the same node. When
       // ${APP_BASE_URL} was pre-reserved above, pin the mapping so env matches the probe URL.
       const publishPort = singleReservedPort > 0 ? singleReservedPort : 0;
+      // Manifest url_suffix marks apps whose `/` is not the real UI (GitLab serves an API-ish root).
+      // Disable the image's baked-in HEALTHCHECK so readiness waits for HTTP on that path instead
+      // of an overly-optimistic vendor check that fires before the sign-in page is stable.
+      const noHealthFlag = config.url_suffix ? ' --no-healthcheck' : '';
       const run = execQuiet(
-        `docker run -d --name ${containerName} -p ${publishPort}:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`,
+        `docker run -d --name ${containerName} -p ${publishPort}:${result.port}${capFlags}${noHealthFlag}${runFlags} ${result.image}${cmdSuffix}`,
         60_000,
       );
       if (!run.ok) {
