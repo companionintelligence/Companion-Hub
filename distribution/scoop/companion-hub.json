@@ -1,10 +1,10 @@
 {
-  "version": "0.2.36",
+  "version": "0.2.37",
   "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
   "homepage": "https://ci.computer/hub",
   "license": "CI-Commercial-1.0",
-  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.36/Companion.Hub_0.2.36_x64-setup.exe",
-  "hash": "aaaeb2f300b533449bd34ac670b565a2f77ce164f984d5a79793747ce0c70d42",
+  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.37/Companion.Hub_0.2.37_x64-setup.exe",
+  "hash": "95ae3c3ce4b7e2692a0ee9522e3fdd6d60b682f4f9a81b785d597731acd71d28",
   "installer": {
     "script": "& \"$dir\\Companion.Hub_$version_x64-setup.exe\" /S"
   },
