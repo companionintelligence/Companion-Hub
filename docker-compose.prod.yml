@@ -119,8 +119,11 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
       # Allow Hub to configure Tunnel — resolves to the sibling tunnel/ directory
       # relative to ROOT_FOLDER_HOST (e.g. /home/user/ci-hub/.internal → /home/user/ci-hub/tunnel).
-      # When ROOT_FOLDER_HOST is unset, the tunnel bind uses .internal/tunnel under the compose CWD.
-      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel
+      # Must match scripts/heal-hub-bind-mounts.ts resolveTunnelDir() (= <ROOT_FOLDER_HOST>/../tunnel),
+      # which pre-creates/repairs this dir owned by the container UID. A plain
+      # ${ROOT_FOLDER_HOST}/tunnel bind would land inside .internal, where the heal step never
+      # runs, so Docker auto-creates it root-owned and the Hub can't write the tunnel token.
+      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/app/tunnel
       - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
       - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
@@ -224,7 +227,8 @@ services:
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
-      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/home/nonroot/.cloudflared:ro
+      # Sibling tunnel/ dir (see ci-os-hub /app/tunnel mount above) — where the Hub writes the token.
+      - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
     extra_hosts:
