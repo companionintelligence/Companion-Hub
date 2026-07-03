@@ -1082,7 +1082,9 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   else if (/DATA_DIR$|_DIR$/.test(name)) {
     v = join(scratchBase, `var_${name.toLowerCase()}`);
     mkdirSync(v, { recursive: true });
-  } else if (/DOMAIN|HOST(NAME)?$/.test(name)) v = 'ci.localhost';
+  } else if (/^TLS_FLAVOR$/.test(name)) v = 'notls';
+  else if (/^POSTMASTER$/.test(name)) v = 'admin';
+  else if (/DOMAIN|HOST(NAME)?$/.test(name)) v = 'ci.localhost';
   else if (/PROTOCOL$|SCHEME$/.test(name))
     v = 'http'; // APP_PROTOCOL etc. — else a random hex makes `${APP_PROTOCOL}://host` a malformed URL
   else if (/URL/.test(name)) v = 'http://localhost';
@@ -1279,6 +1281,12 @@ async function composeUp(
         if (statSync(sc).isDirectory()) chmodSync(sc, 0o777);
         y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
       }
+    }
+    const dnsRaw = s.dns;
+    if (dnsRaw) {
+      const dnsList = Array.isArray(dnsRaw) ? dnsRaw : [dnsRaw];
+      y += '    dns:\n';
+      for (const d of dnsList) y += `      - ${yamlStr(subst(String(d)))}\n`;
     }
     // Healthcheck — emitted so dependents can wait on `service_healthy` (below). A scalar
     // `test` string is interpreted by compose as CMD-SHELL; an array form carries its own
