@@ -56,48 +56,54 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
     api.log.warn(`Hub unreachable at ${hubUrl}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Hub MCP tools are served by OpenClaw's built-in MCP client via the
-  // `mcp.servers.ci-hub` entry that CI-OpenClaw writes into openclaw.json
-  // (bootstrap-ci-hub-mcp.sh / server.cjs). The Hub speaks the spec-compliant
-  // Streamable HTTP transport; this in-plugin McpClient is retained only as an
-  // emergency rollback behind HUB_MCP_LEGACY_CLIENT=true and is off by default,
-  // so the plugin no longer double-registers tools or runs a redundant client.
-  // The plugin's live responsibilities are the wake endpoint, the optional SSE
-  // listener, and inference auto-configuration below.
-  let mcpClient: McpClient | null = null;
-  if (process.env.HUB_MCP_LEGACY_CLIENT === 'true') {
-    api.log.warn('HUB_MCP_LEGACY_CLIENT=true — using the legacy in-plugin Hub MCP client; prefer the native mcp.servers.ci-hub config');
-    mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
-    await mcpClient.connect();
+  // Connect the in-plugin MCP client. Tool *exposure to the agent* is handled by
+  // OpenClaw's built-in MCP client via the `mcp.servers.ci-hub` entry CI-OpenClaw
+  // writes into openclaw.json (bootstrap-ci-hub-mcp.sh / server.cjs), so this
+  // client does NOT register tools by default — doing so would double-register
+  // them. It stays connected for the plugin's OWN authenticated Hub calls:
+  // inference auto-config below needs `hub_get_inference_status`, and the REST
+  // `/api/inference/status` endpoint requires a Hub session the plugin does not
+  // have (so the MCP call is the only working path). Under
+  // HUB_MCP_LEGACY_CLIENT=true it ALSO registers tools in-plugin, as a rollback
+  // if the native mcp.servers path is unavailable.
+  const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
+  await mcpClient.connect();
 
-    if (mcpClient.isConnected()) {
-      try {
-        const tools = await mcpClient.listTools();
-        for (const tool of tools) {
-          api.registerTool({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            handler: async (args) => mcpClient?.callTool(tool.name, args),
-          });
-        }
-        api.log.info(`Registered ${tools.length} Hub MCP tools (legacy client)`);
-      } catch (error) {
-        api.log.error(`Failed to register Hub tools: ${error instanceof Error ? error.message : String(error)}`);
+  if (mcpClient.isConnected() && process.env.HUB_MCP_LEGACY_CLIENT === 'true') {
+    api.log.warn('HUB_MCP_LEGACY_CLIENT=true — also registering Hub tools via the in-plugin client (native mcp.servers.ci-hub is the default path)');
+    try {
+      const tools = await mcpClient.listTools();
+      for (const tool of tools) {
+        api.registerTool({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          handler: async (args) => mcpClient.callTool(tool.name, args),
+        });
       }
+      api.log.info(`Registered ${tools.length} Hub MCP tools (legacy client)`);
+    } catch (error) {
+      api.log.error(`Failed to register Hub tools: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
-    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config; in-plugin MCP client disabled');
+    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config; in-plugin client used only for inference discovery');
   }
 
-  // Register wake webhook endpoint
-  const wakeHandler = createWakeEndpointHandler(api, wakeSecret, config.wakeFilter);
-  api.registerHttpRoute({
-    method: 'POST',
-    path: '/hooks/hub-wake',
-    handler: wakeHandler,
-  });
-  api.log.info('Registered wake endpoint: POST /hooks/hub-wake');
+  // Register wake webhook endpoint — only when a wake secret is set. The handler
+  // enforces the Bearer check ONLY when a secret is present, so mounting the route
+  // without a secret would expose an unauthenticated agent-wake trigger. Gate the
+  // route on the secret (matches the credential the Hub injects alongside MCP).
+  if (wakeSecret) {
+    const wakeHandler = createWakeEndpointHandler(api, wakeSecret, config.wakeFilter);
+    api.registerHttpRoute({
+      method: 'POST',
+      path: '/hooks/hub-wake',
+      handler: wakeHandler,
+    });
+    api.log.info('Registered wake endpoint: POST /hooks/hub-wake');
+  } else {
+    api.log.warn('HUB_WAKE_SECRET not set — wake endpoint disabled (would be unauthenticated otherwise)');
+  }
 
   // Start SSE listener if enabled
   if (config.sseEnabled) {
@@ -116,14 +122,15 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
  * S-OC-1.3: Local models have cost { input: 0, output: 0 }.
  * S-OC-2.1: If hardware tier is insufficient, surfaces a message recommending cloud.
  */
-async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, apiKey: string, mcpClient: McpClient | null): Promise<void> {
+async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, apiKey: string, mcpClient: McpClient): Promise<void> {
   try {
-    // S-OC-1.1: Discover inference capabilities. When the legacy in-plugin MCP
-    // client is disabled (the default), mcpClient is null and status comes from
-    // the REST fallback below (GET /api/inference/status).
+    // S-OC-1.1: Discover inference capabilities via the authenticated MCP call
+    // (hub_get_inference_status). The REST fallback below only fires if that
+    // fails — and /api/inference/status requires a Hub session the plugin lacks,
+    // so it typically 401s; the MCP call is the plugin's working channel.
     let inferenceStatus: HubInferenceStatus | null = null;
 
-    if (mcpClient?.isConnected()) {
+    if (mcpClient.isConnected()) {
       try {
         // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
         // A null result (error/unparseable) falls through to the REST fallback below.

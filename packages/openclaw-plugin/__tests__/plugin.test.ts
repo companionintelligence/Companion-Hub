@@ -84,7 +84,7 @@ describe('CI-Hub Plugin', () => {
     expect(typeof register).toBe('function');
   });
 
-  it('should register wake HTTP route on /hooks/hub-wake', async () => {
+  it('should register wake HTTP route on /hooks/hub-wake when a wake secret is set', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -95,9 +95,26 @@ describe('CI-Hub Plugin', () => {
       }),
     );
 
-    await register(api, baseConfig);
+    await register(api, { ...baseConfig, wakeSecret: 'test-wake-secret' });
 
     expect(api.registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/hooks/hub-wake' }));
+  });
+
+  it('does NOT register the wake route when no wake secret is set (avoids an unauthenticated trigger)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init);
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    await register(api, baseConfig); // no wakeSecret in config or env
+
+    expect(api.registerHttpRoute).not.toHaveBeenCalled();
+    expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('wake endpoint disabled'));
   });
 
   it('should log warning when Hub is unreachable', async () => {
@@ -173,8 +190,6 @@ describe('CI-Hub Plugin', () => {
     };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      // Default path: the in-plugin MCP client is off, so inference status is discovered via REST.
-      if (url.includes('/api/inference/status')) return { ok: true, json: async () => status };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
       if (mcp) return mcp;
       if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
@@ -200,7 +215,6 @@ describe('CI-Hub Plugin', () => {
   it('applies the Hub hardware-aware context window (CI_LLM_NUM_CTX) to registered models', async () => {
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      if (url.includes('/api/inference/status')) return { ok: true, json: async () => EMPTY_STATUS };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? EMPTY_STATUS : {}) });
       if (mcp) return mcp;
       if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
@@ -227,7 +241,6 @@ describe('CI-Hub Plugin', () => {
     };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
-      if (url.includes('/api/inference/status')) return { ok: true, json: async () => status };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
       if (mcp) return mcp;
       // Empty /api/tags -> plugin falls back to Hub inference status, which carries context_window.
