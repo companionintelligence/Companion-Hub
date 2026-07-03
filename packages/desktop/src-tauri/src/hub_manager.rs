@@ -3356,6 +3356,7 @@ fn host_docker_socket_path() -> PathBuf {
     PathBuf::from("/var/run/docker.sock")
 }
 
+#[cfg(not(target_os = "windows"))]
 fn docker_socket_mount_arg() -> String {
     format!(
         "{}:/var/run/docker.sock:ro",
@@ -3364,6 +3365,7 @@ fn docker_socket_mount_arg() -> String {
 }
 
 /// Parse `stat -c "%u:%g"` output from a container probing the mounted Docker socket.
+#[cfg(not(target_os = "windows"))]
 fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
     let trimmed = raw.trim();
     let (uid_raw, gid_raw) = trimmed.split_once(':')?;
@@ -3371,6 +3373,7 @@ fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
 }
 
 /// How the mounted Docker socket appears *inside* a throwaway container (authoritative for compose `user:`).
+#[cfg(not(target_os = "windows"))]
 fn docker_socket_uid_gid_inside_container() -> Option<(u32, u32)> {
     let socket_mount = docker_socket_mount_arg();
     let output = docker_command()
@@ -3418,6 +3421,7 @@ fn default_docker_gid() -> u32 {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn likely_docker_desktop() -> bool {
     if std::env::var("DOCKER_HOST")
         .map(|value| value.contains("docker-desktop"))
@@ -3462,12 +3466,6 @@ pub(crate) fn resolve_hub_container_identity() -> (u32, u32, u32) {
         let (host_uid, host_gid) = host_container_uid_gid();
         (host_uid, host_gid, default_docker_gid())
     }
-}
-
-#[cfg(windows)]
-pub(crate) fn host_container_uid_gid() -> (u32, u32) {
-    // Docker Desktop file shares typically map the Linux VM user to 1000:1000.
-    (1000, 1000)
 }
 
 /// Host paths bind-mounted into `/data/*` in the Hub container. Create as the current host user
@@ -3634,6 +3632,7 @@ fn remove_host_root_owned_state_files(data_dir: &Path) {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool {
     let host_dir = match host_file.parent() {
         Some(dir) => dir,
@@ -3675,6 +3674,7 @@ fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     if !host_dir.exists() {
         return false;
@@ -3703,6 +3703,7 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn heal_bind_mount_permissions_via_docker(
     data_dir: &Path,
     subdir: &str,
@@ -8024,16 +8025,20 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_outer_launch_command;
+    #[cfg(unix)]
+    use super::host_container_uid_gid;
     #[cfg(any(test, target_os = "linux"))]
     use super::ollama_linux_install_script;
-    #[cfg(any(test, target_os = "linux"))]
-    use super::rocm_linux_install_script;
     #[cfg(any(test, target_os = "macos"))]
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
+    #[cfg(not(target_os = "windows"))]
+    use super::parse_docker_socket_uid_gid;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::preferred_unix_cli_install_dir;
+    #[cfg(any(test, target_os = "linux"))]
+    use super::rocm_linux_install_script;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::unix_profile_for_shell;
     #[cfg(any(test, target_os = "windows"))]
@@ -8044,15 +8049,15 @@ mod tests {
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, derive_optional_service_state, desktop_log_path_for,
         docker_context_host_from_inspect_output, files_match, format_command_output,
-        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
-        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
-        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
-        parse_docker_socket_uid_gid, paths_match_by_components, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, seeded_traefik_config_contents,
-        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState,
-        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        generate_container_docker_config, host_docker_socket_path, is_container_name_conflict,
+        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        merge_compose_profiles, parse_container_ids, paths_match_by_components,
+        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState,
+        ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
         TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(test, target_os = "macos"))]
@@ -8255,6 +8260,7 @@ mod tests {
         assert_eq!(selected, None);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn parses_docker_socket_stat_output() {
         assert_eq!(parse_docker_socket_uid_gid("0:0"), Some((0, 0)));
@@ -8322,19 +8328,12 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn host_container_uid_gid_matches_current_process_on_unix() {
         let (uid, gid) = host_container_uid_gid();
-        #[cfg(unix)]
-        {
-            assert_eq!(uid, unsafe { libc::getuid() });
-            assert_eq!(gid, unsafe { libc::getgid() });
-        }
-        #[cfg(windows)]
-        {
-            assert_eq!(uid, 1000);
-            assert_eq!(gid, 1000);
-        }
+        assert_eq!(uid, unsafe { libc::getuid() });
+        assert_eq!(gid, unsafe { libc::getgid() });
     }
 
     #[test]
