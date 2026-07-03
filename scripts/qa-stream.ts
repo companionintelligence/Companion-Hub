@@ -390,6 +390,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   let statsName = containerName; // container to `docker stats` (overridden for compose path)
   let composeProject = '';
   let composeYml = '';
+  let singleReservedPort = 0; // pre-reserved publish port when manifest embeds ${APP_BASE_URL}
   const result: Record<string, unknown> = {
     appId,
     score: 'fail' as Score,
@@ -494,6 +495,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // no credentials set and had broken logins. Same substitution the compose path uses.
         const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
+        // Apps like GitLab/Vaultwarden embed ${APP_BASE_URL} as external_url — it must match the
+        // browser URL including the host port. Reserve the publish port up front (composeUp already
+        // does this for multi-service stacks; single-service used to mint APP_HOST/APP_PORT instead).
+        if (composeReferencesVar(services, 'APP_BASE_URL')) {
+          singleReservedPort = await reserveHostPort();
+          if (singleReservedPort > 0) cache.set('APP_BASE_URL', `http://localhost:${singleReservedPort}`);
+        }
         const subst = (s: string) =>
           s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
         for (const e of main?.environment ?? []) {
@@ -644,8 +652,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // from starving its neighbours now that apps run concurrently on a node.
       const capFlags = (QA_MEM_LIMIT ? ` --memory ${QA_MEM_LIMIT}` : '') + (QA_CPU_LIMIT ? ` --cpus ${QA_CPU_LIMIT}` : '');
       // Bind a Docker-assigned host port (host side :0) so we never collide with the
-      // Hub/Traefik (commonly on :80) or another app under test on the same node.
-      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
+      // Hub/Traefik (commonly on :80) or another app under test on the same node. When
+      // ${APP_BASE_URL} was pre-reserved above, pin the mapping so env matches the probe URL.
+      const publishPort = singleReservedPort > 0 ? singleReservedPort : 0;
+      const run = execQuiet(
+        `docker run -d --name ${containerName} -p ${publishPort}:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`,
+        60_000,
+      );
       if (!run.ok) {
         result.score = 'error';
         result.failKind = 'start';
@@ -653,8 +666,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         return result;
       }
       // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
-      const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
-      hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+      hostPort =
+        singleReservedPort > 0
+          ? singleReservedPort
+          : (() => {
+              const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
+              return portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+            })();
       if (!hostPort) {
         execQuiet(`docker rm -f ${containerName}`, 30_000);
         result.score = 'error';
