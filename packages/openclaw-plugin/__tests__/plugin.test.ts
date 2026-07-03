@@ -66,6 +66,7 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_API_KEY;
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
+    delete process.env.HUB_MCP_LEGACY_CLIENT;
   });
 
   afterEach(() => {
@@ -74,6 +75,7 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_API_KEY;
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
+    delete process.env.HUB_MCP_LEGACY_CLIENT;
     delete process.env.CI_LLM_NUM_CTX;
     delete process.env.OLLAMA_HOST;
   });
@@ -107,7 +109,26 @@ describe('CI-Hub Plugin', () => {
     expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('Hub unreachable'));
   });
 
-  it('should register tools from MCP server', async () => {
+  it('does NOT register tools by default (tools come from native mcp.servers.ci-hub config)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init, { tools: [{ name: 'hub_list_apps', description: 'x', inputSchema: {} }] });
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    await register(api, baseConfig);
+
+    // Native OpenClaw MCP client owns tool registration now; the plugin must not.
+    expect(api.registerTool).not.toHaveBeenCalled();
+    expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('native OpenClaw mcp.servers.ci-hub'));
+  });
+
+  it('registers tools via the legacy in-plugin client when HUB_MCP_LEGACY_CLIENT=true', async () => {
+    process.env.HUB_MCP_LEGACY_CLIENT = 'true';
     const mockTools = [
       { name: 'hub_list_apps', description: 'List apps', inputSchema: { type: 'object' } },
       { name: 'hub_start_app', description: 'Start an app', inputSchema: { type: 'object' } },
@@ -152,6 +173,8 @@ describe('CI-Hub Plugin', () => {
     };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
+      // Default path: the in-plugin MCP client is off, so inference status is discovered via REST.
+      if (url.includes('/api/inference/status')) return { ok: true, json: async () => status };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
       if (mcp) return mcp;
       if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
@@ -177,6 +200,7 @@ describe('CI-Hub Plugin', () => {
   it('applies the Hub hardware-aware context window (CI_LLM_NUM_CTX) to registered models', async () => {
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
+      if (url.includes('/api/inference/status')) return { ok: true, json: async () => EMPTY_STATUS };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? EMPTY_STATUS : {}) });
       if (mcp) return mcp;
       if (url === 'http://ci-hub-ollama:11434/api/tags') return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
@@ -203,6 +227,7 @@ describe('CI-Hub Plugin', () => {
     };
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
+      if (url.includes('/api/inference/status')) return { ok: true, json: async () => status };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? status : {}) });
       if (mcp) return mcp;
       // Empty /api/tags -> plugin falls back to Hub inference status, which carries context_window.

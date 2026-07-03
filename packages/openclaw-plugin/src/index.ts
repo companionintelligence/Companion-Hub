@@ -56,25 +56,38 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
     api.log.warn(`Hub unreachable at ${hubUrl}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Connect to Hub MCP server and register tools
-  const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
-  await mcpClient.connect();
+  // Hub MCP tools are served by OpenClaw's built-in MCP client via the
+  // `mcp.servers.ci-hub` entry that CI-OpenClaw writes into openclaw.json
+  // (bootstrap-ci-hub-mcp.sh / server.cjs). The Hub speaks the spec-compliant
+  // Streamable HTTP transport; this in-plugin McpClient is retained only as an
+  // emergency rollback behind HUB_MCP_LEGACY_CLIENT=true and is off by default,
+  // so the plugin no longer double-registers tools or runs a redundant client.
+  // The plugin's live responsibilities are the wake endpoint, the optional SSE
+  // listener, and inference auto-configuration below.
+  let mcpClient: McpClient | null = null;
+  if (process.env.HUB_MCP_LEGACY_CLIENT === 'true') {
+    api.log.warn('HUB_MCP_LEGACY_CLIENT=true — using the legacy in-plugin Hub MCP client; prefer the native mcp.servers.ci-hub config');
+    mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
+    await mcpClient.connect();
 
-  if (mcpClient.isConnected()) {
-    try {
-      const tools = await mcpClient.listTools();
-      for (const tool of tools) {
-        api.registerTool({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          handler: async (args) => mcpClient.callTool(tool.name, args),
-        });
+    if (mcpClient.isConnected()) {
+      try {
+        const tools = await mcpClient.listTools();
+        for (const tool of tools) {
+          api.registerTool({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            handler: async (args) => mcpClient!.callTool(tool.name, args),
+          });
+        }
+        api.log.info(`Registered ${tools.length} Hub MCP tools (legacy client)`);
+      } catch (error) {
+        api.log.error(`Failed to register Hub tools: ${error instanceof Error ? error.message : String(error)}`);
       }
-      api.log.info(`Registered ${tools.length} Hub MCP tools`);
-    } catch (error) {
-      api.log.error(`Failed to register Hub tools: ${error instanceof Error ? error.message : String(error)}`);
     }
+  } else {
+    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config; in-plugin MCP client disabled');
   }
 
   // Register wake webhook endpoint
@@ -103,12 +116,14 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
  * S-OC-1.3: Local models have cost { input: 0, output: 0 }.
  * S-OC-2.1: If hardware tier is insufficient, surfaces a message recommending cloud.
  */
-async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, apiKey: string, mcpClient: McpClient): Promise<void> {
+async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, apiKey: string, mcpClient: McpClient | null): Promise<void> {
   try {
-    // S-OC-1.1: Discover inference capabilities via MCP
+    // S-OC-1.1: Discover inference capabilities. When the legacy in-plugin MCP
+    // client is disabled (the default), mcpClient is null and status comes from
+    // the REST fallback below (GET /api/inference/status).
     let inferenceStatus: HubInferenceStatus | null = null;
 
-    if (mcpClient.isConnected()) {
+    if (mcpClient && mcpClient.isConnected()) {
       try {
         // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
         // A null result (error/unparseable) falls through to the REST fallback below.
