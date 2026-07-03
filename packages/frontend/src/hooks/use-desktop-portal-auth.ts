@@ -76,23 +76,43 @@ export function useDesktopPortalAuth() {
       return;
     }
 
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
 
     void (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
+        if (cancelled) {
+          return;
+        }
+
         unlisten = await listen<DesktopPortalAuthPayload>('deep-link-auth', (event) => {
           void completeDesktopPortalLogin(event.payload);
         });
+
+        if (cancelled) {
+          void unlisten?.();
+          unlisten = undefined;
+          return;
+        }
       } catch {
         // Non-desktop or deep-link listener unavailable.
       }
 
+      if (cancelled) {
+        return;
+      }
+
       const pending = await takePendingDesktopPortalAuth();
+      if (cancelled) {
+        return;
+      }
+
       await completeDesktopPortalLogin(pending);
     })();
 
     return () => {
+      cancelled = true;
       void unlisten?.();
     };
   }, [completeDesktopPortalLogin]);
