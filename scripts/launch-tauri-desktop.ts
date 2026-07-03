@@ -1,8 +1,10 @@
 #!/usr/bin/env tsx
+import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { box } from './cihub-cli';
+import { parseEnvFile } from './env-file';
 import {
   buildTauriProcessEnv,
   checkTauriDesktopPrereqs,
@@ -24,6 +26,40 @@ function parseMode(): LaunchMode {
 
 function printBox(title: string, lines: string[], tone: 'green' | 'yellow' | 'red' | 'cyan') {
   console.log(box(title, lines, tone));
+}
+
+/** Stack-dev WebView URL must match API_PORT in the env file (port manager may reassign it). */
+function writeStackDevTauriConfig(desktopDir: string, envPath: string): string {
+  const vars = parseEnvFile(envPath);
+  const apiPort = vars.API_PORT?.trim() || '5002';
+  const configRelPath = 'src-tauri/.tauri.stack-dev.generated.json';
+  const configAbsPath = path.join(desktopDir, configRelPath);
+
+  writeFileSync(
+    configAbsPath,
+    `${JSON.stringify(
+      {
+        $schema: 'https://schema.tauri.app/config/2',
+        identifier: 'computer.ci.app.hub.dev',
+        build: {
+          devUrl: `http://127.0.0.1:${apiPort}`,
+          beforeDevCommand: '',
+        },
+        plugins: {
+          'deep-link': {
+            desktop: {
+              schemes: ['cihub-dev'],
+            },
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    'utf-8',
+  );
+
+  return configRelPath;
 }
 
 function launchTauriDesktop(mode: LaunchMode): number {
@@ -54,10 +90,12 @@ function launchTauriDesktop(mode: LaunchMode): number {
     printBox('Desktop session', formatTauriPrereqReport({ ok: true, issues: [], guiEnv }, guiEnv), 'cyan');
   }
 
+  const stackDevEnvPath = path.join(repoRoot, '.env.dev');
+
   const args = ['tauri', 'dev'];
   if (mode === 'stack-dev') {
     args.push('--no-dev-server-wait');
-    args.push('--config', 'src-tauri/tauri.stack-dev.json');
+    args.push('--config', writeStackDevTauriConfig(desktopDir, stackDevEnvPath));
   }
 
   // This launcher only ever runs dev builds, so the Hub must target the dev portal
@@ -77,7 +115,7 @@ function launchTauriDesktop(mode: LaunchMode): number {
       ? {
           CI_HUB_STACK_DEV: '1',
           CI_HUB_STACK_DEV_COMPOSE_PATH: path.join(repoRoot, 'docker-compose.prod.yml'),
-          CI_HUB_STACK_DEV_ENV_PATH: path.join(repoRoot, '.env.dev'),
+          CI_HUB_STACK_DEV_ENV_PATH: stackDevEnvPath,
         }
       : {}),
   };

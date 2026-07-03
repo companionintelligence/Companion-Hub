@@ -767,10 +767,12 @@ pub fn run() {
                 handle_deep_link_url(&app_handle, &arg);
             }
 
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                if let Err(err) = app.deep_link().register("cihub") {
-                    log::warn!("Failed to register cihub:// deep-link handler: {err}");
+                for scheme in ["cihub", "cihub-dev"] {
+                    if let Err(err) = app.deep_link().register(scheme) {
+                        log::warn!("Failed to register {scheme}:// deep-link handler: {err}");
+                    }
                 }
             }
 
@@ -1021,7 +1023,7 @@ fn extract_pairing_code(url: &str) -> Option<String> {
 
 fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     let trimmed = url.trim();
-    if !trimmed.starts_with("cihub://auth") {
+    if !trimmed.starts_with("cihub://auth") && !trimmed.starts_with("cihub-dev://auth") {
         return None;
     }
 
@@ -1111,6 +1113,13 @@ mod tests {
     fn extract_portal_auth_token_from_query_param() {
         assert_eq!(
             extract_portal_auth("cihub://auth?token=desktop-token"),
+            Some(super::DesktopPortalAuthPayload {
+                token: Some("desktop-token".to_string()),
+                error: None,
+            })
+        );
+        assert_eq!(
+            extract_portal_auth("cihub-dev://auth?token=desktop-token"),
             Some(super::DesktopPortalAuthPayload {
                 token: Some("desktop-token".to_string()),
                 error: None,
