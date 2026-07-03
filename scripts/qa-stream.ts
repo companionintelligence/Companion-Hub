@@ -93,15 +93,17 @@ function captureScreenshot(
       `--timeout=${opts.timeoutMs}`,
       url,
     ],
-    { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'pipe' },
+    // stderr must not be piped: headless Chrome is chatty (GCM/sync noise) and a filled pipe
+    // buffer deadlocks the child until spawnSync hits its SIGKILL timeout — woodpecker/jellyfin
+    // class apps then score a false warn despite a healthy http 200 UI.
+    { timeout: opts.spawnTimeoutMs, killSignal: 'SIGKILL', stdio: 'ignore' },
   );
   const ok = ss.status === 0 && existsSync(screenshotPath) && !isBlankScreenshot(screenshotPath);
   if (ok) return { ok: true, diag: '' };
-  const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
   const blank = existsSync(screenshotPath) && isBlankScreenshot(screenshotPath);
   const diag = blank
     ? 'screenshot blank (page load timed out before paint)'
-    : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+    : `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}`;
   return { ok: false, diag };
 }
 
@@ -1184,7 +1186,7 @@ async function composeUp(
   let reservedHostPort = 0;
   if (composeReferencesVar(services, 'APP_BASE_URL')) {
     reservedHostPort = await reserveHostPort();
-    if (reservedHostPort > 0) cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
+    if (reservedHostPort > 0) cache.set('APP_BASE_URL', `http://localhost:${reservedHostPort}`);
   }
   const subst = (s: string) =>
     s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
