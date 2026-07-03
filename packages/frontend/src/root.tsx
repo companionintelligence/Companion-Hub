@@ -139,11 +139,11 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {
-    if (url.pathname === '/device-registration' || url.pathname === '/login') {
+    if (url.pathname === '/device-registration' || url.pathname === '/login' || url.pathname === '/') {
+      // Stay on the current bootstrap route while the API wakes up. Redirecting `/`
+      // to device-registration here caused a flash loop with the registration page,
+      // which navigates away as soon as status becomes operational again.
       return null;
-    }
-    if (url.pathname === '/') {
-      return redirect('/device-registration');
     }
   }
 
@@ -163,7 +163,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     !requiresPortalRePairing(registration.status) &&
     url.pathname === '/device-registration'
   ) {
-    return redirect('/');
+    return redirect('/login');
   }
 
   // Now check user context for auth/onboarding flow.

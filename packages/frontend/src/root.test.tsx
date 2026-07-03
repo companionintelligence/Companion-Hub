@@ -103,24 +103,22 @@ describe('root clientLoader registration gating', () => {
     expect(provisioningResult).toBeNull();
   });
 
-  it('redirects root to device registration when registration status is unavailable during startup', async () => {
+  it('keeps root on the startup bootstrap route when registration status is temporarily unavailable', async () => {
     resolveRegistrationStatus.mockResolvedValue(null);
     userContext.mockRejectedValue(new Error('backend unavailable'));
 
-    const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+    const result = await clientLoader({ request: new Request('http://localhost/') } as never);
 
-    expect(result.status).toBe(302);
-    expect(result.headers.get('Location')).toBe('/device-registration');
+    expect(result).toBeNull();
   });
 
-  it('redirects bootstrap routes to device registration when status is temporarily unavailable', async () => {
+  it('keeps login and root available when registration status is temporarily unavailable', async () => {
     resolveRegistrationStatus.mockResolvedValue(null);
 
-    const rootResult = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+    const rootResult = await clientLoader({ request: new Request('http://localhost/') } as never);
     const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
 
-    expect(rootResult.status).toBe(302);
-    expect(rootResult.headers.get('Location')).toBe('/device-registration');
+    expect(rootResult).toBeNull();
     expect(loginResult).toBeNull();
   });
 
@@ -169,7 +167,7 @@ describe('root clientLoader registration gating', () => {
     const result = (await clientLoader({ request: new Request('http://localhost/device-registration') } as never)) as Response;
 
     expect(result.status).toBe(302);
-    expect(result.headers.get('Location')).toBe('/');
+    expect(result.headers.get('Location')).toBe('/login');
     expect(sessionStorage.getItem('device-registered')).toBe('true');
   });
 });

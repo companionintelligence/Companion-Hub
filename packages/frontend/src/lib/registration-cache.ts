@@ -16,7 +16,8 @@ export async function resolveRegistrationStatus(): Promise<RegistrationStatus | 
   }
 }
 
-const REGISTRATION_CACHE_TTL_MS = 15 * 1000;
+/** Grace period while Docker/API finish booting after registration or an upgrade. */
+const REGISTRATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_KEY = 'device-registered';
 const CACHE_AT_KEY = 'device-registered-at';
 

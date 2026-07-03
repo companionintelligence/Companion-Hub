@@ -275,7 +275,7 @@ export default function DeviceRegistrationPage() {
       if (isTauri) {
         setRedirectStatusKey('DEVICE_REGISTRATION_COMPLETE_LOADING_LOCAL');
         await sleep(1500);
-        window.location.href = '/';
+        window.location.href = '/login';
         return;
       }
 
@@ -283,7 +283,7 @@ export default function DeviceRegistrationPage() {
         setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_REDIRECTING');
         toast(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
         await sleep(2000);
-        navigate('/', { replace: true });
+        navigate('/login', { replace: true });
         return;
       }
 
@@ -324,13 +324,13 @@ export default function DeviceRegistrationPage() {
         setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_ROUTE_PROPAGATING_REDIRECTING_LOCAL');
         toast(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
         await sleep(2000);
-        navigate('/', { replace: true });
+        navigate('/login', { replace: true });
         return;
       }
 
       setRedirectStatusKey('DEVICE_REGISTRATION_COMPLETE_REDIRECTING_LOCAL');
       await sleep(1000);
-      navigate('/', { replace: true });
+      navigate('/login', { replace: true });
     },
     [isTauri, navigate, t],
   );
@@ -382,7 +382,7 @@ export default function DeviceRegistrationPage() {
       return;
     }
 
-    navigate('/', { replace: true });
+    navigate('/login', { replace: true });
   }, [finishRegistrationFlow, navigate, registrationStatus]);
 
   useEffect(() => {
