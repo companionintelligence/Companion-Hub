@@ -224,7 +224,14 @@ services:
         bind:
           create_host_path: false
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
-      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
+      # acme.json is a FILE mount like traefik.yml above — same create_host_path:false
+      # guard, or a mis-resolved path silently becomes a persistent host directory
+      # that breaks ACME issuance until manually deleted.
+      - type: bind
+        source: ${ROOT_FOLDER_HOST:-.internal}/state/traefik/acme_storage.json
+        target: /etc/traefik/acme.json
+        bind:
+          create_host_path: false
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
       ci_os_hub_network:

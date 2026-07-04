@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -29,43 +30,126 @@ function isMsysDockerPath(value: string): boolean {
   return value.length >= 3 && value[0] === '/' && value[2] === '/' && /[a-zA-Z]/.test(value[1] ?? '');
 }
 
-/** Legacy WSL-style Docker bind-mount input (`/mnt/<drive>/...`). */
+/** WSL-style Docker bind-mount input (`/mnt/<drive>/...`). */
 function isMntDockerPath(value: string): boolean {
   return value.length >= 7 && value.startsWith('/mnt/') && /[a-zA-Z]/.test(value[5] ?? '') && value[6] === '/';
 }
 
-/** Normalize Windows host paths to `/<drive>/...` (lowercase drive). */
-function normalizeWindowsDockerPath(value: string): string {
+/**
+ * How Windows host paths must be rendered for the active Docker backend
+ * (mirrors `WindowsDockerHostStyle` in `hub_manager.rs`):
+ * - `drive` (`/c/Users/...`): Docker Desktop translates this form itself.
+ * - `wsl-mnt` (`/mnt/c/Users/...`): a native Docker Engine inside WSL2 sees the
+ *   Windows drive only under /mnt; a `/c/...` source does not exist there, so the
+ *   daemon silently fabricates an empty directory and mounts that instead.
+ */
+export type WindowsDockerPathStyle = 'drive' | 'wsl-mnt';
+
+/** docker CLI context the desktop's WSL2-engine installer creates and activates
+ * (`DOCKER_CONTEXT_WSL_ENGINE` in `hub_manager.rs`). */
+const DOCKER_CONTEXT_WSL_ENGINE = 'wsl-engine';
+
+/** Sticky per-process fallback guess — repeated calls must not flip mid-run and
+ * must not re-spawn `docker info` per normalized path. */
+let cachedWindowsDockerPathStyleGuess: WindowsDockerPathStyle | null = null;
+
+/** Style from deterministic CLI configuration, mirroring the docker CLI's own
+ * precedence: CI_HUB_DOCKER_PATH_STYLE override > DOCKER_HOST env (bypasses
+ * contexts — fall through to the daemon self-report) > DOCKER_CONTEXT env >
+ * config.json currentContext. */
+function windowsDockerPathStyleFromCliSignals(): WindowsDockerPathStyle | null {
+  const override = (process.env.CI_HUB_DOCKER_PATH_STYLE ?? '').trim();
+  if (override === 'drive' || override === 'wsl-mnt') return override;
+
+  if ((process.env.DOCKER_HOST ?? '').trim().length > 0) return null;
+
+  let context = (process.env.DOCKER_CONTEXT ?? '').trim();
+  if (context.length === 0 || context === 'default') {
+    try {
+      const raw = readFileSync(path.join(os.homedir(), '.docker', 'config.json'), 'utf-8');
+      const parsed: unknown = JSON.parse(raw);
+      const current = (parsed as { currentContext?: unknown })?.currentContext;
+      context = typeof current === 'string' ? current.trim() : '';
+    } catch {
+      context = '';
+    }
+  }
+  if (context === DOCKER_CONTEXT_WSL_ENGINE) return 'wsl-mnt';
+  if (context === 'desktop-linux' || context === 'desktop-windows') return 'drive';
+  return null;
+}
+
+/** One-shot expensive detection: daemon self-report, then filesystem heuristic.
+ * Mirrors `detect_windows_docker_host_style_via_daemon` in `hub_manager.rs`. */
+function detectWindowsDockerPathStyleViaDaemon(): WindowsDockerPathStyle {
+  try {
+    const line = execSync('docker info --format "{{.OperatingSystem}}\t{{.KernelVersion}}"', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 15_000,
+    })
+      .toString()
+      .trim();
+    if (line.length > 0) {
+      const [osName = '', kernel = ''] = line.split('\t');
+      if (osName.includes('Docker Desktop')) return 'drive';
+      // Checked after the Desktop match — Desktop's WSL2 backend also reports a WSL kernel.
+      const k = kernel.toLowerCase();
+      if (k.includes('microsoft') || k.includes('wsl')) return 'wsl-mnt';
+      // Reachable but neither (remote engine, Windows containers): no Windows-drive
+      // mapping in either style; keep the legacy drive form.
+      return 'drive';
+    }
+  } catch {
+    // Daemon unreachable — fall through to the heuristic.
+  }
+  if ((process.env.DOCKER_HOST ?? '').includes('docker-desktop')) return 'drive';
+  return existsSync(path.join(os.homedir(), '.docker', 'desktop')) ? 'drive' : 'wsl-mnt';
+}
+
+function windowsDockerPathStyle(): WindowsDockerPathStyle {
+  const fromSignals = windowsDockerPathStyleFromCliSignals();
+  if (fromSignals) return fromSignals;
+  if (!cachedWindowsDockerPathStyleGuess) {
+    cachedWindowsDockerPathStyleGuess = detectWindowsDockerPathStyleViaDaemon();
+  }
+  return cachedWindowsDockerPathStyleGuess;
+}
+
+/** Normalize Windows host paths to the backend-correct drive form (lowercase drive). */
+function normalizeWindowsDockerPath(value: string, style: WindowsDockerPathStyle): string {
   const trimmed = value.trim().replace(/\\/g, '/');
 
+  let drive: string | null = null;
+  let rest = '';
   if (isMntDockerPath(trimmed)) {
-    const drive = (trimmed[5] ?? 'c').toLowerCase();
-    return `/${drive}${trimmed.slice(6)}`;
+    drive = (trimmed[5] ?? 'c').toLowerCase();
+    rest = trimmed.slice(6);
+  } else if (isMsysDockerPath(trimmed)) {
+    drive = (trimmed[1] ?? 'c').toLowerCase();
+    rest = trimmed.slice(2);
+  } else {
+    const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
+    const driveLetter = driveMatch?.[1];
+    if (driveLetter) {
+      drive = driveLetter.toLowerCase();
+      const tail = driveMatch[2] ?? '';
+      rest = tail.length === 0 ? '' : `/${tail}`;
+    }
   }
+  if (drive === null) return trimmed;
 
-  if (isMsysDockerPath(trimmed)) {
-    const drive = (trimmed[1] ?? 'c').toLowerCase();
-    return `/${drive}${trimmed.slice(2)}`;
-  }
-
-  const driveMatch = /^([a-zA-Z]):\/(.*)$/.exec(trimmed);
-  const driveLetter = driveMatch?.[1];
-  if (driveLetter) {
-    const drive = driveLetter.toLowerCase();
-    const rest = driveMatch[2] ?? '';
-    return rest.length === 0 ? `/${drive}` : `/${drive}/${rest}`;
-  }
-
-  return trimmed;
+  return style === 'wsl-mnt' ? `/mnt/${drive}${rest}` : `/${drive}${rest}`;
 }
 
 /**
  * Host path for Docker bind mounts (`-v`, compose volume sources).
  *
- * On Windows the canonical form is `/<drive>/...` (lowercase drive), matching
- * the desktop runtime (`hub_manager.rs`). Inputs `C:/...`, `C:\...`, and MSYS
- * `/c/...` are normalized to that form; native `C:/...` breaks compose parsing
- * because Docker treats the first `:` as the volume delimiter.
+ * On Windows the drive form depends on the active backend, matching the desktop
+ * runtime (`hub_manager.rs`): `/c/...` for Docker Desktop, `/mnt/c/...` for a
+ * native Docker Engine inside WSL2. Inputs `C:/...`, `C:\...`, MSYS `/c/...`,
+ * and `/mnt/c/...` are all normalized to the backend-correct form; native
+ * `C:/...` breaks compose parsing because Docker treats the first `:` as the
+ * volume delimiter.
  */
 export function dockerBindMountPath(hostPath: string): string {
   // Use path.posix.resolve on non-Windows so that absolute POSIX paths (e.g.
@@ -73,14 +157,15 @@ export function dockerBindMountPath(hostPath: string): string {
   // (which would add a drive letter prefix).
   if (process.platform !== 'win32') return path.posix.resolve(hostPath);
 
+  const style = windowsDockerPathStyle();
   const trimmed = hostPath.trim();
   if (isMntDockerPath(trimmed) || isMsysDockerPath(trimmed)) {
-    return normalizeWindowsDockerPath(trimmed);
+    return normalizeWindowsDockerPath(trimmed, style);
   }
   if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
-    return normalizeWindowsDockerPath(trimmed);
+    return normalizeWindowsDockerPath(trimmed, style);
   }
-  return normalizeWindowsDockerPath(path.win32.resolve(trimmed));
+  return normalizeWindowsDockerPath(path.win32.resolve(trimmed), style);
 }
 
 /** Log files a prior root-owned Hub container may leave behind. */
