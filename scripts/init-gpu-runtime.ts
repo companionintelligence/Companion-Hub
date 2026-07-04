@@ -72,6 +72,11 @@ function findWslDistro(): string | null {
   return distros.find((d) => d === 'Ubuntu' || /^Ubuntu-/.test(d)) ?? distros[0] ?? null;
 }
 
+/** Synchronous sleep (this script runs as a blocking startup step, no event loop). */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Run a shell script as root inside the given WSL2 distro. */
 function runInWslDistro(distro: string, script: string): boolean {
   console.log(`init-gpu-runtime: > wsl -d ${distro} -u root -- sh -lc '<script>'`);
@@ -493,12 +498,20 @@ export function initGpuRuntime() {
         return;
       }
 
-      if (dockerHasNvidiaRuntime()) {
+      // The setup script restarts the in-distro dockerd to load the nvidia runtime,
+      // which briefly drops the daemon; wait for it to come back and register.
+      let configured = false;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        if (dockerHasNvidiaRuntime()) {
+          configured = true;
+          break;
+        }
+        if (attempt < 14) sleepSync(1000);
+      }
+      if (configured) {
         console.log('init-gpu-runtime: NVIDIA runtime configured for the WSL2 Docker engine.');
       } else {
-        warnCpuFallback(
-          'Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; a Docker restart inside the distro may be required.',
-        );
+        warnCpuFallback('Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; it should register on the next start.');
       }
       return;
     }

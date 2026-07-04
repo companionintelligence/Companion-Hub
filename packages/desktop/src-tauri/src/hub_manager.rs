@@ -6104,19 +6104,28 @@ fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
         );
         return;
     }
-    if docker_has_nvidia_runtime() {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "gpu.runtime",
-            "NVIDIA container runtime configured for the WSL2 Docker engine.",
-        );
-    } else {
-        let _ = append_desktop_log_for(
-            data_dir,
-            "gpu.runtime",
-            "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; a Docker restart inside the distro may be required.",
-        );
+    // The setup script restarts the in-distro dockerd so it loads the nvidia
+    // runtime. That briefly drops the daemon the host CLI (and the imminent
+    // `docker compose up`) talk to over tcp://127.0.0.1:2375, so wait for it to
+    // come back and register the runtime before returning.
+    for attempt in 0..15 {
+        if docker_has_nvidia_runtime() {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.runtime",
+                "NVIDIA container runtime configured for the WSL2 Docker engine.",
+            );
+            return;
+        }
+        if attempt < 14 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "gpu.runtime",
+        "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; it should register on the next start.",
+    );
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
