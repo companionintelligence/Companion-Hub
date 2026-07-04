@@ -3212,8 +3212,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#[cfg(any(target_os = "linux", windows, test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -3221,8 +3221,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#[cfg(any(target_os = "linux", windows, test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -5721,10 +5721,31 @@ fn generate_hex(bytes: usize) -> String {
         .collect()
 }
 
+/// How a Windows host path must be rendered for the active Docker backend's bind
+/// mounts. The two backends resolve host paths through entirely different layers:
+///
+/// - **Docker Desktop** shares the Windows filesystem into its VM, translating the
+///   MSYS `/c/Users/...` form (and `C:\...`) back to the real Windows file.
+/// - **Docker Engine running natively inside WSL2** has no such translation: its
+///   filesystem *is* the WSL Linux root, where Windows drives are visible only under
+///   `/mnt/<drive>/...`. A `/c/...` source does not exist there, so the daemon
+///   silently creates an empty directory at that path and bind-mounts it — turning
+///   every config/env *file* into a *directory* inside the container (EISDIR).
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WindowsDockerHostStyle {
+    /// `/c/Users/...` — Docker Desktop.
+    Drive,
+    /// `/mnt/c/Users/...` — native Docker Engine inside WSL2.
+    WslMnt,
+}
+
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
-/// On Windows the canonical form is `/<drive>/...` (lowercase drive); `C:/...`,
-/// `C:\...`, and MSYS `/c/...` are normalized to that form (Docker Desktop rejects
-/// `C:/...` because the drive colon is parsed as the host/container delimiter).
+/// On Windows the drive form is chosen from the active backend (see
+/// [`WindowsDockerHostStyle`]); `C:/...`, `C:\...`, MSYS `/c/...`, `/mnt/c/...`, and
+/// `\\?\C:\...` are all accepted as input and normalized to the backend-correct form.
+/// (Docker rejects a raw `C:/...` source because the drive colon is parsed as the
+/// host/container delimiter, so the drive letter always moves into the leading path.)
 fn docker_bind_mount_path(path: &Path) -> String {
     normalize_docker_host_path(&path.to_string_lossy())
 }
@@ -5733,12 +5754,65 @@ fn docker_bind_mount_path(path: &Path) -> String {
 fn normalize_docker_host_path(value: &str) -> String {
     #[cfg(windows)]
     {
-        return normalize_windows_docker_host_path(value);
+        return normalize_windows_docker_host_path(value, windows_docker_host_style());
     }
     #[cfg(not(windows))]
     {
         value.trim().to_string()
     }
+}
+
+/// Extract `(lowercase_drive, "/rest/with/forward/slashes")` from any Windows path
+/// form: `C:\...`, `C:/...`, `/c/...`, `/mnt/c/...`, or the `\\?\C:\...`
+/// extended-length prefix. Returns `None` for non-drive paths (e.g. a `/var/run`
+/// unix socket or a `//./pipe/...` named pipe), which callers pass through unchanged.
+#[cfg(any(windows, test))]
+fn split_windows_drive(value: &str) -> Option<(char, String)> {
+    let replaced = value.trim().replace('\\', "/");
+    // `\\?\C:\...` becomes `//?/C:/...` after the slash swap — strip the prefix.
+    let trimmed = replaced.strip_prefix("//?/").unwrap_or(replaced.as_str());
+
+    // `/mnt/<drive>` or `/mnt/<drive>/...`
+    if let Some(rest) = trimmed.strip_prefix("/mnt/") {
+        let bytes = rest.as_bytes();
+        if !bytes.is_empty()
+            && bytes[0].is_ascii_alphabetic()
+            && (bytes.len() == 1 || bytes[1] == b'/')
+        {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            return Some((drive, rest[1..].to_string()));
+        }
+    }
+
+    // `/<drive>` or `/<drive>/...` (MSYS/Git-Bash)
+    {
+        let bytes = trimmed.as_bytes();
+        if bytes.len() >= 2
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && (bytes.len() == 2 || bytes[2] == b'/')
+        {
+            let drive = (bytes[1] as char).to_ascii_lowercase();
+            return Some((drive, trimmed[2..].to_string()));
+        }
+    }
+
+    // `<drive>:` or `<drive>:/...`
+    {
+        let bytes = trimmed.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            let rest = trimmed[2..].trim_start_matches('/');
+            let rest = if rest.is_empty() {
+                String::new()
+            } else {
+                format!("/{rest}")
+            };
+            return Some((drive, rest));
+        }
+    }
+
+    None
 }
 
 /// Convert a Docker bind-mount path back to a native host path for filesystem access.
@@ -5769,46 +5843,90 @@ pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-/// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
-/// Canonical output: `/<drive>/...` with lowercase drive letter.
+/// Windows bind-mount normalization (also unit-tested on other hosts). Rewrites any
+/// recognized Windows path form to the drive form the active backend understands
+/// (see [`WindowsDockerHostStyle`]). Non-drive inputs (unix sockets, named pipes)
+/// pass through with only backslashes normalized to forward slashes.
 #[cfg(any(windows, test))]
-fn normalize_windows_docker_host_path(value: &str) -> String {
-    let trimmed = value.trim().replace('\\', "/");
+fn normalize_windows_docker_host_path(value: &str, style: WindowsDockerHostStyle) -> String {
+    match split_windows_drive(value) {
+        Some((drive, rest)) => match style {
+            WindowsDockerHostStyle::Drive => format!("/{drive}{rest}"),
+            WindowsDockerHostStyle::WslMnt => format!("/mnt/{drive}{rest}"),
+        },
+        None => value.trim().replace('\\', "/"),
+    }
+}
 
-    // Older generated configs used `/mnt/<drive>/...`; convert to Docker Desktop's
-    // Windows-drive form so binds map to the real host filesystem.
-    if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
-        let bytes = trimmed.as_bytes();
-        if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
-            let drive = (bytes[5] as char).to_ascii_lowercase();
-            return format!("/{drive}{}", &trimmed[6..]);
+/// Cached backend style for the process. Only *confident* detections are cached, so a
+/// launch that had to fall back to a heuristic (e.g. daemon not yet installed) can be
+/// corrected by a later launch once the docker context or a reachable daemon appears.
+#[cfg(windows)]
+static WINDOWS_DOCKER_HOST_STYLE: std::sync::OnceLock<WindowsDockerHostStyle> =
+    std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn windows_docker_host_style() -> WindowsDockerHostStyle {
+    if let Some(style) = WINDOWS_DOCKER_HOST_STYLE.get() {
+        return *style;
+    }
+    let (style, confident) = detect_windows_docker_host_style();
+    if confident {
+        let _ = WINDOWS_DOCKER_HOST_STYLE.set(style);
+    }
+    style
+}
+
+/// Determine which bind-mount path form the active Docker backend needs. Returns
+/// `(style, confident)`; `confident == false` marks a best-effort guess that must not
+/// be cached. Signals, strongest first:
+///  1. Active docker context name — daemon-independent (reads `~/.docker/config.json`).
+///     The WSL2-engine installer runs `docker context use wsl-engine`; Docker Desktop
+///     uses `desktop-linux`.
+///  2. `docker info` OperatingSystem — the daemon's own self-report (needs it running).
+///  3. Heuristic (`likely_docker_desktop`) — last resort, never cached.
+#[cfg(windows)]
+fn detect_windows_docker_host_style() -> (WindowsDockerHostStyle, bool) {
+    if let Some(context) = current_docker_context_name(None) {
+        match context.as_str() {
+            "wsl-engine" => return (WindowsDockerHostStyle::WslMnt, true),
+            "desktop-linux" | "desktop-windows" => return (WindowsDockerHostStyle::Drive, true),
+            _ => {}
         }
     }
 
-    // MSYS/Git-Bash `/c/...` — compose-safe and maps to Windows files.
-    if trimmed.len() >= 3 {
-        let bytes = trimmed.as_bytes();
-        if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
-            let drive = (bytes[1] as char).to_ascii_lowercase();
-            return format!("/{drive}{}", &trimmed[2..]);
+    if let Some(os) = docker_server_operating_system() {
+        if os.contains("Docker Desktop") {
+            return (WindowsDockerHostStyle::Drive, true);
         }
+        // A native engine reports its distro OS (e.g. "Ubuntu 22.04.5 LTS").
+        return (WindowsDockerHostStyle::WslMnt, true);
     }
 
-    // `C:/...` or `C:\...` → `/<drive>/...`
-    if trimmed.len() >= 2 {
-        let bytes = trimmed.as_bytes();
-        if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-            let drive = (bytes[0] as char).to_ascii_lowercase();
-            let rest = trimmed[2..].trim_start_matches('/');
-            return if rest.is_empty() {
-                format!("/{drive}")
-            } else {
-                format!("/{drive}/{rest}")
-            };
-        }
+    if likely_docker_desktop() {
+        (WindowsDockerHostStyle::Drive, false)
+    } else {
+        (WindowsDockerHostStyle::WslMnt, false)
     }
+}
 
-    trimmed
+/// The daemon's reported host OS (`docker info -f '{{.OperatingSystem}}'`), or `None`
+/// if no daemon is reachable. "Docker Desktop" for Desktop; the distro name otherwise.
+#[cfg(windows)]
+fn docker_server_operating_system() -> Option<String> {
+    let output = docker_command()
+        .args(["info", "--format", "{{.OperatingSystem}}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let os = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if os.is_empty() {
+        None
+    } else {
+        Some(os)
+    }
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
@@ -9208,31 +9326,72 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     }
 
     #[test]
-    fn normalizes_windows_docker_bind_mount_paths() {
+    fn normalizes_windows_docker_bind_mount_paths_for_docker_desktop() {
+        use super::WindowsDockerHostStyle::Drive;
+        // Every input form collapses to the Docker Desktop `/c/...` form.
+        for input in [
+            r"C:\Users\hegem\AppData\Roaming\companion-hub\media",
+            "C:/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            r"\\?\C:\Users\hegem\AppData\Roaming\companion-hub\media",
+        ] {
+            assert_eq!(
+                super::normalize_windows_docker_host_path(input, Drive),
+                "/c/Users/hegem/AppData/Roaming/companion-hub/media",
+                "input {input:?} should normalize to the Drive form"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_windows_docker_bind_mount_paths_for_wsl2_engine() {
+        use super::WindowsDockerHostStyle::WslMnt;
+        // A native Docker Engine inside WSL2 sees the drive only under /mnt.
+        for input in [
+            r"C:\Users\hegem\AppData\Roaming\companion-hub\media",
+            "C:/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            r"\\?\C:\Users\hegem\AppData\Roaming\companion-hub\media",
+        ] {
+            assert_eq!(
+                super::normalize_windows_docker_host_path(input, WslMnt),
+                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
+                "input {input:?} should normalize to the WslMnt form"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_is_idempotent_and_passes_through_non_drive_paths() {
+        use super::WindowsDockerHostStyle::{Drive, WslMnt};
+        // Idempotent: re-normalizing an already-correct value is a no-op.
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                r"C:\Users\hegem\AppData\Roaming\companion-hub\media"
-            ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            super::normalize_windows_docker_host_path("/c/Users/x", Drive),
+            "/c/Users/x"
         );
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "C:/Users/hegem/AppData/Roaming/companion-hub/media"
-            ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            super::normalize_windows_docker_host_path("/mnt/c/Users/x", WslMnt),
+            "/mnt/c/Users/x"
         );
+        // Bare drive root.
+        assert_eq!(super::normalize_windows_docker_host_path(r"C:\", Drive), "/c");
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "/c/Users/hegem/AppData/Roaming/companion-hub"
-            ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub"
+            super::normalize_windows_docker_host_path(r"C:\", WslMnt),
+            "/mnt/c"
         );
-        assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
-            ),
-            "/c/Users/hegem/AppData/Roaming/companion-hub"
-        );
+        // Non-drive paths (unix socket, named pipe) are never rewritten.
+        for style in [Drive, WslMnt] {
+            assert_eq!(
+                super::normalize_windows_docker_host_path("/var/run/docker.sock", style),
+                "/var/run/docker.sock"
+            );
+            assert_eq!(
+                super::normalize_windows_docker_host_path(r"\\.\pipe\docker_engine", style),
+                "//./pipe/docker_engine"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -9249,13 +9408,50 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         let env = super::render_runtime_env_content(&data_dir, &existing);
 
+        // The exact drive prefix depends on the backend detected at runtime (`/c/...`
+        // for Docker Desktop, `/mnt/c/...` for a native WSL2 engine). Either is valid;
+        // the regression this guards against is a raw `C:\...` path leaking into .env.
+        let root_ok = env
+            .contains("ROOT_FOLDER_HOST=/c/Users/hegem/AppData/Roaming/companion-hub\n")
+            || env.contains(
+                "ROOT_FOLDER_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub\n",
+            );
         assert!(
-            env.contains("ROOT_FOLDER_HOST=/c/Users/hegem/AppData/Roaming/companion-hub\n"),
-            "env should normalize ROOT_FOLDER_HOST for Docker: {env}"
+            root_ok,
+            "env should normalize ROOT_FOLDER_HOST to a Docker-safe drive form: {env}"
+        );
+        let compose_ok = env.contains(
+            "COMPOSE_FILE_HOST=/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n",
+        ) || env.contains(
+            "COMPOSE_FILE_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n",
         );
         assert!(
-            env.contains("COMPOSE_FILE_HOST=/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"),
+            compose_ok,
             "env should expose a Docker-safe compose file mount: {env}"
         );
+        assert!(
+            !env.contains(r"ROOT_FOLDER_HOST=C:\"),
+            "env must not leak a raw Windows path: {env}"
+        );
+    }
+
+    #[test]
+    fn detect_style_round_trips_through_host_path() {
+        // A value normalized for either backend must map back to the same native
+        // Windows path via host_path_from_docker_path (the reverse used for
+        // desktop-side filesystem access).
+        #[cfg(windows)]
+        {
+            use super::WindowsDockerHostStyle::{Drive, WslMnt};
+            let native = r"C:\Users\hegem\AppData\Roaming\companion-hub";
+            for style in [Drive, WslMnt] {
+                let mount = super::normalize_windows_docker_host_path(native, style);
+                assert_eq!(
+                    super::host_path_from_docker_path(&mount),
+                    std::path::PathBuf::from(native),
+                    "round-trip failed for {style:?} via {mount}"
+                );
+            }
+        }
     }
 }

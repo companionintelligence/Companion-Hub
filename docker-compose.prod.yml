@@ -131,8 +131,16 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/logs:/data/logs
       - ${ROOT_FOLDER_HOST:-.internal}/user-config:/data/user-config
       - ${ROOT_FOLDER_HOST:-.internal}/backups:/data/backups
-      # Static
-      - ${ENV_FILE:-.env}:/data/.env
+      # Static. Long syntax with create_host_path:false so a mis-resolved host path
+      # fails loudly ("bind source path does not exist") instead of Docker silently
+      # creating an empty dir here — which would mount a directory over /data/.env
+      # and crash the backend with EISDIR. (Seen when ROOT_FOLDER_HOST used the
+      # Docker-Desktop `/c/...` form against a native WSL2 engine that needs `/mnt/c/...`.)
+      - type: bind
+        source: ${ENV_FILE:-.env}
+        target: /data/.env
+        bind:
+          create_host_path: false
       # Backend uses DATA_DIR/cache (/data/cache). Created by scripts/init-hub-data-dirs.ts.
       - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
@@ -205,8 +213,16 @@ services:
       - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"  # Dashboard
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
-      # Mount Traefik config files individually to avoid mount conflicts
-      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      # Mount Traefik config files individually to avoid mount conflicts.
+      # create_host_path:false: fail loudly if the host path is mis-resolved rather
+      # than letting Docker fabricate an empty dir over traefik.yml (crash-loops
+      # Traefik with "traefik.yml: is a directory").
+      - type: bind
+        source: ${ROOT_FOLDER_HOST:-.internal}/state/traefik/config/traefik.yml
+        target: /etc/traefik/traefik.yml
+        read_only: true
+        bind:
+          create_host_path: false
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
