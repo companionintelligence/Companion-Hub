@@ -923,6 +923,7 @@
   "ONBOARDING_RETRY_AUTOMATIC_SETUP": "Retry automatic setup",
   "ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC": "Close and reopen CI Hub to retry automatic GPU setup.",
   "ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC": "Manual install (distribution-specific)",
+  "ONBOARDING_WSL_ENGINE_MANUAL_NOTE": "You're running the Docker Engine inside WSL2 (not Docker Desktop), so the container GPU runtime is set up inside your WSL distribution — CI Hub attempts this automatically on startup. If it didn't complete, open your WSL distro (e.g. `wsl -d Ubuntu -u root`) and run:",
   "ONBOARDING_DISTRO_DEBIAN_UBUNTU": "Debian/Ubuntu",
   "ONBOARDING_DISTRO_RHEL_FEDORA": "RHEL/Fedora",
   "ONBOARDING_DISTRO_ARCH_MANJARO": "Arch/Manjaro",

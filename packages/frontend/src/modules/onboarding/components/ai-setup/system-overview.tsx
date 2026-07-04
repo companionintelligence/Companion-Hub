@@ -64,7 +64,11 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const showRocmSetup = hardware.gpu.available && hardware.gpu.vendor === 'amd';
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
-  const showLinuxRuntimeSteps = isLinuxClient();
+  // A native Docker Engine inside WSL2 needs the same in-distro toolkit as native
+  // Linux — not Docker Desktop's automatic WSL2 GPU integration. Show the Linux-style
+  // steps for both, so a Windows WSL2-engine user is never told to "open Docker Desktop".
+  const isWslEngineHost = hardware.gpu.containerHostKind === 'wsl-engine';
+  const showLinuxRuntimeSteps = isLinuxClient() || isWslEngineHost;
   const ready = tier !== 'insufficient';
 
   return (
@@ -155,6 +159,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
               {showLinuxRuntimeSteps ? (
                 <>
                   <p className="font-semibold">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
+                  {isWslEngineHost && <p className="mt-1 text-amber-800 dark:text-amber-200/90">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
                   <div className="mt-1.5 space-y-2">
                     <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
                       <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
