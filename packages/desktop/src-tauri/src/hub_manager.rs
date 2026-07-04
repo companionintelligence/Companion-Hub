@@ -4949,6 +4949,11 @@ fn start_hub_inner(
     // Runs before compose up so the backend container comes up GPU-capable.
     #[cfg(target_os = "windows")]
     ensure_wsl_engine_gpu_runtime(data_dir);
+    // Likewise, make an already-installed in-distro Ollama reachable from the Hub
+    // container by binding it to 0.0.0.0 (a native WSL2 engine has no
+    // host.docker.internal bridge). No-op once configured or if Ollama isn't present.
+    #[cfg(target_os = "windows")]
+    ensure_wsl_engine_ollama_reachable(data_dir);
     #[cfg(target_os = "linux")]
     refresh_rocm_host_probe_cache(data_dir);
 
@@ -6023,8 +6028,17 @@ fn docker_has_nvidia_runtime() -> bool {
 /// and there is deliberately NO fallback to an arbitrary first distro — installing
 /// the toolkit into the wrong distro (or running apt on a non-Debian one) would
 /// silently fail to enable the GPU. Returns None → the caller skips setup cleanly.
+///
+/// Memoized for the process: the distro name is stable within a run, and both the GPU
+/// and Ollama startup steps call this, so caching avoids a duplicate `wsl -l -q` spawn.
 #[cfg(windows)]
 fn find_wsl_distro() -> Option<String> {
+    static WSL_DISTRO_CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    WSL_DISTRO_CACHE.get_or_init(compute_wsl_distro).clone()
+}
+
+#[cfg(windows)]
+fn compute_wsl_distro() -> Option<String> {
     let mut command = Command::new("wsl.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.env("WSL_UTF8", "1");
@@ -6046,6 +6060,29 @@ fn find_wsl_distro() -> Option<String> {
         })
 }
 
+/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -- sh -lc`).
+/// Returns whether it exited 0. WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW
+/// suppresses a console flash. Shared by the GPU and Ollama in-distro setup steps.
+#[cfg(windows)]
+fn run_wsl_root_script(distro: &str, script: &str) -> bool {
+    run_wsl_root_script_capture(distro, script).is_some()
+}
+
+/// Like `run_wsl_root_script` but returns the trimmed stdout on success (`None` on
+/// failure), so callers can branch on a marker the script echoes.
+#[cfg(windows)]
+fn run_wsl_root_script_capture(distro: &str, script: &str) -> Option<String> {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
 /// dockerd registers the `nvidia` runtime. Runs as root via `wsl -u root` (no sudo).
 /// The Debian apt flow applies because `find_wsl_distro` only returns Ubuntu/Debian.
@@ -6054,7 +6091,9 @@ fn find_wsl_distro() -> Option<String> {
 /// minimal WSL images may lack them.
 #[cfg(windows)]
 fn run_wsl_gpu_toolkit_setup(distro: &str) -> bool {
-    let script = r#"set -e
+    run_wsl_root_script(
+        distro,
+        r#"set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y curl gnupg ca-certificates
@@ -6064,16 +6103,8 @@ curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 apt-get update
 apt-get install -y nvidia-container-toolkit
 nvidia-ctk runtime configure --runtime=docker
-systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#;
-
-    let mut command = Command::new("wsl.exe");
-    command.creation_flags(CREATE_NO_WINDOW);
-    command.env("WSL_UTF8", "1");
-    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
-    command
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#,
+    )
 }
 
 /// Whether the active Docker daemon is responding (`docker info` exits 0). Used to
@@ -6152,6 +6183,89 @@ fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
         "gpu.runtime",
         "Toolkit installed inside WSL2 but the Docker daemon did not respond within the wait window after its restart; startup will continue.",
     );
+}
+
+/// systemd drop-in that binds the in-distro Ollama to all interfaces. Ollama defaults
+/// to 127.0.0.1:11434 (the distro's loopback), which the Hub container cannot reach —
+/// it only reaches the distro via the docker0 bridge gateway (172.17.0.1). Binding
+/// 0.0.0.0 makes it reachable. Docker Desktop bridges this via host.docker.internal;
+/// a native WSL2 engine does not, so we configure it ourselves.
+#[cfg(windows)]
+const OLLAMA_HOST_DROPIN_PATH: &str = "/etc/systemd/system/ollama.service.d/companionhub-host.conf";
+
+/// Ensure the in-distro Ollama listens on 0.0.0.0 so the Hub container can reach it.
+/// Only touches an existing `ollama` systemd service (installing Ollama is
+/// `install_ollama`); shared by startup and the installer.
+///
+/// Idempotency is keyed on the *runtime* listener (whether Ollama is actually bound to
+/// a wildcard address), NOT on our drop-in file — so a transient `systemctl restart`
+/// failure is retried on the next call instead of being wedged forever. It also
+/// respects a deliberate `OLLAMA_HOST` the user set outside our drop-in (we never
+/// clobber a bind the user chose). Returns the last-line marker on success
+/// (`configured` this call, `already`, `user-configured`, `no-service`) or `None` on
+/// failure. The marker is taken from the last non-empty stdout line so a shell login
+/// banner can't mask it.
+#[cfg(windows)]
+fn ensure_ollama_listens_on_all_interfaces(distro: &str) -> Option<String> {
+    let output = run_wsl_root_script_capture(
+        distro,
+        &format!(
+            r#"set -e
+# Only configure a real ollama systemd service; installing Ollama is a separate step.
+systemctl cat ollama >/dev/null 2>&1 || {{ echo no-service; exit 0; }}
+# Already reachable from containers (bound to a wildcard address)? — checks the live
+# listener, so a prior failed restart (still on loopback) is retried below.
+if ss -ltn 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then echo already; exit 0; fi
+# Respect a deliberate OLLAMA_HOST the user set outside our own drop-in.
+if [ ! -f {path} ] && systemctl show ollama -p Environment 2>/dev/null | grep -q 'OLLAMA_HOST='; then
+  echo user-configured; exit 0
+fi
+mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' > {path}
+systemctl daemon-reload
+systemctl restart ollama
+echo configured"#,
+            path = OLLAMA_HOST_DROPIN_PATH
+        ),
+    )?;
+    // Marker = last non-empty line (robust to any profile banner on stdout).
+    Some(
+        output
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+/// True when the marker means Ollama is now reachable on the network (wildcard bind).
+#[cfg(windows)]
+fn ollama_bind_marker_is_reachable(marker: Option<&str>) -> bool {
+    matches!(marker, Some("configured") | Some("already"))
+}
+
+/// When the desktop runs against a native WSL2 Docker engine, make an already-installed
+/// in-distro Ollama reachable from the Hub container by binding it to 0.0.0.0. Runs at
+/// startup, mirroring `ensure_wsl_engine_gpu_runtime`; idempotent and a silent no-op
+/// once configured or when no Ollama service exists (installing it is `install_ollama`).
+#[cfg(windows)]
+fn ensure_wsl_engine_ollama_reachable(data_dir: &Path) {
+    if !is_wsl_engine_docker_backend() {
+        return;
+    }
+    let Some(distro) = find_wsl_distro() else {
+        return;
+    };
+    // Only log the meaningful transition, so steady-state starts stay quiet.
+    if ensure_ollama_listens_on_all_interfaces(&distro).as_deref() == Some("configured") {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "ollama.bridge",
+            "Configured in-distro Ollama to listen on 0.0.0.0:11434 so the Hub container can reach it.",
+        );
+    }
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
@@ -7176,9 +7290,12 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
 /// - macOS: Ollama-darwin.zip (universal binary) verified with codesign/spctl,
 ///   installed to /Applications with the CLI symlinked, launched hidden.
 /// - Windows: OllamaSetup.exe (Inno Setup, per-user — no elevation needed),
-///   Authenticode-verified, run with /VERYSILENT; the tray app auto-starts.
+///   Authenticode-verified, run with /VERYSILENT; the tray app auto-starts. EXCEPT on
+///   a native WSL2 Docker engine, where Ollama is installed inside the distro bound to
+///   0.0.0.0:11434 (see `install_ollama_in_wsl_distro`) so the Hub container can reach it.
 ///
-/// The Ollama API listens on 127.0.0.1:11434 on every platform.
+/// The Ollama API listens on 127.0.0.1:11434 on host installs; the WSL2-engine install
+/// binds 0.0.0.0:11434 inside the distro instead.
 pub fn install_ollama() -> Result<OllamaInstallResult, String> {
     #[cfg(target_os = "linux")]
     {
@@ -7230,13 +7347,70 @@ exit 0
     )
 }
 
+/// Install Ollama inside the WSL2 distro that hosts the native Docker engine, bound to
+/// 0.0.0.0 so the Hub container can reach it over the docker0 bridge. Uses Ollama's
+/// official install script (sets up the systemd service + GPU detection; Ollama picks
+/// up the GPU via the WSL CUDA libraries), then applies the 0.0.0.0 drop-in. Runs as
+/// root in the distro (no elevation prompt).
+#[cfg(target_os = "windows")]
+fn install_ollama_in_wsl_distro() -> Result<OllamaInstallResult, String> {
+    let distro = find_wsl_distro()
+        .ok_or_else(|| "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string())?;
+
+    // Download the installer to a file first (checking curl's exit) rather than
+    // `curl | sh`: a POSIX `sh` pipeline reports only `sh`'s status, so a failed/partial
+    // download would otherwise be treated as a successful install under `set -e`.
+    let installed = run_wsl_root_script(
+        &distro,
+        r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y curl ca-certificates; }
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+curl -fsSL --connect-timeout 30 --max-time 120 https://ollama.com/install.sh -o "$tmp"
+sh "$tmp""#,
+    );
+    if !installed {
+        return Err(format!(
+            "Ollama installation inside the WSL2 distro \"{distro}\" failed."
+        ));
+    }
+
+    // Bind to 0.0.0.0 so the Hub container can reach it, and report the ACTUAL result
+    // (installing the binary doesn't guarantee a systemd service was set up + bound).
+    let marker = ensure_ollama_listens_on_all_interfaces(&distro);
+    let detail = if ollama_bind_marker_is_reachable(marker.as_deref()) {
+        format!(
+            "Ollama installed inside WSL2 distro \"{distro}\" and bound to 0.0.0.0:11434 so the Hub can reach it."
+        )
+    } else {
+        format!(
+            "Ollama installed inside WSL2 distro \"{distro}\", but it isn't bound to 0.0.0.0 yet (is systemd enabled in the distro?). Start Ollama and click Re-check."
+        )
+    };
+
+    Ok(OllamaInstallResult {
+        state: OllamaInstallState::Completed,
+        detail: Some(detail),
+    })
+}
+
 /// OllamaSetup.exe is an Inno Setup installer with PrivilegesRequired=lowest —
 /// it installs per-user to %LOCALAPPDATA%\Programs\Ollama, so unlike the Docker
 /// installer no elevation is required. The installer adds Ollama to the user
-/// PATH and launches the tray app itself.
+/// PATH and launches the tray app itself. On a native WSL2 Docker engine, Ollama is
+/// installed inside the distro instead (see the branch below).
 #[cfg(target_os = "windows")]
 fn install_ollama_windows() -> Result<OllamaInstallResult, String> {
     use std::io::Write as IoWrite;
+
+    // On a native WSL2 Docker engine, a Windows-host Ollama (127.0.0.1 on Windows) is
+    // unreachable from the Hub container. Install Ollama *inside* the distro instead,
+    // bound to 0.0.0.0 so the container can reach it over the docker0 bridge — and so
+    // it can use the GPU via the WSL CUDA libraries.
+    if is_wsl_engine_docker_backend() {
+        return install_ollama_in_wsl_distro();
+    }
 
     // PowerShell -File refuses scripts without a .ps1 extension.
     let mut script = tempfile::Builder::new()
