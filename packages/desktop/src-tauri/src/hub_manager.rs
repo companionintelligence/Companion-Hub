@@ -5736,6 +5736,10 @@ fn generate_hex(bytes: usize) -> String {
 /// activates (`docker context use …`, see `wsl2_engine_user_script`). Also the
 /// primary daemon-independent signal for Windows bind-mount style detection — keep
 /// the installer and the detector on this single constant so they cannot drift.
+/// Gated to match its consumers (all Windows-only or test-only); on a non-Windows
+/// release build there are none, and an ungated const would be a `-D warnings`
+/// dead-code error.
+#[cfg(any(test, target_os = "windows"))]
 const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
 
 #[cfg(any(windows, test))]
