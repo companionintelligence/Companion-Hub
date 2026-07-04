@@ -1252,4 +1252,48 @@ describe('HardwareInspectorService', () => {
       expect(si.osInfo).not.toHaveBeenCalled();
     });
   });
+
+  // ─── Container host kind (Docker Desktop vs native WSL2 engine vs Linux) ─────
+
+  describe('container host kind detection', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+    });
+
+    function mockDockerInfo(osTabKernel: string) {
+      execAsyncMock.mockImplementation((cmd: string) => {
+        if (cmd.includes('.OperatingSystem')) return Promise.resolve({ stdout: osTabKernel });
+        return Promise.resolve({ stdout: '{}' });
+      });
+    }
+
+    it('classifies Docker Desktop from OperatingSystem', async () => {
+      mockDockerInfo('Docker Desktop\t5.15.0-microsoft-standard-WSL2');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('docker-desktop');
+    });
+
+    it('classifies a native WSL2 engine from a WSL kernel', async () => {
+      mockDockerInfo('Ubuntu 24.04.1 LTS\t5.15.167.4-microsoft-standard-WSL2');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('wsl-engine');
+    });
+
+    it('classifies a native Linux engine', async () => {
+      mockDockerInfo('Ubuntu 22.04.3 LTS\t5.15.0-124-generic');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('native-linux');
+    });
+
+    it('is unknown when the daemon is unreachable', async () => {
+      execAsyncMock.mockRejectedValue(new Error('docker daemon unreachable'));
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('unknown');
+    });
+  });
 });

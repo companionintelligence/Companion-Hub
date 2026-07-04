@@ -4944,6 +4944,11 @@ fn start_hub_inner(
     // direct GPU devices; this enables runtime-missing warnings instead of
     // misclassifying NVIDIA hosts as "no GPU detected".
     refresh_nvidia_host_probe_cache(data_dir);
+    // On a native WSL2 Docker engine, configure the in-distro NVIDIA container
+    // runtime (Docker Desktop does this automatically; a native engine does not).
+    // Runs before compose up so the backend container comes up GPU-capable.
+    #[cfg(target_os = "windows")]
+    ensure_wsl_engine_gpu_runtime(data_dir);
     #[cfg(target_os = "linux")]
     refresh_rocm_host_probe_cache(data_dir);
 
@@ -5976,6 +5981,142 @@ fn docker_server_os_and_kernel() -> Option<(String, String)> {
     }
     let (os, kernel) = line.split_once('\t').unwrap_or((line, ""));
     Some((os.trim().to_string(), kernel.trim().to_string()))
+}
+
+/// True when the active Docker daemon is a native Engine inside WSL2 (as opposed to
+/// Docker Desktop). Docker Desktop manages the container GPU runtime itself; a native
+/// engine needs nvidia-container-toolkit installed inside the distro. Mirrors the
+/// backend's `detectContainerHostKind` and the CLI's `detectWindowsDockerBackend`.
+#[cfg(windows)]
+fn is_wsl_engine_docker_backend() -> bool {
+    if let Some(context) = current_docker_context_name(None) {
+        if context == DOCKER_CONTEXT_WSL_ENGINE {
+            return true;
+        }
+        if context == "desktop-linux" || context == "desktop-windows" {
+            return false;
+        }
+    }
+    if let Some((os, kernel)) = docker_server_os_and_kernel() {
+        if os.contains("Docker Desktop") {
+            return false;
+        }
+        let kernel = kernel.to_ascii_lowercase();
+        return kernel.contains("microsoft") || kernel.contains("wsl");
+    }
+    false
+}
+
+/// Whether the active Docker daemon has the `nvidia` container runtime registered.
+#[cfg(windows)]
+fn docker_has_nvidia_runtime() -> bool {
+    docker_command()
+        .args(["info", "--format", "{{json .Runtimes}}"])
+        .output()
+        .map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia"))
+        .unwrap_or(false)
+}
+
+/// Name of the WSL2 distro hosting the Docker engine (the installer provisions Ubuntu).
+#[cfg(windows)]
+fn find_wsl_distro() -> Option<String> {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    let output = command.args(["-l", "-q"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let distros: Vec<String> = text
+        .lines()
+        .map(|line| line.trim().trim_matches('\u{0}').trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    distros
+        .iter()
+        .find(|d| d.as_str() == "Ubuntu" || d.starts_with("Ubuntu-"))
+        .cloned()
+        .or_else(|| distros.first().cloned())
+}
+
+/// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
+/// dockerd registers the `nvidia` runtime. Runs as root via `wsl -u root` (no sudo).
+/// The Debian apt flow applies because the engine installer only provisions Ubuntu.
+#[cfg(windows)]
+fn run_wsl_gpu_toolkit_setup(distro: &str) -> bool {
+    let script = r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+apt-get update
+apt-get install -y nvidia-container-toolkit
+nvidia-ctk runtime configure --runtime=docker
+systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#;
+
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
+    command
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// When the desktop runs against a native WSL2 Docker engine with an NVIDIA GPU,
+/// ensure the container GPU runtime is configured inside the distro (Docker Desktop
+/// does this automatically; a native engine does not). Idempotent and cheap after the
+/// first success: it early-returns once `docker info` reports the `nvidia` runtime.
+/// Best-effort — failure only means CPU-only inference, never blocks startup.
+#[cfg(windows)]
+fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
+    if !is_wsl_engine_docker_backend() {
+        return;
+    }
+    // NVIDIA GPU present iff the just-refreshed probe cache exists (the refresh
+    // removes it when no NVIDIA GPU is found).
+    if !data_dir.join("state/hardware/nvidia.json").exists() {
+        return;
+    }
+    if docker_has_nvidia_runtime() {
+        return;
+    }
+    let Some(distro) = find_wsl_distro() else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "WSL2 engine + NVIDIA GPU detected, but no WSL distro was found; skipping container GPU runtime setup.",
+        );
+        return;
+    };
+    let _ = append_desktop_log_for(
+        data_dir,
+        "gpu.runtime",
+        &format!("Configuring nvidia-container-toolkit inside WSL2 distro \"{distro}\" for the container GPU runtime…"),
+    );
+    if !run_wsl_gpu_toolkit_setup(&distro) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "Automatic nvidia-container-toolkit setup inside WSL2 failed; continuing without container GPU acceleration.",
+        );
+        return;
+    }
+    if docker_has_nvidia_runtime() {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "NVIDIA container runtime configured for the WSL2 Docker engine.",
+        );
+    } else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; a Docker restart inside the distro may be required.",
+        );
+    }
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
