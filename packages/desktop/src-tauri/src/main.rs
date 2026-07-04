@@ -148,7 +148,11 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
 /// Install Ollama using the platform-native bootstrap flow.
 #[tauri::command]
 async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
-    hub_manager::install_ollama()
+    // Run on the blocking pool: on a WSL2 engine this shells out to an unbounded
+    // in-distro `apt`/Ollama install, which must not pin an async-runtime worker.
+    tokio::task::spawn_blocking(hub_manager::install_ollama)
+        .await
+        .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
