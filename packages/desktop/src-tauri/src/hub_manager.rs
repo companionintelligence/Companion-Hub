@@ -6017,7 +6017,12 @@ fn docker_has_nvidia_runtime() -> bool {
         .unwrap_or(false)
 }
 
-/// Name of the WSL2 distro hosting the Docker engine (the installer provisions Ubuntu).
+/// The WSL2 distro hosting the Docker engine. The installer provisions Ubuntu, so
+/// only an Ubuntu/Debian (apt-based) distro is a valid target for the apt install
+/// flow below. Docker Desktop's own `docker-desktop*` utility distros are excluded,
+/// and there is deliberately NO fallback to an arbitrary first distro — installing
+/// the toolkit into the wrong distro (or running apt on a non-Debian one) would
+/// silently fail to enable the GPU. Returns None → the caller skips setup cleanly.
 #[cfg(windows)]
 fn find_wsl_distro() -> Option<String> {
     let mut command = Command::new("wsl.exe");
@@ -6028,27 +6033,33 @@ fn find_wsl_distro() -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let distros: Vec<String> = text
-        .lines()
+    text.lines()
         .map(|line| line.trim().trim_matches('\u{0}').trim().to_string())
         .filter(|line| !line.is_empty())
-        .collect();
-    distros
-        .iter()
-        .find(|d| d.as_str() == "Ubuntu" || d.starts_with("Ubuntu-"))
-        .cloned()
-        .or_else(|| distros.first().cloned())
+        .find(|d| {
+            let lower = d.to_ascii_lowercase();
+            !lower.starts_with("docker-desktop")
+                && (lower == "ubuntu"
+                    || lower.starts_with("ubuntu-")
+                    || lower == "debian"
+                    || lower.starts_with("debian-"))
+        })
 }
 
 /// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
 /// dockerd registers the `nvidia` runtime. Runs as root via `wsl -u root` (no sudo).
-/// The Debian apt flow applies because the engine installer only provisions Ubuntu.
+/// The Debian apt flow applies because `find_wsl_distro` only returns Ubuntu/Debian.
+/// Idempotent: `gpg --yes` overwrites an existing keyring (so a retry after a failed
+/// `apt-get` isn't wedged by a leftover file), and curl/gnupg are ensured first since
+/// minimal WSL images may lack them.
 #[cfg(windows)]
 fn run_wsl_gpu_toolkit_setup(distro: &str) -> bool {
     let script = r#"set -e
 export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl gnupg ca-certificates
 install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --yes --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
 curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
 apt-get update
 apt-get install -y nvidia-container-toolkit
@@ -6060,6 +6071,18 @@ systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || tr
     command.env("WSL_UTF8", "1");
     command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
     command
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Whether the active Docker daemon is responding (`docker info` exits 0). Used to
+/// confirm the in-distro dockerd is back after the runtime-config restart before the
+/// caller proceeds to the (un-retried) database bootstrap.
+#[cfg(windows)]
+fn docker_daemon_responsive() -> bool {
+    docker_command()
+        .args(["info", "--format", "{{.ServerVersion}}"])
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
@@ -6104,27 +6127,30 @@ fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
         );
         return;
     }
-    // The setup script restarts the in-distro dockerd so it loads the nvidia
-    // runtime. That briefly drops the daemon the host CLI (and the imminent
-    // `docker compose up`) talk to over tcp://127.0.0.1:2375, so wait for it to
-    // come back and register the runtime before returning.
-    for attempt in 0..15 {
-        if docker_has_nvidia_runtime() {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.runtime",
-                "NVIDIA container runtime configured for the WSL2 Docker engine.",
-            );
+    // The setup script restarts the in-distro dockerd so it loads the nvidia runtime.
+    // That briefly drops the daemon the host CLI — and the imminent, UN-RETRIED
+    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2375.
+    // Wait for the daemon to be responsive again before returning so that bootstrap
+    // never hits a mid-restart daemon; report whether the runtime registered.
+    const READINESS_WAIT_SECS: u32 = 20;
+    for attempt in 0..READINESS_WAIT_SECS {
+        if docker_daemon_responsive() {
+            let message = if docker_has_nvidia_runtime() {
+                "NVIDIA container runtime configured for the WSL2 Docker engine."
+            } else {
+                "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; it should register on the next start."
+            };
+            let _ = append_desktop_log_for(data_dir, "gpu.runtime", message);
             return;
         }
-        if attempt < 14 {
+        if attempt + 1 < READINESS_WAIT_SECS {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
     let _ = append_desktop_log_for(
         data_dir,
         "gpu.runtime",
-        "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; it should register on the next start.",
+        "Toolkit installed inside WSL2 but the Docker daemon did not respond within the wait window after its restart; startup will continue.",
     );
 }
 

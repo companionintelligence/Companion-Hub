@@ -34,8 +34,8 @@ type WindowsDockerBackend = 'desktop' | 'wsl-engine' | 'unknown';
 
 /**
  * Classify the Windows Docker backend, mirroring hub_manager.rs
- * `detect_windows_docker_host_style_via_daemon`: active context first
- * (daemon-independent), then the daemon's own OS/kernel self-report.
+ * `is_wsl_engine_docker_backend`: active context first (daemon-independent), then
+ * the daemon's own OS/kernel self-report.
  * - Docker Desktop provides the container GPU runtime via its WSL2 integration.
  * - A native dockerd inside a WSL2 distro needs nvidia-container-toolkit just
  *   like native Linux, installed *inside* that distro.
@@ -59,17 +59,35 @@ function detectWindowsDockerBackend(): WindowsDockerBackend {
   return 'unknown';
 }
 
-/** Name of the WSL2 distro hosting the Docker engine (the installer provisions Ubuntu). */
+/**
+ * The WSL2 distro hosting the Docker engine. The installer provisions Ubuntu, so only
+ * an Ubuntu/Debian (apt-based) distro is a valid target for the apt flow below.
+ * Docker Desktop's `docker-desktop*` utility distros are excluded, and there is NO
+ * fallback to an arbitrary first distro — installing into the wrong distro (or running
+ * apt on a non-Debian one) would silently fail to enable the GPU. null → skip cleanly.
+ */
 function findWslDistro(): string | null {
-  // WSL_UTF8=1 makes wsl.exe emit UTF-8 instead of UTF-16LE (matches the engine installer).
+  // WSL_UTF8=1 asks wsl.exe for UTF-8 instead of UTF-16LE (matches the engine
+  // installer); strip any residual control chars/NULs defensively in case a given
+  // wsl.exe build ignores it, so the name match doesn't fail on interior NULs.
   const res = runCapture('wsl.exe', ['-l', '-q'], { WSL_UTF8: '1' });
   if (!res.ok) return null;
 
   const distros = res.stdout
+    // eslint-disable-next-line no-control-regex
+    .replace(/[^\x20-\x7E\r\n]/g, '')
     .split(/\r?\n/)
     .map((v) => v.trim())
     .filter((v) => v.length > 0);
-  return distros.find((d) => d === 'Ubuntu' || /^Ubuntu-/.test(d)) ?? distros[0] ?? null;
+  return (
+    distros.find((d) => {
+      const lower = d.toLowerCase();
+      return (
+        !lower.startsWith('docker-desktop') &&
+        (lower === 'ubuntu' || lower.startsWith('ubuntu-') || lower === 'debian' || lower.startsWith('debian-'))
+      );
+    }) ?? null
+  );
 }
 
 /** Synchronous sleep (this script runs as a blocking startup step, no event loop). */
@@ -92,15 +110,20 @@ function runInWslDistro(distro: string, script: string): boolean {
  * Install + configure nvidia-container-toolkit inside a WSL2 distro that runs a
  * native Docker Engine. The Windows NVIDIA driver already exposes the GPU into
  * WSL2 (`/dev/dxg`, `/usr/lib/wsl/lib/libcuda.so`); this registers the `nvidia`
- * runtime with the in-distro dockerd. The installer only provisions Ubuntu, so
- * the Debian apt flow applies. Runs as root via `wsl -u root` (no sudo needed).
+ * runtime with the in-distro dockerd. The Debian apt flow applies because
+ * findWslDistro only returns Ubuntu/Debian. Runs as root via `wsl -u root` (no sudo).
+ * Idempotent: `gpg --yes` overwrites an existing keyring (so a retry after a failed
+ * apt-get isn't wedged by a leftover file), and curl/gnupg are ensured first since
+ * minimal WSL images may lack them.
  */
 function setupNvidiaToolkitInWslDistro(distro: string): boolean {
   const script = [
     'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
+    'apt-get update',
+    'apt-get install -y curl gnupg ca-certificates',
     'install -d -m 0755 /etc/apt/keyrings',
-    'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg',
+    'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --yes --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg',
     "curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null",
     'apt-get update',
     'apt-get install -y nvidia-container-toolkit',
@@ -500,13 +523,14 @@ export function initGpuRuntime() {
 
       // The setup script restarts the in-distro dockerd to load the nvidia runtime,
       // which briefly drops the daemon; wait for it to come back and register.
+      const READINESS_WAIT_SECS = 20;
       let configured = false;
-      for (let attempt = 0; attempt < 15; attempt++) {
+      for (let attempt = 0; attempt < READINESS_WAIT_SECS; attempt++) {
         if (dockerHasNvidiaRuntime()) {
           configured = true;
           break;
         }
-        if (attempt < 14) sleepSync(1000);
+        if (attempt + 1 < READINESS_WAIT_SECS) sleepSync(1000);
       }
       if (configured) {
         console.log('init-gpu-runtime: NVIDIA runtime configured for the WSL2 Docker engine.');
@@ -516,7 +540,14 @@ export function initGpuRuntime() {
       return;
     }
 
-    warnCpuFallback('Could not determine the Docker backend (Docker Desktop vs WSL2 engine); skipping automatic GPU runtime setup.');
+    // Backend not positively identified. The overwhelmingly common Windows case is
+    // Docker Desktop, whose WSL2 integration provides the GPU runtime automatically —
+    // so assume that (a benign no-op) rather than alarming the user with a CPU-only
+    // warning, matching the pre-existing behavior for unrecognized Windows backends.
+    console.log(
+      'init-gpu-runtime: Could not positively identify the Docker backend; assuming Docker Desktop (its WSL2 integration provides the GPU runtime).',
+    );
+    console.log('init-gpu-runtime: If you use the WSL2 Docker engine and GPU is unavailable, ensure the `wsl-engine` context is active and rescan.');
     return;
   }
 

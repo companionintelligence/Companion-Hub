@@ -100,14 +100,14 @@ export class HardwareInspectorService {
 
   /** Main detection routine */
   async detect(): Promise<HardwareProfile> {
-    const [gpuInfo, rawRamInfo, rawCpuInfo, nvidiaRuntime, rocmSupport, containerHostKind] = await Promise.all([
+    const [gpuInfo, rawRamInfo, rawCpuInfo, dockerInfo, rocmSupport] = await Promise.all([
       this.detectGpu(),
       this.detectRam(),
       this.detectCpu(),
-      this.detectNvidiaRuntime(),
+      this.detectDockerInfo(),
       this.detectRocmSupport(),
-      this.detectContainerHostKind(),
     ]);
+    const { nvidiaRuntime, containerHostKind } = dockerInfo;
 
     // Read cross-platform host probe (init-host-probe, Tauri desktop, or legacy macOS file).
     const hostProbe = await this.hostMetrics.readHostProbe();
@@ -880,33 +880,35 @@ export class HardwareInspectorService {
     }
   }
 
-  private async detectNvidiaRuntime(): Promise<boolean> {
-    try {
-      const { stdout } = await execAsync('docker info --format "{{json .Runtimes}}"');
-      return stdout.includes('nvidia');
-    } catch {
-      return false;
-    }
-  }
-
   /**
-   * Classify the Docker backend from the daemon's own `docker info` self-report so
-   * GPU setup guidance can be accurate. Docker Desktop reports OperatingSystem
-   * "Docker Desktop"; a native engine inside WSL2 reports a distro OS with a
-   * `*-microsoft-standard-WSL2` kernel; anything else with a Linux daemon is
-   * treated as native Linux.
+   * Single `docker info` call yielding both the nvidia-runtime flag and the backend
+   * classification (one daemon round-trip instead of two). Docker Desktop reports
+   * OperatingSystem "Docker Desktop"; a native engine inside WSL2 reports a distro OS
+   * with a `*-microsoft-standard-WSL2` kernel; any other reachable Linux daemon is
+   * treated as native Linux. Runtimes JSON, OperatingSystem, and KernelVersion contain
+   * no tabs, so a tab-delimited template splits cleanly.
    */
-  private async detectContainerHostKind(): Promise<NonNullable<HardwareProfile['gpu']['containerHostKind']>> {
+  private async detectDockerInfo(): Promise<{
+    nvidiaRuntime: boolean;
+    containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']>;
+  }> {
     try {
-      const { stdout } = await execAsync('docker info --format "{{.OperatingSystem}}\t{{.KernelVersion}}"');
-      const [osName = '', kernel = ''] = stdout.trim().split('\t');
-      if (osName.includes('Docker Desktop')) return 'docker-desktop';
-      const k = kernel.toLowerCase();
-      if (k.includes('microsoft') || k.includes('wsl')) return 'wsl-engine';
-      if (osName.trim().length > 0) return 'native-linux';
-      return 'unknown';
+      const { stdout } = await execAsync('docker info --format "{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}"');
+      const [runtimes = '', osName = '', kernel = ''] = stdout.trim().split('\t');
+      const nvidiaRuntime = runtimes.includes('nvidia');
+
+      let containerHostKind: NonNullable<HardwareProfile['gpu']['containerHostKind']> = 'unknown';
+      if (osName.includes('Docker Desktop')) {
+        containerHostKind = 'docker-desktop';
+      } else if (kernel.toLowerCase().includes('microsoft') || kernel.toLowerCase().includes('wsl')) {
+        containerHostKind = 'wsl-engine';
+      } else if (osName.trim().length > 0) {
+        containerHostKind = 'native-linux';
+      }
+
+      return { nvidiaRuntime, containerHostKind };
     } catch {
-      return 'unknown';
+      return { nvidiaRuntime: false, containerHostKind: 'unknown' };
     }
   }
 
