@@ -228,6 +228,25 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
 
+  it('renders the re-pair form instead of bouncing to login when the public tunnel is degraded', async () => {
+    fetchRegistrationStatusResult.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { phase: 'degraded', registered: true, degradedReasons: ['tunnel_token_missing'] },
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    // The pairing form renders so the user can re-pair...
+    expect(await screen.findByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    // ...with an explanation of why remote access needs attention...
+    expect(screen.getByText(/public URL is offline/i)).toBeInTheDocument();
+    // ...device info is loaded so the device ID is shown (not stuck "Loading device ID...")...
+    expect(await screen.findByText('device-123')).toBeInTheDocument();
+    // ...and the page does NOT auto-bounce to the local app.
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('points the login button at Portal home (not the Add Device intent URL) after choosing restore', async () => {
     fetchDeviceRegistrationInfoResult.mockResolvedValue(
       deviceInfo({

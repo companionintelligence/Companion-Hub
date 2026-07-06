@@ -9,6 +9,7 @@ import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
 import { detectClientPlatform, shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { getDeviceIdOptions } from '@/api-client/@tanstack/react-query.gen';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
@@ -111,6 +112,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main className="relative flex flex-1 flex-col gap-4 pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
+        <TunnelStatusBanner />
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={getAnimationKey(location.pathname)}

@@ -13,7 +13,7 @@ import {
   probeRegistrationDomain,
 } from '@/lib/registration-api';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
+import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
@@ -231,6 +231,14 @@ export default function DeviceRegistrationPage() {
 
       if (isRegistrationOperational(status)) {
         cacheRegistrationStatus(status);
+        // A registered Hub whose public tunnel is degraded (tunnel_token_missing)
+        // renders the re-pair form. Load the device info it needs — the device ID
+        // and the device-scoped Portal Add-Device URL — just like the unregistered
+        // path, otherwise the form is stuck on "Loading device ID..." and its login
+        // link falls back to the generic Portal URL.
+        if (requiresPortalRePairing(status)) {
+          await loadDeviceInfo();
+        }
         return status;
       }
 
@@ -382,11 +390,21 @@ export default function DeviceRegistrationPage() {
       return;
     }
 
+    // Registered Hub with a degraded public tunnel (tunnel_token_missing) and no
+    // pairing in flight: the user navigated here to re-pair (e.g. from the
+    // dashboard banner). Keep them on the pairing form instead of bouncing back
+    // to the local app.
+    if (requiresPortalRePairing(registrationStatus)) {
+      return;
+    }
+
     navigate('/login', { replace: true });
   }, [finishRegistrationFlow, navigate, registrationStatus]);
 
   useEffect(() => {
-    if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
+    const showsPairingForm =
+      registrationStatus?.phase === 'unregistered' || (registrationStatus != null && requiresPortalRePairing(registrationStatus));
+    if (!isLoading && showsPairingForm && deviceId && pairingInputRef.current) {
       pairingInputRef.current.focus();
     }
   }, [deviceId, isLoading, registrationStatus]);
@@ -638,7 +656,13 @@ export default function DeviceRegistrationPage() {
     );
   }
 
-  if (registrationStatus && isRegistrationOperational(registrationStatus) && !pendingPairTargetRef.current && lastStatusFetchSucceededRef.current) {
+  if (
+    registrationStatus &&
+    isRegistrationOperational(registrationStatus) &&
+    !requiresPortalRePairing(registrationStatus) &&
+    !pendingPairTargetRef.current &&
+    lastStatusFetchSucceededRef.current
+  ) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
@@ -659,6 +683,17 @@ export default function DeviceRegistrationPage() {
         onSetupNew={() => void handleSetupNewDevice()}
         onRestore={handleRestoreExistingDevice}
       />
+
+      {registrationStatus && requiresPortalRePairing(registrationStatus) && (
+        <Alert variant="warning">
+          <AlertDescription>
+            <div className="flex items-start gap-2">
+              <AlertCircle role="img" aria-label={t('COMMON_WARNING')} className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{t('DEVICE_REGISTRATION_REPAIR_NOTICE_MESSAGE')}</span>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
 
