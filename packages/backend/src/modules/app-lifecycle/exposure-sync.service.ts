@@ -97,6 +97,7 @@ export class ExposureSyncService {
       );
 
       const serveStatus = await tailscaleService.getServeStatus();
+      const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
       const desiredPorts = new Map<
         number,
         {
@@ -114,7 +115,6 @@ export class ExposureSyncService {
         }
 
         const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-        const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
         const installedInfo = appFilesManager ? await appFilesManager.getInstalledAppInfo(appUrn) : null;
 
         let upstreamUrl: string | null = null;

@@ -1,0 +1,147 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { PortExposeService } from '../port-expose.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { LoggerService } from '@/core/logger/logger.service';
+import { PORT_EXPOSE_KIND } from '@ci-hub/common/schemas';
+import { mock, MockProxy } from 'vitest-mock-extended';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+describe('PortExposeService', () => {
+  let service: PortExposeService;
+  let filesystem: MockProxy<FilesystemService>;
+  let configService: MockProxy<ConfigurationService>;
+  let appsRepository: MockProxy<AppsRepository>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  let traefikConfigService: MockProxy<TraefikConfigService>;
+  let exposureSyncService: MockProxy<ExposureSyncService>;
+  let portalClient: MockProxy<PortalClientService>;
+  let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
+  let logger: MockProxy<LoggerService>;
+
+  beforeEach(async () => {
+    filesystem = mock<FilesystemService>();
+    configService = mock<ConfigurationService>();
+    appsRepository = mock<AppsRepository>();
+    appFilesManager = mock<AppFilesManager>();
+    traefikConfigService = mock<TraefikConfigService>();
+    exposureSyncService = mock<ExposureSyncService>();
+    portalClient = mock<PortalClientService>();
+    deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
+    logger = mock<LoggerService>();
+
+    configService.get.mockImplementation((key) => {
+      if (key === 'directories') return { dataDir: '/data' } as any;
+      if (key === 'demoMode') return false;
+      return null;
+    });
+    configService.getConfig.mockReturnValue({
+      userSettings: { localDomain: 'local.test' },
+      localDomain: 'local.test',
+    } as any);
+
+    filesystem.createDirectory.mockResolvedValue(true);
+    filesystem.createDirectories.mockResolvedValue(true);
+    filesystem.writeJsonFile.mockResolvedValue(true);
+    filesystem.writeTextFile.mockResolvedValue(true);
+    appsRepository.getAppByUrn.mockResolvedValue(null as any);
+    appsRepository.getAppsByPort.mockResolvedValue([]);
+    appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+    appsRepository.getApps.mockResolvedValue([]);
+    deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null as any);
+    traefikConfigService.syncPortExposeRoutes.mockResolvedValue(undefined);
+    exposureSyncService.syncExposurePublic.mockResolvedValue(undefined);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PortExposeService,
+        { provide: FilesystemService, useValue: filesystem },
+        { provide: ConfigurationService, useValue: configService },
+        { provide: AppsRepository, useValue: appsRepository },
+        { provide: AppFilesManager, useValue: appFilesManager },
+        { provide: TraefikConfigService, useValue: traefikConfigService },
+        { provide: ExposureSyncService, useValue: exposureSyncService },
+        { provide: PortalClientService, useValue: portalClient },
+        { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
+        { provide: LoggerService, useValue: logger },
+      ],
+    }).compile();
+
+    service = module.get<PortExposeService>(PortExposeService);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('createPortExposeApp', () => {
+    it('creates a local port-expose workload with kind in persisted config', async () => {
+      const result = await service.createPortExposeApp({
+        name: 'my-workload',
+        port: 8080,
+        exposureMode: 'local',
+      });
+
+      expect(result.appUrn).toBe('my-workload:_user');
+      expect(appsRepository.createApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            kind: PORT_EXPOSE_KIND,
+            port: 8080,
+            exposureMode: 'local',
+          }),
+        }),
+      );
+      expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
+    });
+
+    it('throws when cloudflare mode is missing a subdomain', async () => {
+      await expect(
+        service.createPortExposeApp({
+          name: 'my-workload',
+          port: 8080,
+          exposureMode: 'cloudflare',
+        }),
+      ).rejects.toThrow('PORT_EXPOSE_SUBDOMAIN_REQUIRED');
+    });
+
+    it('throws when app name already exists', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
+
+      await expect(
+        service.createPortExposeApp({
+          name: 'my-workload',
+          port: 8080,
+          exposureMode: 'local',
+        }),
+      ).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');
+    });
+  });
+
+  describe('beforePortExposeUninstall', () => {
+    it('syncs portal registry removal for local workloads identified by config kind', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        exposureMode: 'local',
+        config: { kind: PORT_EXPOSE_KIND },
+      } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+
+      await service.beforePortExposeUninstall('my-workload:_user');
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: 'org-1',
+          apps: [expect.objectContaining({ remove: true })],
+        }),
+      );
+    });
+  });
+});

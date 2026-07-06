@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
 
-const RESERVED_APP_NAMES = ['create'];
+const RESERVED_APP_NAMES = ['create', 'expose'];
 
 export default () => {
   const { t } = useTranslation();

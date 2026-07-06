@@ -41,7 +41,7 @@ export class PortExposeService {
     const { name, port, exposureMode, localSubdomain, publicDomain } = dto;
 
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
-      throw new TranslatableError('APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_INVALID', undefined, HttpStatus.BAD_REQUEST);
+      throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
 
     const appUrn = createAppUrn(name, APPS_FOLDER);
@@ -78,6 +78,7 @@ export class PortExposeService {
         appStoreSlug: APPS_FOLDER,
         appName: name,
         config: {
+          kind: PORT_EXPOSE_KIND,
           port,
           exposureMode,
           localSubdomain: routingSubdomain,
@@ -124,7 +125,7 @@ export class PortExposeService {
     }
 
     const info = await this.appFilesManager.getInstalledAppInfo(appUrn);
-    if (!info || !isPortExposeApp(info)) {
+    if (!isPortExposeApp(info) && !isPortExposeApp(app.config)) {
       return;
     }
 

@@ -877,29 +877,30 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
+    const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+    const isPortExpose = isPortExposeApp(installedInfo) || isPortExposeApp(app.config);
+
+    let portExposeService: { beforePortExposeUninstall: (urn: AppUrn) => Promise<void>; afterPortExposeUninstall: () => Promise<void> } | undefined;
+    if (isPortExpose) {
+      try {
+        const { PortExposeService } = await import('../custom-apps/port-expose.service');
+        portExposeService = this.moduleRef.get(PortExposeService, { strict: false }) ?? undefined;
+        if (portExposeService) {
+          await portExposeService.beforePortExposeUninstall(appUrn).catch((err) => {
+            this.logger.warn(`Port-expose registry cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+      } catch (err) {
+        this.logger.warn(`Port-expose cleanup unavailable for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     const requestId = crypto.randomUUID();
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async ({ success, message }) => {
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
-
-          let portExposeService:
-            | { beforePortExposeUninstall: (urn: AppUrn) => Promise<void>; afterPortExposeUninstall: () => Promise<void> }
-            | undefined;
-          if (isPortExposeApp(app.config)) {
-            try {
-              const { PortExposeService } = await import('../custom-apps/port-expose.service');
-              portExposeService = this.moduleRef.get(PortExposeService, { strict: false }) ?? undefined;
-              if (portExposeService) {
-                await portExposeService.beforePortExposeUninstall(appUrn).catch((err) => {
-                  this.logger.warn(`Port-expose registry cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-                });
-              }
-            } catch (err) {
-              this.logger.warn(`Port-expose cleanup unavailable for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
 
           await this.appRepository.deleteAppById(app.id);
 

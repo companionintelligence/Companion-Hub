@@ -235,6 +235,8 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
       ci_os_hub_network:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - ci-os-hub
     labels:
