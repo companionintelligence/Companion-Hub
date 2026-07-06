@@ -11,7 +11,34 @@ export const createCustomAppSchema = z.object({
   config: dynamicComposeSchema,
 });
 
+export const createPortExposeAppSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(/^[a-z0-9-]+$/)
+      .min(1)
+      .max(50),
+    port: z.number().min(1024).max(65535),
+    exposureMode: z.enum(['local', 'cloudflare', 'tailscale']),
+    localSubdomain: z
+      .string()
+      .regex(/^[a-zA-Z0-9-]{1,63}$/)
+      .optional(),
+    publicDomain: z.string().trim().min(1).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.exposureMode === 'cloudflare' && !data.localSubdomain?.trim()) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Subdomain is required for public web exposure',
+        path: ['localSubdomain'],
+      });
+    }
+  });
+
 export class CreateCustomAppDto extends createZodDto(createCustomAppSchema) {}
+
+export class CreatePortExposeAppDto extends createZodDto(createPortExposeAppSchema) {}
 
 export const createCustomAppResponseSchema = z.object({
   appUrn: z.string(),

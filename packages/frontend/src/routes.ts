@@ -30,6 +30,7 @@ export default [
     ...prefix('apps', [
       index('./modules/app/pages/apps-redirect.tsx', { id: 'my-apps' }),
       route('create', './modules/app/pages/custom-app-create-page.tsx', { id: 'custom-app-create' }),
+      route('expose', './modules/app/pages/port-expose-create-page.tsx', { id: 'port-expose-create' }),
       route(':appId/edit', './modules/app/pages/custom-app-edit-page.tsx', { id: 'custom-app-edit' }),
       route(':appId', './modules/app/pages/custom-app-details-page.tsx', { id: 'custom-app' }),
       route(':storeId/:appId', './modules/app/pages/app-details-page.tsx', { id: 'app-details' }),

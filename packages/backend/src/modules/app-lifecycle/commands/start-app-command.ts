@@ -4,6 +4,7 @@ import { AppHelpers } from '@/modules/apps/app.helpers';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 
 export class StartAppCommand extends AppLifecycleCommand {
@@ -18,6 +19,14 @@ export class StartAppCommand extends AppLifecycleCommand {
 
       if (!config) {
         return { success: true, message: 'App config not found. Skipping...' };
+      }
+
+      if (isPortExposeApp(config)) {
+        const { PortExposeService } = await import('../../custom-apps/port-expose.service');
+        const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
+        await portExposeService?.syncPortExposeRoutes();
+        logger.info(`Port-expose workload ${appUrn} started`);
+        return { success: true, message: `App ${appUrn} started successfully` };
       }
 
       logger.info(`Starting app ${appUrn}`);
