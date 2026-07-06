@@ -13,10 +13,12 @@ import {
   type RegistrationStatusResponse,
   fetchDeviceId,
   fetchRegistrationStatus,
+  fetchStateDrift,
   formatHubAccessUrl,
   isValidPairingCode,
   normalizePairingCode,
   pollRegistrationComplete,
+  prepareFreshSetup,
   registrationComplete,
   resolveRegisterApiBase,
   submitPairingCode,
@@ -104,7 +106,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     entries: [
       { command: `${BASE_COMMAND} wizard [env]`, description: 'Guided first-time or re-setup wizard' },
       { command: `${BASE_COMMAND} setup [env]`, description: 'Initialize host state, Traefik, and Docker auth config' },
-      { command: `${BASE_COMMAND} register [env]`, description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)' },
+      {
+        command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>]`,
+        description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
+      },
     ],
   },
   {
@@ -607,6 +612,45 @@ export function normalizeDetachedFlag(args: string[]): { detached: boolean; atta
   };
 }
 
+export type RegisterHubOptions = {
+  fresh?: boolean;
+  code?: string;
+};
+
+export function normalizeRegisterFlags(args: string[]): RegisterHubOptions & { env: HubEnv } {
+  let fresh = false;
+  let code: string | undefined;
+  const remaining: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--fresh') {
+      fresh = true;
+      continue;
+    }
+    if (arg === '--code') {
+      const next = args[i + 1];
+      if (!next) {
+        usageAndExit(`Usage: ${BASE_COMMAND} register [env] [--fresh] [--code <code>]`);
+      }
+      code = next;
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--code=')) {
+      code = arg.slice('--code='.length);
+      continue;
+    }
+    remaining.push(arg);
+  }
+
+  return {
+    fresh,
+    code,
+    env: resolveEnvFromArgs(remaining),
+  };
+}
+
 /** Non-local appliance stacks default to detached so `cihub up dev` returns after boot. */
 export function resolveUpStartMode(
   env: HubEnv,
@@ -999,7 +1043,7 @@ export function printConfig(env: HubEnv) {
   printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
 }
 
-export async function registerHub(env: HubEnv) {
+export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
     requireRepoOrApplianceContext('cihub register', 'require-seed');
@@ -1033,6 +1077,39 @@ export async function registerHub(env: HubEnv) {
   if (registrationComplete(status)) {
     printMessageBox('Already registered', [`Phase: ${status.phase}`, 'No pairing needed. Use cihub status to inspect tunnel and URLs.'], 'green');
     return;
+  }
+
+  let shouldPrepareFresh = options.fresh === true;
+  if (!shouldPrepareFresh) {
+    try {
+      const drift = await fetchStateDrift(apiBase);
+      shouldPrepareFresh = drift.detected;
+    } catch {
+      // Non-fatal — proceed without auto-clearing drift.
+    }
+  }
+
+  if (shouldPrepareFresh) {
+    printMessageBox(
+      'Clearing local registration state',
+      [
+        options.fresh
+          ? 'Requested via --fresh: removing stale local registration artifacts before pairing.'
+          : 'State drift detected: clearing local registration artifacts before pairing (same as "Set up as new device").',
+      ],
+      'cyan',
+    );
+    try {
+      const prepared = await prepareFreshSetup(apiBase);
+      if (!prepared.success) {
+        printMessageBox('Prepare fresh failed', [prepared.message || 'Unknown error'], 'red');
+        return;
+      }
+      printMessageBox('Local state cleared', [prepared.message], 'green');
+    } catch (error) {
+      printMessageBox('Prepare fresh failed', [error instanceof Error ? error.message : String(error)], 'red');
+      return;
+    }
   }
 
   let deviceInfo: DeviceIdResponse;
@@ -1070,18 +1147,25 @@ export async function registerHub(env: HubEnv) {
     'green',
   );
 
-  const rl = createInterface({ input, output });
-  let pairingCode = '';
-  try {
-    while (!isValidPairingCode(pairingCode)) {
-      const answer = await rl.question('  Pairing code (6 characters): ');
-      pairingCode = normalizePairingCode(answer);
-      if (!isValidPairingCode(pairingCode)) {
-        console.log(colorize('  Enter a valid 6-character code from the portal.', 'yellow'));
+  let pairingCode = options.code ? normalizePairingCode(options.code) : '';
+  if (options.code && !isValidPairingCode(pairingCode)) {
+    printMessageBox('Invalid pairing code', [`"${options.code}" is not a valid 6-character code.`], 'red');
+    return;
+  }
+
+  if (!isValidPairingCode(pairingCode)) {
+    const rl = createInterface({ input, output });
+    try {
+      while (!isValidPairingCode(pairingCode)) {
+        const answer = await rl.question('  Pairing code (6 characters): ');
+        pairingCode = normalizePairingCode(answer);
+        if (!isValidPairingCode(pairingCode)) {
+          console.log(colorize('  Enter a valid 6-character code from the portal.', 'yellow'));
+        }
       }
+    } finally {
+      rl.close();
     }
-  } finally {
-    rl.close();
   }
 
   printMessageBox('Pairing', ['Submitting pairing code to the Hub?'], 'cyan');

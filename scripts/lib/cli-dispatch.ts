@@ -13,6 +13,7 @@ import {
   logsHub,
   normalizeCliArgs,
   normalizeDetachedFlag,
+  normalizeRegisterFlags,
   resolveUpStartMode,
   printConfig,
   printMessageBox,
@@ -78,7 +79,8 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'register') {
-    await registerHub(resolveEnvFromArgs(args.slice(1)));
+    const registerArgs = normalizeRegisterFlags(args.slice(1));
+    await registerHub(registerArgs.env, { fresh: registerArgs.fresh, code: registerArgs.code });
     return;
   }
 
