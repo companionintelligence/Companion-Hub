@@ -44,6 +44,52 @@ export const hubIntegrationSchema = z
      * ```
      */
     inference: inferenceEnvMappingSchema.optional(),
+    /**
+     * Opt-in Portal OIDC issuer injection. Apps that "Sign in with CI-Portal"
+     * must authenticate against the *paired* Portal IdP (CI_CLOUD_URL), not a
+     * hardcoded default — otherwise an exposed app is redirected to the wrong
+     * IdP and fails with `INVALID_REDIRECT_URI`.
+     *
+     * When declared, the Hub resolves the paired Portal origin (CI_CLOUD_URL)
+     * at env-generation time and writes it into the app's `app.env` under the
+     * app-declared env variable name. This mirrors the `inference` opt-in
+     * mapping: only apps that opt in are touched, so a third-party app that
+     * reads a same-named var for its own IdP is never clobbered.
+     *
+     * Example in config.json:
+     * ```json
+     * "hub_integration": {
+     *   "oidc": {
+     *     "issuer_env": "CI_OIDC_ISSUER",
+     *     "issuer_path": "/api/auth"
+     *   }
+     * }
+     * ```
+     */
+    oidc: z
+      .object({
+        /**
+         * Env variable name the app reads its OIDC issuer from (e.g. "CI_OIDC_ISSUER").
+         * Must be a valid environment variable name so it is never written as a
+         * malformed/whitespace-padded key (which would silently misconfigure OIDC).
+         */
+        issuer_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        /**
+         * Optional path appended to the paired Portal origin to form the issuer
+         * (e.g. "/api/auth" for discovery-based clients that resolve
+         * `<issuer>/.well-known/openid-configuration`). Omit for a bare-origin
+         * issuer (e.g. CI-Server, which appends its own auth paths).
+         *
+         * Must not contain whitespace: the composed issuer is written verbatim
+         * into the app's `app.env` (an unescaped `KEY=value` line), so a newline
+         * here would inject an arbitrary extra environment line.
+         */
+        issuer_path: z.string().regex(/^\S*$/, 'issuer_path must not contain whitespace').optional(),
+      })
+      .optional(),
   })
   .optional();
 

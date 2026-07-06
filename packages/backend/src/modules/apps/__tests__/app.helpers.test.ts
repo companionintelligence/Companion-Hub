@@ -1049,5 +1049,156 @@ describe('AppHelpers', () => {
         expect(envMap.has('HUB_WAKE_SECRET')).toBe(false);
       });
     });
+
+    // CI-Hub#870: exposed apps that "Sign in with CI-Portal" must authenticate against the
+    // paired Portal (CI_CLOUD_URL). The Hub injects that issuer into the app-declared env var.
+    describe('Portal OIDC issuer injection', () => {
+      const CI_CLOUD_URL = 'https://hub.ci.computer';
+
+      beforeEach(() => {
+        // Re-mock with a paired Portal URL present (the base beforeEach omits ciCloudUrl).
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: CI_CLOUD_URL,
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+      });
+
+      it('injects <origin>/api/auth into the app-declared env var when a path suffix is set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+        // The legacy OIDC_ISSUER_URL is not written for a manifest-declared app.
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('injects the bare Portal origin when no path suffix is declared', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer');
+      });
+
+      it('normalizes trailing slashes on the origin and leading/trailing slashes on the path', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: 'https://hub.ci.computer///',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth/' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+      });
+
+      it('joins an issuer_path that has no leading slash', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: 'api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+      });
+
+      it('does not inject any issuer for a third-party app that does not opt in', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        // mockAppInfo is a third-party app (source http://example.com) with no hub_integration.
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('injects bare OIDC_ISSUER_URL for the legacy first-party app id (ci-memory)', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const firstPartyApp = { ...mockAppInfo, id: 'ci-memory' };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('OIDC_ISSUER_URL')).toBe('https://hub.ci.computer');
+      });
+
+      it('injects bare OIDC_ISSUER_URL for a legacy first-party app by CI-Server source', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const firstPartyApp = { ...mockAppInfo, source: 'https://github.com/companionintelligence/CI-Server' };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('OIDC_ISSUER_URL')).toBe('https://hub.ci.computer');
+      });
+
+      it('lets a manifest oidc declaration take precedence over the legacy first-party branch', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        // A first-party app that also opts in via the manifest: only the declared var is written.
+        const firstPartyOidcApp = {
+          ...mockAppInfo,
+          id: 'ci-memory',
+          hub_integration: { oidc: { issuer_env: 'CUSTOM_ISSUER', issuer_path: '/api/auth' } },
+        };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyOidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CUSTOM_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('skips injection (no env written) when the manifest opts in but CI_CLOUD_URL is empty', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: '',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
+      });
+    });
   });
 });

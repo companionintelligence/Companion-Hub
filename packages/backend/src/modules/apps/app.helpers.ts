@@ -446,20 +446,47 @@ export class AppHelpers {
       }
     }
 
-    // --- Portal OIDC issuer (first-party CI apps only) ---
-    // CI-Server's "Sign in with CI-Portal" flow needs the Portal OIDC IdP origin.
-    // That is CI_CLOUD_URL (ciCloudUrl) — already normalized to the Portal origin
-    // per environment (https://hub.ci.computer in prod, https://hub.companionintelligence.com
-    // in dev). NOTE: this is NOT hub.<DOMAIN>: DOMAIN is the public *app* zone
-    // (apps deploy at ci-memory-<org>.companionintelligence.com), which in prod is
-    // a different zone from the Portal IdP. We only inject for first-party CI apps;
-    // a third-party app (e.g. AnythingLLM) may read OIDC_ISSUER_URL for its own IdP,
-    // so we must never clobber it.
+    // --- Portal OIDC issuer injection ---
+    // Apps that "Sign in with CI-Portal" must authenticate against the *paired*
+    // Portal IdP — that is CI_CLOUD_URL (ciCloudUrl), already normalized to the
+    // Portal origin per environment (https://hub.ci.computer in prod,
+    // https://hub.companionintelligence.com in dev). NOTE: this is NOT hub.<DOMAIN>:
+    // DOMAIN is the public *app* zone (apps deploy at
+    // ci-import-tools-<device>-<org>.companionintelligence.com), which in prod is a
+    // different zone from the Portal IdP. If the issuer is not injected, an exposed
+    // app falls back to its hardcoded default IdP and the Portal rejects the
+    // sign-in with INVALID_REDIRECT_URI (see CI-Hub#870).
     const { ciCloudUrl } = this.config.getConfig();
-    const isFirstPartyPortalOidcApp =
-      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-    if (isFirstPartyPortalOidcApp && ciCloudUrl) {
-      envMap.set('OIDC_ISSUER_URL', ciCloudUrl.replace(/\/+$/, ''));
+    const normalizedCloudUrl = ciCloudUrl?.trim().replace(/\/+$/, '');
+
+    // Preferred path: manifest-driven, opt-in injection (mirrors hub_integration.inference).
+    // Apps declare the env var they read the issuer from and, optionally, a path
+    // suffix (e.g. "/api/auth" for discovery-based clients like CI-Import-Tools).
+    // Only opted-in apps are touched, so a third-party app reading a same-named var
+    // for its own IdP is never clobbered.
+    const oidcIntegration = config.hub_integration?.oidc;
+    if (oidcIntegration) {
+      if (normalizedCloudUrl) {
+        const suffix = oidcIntegration.issuer_path?.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+        const issuer = suffix ? `${normalizedCloudUrl}/${suffix}` : normalizedCloudUrl;
+        envMap.set(oidcIntegration.issuer_env, issuer);
+        this.logger.debug(`[AppHelpers] Injected paired Portal OIDC issuer for ${appUrn}: ${oidcIntegration.issuer_env}=${issuer}`);
+      } else {
+        this.logger.warn(`[AppHelpers] ${appUrn} declares hub_integration.oidc but CI_CLOUD_URL is empty; skipping OIDC issuer injection.`);
+      }
+    }
+
+    // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
+    // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
+    // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
+    // The first-party check is computed lazily so opted-in apps (the common path going
+    // forward) don't pay for the id/source scan on every env generation.
+    if (!oidcIntegration && normalizedCloudUrl) {
+      const isFirstPartyPortalOidcApp =
+        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+      if (isFirstPartyPortalOidcApp) {
+        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+      }
     }
 
     envMap.delete('APP_PUBLIC_DOMAIN');
