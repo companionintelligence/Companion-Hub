@@ -72,6 +72,48 @@ describe('hubIntegrationSchema', () => {
     });
   });
 
+  describe('R-SCH-3: oidc issuer mapping', () => {
+    it('should accept an oidc block with issuer_env and issuer_path', () => {
+      const result = hubIntegrationSchema.safeParse({
+        oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.oidc?.issuer_env).toBe('CI_OIDC_ISSUER');
+        expect(result.data?.oidc?.issuer_path).toBe('/api/auth');
+      }
+    });
+
+    it('should accept an oidc block with only issuer_env (bare-origin issuer)', () => {
+      const result = hubIntegrationSchema.safeParse({
+        oidc: { issuer_env: 'OIDC_ISSUER_URL' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.oidc?.issuer_env).toBe('OIDC_ISSUER_URL');
+        expect(result.data?.oidc?.issuer_path).toBeUndefined();
+      }
+    });
+
+    it('should reject an oidc block missing issuer_env', () => {
+      const result = hubIntegrationSchema.safeParse({ oidc: { issuer_path: '/api/auth' } });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject an empty issuer_env', () => {
+      const result = hubIntegrationSchema.safeParse({ oidc: { issuer_env: '' } });
+      expect(result.success).toBe(false);
+    });
+
+    it('should leave oidc undefined when not declared', () => {
+      const result = hubIntegrationSchema.safeParse({ mcp_client: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.oidc).toBeUndefined();
+      }
+    });
+  });
+
   describe('R-SCH-2: appInfoSchema integration', () => {
     const minimalAppInfo = {
       id: 'test-app',
@@ -97,6 +139,18 @@ describe('hubIntegrationSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.hub_integration?.mcp_client).toBe(true);
+      }
+    });
+
+    it('should parse appInfoSchema with hub_integration.oidc', () => {
+      const result = appInfoSchema.safeParse({
+        ...minimalAppInfo,
+        hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.hub_integration?.oidc?.issuer_env).toBe('CI_OIDC_ISSUER');
+        expect(result.data.hub_integration?.oidc?.issuer_path).toBe('/api/auth');
       }
     });
 
