@@ -21,6 +21,7 @@ import {
   hubIntegrationSchema,
 } from './app-info.js';
 import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, RandomEncoding } from './app-info.js';
+import { isPortExposeApp, PORT_EXPOSE_KIND } from './port-expose.js';
 
 import {
   agentConfigSchema,
@@ -71,6 +72,8 @@ export {
   hubIntegrationSchema,
   sseSchema,
   frontmatterSchema,
+  isPortExposeApp,
+  PORT_EXPOSE_KIND,
   type AgentConfig,
   type AgentIntent,
   type AgentIntentPrivacy,

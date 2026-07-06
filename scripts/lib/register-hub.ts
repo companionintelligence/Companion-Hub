@@ -21,6 +21,28 @@ export type PairResponse = {
   subdomain?: string;
 };
 
+export type StateDriftReason =
+  | 'local_unregistered_portal_active'
+  | 'stale_hub_device_id_in_app_data'
+  | 'stale_tunnel_token'
+  | 'orphaned_local_db_registration';
+
+export type RegistrationStateDrift = {
+  detected: boolean;
+  hardwareDeviceId: string;
+  localRegistered: boolean;
+  portalDeviceActive: boolean | null;
+  staleAppEnvDeviceIds: string[];
+  signals: { reason: StateDriftReason; detail?: string }[];
+  hasStaleTunnelToken: boolean;
+};
+
+export type PrepareFreshResponse = {
+  success: boolean;
+  message: string;
+  clearedAppEnvFiles?: number;
+};
+
 export function normalizePairingCode(raw: string): string {
   return raw
     .trim()
@@ -71,6 +93,27 @@ export async function fetchDeviceId(apiBase: string): Promise<DeviceIdResponse> 
     throw new Error(`Device ID lookup failed (${res.status})`);
   }
   return (await res.json()) as DeviceIdResponse;
+}
+
+export async function fetchStateDrift(apiBase: string): Promise<RegistrationStateDrift> {
+  const res = await fetch(`${apiBase}/api/registration/state-drift`, { signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) {
+    throw new Error(`State drift check failed (${res.status})`);
+  }
+  return (await res.json()) as RegistrationStateDrift;
+}
+
+export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshResponse> {
+  const res = await fetch(`${apiBase}/api/registration/prepare-fresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = (await res.json()) as PrepareFreshResponse;
+  if (!res.ok && !data.message) {
+    return { success: false, message: `Prepare fresh failed (${res.status})` };
+  }
+  return data;
 }
 
 export async function submitPairingCode(apiBase: string, pairingCode: string): Promise<PairResponse> {

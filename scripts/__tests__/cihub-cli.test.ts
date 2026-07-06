@@ -14,6 +14,7 @@ import {
   mergeComposeProfilesFromEnvFile,
   resolveHubContext,
   normalizeCliArgs,
+  normalizeRegisterFlags,
   parseAppRuntimeArgs,
   parseEnvFile,
   renderBanner,
@@ -290,6 +291,32 @@ describe('resolveEnvFromArgs', () => {
     expect(exitSpy).toHaveBeenCalledWith(2);
     exitSpy.mockRestore();
     consoleSpy.mockRestore();
+  });
+});
+
+describe('normalizeRegisterFlags', () => {
+  it('parses env, --fresh, and --code flags', () => {
+    expect(normalizeRegisterFlags(['dev', '--fresh', '--code', '8XNYEB'])).toEqual({
+      env: 'dev',
+      fresh: true,
+      code: '8XNYEB',
+    });
+  });
+
+  it('parses --code=value form', () => {
+    expect(normalizeRegisterFlags(['--fresh', '--code=ABC123', 'staging'])).toEqual({
+      env: 'staging',
+      fresh: true,
+      code: 'ABC123',
+    });
+  });
+
+  it('defaults env to local when omitted', () => {
+    expect(normalizeRegisterFlags(['--code', 'ABC123'])).toEqual({
+      env: 'local',
+      fresh: false,
+      code: 'ABC123',
+    });
   });
 });
 

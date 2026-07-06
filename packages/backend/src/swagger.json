@@ -3801,6 +3801,37 @@
         ]
       }
     },
+    "/api/custom-apps/port-expose": {
+      "post": {
+        "operationId": "createPortExposeApp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePortExposeAppDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCustomAppResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
     "/api/custom-apps": {
       "post": {
         "operationId": "createCustomApp",
@@ -4544,11 +4575,15 @@
         "type": "object",
         "properties": {}
       },
-      "CreateCustomAppDto": {
+      "CreatePortExposeAppDto": {
         "type": "object",
         "properties": {}
       },
       "CreateCustomAppResponseDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateCustomAppDto": {
         "type": "object",
         "properties": {}
       },
