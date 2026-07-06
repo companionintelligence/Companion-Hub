@@ -147,7 +147,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     }
   }
 
-  if (registration.kind === 'ok' && (requiresDeviceRegistration(registration.status) || requiresPortalRePairing(registration.status))) {
+  if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
     if (url.pathname === '/login') {
       return null;
     }
@@ -157,6 +157,11 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return null;
   }
 
+  // A registered Hub whose public tunnel is degraded (tunnel_token_missing) is
+  // still fully usable locally. Don't hijack every navigation to the re-pair
+  // screen — that locks the user out of Settings and other local pages. The
+  // state is surfaced in-app via the dashboard banner (TunnelStatusBanner),
+  // and the user can open the re-pair screen from there when they choose to.
   if (
     registration.kind === 'ok' &&
     isRegistrationOperational(registration.status) &&

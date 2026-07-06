@@ -170,6 +170,41 @@ describe('root clientLoader registration gating', () => {
     expect(result.headers.get('Location')).toBe('/login');
     expect(sessionStorage.getItem('device-registered')).toBe('true');
   });
+
+  it('does not hijack navigation when only the public tunnel is degraded', async () => {
+    const userResult = {
+      data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false },
+    };
+    userContext.mockResolvedValue(userResult);
+    resolveRegistrationStatus.mockResolvedValue({
+      phase: 'degraded',
+      registered: true,
+      degradedReasons: ['tunnel_token_missing'],
+    });
+
+    const result = await clientLoader({ request: new Request('http://localhost/settings') } as never);
+
+    // The Hub is registered and works locally — stay on the requested page
+    // instead of redirecting to the re-pair screen.
+    expect(result).toBe(userResult);
+  });
+
+  it('keeps the re-pair screen reachable when the public tunnel is degraded', async () => {
+    const userResult = {
+      data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false },
+    };
+    userContext.mockResolvedValue(userResult);
+    resolveRegistrationStatus.mockResolvedValue({
+      phase: 'degraded',
+      registered: true,
+      degradedReasons: ['tunnel_token_missing'],
+    });
+
+    const result = await clientLoader({ request: new Request('http://localhost/device-registration') } as never);
+
+    // No forced bounce to /login — the user can stay and re-pair.
+    expect(result).toBe(userResult);
+  });
 });
 
 describe('root clientLoader session continuity', () => {
