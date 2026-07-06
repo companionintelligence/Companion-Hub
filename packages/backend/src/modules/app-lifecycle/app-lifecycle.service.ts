@@ -1,6 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -754,9 +755,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
           this.logger.info(`App ${appUrn} stopped successfully`);
 
-          const { PortExposeService } = await import('../custom-apps/port-expose.service');
-          const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
-          await portExposeService?.syncPortExposeRoutes().catch(() => undefined);
+          try {
+            const { PortExposeService } = await import('../custom-apps/port-expose.service');
+            const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
+            await portExposeService?.syncPortExposeRoutes().catch(() => undefined);
+          } catch (err) {
+            this.logger.warn(`Port-expose route sync skipped after stop for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+          }
 
           if (app.exposedLocal || app.exposureMode === 'cloudflare' || app.exposureMode === 'tailscale') {
             await this.syncExposure();
@@ -879,12 +884,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (success) {
           this.logger.info(`App ${appUrn} uninstalled successfully`);
 
-          const { PortExposeService } = await import('../custom-apps/port-expose.service');
-          const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
-          if (portExposeService) {
-            await portExposeService.beforePortExposeUninstall(appUrn).catch((err) => {
-              this.logger.warn(`Port-expose registry cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-            });
+          let portExposeService:
+            | { beforePortExposeUninstall: (urn: AppUrn) => Promise<void>; afterPortExposeUninstall: () => Promise<void> }
+            | undefined;
+          if (isPortExposeApp(app.config)) {
+            try {
+              const { PortExposeService } = await import('../custom-apps/port-expose.service');
+              portExposeService = this.moduleRef.get(PortExposeService, { strict: false }) ?? undefined;
+              if (portExposeService) {
+                await portExposeService.beforePortExposeUninstall(appUrn).catch((err) => {
+                  this.logger.warn(`Port-expose registry cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+                });
+              }
+            } catch (err) {
+              this.logger.warn(`Port-expose cleanup unavailable for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+            }
           }
 
           await this.appRepository.deleteAppById(app.id);
