@@ -479,10 +479,14 @@ export class AppHelpers {
     // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
     // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
     // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
-    const isFirstPartyPortalOidcApp =
-      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-    if (!oidcIntegration && isFirstPartyPortalOidcApp && normalizedCloudUrl) {
-      envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    // The first-party check is computed lazily so opted-in apps (the common path going
+    // forward) don't pay for the id/source scan on every env generation.
+    if (!oidcIntegration && normalizedCloudUrl) {
+      const isFirstPartyPortalOidcApp =
+        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+      if (isFirstPartyPortalOidcApp) {
+        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+      }
     }
 
     envMap.delete('APP_PUBLIC_DOMAIN');

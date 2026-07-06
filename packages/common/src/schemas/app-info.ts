@@ -68,8 +68,15 @@ export const hubIntegrationSchema = z
      */
     oidc: z
       .object({
-        /** Env variable name the app reads its OIDC issuer from (e.g. "CI_OIDC_ISSUER"). */
-        issuer_env: z.string().min(1),
+        /**
+         * Env variable name the app reads its OIDC issuer from (e.g. "CI_OIDC_ISSUER").
+         * Must be a valid environment variable name so it is never written as a
+         * malformed/whitespace-padded key (which would silently misconfigure OIDC).
+         */
+        issuer_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
         /**
          * Optional path appended to the paired Portal origin to form the issuer
          * (e.g. "/api/auth" for discovery-based clients that resolve

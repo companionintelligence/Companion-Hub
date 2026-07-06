@@ -105,6 +105,12 @@ describe('hubIntegrationSchema', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject a whitespace-only or malformed issuer_env (must be a valid env var name)', () => {
+      expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: '   ' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: 'CI_OIDC_ISSUER ' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: '1_BAD_NAME' } }).success).toBe(false);
+    });
+
     it('should leave oidc undefined when not declared', () => {
       const result = hubIntegrationSchema.safeParse({ mcp_client: true });
       expect(result.success).toBe(true);
