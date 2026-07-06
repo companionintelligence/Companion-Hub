@@ -241,6 +241,8 @@ describe('DeviceRegistrationPage', () => {
     expect(await screen.findByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     // ...with an explanation of why remote access needs attention...
     expect(screen.getByText(/public URL is offline/i)).toBeInTheDocument();
+    // ...device info is loaded so the device ID is shown (not stuck "Loading device ID...")...
+    expect(await screen.findByText('device-123')).toBeInTheDocument();
     // ...and the page does NOT auto-bounce to the local app.
     expect(navigate).not.toHaveBeenCalled();
   });

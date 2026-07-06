@@ -231,6 +231,14 @@ export default function DeviceRegistrationPage() {
 
       if (isRegistrationOperational(status)) {
         cacheRegistrationStatus(status);
+        // A registered Hub whose public tunnel is degraded (tunnel_token_missing)
+        // renders the re-pair form. Load the device info it needs — the device ID
+        // and the device-scoped Portal Add-Device URL — just like the unregistered
+        // path, otherwise the form is stuck on "Loading device ID..." and its login
+        // link falls back to the generic Portal URL.
+        if (requiresPortalRePairing(status)) {
+          await loadDeviceInfo();
+        }
         return status;
       }
 
@@ -394,7 +402,9 @@ export default function DeviceRegistrationPage() {
   }, [finishRegistrationFlow, navigate, registrationStatus]);
 
   useEffect(() => {
-    if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
+    const showsPairingForm =
+      registrationStatus?.phase === 'unregistered' || (registrationStatus != null && requiresPortalRePairing(registrationStatus));
+    if (!isLoading && showsPairingForm && deviceId && pairingInputRef.current) {
       pairingInputRef.current.focus();
     }
   }, [deviceId, isLoading, registrationStatus]);
