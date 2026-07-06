@@ -111,6 +111,24 @@ describe('hubIntegrationSchema', () => {
       expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: '1_BAD_NAME' } }).success).toBe(false);
     });
 
+    it('should accept a valid lowercase issuer_env', () => {
+      const result = hubIntegrationSchema.safeParse({ oidc: { issuer_env: 'ci_oidc_issuer' } });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject an issuer_path containing whitespace or a newline (env-injection guard)', () => {
+      // The composed issuer is written verbatim into app.env; a newline would inject an extra env line.
+      expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: 'api/auth\nHUB_API_KEY=evil' } }).success).toBe(
+        false,
+      );
+      expect(hubIntegrationSchema.safeParse({ oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api /auth' } }).success).toBe(false);
+    });
+
+    it('should accept an issuer_path without a leading slash', () => {
+      const result = hubIntegrationSchema.safeParse({ oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: 'api/auth' } });
+      expect(result.success).toBe(true);
+    });
+
     it('should leave oidc undefined when not declared', () => {
       const result = hubIntegrationSchema.safeParse({ mcp_client: true });
       expect(result.success).toBe(true);

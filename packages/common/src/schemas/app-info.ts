@@ -82,8 +82,12 @@ export const hubIntegrationSchema = z
          * (e.g. "/api/auth" for discovery-based clients that resolve
          * `<issuer>/.well-known/openid-configuration`). Omit for a bare-origin
          * issuer (e.g. CI-Server, which appends its own auth paths).
+         *
+         * Must not contain whitespace: the composed issuer is written verbatim
+         * into the app's `app.env` (an unescaped `KEY=value` line), so a newline
+         * here would inject an arbitrary extra environment line.
          */
-        issuer_path: z.string().optional(),
+        issuer_path: z.string().regex(/^\S*$/, 'issuer_path must not contain whitespace').optional(),
       })
       .optional(),
   })

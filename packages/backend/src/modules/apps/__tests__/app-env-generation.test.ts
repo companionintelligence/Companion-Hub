@@ -124,4 +124,65 @@ describe('AppHelpers Reproduction', () => {
     expect(generatedEnvContent).toContain('APP_PUBLIC_URL=https://test-app-test-store-test-org-slug.example.com');
     expect(generatedEnvContent).toContain('APP_SCHEME=https');
   });
+
+  it('serializes an injected OIDC issuer as exactly one clean env line (real EnvUtils)', async () => {
+    // Arrange: an opted-in app (hub_integration.oidc) on a paired Hub.
+    const mockAppInfo: AppInfo = {
+      id: 'ci-import-tools',
+      urn: testAppUrn,
+      name: 'Import Tools',
+      author: 'CI',
+      port: 8000,
+      https: false,
+      no_gui: false,
+      available: true,
+      exposable: true,
+      dynamic_config: true,
+      source: 'https://github.com/companionintelligence/CI-Import-Tools',
+      version: '1.0.0',
+      categories: ['utilities'],
+      description: 'Test description',
+      short_desc: 'Test short description',
+      website: 'http://example.com',
+      supported_architectures: [],
+      created_at: 0,
+      updated_at: 0,
+      deprecated: false,
+      cihub_app_version: 2,
+      force_expose: false,
+      force_pull: false,
+      generate_vapid_keys: false,
+      form_fields: [],
+      hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } },
+    };
+
+    config.getConfig.mockReturnValue(
+      fromPartial({
+        internalIp: '127.0.0.1',
+        envFilePath: '/data/.env',
+        rootFolderHost: '/opt/ci-hub',
+        domain: 'example.com',
+        ciCloudUrl: 'https://hub.ci.computer',
+        userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com', localDomain: 'test.local' },
+      }),
+    );
+
+    appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
+    filesystem.readTextFile.mockResolvedValue('');
+    deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(fromPartial({ id: 'org-id', slug: 'test-org-slug' }));
+
+    let generatedEnvContent = '';
+    appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
+      generatedEnvContent = content;
+    });
+
+    // Act
+    await appHelpers.generateEnvFile(testAppUrn, {});
+
+    // Assert: the issuer is present exactly once, as a single well-formed line
+    // (guards against the value corrupting the serialized env file).
+    const issuerLines = generatedEnvContent.split('\n').filter((line) => line.startsWith('CI_OIDC_ISSUER='));
+    expect(issuerLines).toEqual(['CI_OIDC_ISSUER=https://hub.ci.computer/api/auth']);
+  });
 });

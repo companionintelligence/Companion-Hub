@@ -1116,6 +1116,17 @@ describe('AppHelpers', () => {
         expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
       });
 
+      it('joins an issuer_path that has no leading slash', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: 'api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+      });
+
       it('does not inject any issuer for a third-party app that does not opt in', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
