@@ -9,6 +9,7 @@ import {
   CreatePortExposeAppDto,
   UpdateAppMetadataDto,
   UpdateCustomAppDto,
+  UpdatePortExposeAppDto,
 } from './dto/custom-apps.dto';
 import { ApiResponse, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { castAppUrn } from '@/common/helpers/app-helpers';
@@ -48,6 +49,14 @@ export class CustomAppController {
       },
       { reportOnly: true },
     );
+  }
+
+  @Patch('port-expose/:urn')
+  @UseGuards(AuthGuard)
+  @ApiResponse({})
+  async updatePortExposeApp(@Param('urn') appUrn: string, @Body() body: UpdatePortExposeAppDto) {
+    await this.portExposeService.updatePortExposeApp(castAppUrn(appUrn), body);
+    return { success: true };
   }
 
   @Patch(':urn')

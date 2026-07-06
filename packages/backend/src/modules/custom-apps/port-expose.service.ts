@@ -15,7 +15,7 @@ import { publishesCloudflarePublicRoute } from '../apps/app-public-routing.helpe
 import { ExposureSyncService } from '../app-lifecycle/exposure-sync.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { TraefikConfigService, type PortExposeRoute } from '../docker/traefik-config.service';
-import type { CreatePortExposeAppDto } from './dto/custom-apps.dto';
+import type { CreatePortExposeAppDto, UpdatePortExposeAppDto } from './dto/custom-apps.dto';
 
 const APPS_FOLDER = '_user';
 
@@ -115,6 +115,93 @@ export class PortExposeService {
         throw error;
       }
       throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  async updatePortExposeApp(appUrn: AppUrn, dto: UpdatePortExposeAppDto): Promise<void> {
+    if (this.configService.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    const info = await this.appFilesManager.getInstalledAppInfo(appUrn);
+    if (!isPortExposeApp(info) && !isPortExposeApp(app.config)) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.BAD_REQUEST);
+    }
+
+    const { port, exposureMode, localSubdomain, publicDomain } = dto;
+    const previousExposureMode = app.exposureMode;
+
+    if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
+      throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
+    }
+
+    const appsWithSamePort = await this.appsRepository.getAppsByPort(port, app.id);
+    if (appsWithSamePort.length > 0) {
+      throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
+    }
+
+    const { appName } = extractAppUrn(appUrn);
+    const routingSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() || appName);
+    if (exposureMode === 'cloudflare') {
+      const appsWithSameLocalSubdomain = await this.appsRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
+      if (appsWithSameLocalSubdomain.length > 0) {
+        throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {
+          subdomain: routingSubdomain,
+          id: appsWithSameLocalSubdomain[0]?.appName,
+        });
+      }
+    }
+
+    try {
+      await this.updatePortExposeConfigJson(appUrn, port);
+
+      const exposedLocal = exposureMode === 'cloudflare';
+      const openPort = exposureMode === 'local' || exposedLocal;
+      const config = {
+        kind: PORT_EXPOSE_KIND,
+        port,
+        exposureMode,
+        localSubdomain: routingSubdomain,
+        publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
+        exposedLocal,
+        openPort,
+      };
+
+      await this.appsRepository.updateAppById(app.id, {
+        config,
+        port,
+        exposedLocal,
+        exposureMode,
+        openPort,
+        localSubdomain: routingSubdomain,
+        publicDomain: exposureMode === 'cloudflare' ? (publicDomain ?? null) : null,
+        status: 'running',
+      });
+
+      await this.syncPortExposeRoutes();
+      await this.exposureSyncService.syncExposurePublic();
+
+      const previousNeedsPortal = portExposeNeedsPortalRegistry(previousExposureMode);
+      const nextNeedsPortal = portExposeNeedsPortalRegistry(exposureMode);
+
+      if (previousNeedsPortal && !nextNeedsPortal) {
+        await this.syncPortalRegistry(appUrn, 'remove');
+      } else if (nextNeedsPortal) {
+        await this.syncPortalRegistry(appUrn, 'upsert');
+      }
+
+      this.logger.info(`Port-expose workload ${appName} updated (port ${port}, ${exposureMode})`);
+    } catch (error) {
+      this.logger.error(`Failed to update port-expose workload ${appUrn}:`, error);
+      if (error instanceof TranslatableError) {
+        throw error;
+      }
+      throw new TranslatableError('PORT_EXPOSE_UPDATE_ERROR', { name: appName }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -243,6 +330,29 @@ export class PortExposeService {
     const ok = await this.filesystem.writeTextFile(configPath, configContent);
     if (!ok) {
       throw new Error(`Failed to write docker-compose config at ${configPath}`);
+    }
+  }
+
+  private async updatePortExposeConfigJson(appUrn: AppUrn, upstreamPort: number): Promise<void> {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const { dataDir } = this.configService.get('directories');
+    const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
+
+    const existing = await this.filesystem.readJsonFile<AppInfo>(infoPath);
+    if (!existing) {
+      throw new Error(`Failed to read app info at ${infoPath}`);
+    }
+
+    const updatedInfo = {
+      ...existing,
+      port: upstreamPort,
+      upstreamPort,
+      updated_at: Date.now(),
+    } satisfies AppInfo;
+
+    const ok = await this.filesystem.writeJsonFile(infoPath, updatedInfo);
+    if (!ok) {
+      throw new Error(`Failed to write app info at ${infoPath}`);
     }
   }
 
