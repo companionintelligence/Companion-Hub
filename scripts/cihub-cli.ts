@@ -1085,7 +1085,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       const drift = await fetchStateDrift(apiBase);
       shouldPrepareFresh = drift.detected;
     } catch {
-      // Non-fatal â€” proceed without auto-clearing drift.
+      // Non-fatal — proceed without auto-clearing drift.
     }
   }
 
@@ -1160,7 +1160,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
         const answer = await rl.question('  Pairing code (6 characters): ');
         pairingCode = normalizePairingCode(answer);
         if (!isValidPairingCode(pairingCode)) {
-          console.log(colorize('  Enter a valid 6-character code from the portal.', 'yellow'));
+          console.log(colorize('  Enter a valid 6-character code from your CI Account.', 'yellow'));
         }
       }
     } finally {
