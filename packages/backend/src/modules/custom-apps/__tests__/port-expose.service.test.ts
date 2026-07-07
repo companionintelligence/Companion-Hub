@@ -124,6 +124,84 @@ describe('PortExposeService', () => {
     });
   });
 
+  describe('updatePortExposeApp', () => {
+    const existingApp = {
+      id: 7,
+      appName: 'my-workload',
+      appStoreSlug: '_user',
+      exposureMode: 'local',
+      port: 8080,
+      localSubdomain: 'my-workload',
+      config: { kind: PORT_EXPOSE_KIND, port: 8080, exposureMode: 'local' },
+    };
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(existingApp as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ kind: PORT_EXPOSE_KIND, port: 8080, upstreamPort: 8080 } as any);
+      filesystem.readJsonFile.mockResolvedValue({ kind: PORT_EXPOSE_KIND, port: 8080, upstreamPort: 8080 } as any);
+      appsRepository.updateAppById.mockResolvedValue(existingApp as any);
+    });
+
+    it('updates port and exposure settings for an existing workload', async () => {
+      await service.updatePortExposeApp('my-workload:_user', {
+        port: 9090,
+        exposureMode: 'local',
+      });
+
+      expect(filesystem.writeJsonFile).toHaveBeenCalledWith(
+        expect.stringContaining('config.json'),
+        expect.objectContaining({ port: 9090, upstreamPort: 9090 }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({
+          port: 9090,
+          exposureMode: 'local',
+          status: 'running',
+        }),
+      );
+      expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
+      expect(exposureSyncService.syncExposurePublic).toHaveBeenCalled();
+    });
+
+    it('throws when cloudflare mode is missing a subdomain', async () => {
+      await expect(
+        service.updatePortExposeApp('my-workload:_user', {
+          port: 8080,
+          exposureMode: 'cloudflare',
+        }),
+      ).rejects.toThrow('PORT_EXPOSE_SUBDOMAIN_REQUIRED');
+    });
+
+    it('throws when another app already uses the port', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'other-app' }] as any);
+
+      await expect(
+        service.updatePortExposeApp('my-workload:_user', {
+          port: 9090,
+          exposureMode: 'local',
+        }),
+      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+    });
+
+    it('removes portal registry entry when switching from local to cloudflare', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+
+      await service.updatePortExposeApp('my-workload:_user', {
+        port: 8080,
+        exposureMode: 'cloudflare',
+        localSubdomain: 'my-workload',
+        publicDomain: 'example.com',
+      });
+
+      expect(portalClient.postDeviceApplicationsRegistry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apps: [expect.objectContaining({ remove: true })],
+        }),
+      );
+    });
+  });
+
   describe('beforePortExposeUninstall', () => {
     it('syncs portal registry removal for local workloads identified by config kind', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({

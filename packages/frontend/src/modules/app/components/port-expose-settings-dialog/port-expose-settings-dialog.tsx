@@ -186,13 +186,17 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     });
   };
 
+  const handleClose = () => {
+    reset();
+    onClose();
+  };
+
   return (
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) {
-          reset();
-          onClose();
+          handleClose();
         }
       }}
     >
@@ -293,7 +297,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
           ) : null}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={updatePortExpose.isPending}>
+            <Button type="button" variant="outline" onClick={handleClose} disabled={updatePortExpose.isPending}>
               {t('COMMON_CANCEL')}
             </Button>
             <Button type="submit" loading={updatePortExpose.isPending}>
