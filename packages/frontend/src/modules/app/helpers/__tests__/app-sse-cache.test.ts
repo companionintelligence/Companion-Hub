@@ -71,6 +71,16 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
   });
 
+  it('refreshes install queue when an app enters installing', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'status_change',
+      appUrn: 'plane:ci-marketplace',
+      appStatus: 'installing',
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: installQueueQueryKey });
+  });
+
   it('invalidates on install_success', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'install_success',

@@ -30,6 +30,7 @@
   "APP_ACTION_FAILED_TO_RESOLVE": "Failed to resolve: {{error}}",
   "APP_ACTION_APPLICATION_ERROR": "Application Error",
   "INSTALL_QUEUE_ACTIVE_AND_WAITING": "Downloading <strong>{{activeName}}</strong>; {{count}} more waiting in queue",
+  "INSTALL_QUEUE_ACTIVE_ONLY": "Installing {{name}}",
   "INSTALL_QUEUE_WAITING_ONLY": "{{count}} installs waiting in queue",
   "INSTALL_QUEUE_WAITING_NAMES": "Waiting: {{names}}",
   "APP_CATEGORY_AUTOMATION": "Automation",

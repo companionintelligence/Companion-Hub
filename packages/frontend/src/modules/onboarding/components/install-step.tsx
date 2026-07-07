@@ -218,18 +218,31 @@ export const InstallStep = ({
       const finalStates: AppInstallState[] = apps.map((app) => ({ app, status: 'queued' as AppInstallStatus }));
       const stateAt = (index: number, app: OnboardingApp): AppInstallState => finalStates[index] ?? { app, status: 'queued' };
 
-      for (let i = 0; i < apps.length; i++) {
-        const app = apps[i];
-        if (!app) continue;
+      const resolveInstalledStatus = async (urn: string): Promise<'running' | 'installing' | 'install_failed' | false> => {
+        try {
+          const installedResult = await sdkResult(getInstalledApps());
+          if (!installedResult.ok) return false;
+          const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
+          const installed = data.installed || [];
+          const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === urn);
+          if (!match) return false;
+          const appStatus = (match.app?.status as string) ?? '';
+          if (appStatus === 'running') return 'running';
+          if (appStatus === 'install_failed') return 'install_failed';
+          return 'installing';
+        } catch {
+          return false;
+        }
+      };
 
+      const enqueueApp = async (index: number, app: OnboardingApp) => {
         if (!app.urn) {
-          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: t('ONBOARDING_APP_NOT_AVAILABLE_IN_STORE') };
+          finalStates[index] = { ...stateAt(index, app), status: 'failed', error: t('ONBOARDING_APP_NOT_AVAILABLE_IN_STORE') };
           setStates([...finalStates]);
-          await minDelay(500);
-          continue;
+          return;
         }
 
-        finalStates[i] = { ...stateAt(i, app), status: 'installing' };
+        finalStates[index] = { ...stateAt(index, app), status: 'installing' };
         setStates([...finalStates]);
 
         try {
@@ -245,89 +258,19 @@ export const InstallStep = ({
 
         try {
           const installBody = buildInstallBody(app);
-          const [installResult] = await Promise.all([
-            sdkResult(
-              installApp({
-                path: { urn: app.urn },
-                body: installBody,
-              } as Parameters<typeof installApp>[0]),
-            ),
-            minDelay(500),
-          ]);
+          const installResult = await sdkResult(
+            installApp({
+              path: { urn: app.urn },
+              body: installBody,
+            } as Parameters<typeof installApp>[0]),
+          );
 
           if (!installResult.ok) {
             const data = (installResult.data ?? {}) as { message?: string };
             throw new Error(data.message || `HTTP ${installResult.status}`);
           }
-
-          // Poll to confirm the app shows up in the installed apps list with
-          // a status that indicates it is actually running / healthy.
-          const pollInterval = 1000;
-          const timeoutMs = 60_000;
-          const start = Date.now();
-
-          const checkRunning = async (): Promise<'running' | 'installing' | 'install_failed' | false> => {
-            try {
-              const installedResult = await sdkResult(getInstalledApps());
-              if (!installedResult.ok) return false;
-              const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
-              const installed = data.installed || [];
-              const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
-              if (!match) return false;
-              const appStatus = (match.app?.status as string) ?? '';
-              if (appStatus === 'running') return 'running';
-              if (appStatus === 'install_failed') return 'install_failed';
-              // Present in list but not yet running
-              return 'installing';
-            } catch {
-              return false;
-            }
-          };
-
-          let confirmedStatus: 'running' | 'installing' | 'install_failed' | false = false;
-
-          while (Date.now() - start < timeoutMs) {
-            await minDelay(pollInterval);
-            confirmedStatus = await checkRunning();
-            if (confirmedStatus === 'running' || confirmedStatus === 'install_failed') break;
-          }
-
-          if (confirmedStatus === 'running') {
-            finalStates[i] = { ...stateAt(i, app), status: 'running' };
-            setStates([...finalStates]);
-            try {
-              queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
-              queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
-            } catch (_e) {
-              // ignore
-            }
-          } else if (confirmedStatus === 'install_failed') {
-            finalStates[i] = {
-              ...stateAt(i, app),
-              status: 'failed',
-              error: t('ONBOARDING_INSTALL_FAILED_RETRY_MY_APPS'),
-            };
-            setStates([...finalStates]);
-            try {
-              queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
-              queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
-            } catch (_e) {
-              // ignore
-            }
-          } else {
-            // The install request was accepted but the app was not confirmed
-            // running within the timeout. Mark as incomplete, not success.
-            finalStates[i] = {
-              ...stateAt(i, app),
-              status: 'incomplete',
-              error: t('ONBOARDING_INSTALL_STARTED_NOT_CONFIRMED'),
-            };
-            setStates([...finalStates]);
-            // Keep optimistic cache entry — the app likely still exists on
-            // the server, just hasn't fully converged yet.
-          }
         } catch (e) {
-          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: (e as Error).message };
+          finalStates[index] = { ...stateAt(index, app), status: 'failed', error: (e as Error).message };
           setStates([...finalStates]);
           try {
             await queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
@@ -336,6 +279,67 @@ export const InstallStep = ({
             // ignore
           }
         }
+      };
+
+      // Enqueue every selected app immediately; the backend serializes Docker pulls.
+      await Promise.all(apps.map((app, index) => enqueueApp(index, app)));
+
+      const pollInterval = 1000;
+      const timeoutMs = 120_000;
+      const monitorStart = Date.now();
+
+      while (Date.now() - monitorStart < timeoutMs) {
+        const pending = finalStates.map((state, index) => ({ state, index })).filter(({ state }) => state.status === 'installing' && state.app.urn);
+
+        if (pending.length === 0) {
+          break;
+        }
+
+        for (const { state, index } of pending) {
+          const urn = state.app.urn;
+          if (!urn) continue;
+
+          const confirmedStatus = await resolveInstalledStatus(urn);
+          if (confirmedStatus === 'running') {
+            finalStates[index] = { ...stateAt(index, state.app), status: 'running' };
+          } else if (confirmedStatus === 'install_failed') {
+            finalStates[index] = {
+              ...stateAt(index, state.app),
+              status: 'failed',
+              error: t('ONBOARDING_INSTALL_FAILED_RETRY_MY_APPS'),
+            };
+          }
+        }
+
+        setStates([...finalStates]);
+
+        if (finalStates.every((state) => state.status !== 'installing')) {
+          break;
+        }
+
+        await minDelay(pollInterval);
+      }
+
+      for (let i = 0; i < finalStates.length; i++) {
+        const state = finalStates[i];
+        if (!state || state.status !== 'installing') {
+          continue;
+        }
+
+        finalStates[i] = {
+          ...stateAt(i, state.app),
+          status: 'incomplete',
+          error: t('ONBOARDING_INSTALL_STARTED_NOT_CONFIRMED'),
+        };
+      }
+
+      setStates([...finalStates]);
+
+      try {
+        queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
+      } catch (_e) {
+        // ignore
       }
 
       setDone(true);

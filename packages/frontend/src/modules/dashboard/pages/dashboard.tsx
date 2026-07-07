@@ -42,8 +42,7 @@ export default () => {
     staleTime: 30_000,
   });
 
-  const installingCount = appsData?.installed.filter((entry) => entry.app.status === 'installing').length ?? 0;
-  const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue(installingCount > 0);
+  const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue();
 
   const isLoading = !systemData;
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
@@ -89,7 +88,7 @@ export default () => {
 
         {/* Apps section */}
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
-          <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading && installingCount > 0} />
+          <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
           {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
         </div>
       </div>

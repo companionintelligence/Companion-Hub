@@ -49,7 +49,7 @@ function RestoreAppsContent() {
   const [error, setError] = useState<string | null>(null);
   const [isExecuting, setIsExecuting] = useState(false);
   const startedRef = useRef(false);
-  const { data: installQueue, isLoading: isQueueLoading } = useInstallQueue(true);
+  const { data: installQueue, isLoading: isQueueLoading } = useInstallQueue();
 
   useEffect(() => {
     if (startedRef.current) {

@@ -199,6 +199,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   if (appStatus === 'installing' && progress === undefined) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     updateInstallErrorCache(queryClient, appUrn, { error, errorCode, errorDetail, settingsPath }, appStatus);
+    void queryClient.invalidateQueries({ queryKey: installQueueQueryKey });
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
