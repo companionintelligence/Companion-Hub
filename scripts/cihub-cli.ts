@@ -1085,7 +1085,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       const drift = await fetchStateDrift(apiBase);
       shouldPrepareFresh = drift.detected;
     } catch {
-      // Non-fatal — proceed without auto-clearing drift.
+      // Non-fatal ? proceed without auto-clearing drift.
     }
   }
 

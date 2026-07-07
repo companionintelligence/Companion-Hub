@@ -1,6 +1,12 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { buildInstallIntentPath, type InstallIntent, stashPendingInstallIntent, takePendingInstallIntentFromDesktop } from '@/lib/deep-link-install';
+import {
+  buildInstallIntentPath,
+  DEFAULT_INSTALL_STORE_ID,
+  type InstallIntent,
+  stashPendingInstallIntent,
+  takePendingInstallIntentFromDesktop,
+} from '@/lib/deep-link-install';
 
 const SETUP_ROUTE_PREFIXES = ['/device-registration', '/onboarding', '/restore-apps', '/login', '/register'];
 
@@ -16,7 +22,7 @@ function normalizePayload(payload: InstallIntent): InstallIntent | null {
 
   return {
     appSlug,
-    storeId: payload.storeId?.trim() || 'ci-marketplace',
+    storeId: payload.storeId?.trim() || DEFAULT_INSTALL_STORE_ID,
     deviceId: payload.deviceId?.trim() || null,
   };
 }

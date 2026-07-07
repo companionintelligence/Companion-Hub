@@ -11,7 +11,7 @@ function isI18nKey(message: string): boolean {
   return I18N_KEY_PATTERN.test(message);
 }
 
-/** Turn API or route errors into translated Uncloud copy (fact + fix). Never surfaces raw backend English. */
+/** Turn API or route errors into translated user-facing copy (fact + fix). Never surfaces raw backend English. */
 export function formatApiError(error: unknown, t: TFunction, status = 500): string {
   if (isChunkLoadError(error)) {
     return t('ERROR_PAGE_CHUNK_LOAD');
@@ -28,10 +28,11 @@ export function formatApiError(error: unknown, t: TFunction, status = 500): stri
   }
 
   const key = normalizeApiErrorMessage(message, status);
+  const fallback = t('COMMON_AN_ERROR_OCCURRED');
 
   if (isI18nKey(key)) {
-    return t(key, intlParams ?? {});
+    return t(key, { ...(intlParams ?? {}), defaultValue: fallback });
   }
 
-  return t('COMMON_AN_ERROR_OCCURRED');
+  return fallback;
 }

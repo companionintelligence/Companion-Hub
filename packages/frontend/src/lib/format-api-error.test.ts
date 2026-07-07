@@ -5,7 +5,17 @@ import { TranslatableError } from '@/types/error.types';
 
 import { formatApiError } from './format-api-error';
 
-const t = ((key: string) => key) as TFunction;
+const t = ((key: string, options?: Record<string, unknown>) => {
+  const knownKeys = new Set([
+    'AUTH_ERROR_INVALID_CREDENTIALS',
+    'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
+    'COMMON_AN_ERROR_OCCURRED',
+    'ERROR_PAGE_CHUNK_LOAD',
+  ]);
+  if (knownKeys.has(key)) return key;
+  const defaultValue = options?.defaultValue;
+  return typeof defaultValue === 'string' ? defaultValue : key;
+}) as TFunction;
 
 describe('formatApiError', () => {
   it('translates TranslatableError i18n keys', () => {
@@ -22,5 +32,9 @@ describe('formatApiError', () => {
 
   it('maps chunk load failures to a refresh hint', () => {
     expect(formatApiError(new TypeError('Failed to fetch dynamically imported module'), t)).toBe('ERROR_PAGE_CHUNK_LOAD');
+  });
+
+  it('falls back when an i18n key has no translation', () => {
+    expect(formatApiError(new TranslatableError('UNKNOWN_ERROR_KEY'), t, 400)).toBe('COMMON_AN_ERROR_OCCURRED');
   });
 });
