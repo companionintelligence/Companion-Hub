@@ -64,8 +64,12 @@ services:
     # and uses dockerode against that socket). The daemon performs all
     # privileged work host-side; the Hub process only needs *access* to the
     # socket, which is granted by the entrypoint dropping to CI_HUB_CONTAINER_UID
-    # with the DOCKER_GID supplementary group (+ `group_add: DOCKER_GID`)
-    # + the read-only socket mount below. The backend performs no iptables /
+    # with DOCKER_GID applied via `setpriv --groups` (see docker-entrypoint.sh)
+    # + the read-only socket mount below. NOTE: the `group_add: DOCKER_GID` below
+    # only affects the brief pre-drop root phase — setpriv REPLACES the
+    # supplementary groups, so the dropped process's socket access comes solely
+    # from `--groups=$DOCKER_GID` (fed by the DOCKER_GID env var).
+    # The backend performs no iptables /
     # modprobe / mknod / device or kernel-module operations of its own, so it
     # needs no host devices, no extra capabilities, and no seccomp/AppArmor
     # opt-out. `privileged: true` would grant ALL of those and directly

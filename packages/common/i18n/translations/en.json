@@ -1225,6 +1225,7 @@
   "TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART": "Almost there — restart the Hub to finish restoring remote access.",
   "TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR": "This device needs to be re-paired to restore remote access.",
   "TUNNEL_DEGRADED_RECONNECT_FAILED": "Couldn't reconnect. Please try again.",
+  "TUNNEL_DEGRADED_REPAIR_CONFIRM": "Restoring remote access requires re-registering this device. Its current registration will be reset so you can pair it again. Continue?",
   "DEVICE_REGISTRATION_LOCAL_SETUP_COMPLETE_CHECKING_PUBLIC_URL": "Local setup is complete. Checking your public Hub URL...",
   "DEVICE_REGISTRATION_PUBLIC_URL_READY_REDIRECTING": "Public Hub URL is ready. Redirecting...",
   "DEVICE_REGISTRATION_WAITING_DNS_PROPAGATION": "Waiting for DNS propagation...",

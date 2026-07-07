@@ -46,6 +46,7 @@ const degraded = { data: { phase: 'degraded', registered: true, degradedReasons:
 describe('TunnelStatusBanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   it('renders a reconnect banner when the public tunnel is degraded', () => {
@@ -90,8 +91,22 @@ describe('TunnelStatusBanner', () => {
     fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/device-registration'));
+    expect(window.confirm).toHaveBeenCalled();
     expect(resetRegistrationForRePair).toHaveBeenCalled();
     expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('does not reset or navigate if the user cancels the re-pair confirmation', async () => {
+    useRegistrationStatus.mockReturnValue(degraded);
+    reconnectTunnel.mockResolvedValue({ recovered: false, action: 're_pair', reason: 'no_credentials' });
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(<TunnelStatusBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
+
+    await waitFor(() => expect(reconnectTunnel).toHaveBeenCalled());
+    expect(resetRegistrationForRePair).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('does not navigate to re-pair if the reset fails', async () => {

@@ -39,12 +39,15 @@ export function TunnelStatusBanner() {
         return;
       }
       if (result.action === 're_pair') {
-        // No recoverable credentials — reset local registration (the backend
-        // confirmed there are no tunnel creds, so nothing is lost) so the pairing
-        // screen can register the device fresh, then send the user there.
-        toast(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR'), { duration: 8000 });
+        // No recoverable credentials — re-pairing requires resetting local
+        // registration first (the backend refuses a pairing code while registered).
+        // That is destructive, so confirm before wiping the device's registration.
+        if (!window.confirm(t('TUNNEL_DEGRADED_REPAIR_CONFIRM'))) {
+          return;
+        }
         const reset = await resetRegistrationForRePair();
         if (reset.ok) {
+          toast(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR'), { duration: 8000 });
           navigate('/device-registration');
         } else {
           toast.error(t('TUNNEL_DEGRADED_RECONNECT_FAILED'));

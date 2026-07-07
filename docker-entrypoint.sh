@@ -33,10 +33,12 @@ if [ -d /app/tunnel ]; then
   chown -R "$HUB_UID:$HUB_GID" /app/tunnel 2>/dev/null || true
 fi
 
-# Drop privileges to the Hub uid/gid. Preserve access to the host Docker socket
-# by keeping its group (DOCKER_GID) as a supplementary group — this reproduces
-# what the compose `group_add: DOCKER_GID` provided before the drop. setpriv sets
-# the supplementary groups explicitly (su-exec would clear them for a numeric uid).
+# Drop privileges to the Hub uid/gid. Docker-socket access for the dropped process
+# comes solely from adding DOCKER_GID as a supplementary group here: setpriv REPLACES
+# the supplementary set (so the compose `group_add` does NOT survive the drop, and
+# su-exec would clear the groups for a numeric uid). DOCKER_GID is supplied via the
+# container env (compose defaults it to 973); if it is somehow unset we clear groups
+# rather than leak root's, which means the Hub would lack socket access until it is set.
 if [ -n "$DOCKER_GID" ]; then
   exec setpriv --reuid="$HUB_UID" --regid="$HUB_GID" --groups="$DOCKER_GID" -- "$@"
 fi

@@ -666,11 +666,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    *      tunnel must be re-provisioned, which requires resetting and re-pairing
    */
   public async reconnectTunnel(): Promise<{ recovered: boolean; action?: 're_pair' | 'restart'; reason: string }> {
-    await this.refreshPhaseFromSources();
+    // The banner only surfaces this action for a degraded + tunnel_token_missing
+    // device, so trust the in-memory phase instead of re-deriving it — a
+    // refreshPhaseFromSources() here would re-persist a degraded→degraded
+    // transition (firing a redundant high-urgency agent notification) and could
+    // even flip an out-of-band-cleared registration to 'unregistered'.
 
-    // If the token is already on disk (or the device is degraded for a different
-    // reason), there is nothing for this action to recover.
+    // If the token is already on disk, the missing-token condition is resolved.
+    // Clear any stuck degraded phase so the UI reflects success — this state is
+    // reachable when boot recovery rewrote the token but Portal was unreachable,
+    // so the phase never transitioned out of degraded.
     if (this.hasTunnelToken()) {
+      await this.clearTunnelTokenMissingDegraded();
       return { recovered: true, reason: 'tunnel_token_present' };
     }
     if (!this._degradedReasons.includes('tunnel_token_missing')) {
@@ -695,7 +702,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { recovered: false, action: 're_pair', reason: 'no_credentials' };
     }
 
-    // Credentials exist — rewrite the token file and bring the tunnel up.
+    // Credentials exist — rewrite the token file.
     await this.cloudflareClientService.initializeTunnel(org.id, {
       tunnelId: org.tunnelId,
       token: org.tunnelToken,
@@ -710,21 +717,35 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' };
     }
 
-    // Ensure cloudflared is running with the freshly written token (initializeTunnel
-    // may have failed to start it), then clear the tunnel_token_missing degraded
-    // state directly. The missing-token condition is resolved once the file exists,
-    // so success must not hinge on a blocking Portal round-trip.
-    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
-    if (this._currentPhase === 'degraded') {
-      await this.setPhase('locally_ready');
-    }
-    // Confirm with Portal in the background; it may transition the phase further
-    // (or reset the device if Portal no longer recognizes it). Not awaited so the
-    // reconnect response returns promptly.
-    void this.validateRegistrationWithCloud().catch((e) => this.logger.warn('Post-reconnect validation failed (non-fatal)', e));
+    // The missing-token condition is resolved, so clear the degraded phase directly —
+    // success must not hinge on a Portal round-trip. Bringing cloudflared up and the
+    // Portal reconcile both run in the background so the response returns promptly.
+    await this.clearTunnelTokenMissingDegraded();
+    void (async () => {
+      try {
+        await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
+      } catch (e) {
+        this.logger.warn('Post-reconnect cloudflared restart failed (non-fatal)', e);
+      }
+      // Deduped/throttled Portal check-in — shares cloudValidationInFlight with the
+      // status-poll path, so it won't double-run or double-reset on a Portal 400.
+      await this.maybeValidateWithCloud();
+    })();
 
     this.logger.info('Tunnel reconnected from stored credentials');
     return { recovered: true, reason: 'recovered_from_db' };
+  }
+
+  /**
+   * Clear a stuck `degraded` / `tunnel_token_missing` phase once the token is
+   * present again, resetting the transient-failure counter so a single stale
+   * strike cannot immediately re-degrade the just-restored phase.
+   */
+  private async clearTunnelTokenMissingDegraded(): Promise<void> {
+    if (this._currentPhase === 'degraded' && this._degradedReasons.includes('tunnel_token_missing')) {
+      this.consecutiveValidationFailures = 0;
+      await this.setPhase('locally_ready');
+    }
   }
 
   /**
