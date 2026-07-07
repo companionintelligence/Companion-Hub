@@ -1190,11 +1190,34 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         }
         if (tunnelReachable) {
           await this.setPhase('publicly_ready', [], organizationId);
+        } else if (this.config.getConfig().domain === 'ci.localhost') {
+          // Local/E2E mode: there is no public Cloudflare tunnel, so unreachability
+          // is expected and benign. Do NOT self-heal or degrade — ensureCloudflaredRunning()
+          // deliberately no-ops (returns false) for ci.localhost, which must not be
+          // misread as a tunnel failure. Stay at locally_ready.
+          this.logger.warn(`Tunnel not reachable at https://${domain} — local mode (ci.localhost); staying locally_ready.`);
         } else {
-          this.logger.warn(
-            `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
-          );
-          // Stay at locally_ready — tunnel will be probed again during validation
+          // Not reachable after the probe window. Distinguish benign "DNS still
+          // propagating" (cloudflared is up and connecting) from a real failure
+          // (the tunnel container never started). ensureCloudflaredRunning() starts
+          // cloudflared only if it is not already running and returns whether it is
+          // up. If it cannot be brought up, surface the failure as degraded so
+          // `cihub status` reflects reality instead of a clean locally_ready.
+          const cloudflaredUp = await this.cloudflareClientService.ensureCloudflaredRunning().catch((e) => {
+            this.logger.error(`Self-heal ensureCloudflaredRunning failed: ${e instanceof Error ? e.message : String(e)}`);
+            return false;
+          });
+          if (cloudflaredUp) {
+            this.logger.warn(
+              `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — cloudflared is running; DNS may still be propagating. Staying locally_ready; will re-probe during validation.`,
+            );
+            // Stay at locally_ready — tunnel will be probed again during validation
+          } else {
+            this.logger.error(
+              `Tunnel unreachable at https://${domain} and cloudflared could not be started — marking degraded (tunnel_unreachable).`,
+            );
+            await this.setPhase('degraded', ['tunnel_unreachable'], organizationId);
+          }
         }
       }
     } catch (error) {

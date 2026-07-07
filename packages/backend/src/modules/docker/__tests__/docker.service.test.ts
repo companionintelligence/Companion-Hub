@@ -93,6 +93,9 @@ describe('DockerService', () => {
     delete process.env.CI_HUB_COMPOSE_PROJECT_NAME;
     delete process.env.ENV_FILE;
     delete process.env.UNRELATED_VAR;
+    // Reset spawn's implementation (not just call history) so a persistent
+    // mockImplementation from one test cannot leak into the next.
+    (child_process.spawn as any).mockReset();
     vi.clearAllMocks();
   });
 
@@ -622,6 +625,83 @@ describe('DockerService', () => {
           label: ['ci-os-hub.appurn=anything-llm:ci-marketplace', 'traefik.enable=true'],
         },
       });
+    });
+  });
+
+  describe('composeUpService (bounded up)', () => {
+    const procClosing = (code: number) => {
+      const proc = createMockSpawnProcess();
+      proc.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(code));
+        }
+        return proc;
+      });
+      return proc;
+    };
+
+    it('brings the service up via a single docker compose up (up pulls on demand; no separate pull)', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+      (child_process.spawn as any).mockImplementation(() => procClosing(0));
+
+      await service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      const upCalls = calls.filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+      // Exactly one `up`, and no separate `pull` — `up` respects pull_policy itself,
+      // so a cached/baked image starts with no registry round-trip.
+      expect(upCalls.length).toBe(1);
+      expect(calls.some((c) => Array.isArray(c[1]) && c[1].includes('pull'))).toBe(false);
+      expect(upCalls[0][1]).toEqual(
+        expect.arrayContaining(['compose', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build', '--no-deps']),
+      );
+    });
+
+    it('retries compose up after a transient failure', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+      (child_process.spawn as any)
+        .mockImplementationOnce(() => procClosing(1)) // up attempt 1 fails
+        .mockImplementationOnce(() => procClosing(0)); // up attempt 2 succeeds
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).resolves.toBeUndefined();
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      const upCalls = calls.filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+      expect(upCalls.length).toBe(2);
+    });
+
+    it('rejects (with the exit code) after both up attempts exit non-zero', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+      (child_process.spawn as any).mockImplementation(() => procClosing(1)); // every attempt fails
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).rejects.toThrow(/exit 1/);
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      const upCalls = calls.filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+      expect(upCalls.length).toBe(2); // COMPOSE_OP_MAX_ATTEMPTS
+    });
+
+    it('terminates a hung compose up after the timeout and rejects (SIGTERM then SIGKILL)', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+        const hungUp = createMockSpawnProcess();
+        hungUp.on = vi.fn().mockReturnValue(hungUp); // never emits close/error
+        (child_process.spawn as any).mockImplementation(() => hungUp);
+
+        const resultPromise = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
+        const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
+
+        // Each up attempt: 300s timeout → SIGTERM, +5s SIGKILL, +5s hard backstop reject (~310s), then retry.
+        await vi.advanceTimersByTimeAsync(320_000); // attempt 1 times out, killed, backstop rejects, retry starts
+        await vi.advanceTimersByTimeAsync(320_000); // attempt 2 times out, killed, backstop rejects → throw
+
+        await assertion;
+        expect(hungUp.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(hungUp.kill).toHaveBeenCalledWith('SIGKILL');
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

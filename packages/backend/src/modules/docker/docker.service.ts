@@ -38,6 +38,19 @@ const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
 const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
 
+/**
+ * Time-box for `docker compose up <service>`. Generous because `up` pulls the
+ * image on demand (compose `pull_policy`) on a fresh host, so this bound must
+ * cover a cold pull; a wedged/cold pull is killed and retried within it rather
+ * than hanging provisioning forever. When the image is already cached, `up`
+ * starts in seconds — far under this bound and with no registry round-trip.
+ */
+const COMPOSE_UP_TIMEOUT_MS = 300_000;
+/** Attempts for the bounded `up`: a wedged first attempt is killed, then retried. */
+const COMPOSE_OP_MAX_ATTEMPTS = 2;
+/** After the SIGKILL grace, unblock the caller even if the child never exits. */
+const PROCESS_EXIT_BACKSTOP_MS = 5_000;
+
 interface DockerCpuStatsSnapshot {
   cpu_usage?: {
     total_usage?: number;
@@ -1059,7 +1072,11 @@ export class DockerService {
    */
   public async restartContainer(containerName: string): Promise<void> {
     this.logger.info(`Restarting container: ${containerName}`);
-
+    // NOT time-boxed: `docker restart` honors each container's stop_grace_period
+    // (some apps configure 60-120s), and callers such as the app self-heal path
+    // (apps.service.resolveAppAvailability) restart arbitrary containers. A short
+    // bound would spuriously reject a slow-but-healthy restart while the daemon
+    // completes it server-side. `docker restart` does not hang in practice.
     return new Promise((resolve, reject) => {
       const cmd = spawn('docker', ['restart', containerName]);
 
@@ -1108,24 +1125,137 @@ export class DockerService {
   public async ensureContainerRunning(containerName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
     try {
       await this.restartContainer(containerName);
-    } catch {
-      this.logger.info(`Container ${containerName} not found, creating via docker compose...`);
+    } catch (error) {
+      // restart fails when the container does not exist (the common case) but also
+      // on a genuine restart error — surface the reason rather than always claiming
+      // "not found", then fall back to bringing the service up via compose.
+      this.logger.info(
+        `Restart of ${containerName} failed (${error instanceof Error ? error.message : String(error)}); creating via docker compose...`,
+      );
       await this.composeUpService(containerName, opts);
     }
   }
 
+  /**
+   * Spawn a process and reject if it does not finish within `timeoutMs`. On timeout
+   * the child is sent SIGTERM, then SIGKILL after a short grace, so a wedged
+   * `docker` / `docker compose` invocation (e.g. a stalled image pull) can never
+   * hang the caller indefinitely.
+   *
+   * On timeout the rejection is deferred until the child actually exits (its
+   * `close`), so a caller that retries cannot spawn a second overlapping process
+   * that races the still-dying one. A hard backstop still guarantees the caller
+   * unblocks even if the child never exits.
+   */
+  private runProcessBounded(
+    command: string,
+    commandArgs: string[],
+    spawnOptions: { cwd?: string; env?: NodeJS.ProcessEnv },
+    timeoutMs: number,
+    label: string,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Default stdio is 'pipe'; both streams are drained below so a chatty child
+      // cannot block on a full pipe buffer and stall until the timeout.
+      const cmd = spawn(command, commandArgs, spawnOptions);
+
+      let stderr = '';
+      let settled = false;
+      let timedOut = false;
+      let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+      let backstopTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const timer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        timedOut = true;
+        this.logger.error(`${label} exceeded ${timeoutMs}ms — terminating (SIGTERM)`);
+        cmd.kill('SIGTERM');
+        sigkillTimer = setTimeout(() => cmd.kill('SIGKILL'), COMPOSE_CANCEL_SIGKILL_GRACE_MS);
+        sigkillTimer.unref?.();
+        backstopTimer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          this.logger.error(`${label}: child did not exit after SIGKILL`);
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, COMPOSE_CANCEL_SIGKILL_GRACE_MS + PROCESS_EXIT_BACKSTOP_MS);
+        backstopTimer.unref?.();
+      }, timeoutMs);
+      timer.unref?.();
+
+      const clearTimers = () => {
+        clearTimeout(timer);
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+        }
+        if (backstopTimer) {
+          clearTimeout(backstopTimer);
+        }
+      };
+
+      // Drain stdout (unused) and capture stderr so a full pipe cannot stall the child.
+      // A 'data' listener puts the stream in flowing mode (equivalent to resume()).
+      cmd.stdout?.on('data', () => undefined);
+      cmd.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      cmd.on('close', (code) => {
+        clearTimers();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timedOut) {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        } else if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`${label} failed (exit ${code})${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
+        }
+      });
+
+      cmd.on('error', (err) => {
+        clearTimers();
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(err);
+      });
+    });
+  }
+
+  /** Run `fn` up to `attempts` times, logging each failure; rejects with the last error. */
+  private async retryAsync(fn: () => Promise<void>, attempts: number, label: string): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await fn();
+        return;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(`${label} attempt ${attempt}/${attempts} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(`${label} failed after ${attempts} attempts`);
+  }
+
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
-    const args = ['compose'];
+    const baseArgs = ['compose'];
     const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
     const spawnOptions: { cwd: string; env?: NodeJS.ProcessEnv } = { cwd: path.dirname(opts.composeFile) };
 
     if (opts.composeFile === runtimeComposeFile) {
       const envFilePath = this.config.get('envFilePath');
-      args.push('--env-file', envFilePath);
+      baseArgs.push('--env-file', envFilePath);
       // Match the project name used by start.ts / package.json scripts so
       // compose attaches to the running stack instead of creating a new one.
       const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
-      args.push('--project-name', composeProjectName);
+      baseArgs.push('--project-name', composeProjectName);
 
       // When running inside the Hub container, docker compose resolves relative
       // binds (e.g. ./tunnel) against /data. The host daemon then interprets
@@ -1134,7 +1264,7 @@ export class DockerService {
       // to ROOT_FOLDER_HOST (for example /home/.../.local/share/companion-hub).
       const hostProjectDir = process.env.ROOT_FOLDER_HOST?.trim();
       if (hostProjectDir) {
-        args.push('--project-directory', hostProjectDir);
+        baseArgs.push('--project-directory', hostProjectDir);
       }
 
       // Override ENV_FILE to just the filename so compose's env_file
@@ -1142,36 +1272,26 @@ export class DockerService {
       spawnOptions.env = { ...process.env, ENV_FILE: path.basename(envFilePath) };
     }
 
-    args.push('-f', opts.composeFile);
+    baseArgs.push('-f', opts.composeFile);
 
     if (opts.profile) {
-      args.push('--profile', opts.profile);
+      baseArgs.push('--profile', opts.profile);
     }
-    args.push('up', serviceName, '-d', '--no-build', '--no-deps');
 
-    return new Promise((resolve, reject) => {
-      this.logger.info(`Running: docker ${args.join(' ')}`);
-      const cmd = spawn('docker', args, spawnOptions);
-
-      let stderr = '';
-      cmd.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      cmd.on('close', (code) => {
-        if (code === 0) {
-          this.logger.info(`Service ${serviceName} started successfully via docker compose`);
-          resolve();
-        } else {
-          this.logger.error(`Failed to start service ${serviceName}: ${stderr}`);
-          reject(new Error(`Failed to start service ${serviceName} via docker compose`));
-        }
-      });
-
-      cmd.on('error', (err) => {
-        reject(err);
-      });
-    });
+    // Bring the service up on a bounded, retried path. `up` pulls the image on
+    // demand per the compose `pull_policy` (only when it is not already present),
+    // so a cached/baked-in image starts instantly with no registry round-trip,
+    // while a fresh host's cold pull runs inside COMPOSE_UP_TIMEOUT_MS. A wedged
+    // pull/up no longer hangs forever: it is killed at the deadline and retried,
+    // and completed image layers persist across attempts.
+    const upArgs = [...baseArgs, 'up', serviceName, '-d', '--no-build', '--no-deps'];
+    this.logger.info(`Running: docker ${upArgs.join(' ')}`);
+    await this.retryAsync(
+      () => this.runProcessBounded('docker', upArgs, spawnOptions, COMPOSE_UP_TIMEOUT_MS, `docker compose up ${serviceName}`),
+      COMPOSE_OP_MAX_ATTEMPTS,
+      `up ${serviceName}`,
+    );
+    this.logger.info(`Service ${serviceName} started successfully via docker compose`);
   }
 
   /**
