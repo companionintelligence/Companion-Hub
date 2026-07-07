@@ -170,10 +170,16 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     }
   }, [app?.status]);
 
-  const [appSlug, storeId] = info.urn.split(':');
+  const urnParts = info.urn.split(':');
+  const appSlug = urnParts[0];
+  const storeId = urnParts[1];
 
   useEffect(() => {
     if (autoInstallTriggeredRef.current) {
+      return;
+    }
+
+    if (!appSlug || !storeId) {
       return;
     }
 

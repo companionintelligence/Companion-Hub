@@ -54,7 +54,6 @@ export const RecommendationsStep = ({
     data: altsData,
     isLoading: isAltsLoading,
     isError: isAltsError,
-    error: altsError,
     refetch,
   } = useQuery({
     ...portalAlternativesQueryOptions(),
