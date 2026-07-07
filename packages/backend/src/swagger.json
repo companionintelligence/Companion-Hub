@@ -3863,6 +3863,39 @@
         ]
       }
     },
+    "/api/custom-apps/port-expose/{urn}": {
+      "patch": {
+        "operationId": "updatePortExposeApp",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePortExposeAppDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
     "/api/custom-apps/{urn}": {
       "patch": {
         "operationId": "updateCustomApp",
@@ -4584,6 +4617,10 @@
         "properties": {}
       },
       "CreateCustomAppDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdatePortExposeAppDto": {
         "type": "object",
         "properties": {}
       },

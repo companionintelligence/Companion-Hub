@@ -98,6 +98,41 @@ describe('AppStatusSyncService', () => {
     expect(appRepository.updateAppById).toHaveBeenCalledWith(2, expect.objectContaining({ status: 'missing' }));
   });
 
+  it('keeps port-expose workloads running without Docker containers', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 6,
+        appName: 'ggs',
+        appStoreSlug: '_user',
+        status: 'missing',
+        config: { kind: 'port-expose', port: 3000 },
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+
+    await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppById).toHaveBeenCalledWith(6, expect.objectContaining({ status: 'running' }));
+  });
+
+  it('does not override port-expose workloads while uninstalling', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 7,
+        appName: 'ggs',
+        appStoreSlug: '_user',
+        status: 'uninstalling',
+        config: { kind: 'port-expose', port: 3000 },
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppById).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
   it('reports warning coverage for stuck transitional apps', async () => {
     appRepository.getApps.mockResolvedValue([
       {

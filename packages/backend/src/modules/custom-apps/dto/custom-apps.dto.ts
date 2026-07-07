@@ -30,6 +30,10 @@ export class CreateCustomAppDto extends createZodDto(createCustomAppSchema) {}
 
 export class CreatePortExposeAppDto extends createZodDto(createPortExposeAppSchema) {}
 
+export const updatePortExposeAppSchema = createPortExposeAppSchema.omit({ name: true });
+
+export class UpdatePortExposeAppDto extends createZodDto(updatePortExposeAppSchema) {}
+
 export const createCustomAppResponseSchema = z.object({
   appUrn: z.string(),
   appName: z.string(),
