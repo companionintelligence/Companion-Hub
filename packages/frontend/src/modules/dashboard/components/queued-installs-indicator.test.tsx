@@ -30,6 +30,7 @@ describe('QueuedInstallsIndicator', () => {
             { urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' },
           ],
         }}
+        isLoading={false}
       />,
     );
 
@@ -45,6 +46,7 @@ describe('QueuedInstallsIndicator', () => {
           active: { urn: 'plane:ci-marketplace', name: 'Plane' },
           queued: [{ urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' }],
         }}
+        isLoading={false}
       />,
     );
 
@@ -58,6 +60,7 @@ describe('QueuedInstallsIndicator', () => {
           active: { urn: 'plane:ci-marketplace', name: 'Plane' },
           queued: [],
         }}
+        isLoading={false}
       />,
     );
 
@@ -65,7 +68,7 @@ describe('QueuedInstallsIndicator', () => {
   });
 
   it('renders nothing when the queue is empty', () => {
-    const { container } = render(<QueuedInstallsIndicator queue={{ active: null, queued: [] }} />);
+    const { container } = render(<QueuedInstallsIndicator queue={{ active: null, queued: [] }} isLoading={false} />);
 
     expect(container).toBeEmptyDOMElement();
   });

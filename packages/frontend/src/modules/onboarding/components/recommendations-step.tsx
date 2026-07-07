@@ -55,7 +55,6 @@ export const RecommendationsStep = ({
     data: altsData,
     isLoading: isAltsLoading,
     isError: isAltsError,
-    error: altsError,
     refetch,
   } = useQuery({
     ...portalAlternativesQueryOptions(),
@@ -248,10 +247,9 @@ export const RecommendationsStep = ({
         </div>
       )}
 
-      {isAltsError && (
+      {isAltsError && recommendations.length === 0 && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {t('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE')}
-          {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
+          {t('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE')}{' '}
           <button type="button" className="font-medium underline" onClick={() => refetch()}>
             {t('COMMON_RETRY')}
           </button>

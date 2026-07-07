@@ -218,20 +218,28 @@ export const InstallStep = ({
       const finalStates: AppInstallState[] = apps.map((app) => ({ app, status: 'queued' as AppInstallStatus }));
       const stateAt = (index: number, app: OnboardingApp): AppInstallState => finalStates[index] ?? { app, status: 'queued' };
 
-      const resolveInstalledStatus = async (urn: string): Promise<'running' | 'installing' | 'install_failed' | false> => {
+      const fetchInstalledStatusMap = async (): Promise<Map<string, 'running' | 'installing' | 'install_failed'>> => {
         try {
           const installedResult = await sdkResult(getInstalledApps());
-          if (!installedResult.ok) return false;
+          if (!installedResult.ok) return new Map();
           const data = (installedResult.data ?? {}) as { installed?: Array<{ info?: { urn?: string }; app?: { status?: string } }> };
           const installed = data.installed || [];
-          const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === urn);
-          if (!match) return false;
-          const appStatus = (match.app?.status as string) ?? '';
-          if (appStatus === 'running') return 'running';
-          if (appStatus === 'install_failed') return 'install_failed';
-          return 'installing';
+          const statusMap = new Map<string, 'running' | 'installing' | 'install_failed'>();
+          for (const item of installed) {
+            const urn = item.info?.urn;
+            if (!urn) continue;
+            const appStatus = item.app?.status ?? '';
+            if (appStatus === 'running') {
+              statusMap.set(urn, 'running');
+            } else if (appStatus === 'install_failed') {
+              statusMap.set(urn, 'install_failed');
+            } else {
+              statusMap.set(urn, 'installing');
+            }
+          }
+          return statusMap;
         } catch {
-          return false;
+          return new Map();
         }
       };
 
@@ -295,11 +303,13 @@ export const InstallStep = ({
           break;
         }
 
+        const statusMap = await fetchInstalledStatusMap();
+
         for (const { state, index } of pending) {
           const urn = state.app.urn;
           if (!urn) continue;
 
-          const confirmedStatus = await resolveInstalledStatus(urn);
+          const confirmedStatus = statusMap.get(urn) ?? false;
           if (confirmedStatus === 'running') {
             finalStates[index] = { ...stateAt(index, state.app), status: 'running' };
           } else if (confirmedStatus === 'install_failed') {

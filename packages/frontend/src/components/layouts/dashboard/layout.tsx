@@ -27,14 +27,17 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
-  const { data: systemData, dataUpdatedAt } = useQuery({
+  const { data: systemData } = useQuery({
     ...systemLoadOptions(),
     refetchInterval: 3000,
     staleTime: 30_000,
   });
-  const { isDismissed, dismiss } = useCoreServerBanner(dataUpdatedAt);
 
   const diskSnapshot = systemData ? { diskUsed: systemData.diskUsed, diskSize: systemData.diskSize } : undefined;
+
+  const diskProbeKey =
+    diskSnapshot && shouldShowCoreServerBanner({ system: diskSnapshot }) ? diskSnapshot.diskUsed * 1_000_000_000 + diskSnapshot.diskSize : undefined;
+  const { isDismissed, dismiss } = useCoreServerBanner(diskProbeKey);
 
   const showCoreServerBanner =
     !isDismissed &&
