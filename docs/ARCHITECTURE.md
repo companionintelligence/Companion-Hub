@@ -718,10 +718,22 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 - Video and trace capture on failure
 - HTML reporter (+ GitHub reporter in CI)
 
-**Test infrastructure:** Playwright auto-starts three services:
-1. **CI Portal mock** (port 8012) — Miniflare/Wrangler dev server
+**Test infrastructure:** Playwright auto-starts three services for the **default lane** (`pnpm test:e2e:ci`):
+
+1. **CI Portal mock** (port 4444) — lightweight HTTP stub ([`e2e/mock-portal/server.ts`](../e2e/mock-portal/server.ts))
 2. **Backend** (port 3000) — Full NestJS app with real PostgreSQL and RabbitMQ
-3. **Frontend** (port 9091) — Vite dev server
+3. **Frontend** (port 9091) — Vite dev server (preview build in CI)
+
+**Extended lanes** (not in default `testIgnore` coverage):
+
+| Lane | Command / workflow | Portal | Notes |
+|------|-------------------|--------|-------|
+| Cross-domain | `pnpm e2e:cross-domain` / [`e2e-extended.yml`](../.github/workflows/e2e-extended.yml) | Real CI-Portal via wrangler (port 8012) | Hub ↔ Portal pairing |
+| Future onboarding | `pnpm e2e:future:onboarding` / `e2e-extended.yml` | Mock (4444) | AI setup wizard |
+| Platform | [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml) | N/A | Self-hosted Hub + test app |
+| Fleet | [`e2e-fleet.yml`](../.github/workflows/e2e-fleet.yml) | Live cloud URL | Tailscale-connected hardware |
+
+See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 **Test data:** E2E tests use `/tmp/ci-hub-e2e` as the root data directory. A custom fixture creates test users via the API before each test suite.
 
@@ -742,7 +754,9 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 | `error-states.spec.ts` | Error handling and edge cases |
 | `dev-mode.spec.ts` | Development-only features |
 | `launch-path.spec.ts` | Deep link launch paths |
-| `cross-domain/` | Cross-origin scenarios (separate Playwright config) |
+| `cross-domain/` | Hub ↔ Portal pairing (extended lane — [`playwright.cross-domain.config.ts`](../playwright.cross-domain.config.ts)) |
+| `future/` | Onboarding AI setup, networking specs (extended lane — see `e2e/README.md`) |
+| `platform/` | App networking/lifecycle (self-hosted — [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml)) |
 
 ---
 

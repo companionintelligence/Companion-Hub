@@ -131,9 +131,9 @@ jobs:
             all)           echo "pattern=e2e/*.spec.ts" >> "$GITHUB_OUTPUT" ;;
             ftue)          echo "pattern=e2e/ftue.spec.ts" >> "$GITHUB_OUTPUT" ;;
             platform)      echo "pattern=e2e/platform/*.spec.ts" >> "$GITHUB_OUTPUT" ;;
-            cloudflare)    echo "pattern=e2e/cloudflare.spec.ts" >> "$GITHUB_OUTPUT" ;;
-            tailscale)     echo "pattern=e2e/tailscale.spec.ts" >> "$GITHUB_OUTPUT" ;;
-            cloud-account) echo "pattern=e2e/cloud-account.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            cloudflare)    echo "pattern=e2e/future/cloudflare.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            tailscale)     echo "pattern=e2e/future/tailscale.spec.ts" >> "$GITHUB_OUTPUT" ;;
+            cloud-account) echo "pattern=e2e/future/cloud-account.spec.ts" >> "$GITHUB_OUTPUT" ;;
             app-lifecycle) echo "pattern=e2e/app-lifecycle.spec.ts" >> "$GITHUB_OUTPUT" ;;
           esac
 

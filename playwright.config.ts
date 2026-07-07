@@ -51,6 +51,8 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
+  // Extended suites (future/, cross-domain/, platform/) are excluded from the default
+  // CI lane for cost and infra reasons. See e2e/README.md and .github/workflows/e2e-extended.yml.
   testIgnore: [
     '**/future/**',
     '**/generated/**',

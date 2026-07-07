@@ -8,7 +8,7 @@
  * - Account management
  */
 
-import { expect, loginUser, test } from './fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const CLOUD_CONFIG = {
   baseUrl: process.env.CLOUD_URL || 'https://cloud.ci.computer',

@@ -20,6 +20,8 @@ PERSIST_DIR="db/e2e-cross-domain"
 # Resolve Portal directory
 if [ -n "${PORTAL_DIR:-}" ]; then
   PORTAL_ROOT="$PORTAL_DIR"
+elif [ -d "../ci-portal" ]; then
+  PORTAL_ROOT="../ci-portal"
 elif [ -d "../../CI-Portal" ]; then
   PORTAL_ROOT="../../CI-Portal"
 elif [ -d "../CI-Portal" ]; then
