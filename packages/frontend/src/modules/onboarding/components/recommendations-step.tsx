@@ -249,7 +249,7 @@ export const RecommendationsStep = ({
 
       {isAltsError && recommendations.length === 0 && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {t('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE')}{' '}
+          {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}{' '}
           <button type="button" className="font-medium underline" onClick={() => refetch()}>
             {t('COMMON_RETRY')}
           </button>

@@ -734,7 +734,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     return {
       success: true,
-      message: 'Local registration artifacts cleared. Pair this device as new in your Companion Account.',
+      message: 'Local registration artifacts cleared. Pair this device as new in your CI Account.',
       clearedAppEnvFiles,
     };
   }

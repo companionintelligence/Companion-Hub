@@ -27,6 +27,7 @@ const HUB_STATUS_CHECK_TIMEOUT: Duration = Duration::from_millis(2500);
 
 struct PendingPairingCode(Mutex<Option<String>>);
 struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
+struct PendingInstallIntent(Mutex<Option<DesktopInstallIntentPayload>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +36,20 @@ struct DesktopPortalAuthPayload {
     token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInstallIntentPayload {
+    app_slug: String,
+    #[serde(default = "default_install_store_id")]
+    store_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+}
+
+fn default_install_store_id() -> String {
+    "ci-marketplace".to_string()
 }
 
 fn stack_dev_mode_enabled() -> bool {
@@ -333,6 +348,14 @@ fn consume_pending_portal_auth(
     state.0.lock().ok()?.take()
 }
 
+/// Returns a store install intent from a deep link that arrived before the UI was ready.
+#[tauri::command]
+fn consume_pending_install_intent(
+    state: tauri::State<'_, PendingInstallIntent>,
+) -> Option<DesktopInstallIntentPayload> {
+    state.0.lock().ok()?.take()
+}
+
 #[tauri::command]
 async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, String> {
     let current = option_env!("CI_HUB_BUILD_VERSION")
@@ -405,6 +428,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
+        .manage(PendingInstallIntent(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A freshly-updated instance signals us (the old binary, still running)
             // to restart so the new binary on disk takes over.
@@ -445,6 +469,7 @@ pub fn run() {
             install_docker_engine_alternative_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
+            consume_pending_install_intent,
             check_desktop_update_command,
             get_desktop_release_version_command,
             perform_desktop_update_command,
@@ -963,6 +988,15 @@ fn queue_portal_auth(app: &tauri::AppHandle, payload: DesktopPortalAuthPayload) 
     let _ = app.emit("deep-link-auth", payload);
 }
 
+fn queue_install_intent(app: &tauri::AppHandle, payload: DesktopInstallIntentPayload) {
+    if let Some(state) = app.try_state::<PendingInstallIntent>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app.emit("deep-link-install", payload);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         focus_main_window(app);
@@ -973,6 +1007,12 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(payload) = extract_portal_auth(url) {
         focus_main_window(app);
         queue_portal_auth(app, payload);
+        return;
+    }
+
+    if let Some(payload) = extract_install_intent(url) {
+        focus_main_window(app);
+        queue_install_intent(app, payload);
     }
 }
 
@@ -1056,10 +1096,60 @@ fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     }
 }
 
+fn is_install_deep_link_prefix(url: &str) -> bool {
+    url.starts_with("cihub://install") || url.starts_with("cihub-dev://install")
+}
+
+fn parse_install_query_param(query: &str, key: &str) -> Option<String> {
+    for param in query.split('&') {
+        if let Some(value) = param.strip_prefix(&format!("{key}=")) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_install_intent(url: &str) -> Option<DesktopInstallIntentPayload> {
+    let trimmed = url.trim();
+    if !is_install_deep_link_prefix(trimmed) {
+        return None;
+    }
+
+    let without_scheme = trimmed
+        .strip_prefix("cihub-dev://install/")
+        .or_else(|| trimmed.strip_prefix("cihub://install/"))
+        .or_else(|| trimmed.strip_prefix("cihub-dev://install?"))
+        .or_else(|| trimmed.strip_prefix("cihub://install?"))?;
+
+    let (path_part, query_part) = match without_scheme.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (without_scheme, trimmed.split('?').nth(1)),
+    };
+
+    let app_slug = path_part.split('/').next()?.trim().to_string();
+    if app_slug.is_empty() {
+        return None;
+    }
+
+    let store_id = query_part
+        .and_then(|query| parse_install_query_param(query, "storeId"))
+        .unwrap_or_else(default_install_store_id);
+    let device_id = query_part.and_then(|query| parse_install_query_param(query, "deviceId"));
+
+    Some(DesktopInstallIntentPayload {
+        app_slug,
+        store_id,
+        device_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
+        deep_link_urls_from_payload, extract_install_intent, extract_pairing_code, extract_portal_auth,
         launch_mode_from_args, sanitize_download_filename, stack_dev_mode_enabled,
         stack_dev_override_paths, validate_open_path, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
         STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
@@ -1145,6 +1235,47 @@ mod tests {
     #[test]
     fn ignore_non_auth_deep_links_for_portal_auth() {
         assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn extract_install_intent_from_path() {
+        assert_eq!(
+            extract_install_intent("cihub://install/immich"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "immich".to_string(),
+                store_id: "ci-marketplace".to_string(),
+                device_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_install_intent_from_path_with_query() {
+        assert_eq!(
+            extract_install_intent("cihub://install/immich?storeId=ci-apps&deviceId=dev-1"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "immich".to_string(),
+                store_id: "ci-apps".to_string(),
+                device_id: Some("dev-1".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn extract_install_intent_dev_scheme() {
+        assert_eq!(
+            extract_install_intent("cihub-dev://install/plane"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "plane".to_string(),
+                store_id: "ci-marketplace".to_string(),
+                device_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn ignore_pairing_for_install_intent() {
+        assert_eq!(extract_install_intent("cihub://pair?code=abc123"), None);
     }
 
     #[test]

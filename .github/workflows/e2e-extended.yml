@@ -1,0 +1,180 @@
+name: E2E Extended
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize, opened, reopened]
+
+concurrency:
+  group: e2e-extended-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-domain:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && contains(toJSON(github.event.pull_request.labels.*.name), 'e2e-extended'))
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    env:
+      PORTAL_DIR: ${{ github.workspace }}/ci-portal
+      PORTAL_PORT: '8012'
+      CI: true
+      E2E_CLEANUP_PORTS: 'true'
+
+    steps:
+      - name: Checkout CI-Hub
+        uses: actions/checkout@v6
+
+      - name: Checkout CI-Portal
+        uses: actions/checkout@v6
+        with:
+          repository: companionintelligence/ci-portal
+          path: ci-portal
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6
+
+      - name: Install Hub dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Portal dependencies
+        working-directory: ci-portal
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Portal web assets
+        working-directory: ci-portal
+        run: mkdir -p apps/web-app/dist
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run cross-domain E2E
+        run: pnpm e2e:cross-domain
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-cross-domain
+          path: playwright-report/
+          retention-days: 7
+
+  future-onboarding:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' && contains(toJSON(github.event.pull_request.labels.*.name), 'e2e-extended'))
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      E2E_USE_REAL_PORTAL: 'false'
+      MOCK_PORTAL_PORT: '4444'
+      CI: true
+      E2E_CLEANUP_PORTS: 'true'
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: companiondb
+        ports:
+          - 6543:5432
+        options: >-
+          --health-cmd "pg_isready -U companion"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: companion
+          RABBITMQ_DEFAULT_PASS: admin
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create data directories
+        run: |
+          mkdir -p /tmp/ci-hub-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/ci-hub-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/ci-hub-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/ci-hub-e2e/.env
+
+      - name: Verify services
+        run: |
+          timeout 10 bash -c 'until echo > /dev/tcp/localhost/6543; do sleep 1; done' && echo "Postgres port open"
+          timeout 60 bash -c 'until echo > /dev/tcp/localhost/5672; do sleep 2; done' && echo "RabbitMQ AMQP port open"
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - name: Start mock portal
+        run: |
+          pnpm exec tsx e2e/mock-portal/server.ts &
+          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+          curl -sf "http://localhost:${MOCK_PORTAL_PORT}/v2/" || echo "Warning: mock portal not responding"
+
+      - name: Run future onboarding E2E
+        run: pnpm e2e:future:onboarding
+        env:
+          SERVER_IP: localhost
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 6543
+          POSTGRES_USERNAME: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DBNAME: companiondb
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: 5672
+          RABBITMQ_USERNAME: companion
+          RABBITMQ_PASSWORD: admin
+          JWT_SECRET: e2e-test-secret
+          CI_CLOUD_URL: http://localhost:4444
+          DOMAIN: ci.computer
+          LOCAL_DOMAIN: ci.lan
+          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+          CI_HUB_APP_DIR: ${{ github.workspace }}
+          DEVICE_ID: test-device-e2e
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-future-onboarding
+          path: playwright-report/
+          retention-days: 7
