@@ -232,6 +232,21 @@
         ]
       }
     },
+    "/api/registration/reconnect-tunnel": {
+      "post": {
+        "operationId": "reconnectTunnel",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the reconnect outcome (recovered, or an action the client should take)"
+          }
+        },
+        "summary": "Recover public/remote access for a registered but tunnel-degraded Hub",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/state-drift": {
       "get": {
         "operationId": "getStateDrift",
