@@ -20,6 +20,13 @@ if [ "$HUB_UID" = "0" ]; then
   exec "$@"
 fi
 
+# If we are already running unprivileged (e.g. a compose that still pins `user:`),
+# we can neither chown the bind mount nor setpriv-drop (both need root). Run the
+# command as-is instead of crash-looping on a failed privilege drop.
+if [ "$(id -u)" != "0" ]; then
+  exec "$@"
+fi
+
 # Heal the tunnel bind mount so the Hub uid can write the tunnel token.
 # Best-effort — never block boot on a chown failure.
 if [ -d /app/tunnel ]; then
