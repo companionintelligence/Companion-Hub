@@ -640,6 +640,46 @@ describe('DockerService', () => {
       return proc;
     };
 
+    // A child that ignores SIGTERM but exits (killed-by-signal → null code) on SIGKILL.
+    const procKilledOnSigkill = () => {
+      const proc = createMockSpawnProcess();
+      let onClose: ((code: number | null) => void) | undefined;
+      proc.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          onClose = handler;
+        }
+        return proc;
+      });
+      proc.kill = vi.fn().mockImplementation((signal?: string) => {
+        if (signal === 'SIGKILL') {
+          queueMicrotask(() => onClose?.(null));
+        }
+      });
+      return proc;
+    };
+
+    // A child whose spawn fails (e.g. ENOENT): emits 'error', never 'close'.
+    const procErroring = () => {
+      const proc = createMockSpawnProcess();
+      proc.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'error') {
+          queueMicrotask(() => handler(new Error('spawn docker ENOENT')));
+        }
+        return proc;
+      });
+      return proc;
+    };
+
+    it('does not run compose up when the container restart succeeds', async () => {
+      vi.spyOn(service, 'restartContainer').mockResolvedValue(undefined);
+      (child_process.spawn as any).mockImplementation(() => procClosing(0));
+
+      await service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      expect(calls.some((c) => Array.isArray(c[1]) && c[1].includes('up'))).toBe(false);
+    });
+
     it('brings the service up via a single docker compose up (up pulls on demand; no separate pull)', async () => {
       vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
       (child_process.spawn as any).mockImplementation(() => procClosing(0));
@@ -681,7 +721,41 @@ describe('DockerService', () => {
       expect(upCalls.length).toBe(2); // COMPOSE_OP_MAX_ATTEMPTS
     });
 
-    it('terminates a hung compose up after the timeout and rejects (SIGTERM then SIGKILL)', async () => {
+    it('rejects (and retries) when the child process fails to spawn', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+      (child_process.spawn as any).mockImplementation(() => procErroring());
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).rejects.toThrow(/ENOENT/);
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      const upCalls = calls.filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+      expect(upCalls.length).toBe(2); // error is retried
+    });
+
+    it('on timeout, escalates SIGTERM→SIGKILL and rejects once the child exits (normal path)', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+        // Child ignores SIGTERM, exits on SIGKILL — so the `close` handler (not the backstop) rejects.
+        const proc = procKilledOnSigkill();
+        (child_process.spawn as any).mockImplementation(() => proc);
+
+        const resultPromise = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
+        const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
+
+        // Per attempt: 300s timeout → SIGTERM, +5s SIGKILL → child exits (null code) → close rejects 'timed out'.
+        await vi.advanceTimersByTimeAsync(310_000); // attempt 1
+        await vi.advanceTimersByTimeAsync(310_000); // attempt 2 → throw
+
+        await assertion;
+        expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+        expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('unblocks via the hard backstop if a killed child never exits', async () => {
       vi.useFakeTimers();
       try {
         vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
@@ -692,13 +766,17 @@ describe('DockerService', () => {
         const resultPromise = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
         const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
 
-        // Each up attempt: 300s timeout → SIGTERM, +5s SIGKILL, +5s hard backstop reject (~310s), then retry.
-        await vi.advanceTimersByTimeAsync(320_000); // attempt 1 times out, killed, backstop rejects, retry starts
-        await vi.advanceTimersByTimeAsync(320_000); // attempt 2 times out, killed, backstop rejects → throw
+        // Each attempt: 300s timeout → SIGTERM, +5s SIGKILL, +5s hard backstop reject (~310s), then retry.
+        await vi.advanceTimersByTimeAsync(320_000); // attempt 1
+        await vi.advanceTimersByTimeAsync(320_000); // attempt 2 → throw
 
         await assertion;
-        expect(hungUp.kill).toHaveBeenCalledWith('SIGTERM');
-        expect(hungUp.kill).toHaveBeenCalledWith('SIGKILL');
+        // 2 attempts × (SIGTERM then SIGKILL), in order.
+        expect(hungUp.kill).toHaveBeenCalledTimes(4);
+        expect(hungUp.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+        expect(hungUp.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+        expect(hungUp.kill).toHaveBeenNthCalledWith(3, 'SIGTERM');
+        expect(hungUp.kill).toHaveBeenNthCalledWith(4, 'SIGKILL');
       } finally {
         vi.useRealTimers();
       }

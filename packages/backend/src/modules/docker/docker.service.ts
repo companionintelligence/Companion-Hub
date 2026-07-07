@@ -1142,10 +1142,16 @@ export class DockerService {
    * `docker` / `docker compose` invocation (e.g. a stalled image pull) can never
    * hang the caller indefinitely.
    *
-   * On timeout the rejection is deferred until the child actually exits (its
-   * `close`), so a caller that retries cannot spawn a second overlapping process
-   * that races the still-dying one. A hard backstop still guarantees the caller
-   * unblocks even if the child never exits.
+   * On timeout the rejection is normally deferred until the child exits (its
+   * `close`), so a retry does not spawn a second process while the first is still
+   * shutting down. A hard backstop guarantees the caller unblocks even if the
+   * child never exits; in that near-impossible case a retry may briefly overlap
+   * the still-alive child, but docker serializes the underlying daemon-side work
+   * by image/container name, so the overlap is harmless.
+   *
+   * Note: like `runDockerCompose`, this kills only the `docker` CLI, not a
+   * process group — the actual pull/create runs in dockerd and continues (and is
+   * de-duplicated by the daemon), which is why a retry safely re-attaches to it.
    */
   private runProcessBounded(
     command: string,
@@ -1172,7 +1178,11 @@ export class DockerService {
         timedOut = true;
         this.logger.error(`${label} exceeded ${timeoutMs}ms — terminating (SIGTERM)`);
         cmd.kill('SIGTERM');
-        sigkillTimer = setTimeout(() => cmd.kill('SIGKILL'), COMPOSE_CANCEL_SIGKILL_GRACE_MS);
+        sigkillTimer = setTimeout(() => {
+          if (!settled) {
+            cmd.kill('SIGKILL');
+          }
+        }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
         sigkillTimer.unref?.();
         backstopTimer = setTimeout(() => {
           if (settled) {
@@ -1209,10 +1219,13 @@ export class DockerService {
           return;
         }
         settled = true;
-        if (timedOut) {
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-        } else if (code === 0) {
+        if (code === 0) {
+          // A clean exit is a success even if the timeout had just fired and we
+          // sent SIGTERM: the process finished on its own, so honor it rather than
+          // reporting a spurious timeout (and triggering an unnecessary retry).
           resolve();
+        } else if (timedOut) {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
         } else {
           reject(new Error(`${label} failed (exit ${code})${stderr.trim() ? `: ${stderr.trim()}` : ''}`));
         }
@@ -1229,19 +1242,20 @@ export class DockerService {
     });
   }
 
-  /** Run `fn` up to `attempts` times, logging each failure; rejects with the last error. */
+  /** Run `fn` up to `attempts` times (at least once), logging each failure; rejects with the last error. */
   private async retryAsync(fn: () => Promise<void>, attempts: number, label: string): Promise<void> {
+    const total = Math.max(1, attempts);
     let lastError: unknown;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    for (let attempt = 1; attempt <= total; attempt += 1) {
       try {
         await fn();
         return;
       } catch (error) {
         lastError = error;
-        this.logger.warn(`${label} attempt ${attempt}/${attempts} failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.logger.warn(`${label} attempt ${attempt}/${total} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(`${label} failed after ${attempts} attempts`);
+    throw lastError instanceof Error ? lastError : new Error(`${label} failed after ${total} attempts`);
   }
 
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
