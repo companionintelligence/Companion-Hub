@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useRegistrationStatus, reconnectTunnel, navigate, invalidateQueries, toast } = vi.hoisted(() => ({
+const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navigate, invalidateQueries, toast } = vi.hoisted(() => ({
   useRegistrationStatus: vi.fn(),
   reconnectTunnel: vi.fn(),
+  resetRegistrationForRePair: vi.fn(),
   navigate: vi.fn(),
   invalidateQueries: vi.fn(),
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
@@ -15,6 +16,7 @@ vi.mock('@/lib/hooks/use-registration-status', () => ({
 
 vi.mock('@/lib/registration-api', () => ({
   reconnectTunnel: () => reconnectTunnel(),
+  resetRegistrationForRePair: () => resetRegistrationForRePair(),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -79,15 +81,30 @@ describe('TunnelStatusBanner', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('routes to the re-pair screen when there are no recoverable credentials', async () => {
+  it('resets then routes to the re-pair screen when there are no recoverable credentials', async () => {
     useRegistrationStatus.mockReturnValue(degraded);
     reconnectTunnel.mockResolvedValue({ recovered: false, action: 're_pair', reason: 'no_credentials' });
+    resetRegistrationForRePair.mockResolvedValue({ ok: true });
 
     render(<TunnelStatusBanner />);
     fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/device-registration'));
+    expect(resetRegistrationForRePair).toHaveBeenCalled();
     expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate to re-pair if the reset fails', async () => {
+    useRegistrationStatus.mockReturnValue(degraded);
+    reconnectTunnel.mockResolvedValue({ recovered: false, action: 're_pair', reason: 'no_credentials' });
+    resetRegistrationForRePair.mockResolvedValue({ ok: false });
+
+    render(<TunnelStatusBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
+
+    await waitFor(() => expect(resetRegistrationForRePair).toHaveBeenCalled());
+    expect(navigate).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('TUNNEL_DEGRADED_RECONNECT_FAILED');
   });
 
   it('prompts a restart when the token cannot be written yet', async () => {

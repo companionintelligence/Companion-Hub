@@ -11,7 +11,6 @@ import {
   pairWithCode,
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
-  resetRegistrationForRePair,
 } from '@/lib/registration-api';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
@@ -420,13 +419,6 @@ export default function DeviceRegistrationPage() {
       completionStartedRef.current = false;
 
       try {
-        // A registered but tunnel-degraded device cannot pair directly — the
-        // backend refuses with "Device is already registered". Reset local
-        // registration first so re-pairing re-provisions the tunnel from scratch.
-        if (registrationStatus && requiresPortalRePairing(registrationStatus)) {
-          await resetRegistrationForRePair();
-        }
-
         const { ok, data } = await pairWithCode(code);
 
         if (ok && data.success) {
@@ -449,7 +441,7 @@ export default function DeviceRegistrationPage() {
         setIsPairing(false);
       }
     },
-    [refreshRegistrationStatus, registrationStatus, t],
+    [refreshRegistrationStatus, t],
   );
 
   useEffect(() => {

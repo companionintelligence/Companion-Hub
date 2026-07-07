@@ -1,4 +1,13 @@
-import { getDeviceId, getStateDrift, getStatus, markRestoreIntent, pairDevice, prepareFreshSetup, probeDomain } from '@/api-client/sdk.gen';
+import {
+  getDeviceId,
+  getStateDrift,
+  getStatus,
+  markRestoreIntent,
+  pairDevice,
+  prepareFreshSetup,
+  probeDomain,
+  resetRegistration,
+} from '@/api-client/sdk.gen';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import type { RegistrationStateDrift } from '@/lib/registration-state-drift';
@@ -97,10 +106,6 @@ export async function reconnectTunnel(): Promise<ReconnectTunnelResult> {
 
 /** Reset local registration so a registered device can be re-paired (POST /registration/reset). */
 export async function resetRegistrationForRePair(): Promise<{ ok: boolean }> {
-  try {
-    const res = await apiFetch('/api/registration/reset', { method: 'POST' });
-    return { ok: res.ok };
-  } catch {
-    return { ok: false };
-  }
+  const result = await sdkResult(resetRegistration());
+  return { ok: result.ok };
 }

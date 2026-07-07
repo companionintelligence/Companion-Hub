@@ -1,6 +1,6 @@
 import { getStatusQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
-import { reconnectTunnel } from '@/lib/registration-api';
+import { reconnectTunnel, resetRegistrationForRePair } from '@/lib/registration-api';
 import { requiresPortalRePairing } from '@/lib/registration-status';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
@@ -39,9 +39,16 @@ export function TunnelStatusBanner() {
         return;
       }
       if (result.action === 're_pair') {
-        // No recoverable credentials — the device must be reset and re-paired.
+        // No recoverable credentials — reset local registration (the backend
+        // confirmed there are no tunnel creds, so nothing is lost) so the pairing
+        // screen can register the device fresh, then send the user there.
         toast(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR'), { duration: 8000 });
-        navigate('/device-registration');
+        const reset = await resetRegistrationForRePair();
+        if (reset.ok) {
+          navigate('/device-registration');
+        } else {
+          toast.error(t('TUNNEL_DEGRADED_RECONNECT_FAILED'));
+        }
         return;
       }
       if (result.action === 'restart') {

@@ -696,38 +696,35 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     // Credentials exist — rewrite the token file and bring the tunnel up.
-    const result = await this.cloudflareClientService.initializeTunnel(org.id, {
+    await this.cloudflareClientService.initializeTunnel(org.id, {
       tunnelId: org.tunnelId,
       token: org.tunnelToken,
     });
 
-    if (result && this.hasTunnelToken()) {
-      await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
-      // Re-validate so a successful reconnect transitions degraded → locally_ready.
-      await this.validateRegistrationWithCloud().catch((e) => this.logger.warn('Post-reconnect validation failed (non-fatal)', e));
-      this.logger.info('Tunnel reconnected from stored credentials');
-      return { recovered: true, reason: 'recovered_from_db' };
+    // Success is determined by the token now being on disk, NOT by initializeTunnel's
+    // return value: it swallows transient cloudflared/Portal errors and returns null
+    // even after the token file was written. If the token still isn't there, the
+    // write itself failed (root-owned tunnel dir) — a restart lets the container
+    // entrypoint fix ownership before the next boot-time recovery.
+    if (!this.hasTunnelToken()) {
+      return { recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' };
     }
 
-    // The write failed — almost always because the tunnel bind-mount dir is
-    // root-owned and not writable by the Hub uid. The Hub cannot chown it itself;
-    // the container entrypoint fixes ownership on the next start.
-    const writable = await this.isTunnelDirWritable();
-    return {
-      recovered: false,
-      action: 'restart',
-      reason: writable ? 'tunnel_init_failed' : 'tunnel_dir_not_writable',
-    };
-  }
-
-  /** Best-effort check that the Hub process can write into the tunnel directory. */
-  private async isTunnelDirWritable(): Promise<boolean> {
-    try {
-      await fs.promises.access(TUNNEL_DIR, fs.constants.W_OK);
-      return true;
-    } catch {
-      return false;
+    // Ensure cloudflared is running with the freshly written token (initializeTunnel
+    // may have failed to start it), then clear the tunnel_token_missing degraded
+    // state directly. The missing-token condition is resolved once the file exists,
+    // so success must not hinge on a blocking Portal round-trip.
+    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
+    if (this._currentPhase === 'degraded') {
+      await this.setPhase('locally_ready');
     }
+    // Confirm with Portal in the background; it may transition the phase further
+    // (or reset the device if Portal no longer recognizes it). Not awaited so the
+    // reconnect response returns promptly.
+    void this.validateRegistrationWithCloud().catch((e) => this.logger.warn('Post-reconnect validation failed (non-fatal)', e));
+
+    this.logger.info('Tunnel reconnected from stored credentials');
+    return { recovered: true, reason: 'recovered_from_db' };
   }
 
   /**
