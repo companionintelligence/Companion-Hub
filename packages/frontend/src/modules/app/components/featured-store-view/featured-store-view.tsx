@@ -16,7 +16,6 @@ function AppSection({
   apps,
   isLoading,
   isError,
-  error,
   onRetry,
   installedAppUrns,
 }: {
@@ -25,7 +24,6 @@ function AppSection({
   apps: HubStoreApp[] | undefined;
   isLoading: boolean;
   isError: boolean;
-  error: Error | null;
   onRetry: () => void;
   installedAppUrns: Set<string>;
 }) {
@@ -76,8 +74,7 @@ function AppSection({
         </div>
       ) : isError ? (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}
-          {error?.message ? `: ${error.message}` : ''}.{' '}
+          {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}{' '}
           <button type="button" className="font-medium underline" onClick={onRetry}>
             {t('COMMON_RETRY')}
           </button>
@@ -102,7 +99,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
     data: featured,
     isLoading: loadingFeatured,
     isError: featuredError,
-    error: featuredErrorDetail,
     refetch: refetchFeatured,
   } = useQuery({
     ...portalStoreListingsQueryOptions({ tags: 'featured' }, storeId),
@@ -111,7 +107,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
     data: trending,
     isLoading: loadingTrending,
     isError: trendingError,
-    error: trendingErrorDetail,
     refetch: refetchTrending,
   } = useQuery({
     ...portalStoreListingsQueryOptions({ sort: 'trending' }, storeId),
@@ -120,7 +115,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
     data: newest,
     isLoading: loadingNewest,
     isError: newestError,
-    error: newestErrorDetail,
     refetch: refetchNewest,
   } = useQuery({
     ...portalStoreListingsQueryOptions({ sort: 'newest' }, storeId),
@@ -134,7 +128,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         apps={featured}
         isLoading={loadingFeatured}
         isError={featuredError}
-        error={featuredErrorDetail}
         onRetry={() => void refetchFeatured()}
         installedAppUrns={installedAppUrns}
       />
@@ -144,7 +137,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         apps={trending}
         isLoading={loadingTrending}
         isError={trendingError}
-        error={trendingErrorDetail}
         onRetry={() => void refetchTrending()}
         installedAppUrns={installedAppUrns}
       />
@@ -154,7 +146,6 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
         apps={newest}
         isLoading={loadingNewest}
         isError={newestError}
-        error={newestErrorDetail}
         onRetry={() => void refetchNewest()}
         installedAppUrns={installedAppUrns}
       />

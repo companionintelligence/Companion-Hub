@@ -8,7 +8,7 @@
  * - Tailscale Serve/Funnel setup
  */
 
-import { expect, loginUser, test } from './fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 // Test configuration
 const TAILSCALE_CONFIG = {
