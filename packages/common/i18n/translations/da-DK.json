@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Sæt installation i kø",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Kører allerede",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Sprunget over — ingen matchende app store-opslag",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Sprunget over. ingen matchende app store-opslag",
   "RESTORE_APPS_ACTION_START": "Start eksisterende installation",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Fortsæt til dashboard",
   "RESTORE_APPS_DESCRIPTION": "Vi geninstallerer apps fra din CI Account og genbruger eksisterende data på denne maskine, hvor det er muligt.",

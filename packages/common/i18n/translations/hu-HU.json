@@ -524,7 +524,7 @@
   "NO": "Nem",
   "RESTORE_APPS_ACTION_INSTALL": "Telepítés sorba állítása",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Már fut",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Kihagyva — nincs egyező app store bejegyzés",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Kihagyva. nincs egyező app store bejegyzés",
   "RESTORE_APPS_ACTION_START": "Meglévő telepítés indítása",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Tovább a dashboardra",
   "RESTORE_APPS_DESCRIPTION": "Újratelepítjük az alkalmazásokat a CI Accountodból, és ahol lehetséges, újrahasználjuk a meglévő adatokat ezen a gépen.",

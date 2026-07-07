@@ -524,7 +524,7 @@
   "NO": "Нет",
   "RESTORE_APPS_ACTION_INSTALL": "Поставить установку в очередь",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Уже запущено",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Пропущено — нет соответствующей записи в app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Пропущено. нет соответствующей записи в app store",
   "RESTORE_APPS_ACTION_START": "Запустить существующую установку",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Перейти к dashboard",
   "RESTORE_APPS_DESCRIPTION": "Мы переустанавливаем приложения из вашего CI Account и повторно используем существующие данные на этом компьютере, где это возможно.",

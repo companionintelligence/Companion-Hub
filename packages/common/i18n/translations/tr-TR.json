@@ -524,7 +524,7 @@
   "NO": "Hayır",
   "RESTORE_APPS_ACTION_INSTALL": "Kurulumu kuyruğa al",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Zaten çalışıyor",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Atlandı — eşleşen app store listesi yok",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Atlandı. eşleşen app store listesi yok",
   "RESTORE_APPS_ACTION_START": "Mevcut kurulumu başlat",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Dashboard'a devam et",
   "RESTORE_APPS_DESCRIPTION": "CI Account'unuzdan uygulamaları yeniden yüklüyoruz ve mümkün olduğunda bu makinedeki mevcut verileri yeniden kullanıyoruz.",

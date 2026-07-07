@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Lisää asennus jonoon",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Jo käynnissä",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ohitettu — ei vastaavaa app store -listaa",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ohitettu. ei vastaavaa app store -listaa",
   "RESTORE_APPS_ACTION_START": "Käynnistä olemassa oleva asennus",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Jatka dashboardiin",
   "RESTORE_APPS_DESCRIPTION": "Asennamme sovelluksia uudelleen CI Accountistasi ja käytämme olemassa olevia tietoja tällä koneella mahdollisuuksien mukaan.",

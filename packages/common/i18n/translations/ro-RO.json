@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Adaugă instalarea în coadă",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Rulează deja",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Omis — nicio listare corespunzătoare în app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Omis. nicio listare corespunzătoare în app store",
   "RESTORE_APPS_ACTION_START": "Pornește instalarea existentă",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Continuă la dashboard",
   "RESTORE_APPS_DESCRIPTION": "Reinstalăm aplicații din CI Account și reutilizăm datele existente pe această mașină acolo unde este posibil.",

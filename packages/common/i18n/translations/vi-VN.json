@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Xếp hàng cài đặt",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Đang chạy",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Đã bỏ qua — không có mục app store khớp",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Đã bỏ qua. không có mục app store khớp",
   "RESTORE_APPS_ACTION_START": "Bắt đầu cài đặt hiện có",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Tiếp tục đến dashboard",
   "RESTORE_APPS_DESCRIPTION": "Chúng tôi đang cài lại ứng dụng từ CI Account và tái sử dụng dữ liệu hiện có trên máy này khi có thể.",

@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Metti in coda l'installazione",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Già in esecuzione",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Saltato — nessuna voce corrispondente nell'app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Saltato. nessuna voce corrispondente nell'app store",
   "RESTORE_APPS_ACTION_START": "Avvia installazione esistente",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Continua alla dashboard",
   "RESTORE_APPS_DESCRIPTION": "Stiamo reinstallando le app dal tuo CI Account e riutilizzando i dati esistenti su questa macchina quando possibile.",

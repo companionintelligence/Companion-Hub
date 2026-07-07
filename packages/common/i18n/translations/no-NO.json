@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Sett installasjon i kø",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Kjører allerede",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Hoppet over — ingen matchende app store-oppføring",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Hoppet over. ingen matchende app store-oppføring",
   "RESTORE_APPS_ACTION_START": "Start eksisterende installasjon",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Fortsett til dashboard",
   "RESTORE_APPS_DESCRIPTION": "Vi installerer apper på nytt fra CI Account og gjenbruker eksisterende data på denne maskinen der det er mulig.",

@@ -522,7 +522,7 @@
   "NO": "否",
   "RESTORE_APPS_ACTION_INSTALL": "加入安裝佇列",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "已在執行",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "已略過 — 沒有相符的 app store 列表",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "已略過. 沒有相符的 app store 列表",
   "RESTORE_APPS_ACTION_START": "啟動現有安裝",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "繼續前往 dashboard",
   "RESTORE_APPS_DESCRIPTION": "我們正在從你的 CI Account 重新安裝 App，並在可能的情況下重複使用這台機器上的現有資料。",

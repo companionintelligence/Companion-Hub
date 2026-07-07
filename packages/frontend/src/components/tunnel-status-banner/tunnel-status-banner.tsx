@@ -28,8 +28,8 @@ export function TunnelStatusBanner() {
       <div className="flex items-start gap-2.5">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
         <span className="leading-relaxed text-foreground">
-          <strong className="font-semibold text-amber-700 dark:text-amber-400">{t('TUNNEL_DEGRADED_BANNER_TITLE')}</strong>{' '}
-          <span className="text-muted-foreground">— {t('TUNNEL_DEGRADED_BANNER_MESSAGE')}</span>
+          <strong className="font-semibold text-amber-700 dark:text-amber-400">{t('TUNNEL_DEGRADED_BANNER_TITLE')}</strong>
+          <span className="text-muted-foreground"> {t('TUNNEL_DEGRADED_BANNER_MESSAGE')}</span>
         </span>
       </div>
       <Link

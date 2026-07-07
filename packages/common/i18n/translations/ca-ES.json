@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Posar a la cua d'instal·lació",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Ja en execució",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Omesa — cap llistat coincident a la botiga d'aplicacions",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Omesa. cap llistat coincident a la botiga d'aplicacions",
   "RESTORE_APPS_ACTION_START": "Iniciar instal·lació existent",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Continuar al tauler",
   "RESTORE_APPS_DESCRIPTION": "Estem reinstal·lant aplicacions des del teu CI Account i reutilitzant dades existents en aquesta màquina quan sigui possible.",

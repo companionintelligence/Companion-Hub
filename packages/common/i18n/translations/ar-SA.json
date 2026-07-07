@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "إضافة إلى قائمة التثبيت",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "قيد التشغيل بالفعل",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "تم التخطي — لا يوجد إدراج مطابق في app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "تم التخطي. لا يوجد إدراج مطابق في app store",
   "RESTORE_APPS_ACTION_START": "بدء التثبيت الحالي",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "المتابعة إلى لوحة التحكم",
   "RESTORE_APPS_DESCRIPTION": "نعيد تثبيت التطبيقات من CI Account الخاص بك ونعيد استخدام البيانات الموجودة على هذه الآلة حيثما أمكن.",

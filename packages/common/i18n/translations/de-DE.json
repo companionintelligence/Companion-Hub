@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Installation einreihen",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Läuft bereits",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Übersprungen — kein passender App-Store-Eintrag",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Übersprungen. kein passender App-Store-Eintrag",
   "RESTORE_APPS_ACTION_START": "Vorhandene Installation starten",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Weiter zum Dashboard",
   "RESTORE_APPS_DESCRIPTION": "Wir installieren Apps aus deinem CI Account neu und verwenden vorhandene Daten auf diesem Rechner, wo möglich.",

@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Installatie in wachtrij plaatsen",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Draait al",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Overgeslagen — geen overeenkomende app store-vermelding",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Overgeslagen. geen overeenkomende app store-vermelding",
   "RESTORE_APPS_ACTION_START": "Bestaande installatie starten",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Doorgaan naar dashboard",
   "RESTORE_APPS_DESCRIPTION": "We installeren apps opnieuw vanuit je CI Account en hergebruiken bestaande gegevens op deze machine waar mogelijk.",

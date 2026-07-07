@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Plaas installering in tou",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Loop reeds",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Oorgeslaan — geen ooreenstemmende app store-vermelding nie",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Oorgeslaan. geen ooreenstemmende app store-vermelding nie",
   "RESTORE_APPS_ACTION_START": "Begin bestaande installering",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Gaan voort na dashboard",
   "RESTORE_APPS_DESCRIPTION": "Ons herinstalleer apps vanaf jou CI Account en hergebruik bestaande data op hierdie masjien waar moontlik.",

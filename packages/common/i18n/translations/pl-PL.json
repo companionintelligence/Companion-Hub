@@ -524,7 +524,7 @@
   "NO": "Nie",
   "RESTORE_APPS_ACTION_INSTALL": "Dodaj instalację do kolejki",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Już działa",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Pominięto — brak pasującego wpisu w app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Pominięto. brak pasującego wpisu w app store",
   "RESTORE_APPS_ACTION_START": "Uruchom istniejącą instalację",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Kontynuuj do dashboard",
   "RESTORE_APPS_DESCRIPTION": "Ponownie instalujemy aplikacje z Twojego CI Account i ponownie wykorzystujemy istniejące dane na tym komputerze, gdy to możliwe.",

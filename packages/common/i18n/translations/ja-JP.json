@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "インストールをキューに追加",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "既に実行中",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "スキップ — 一致する app store のリストがありません",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "スキップ. 一致する app store のリストがありません",
   "RESTORE_APPS_ACTION_START": "既存のインストールを開始",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "ダッシュボードに進む",
   "RESTORE_APPS_DESCRIPTION": "CI Account からアプリを再インストールし、可能な限りこのマシンの既存データを再利用しています。",

@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Zařadit do fronty instalace",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Již běží",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Přeskočeno — žádný odpovídající záznam v obchodě s aplikacemi",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Přeskočeno. žádný odpovídající záznam v obchodě s aplikacemi",
   "RESTORE_APPS_ACTION_START": "Spustit existující instalaci",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Pokračovat na dashboard",
   "RESTORE_APPS_DESCRIPTION": "Znovu instalujeme aplikace z vašeho CI Account a kde je to možné, znovu používáme existující data na tomto počítači.",

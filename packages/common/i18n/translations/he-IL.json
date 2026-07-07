@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "הוסף התקנה לתור",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "כבר פועל",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "דולג — אין רישום תואם ב-app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "דולג. אין רישום תואם ב-app store",
   "RESTORE_APPS_ACTION_START": "התחל התקנה קיימת",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "המשך ל-dashboard",
   "RESTORE_APPS_DESCRIPTION": "אנו מתקינים מחדש יישומים מ-CI Account שלך ומשתמשים מחדש בנתונים קיימים במכונה זו ככל האפשר.",

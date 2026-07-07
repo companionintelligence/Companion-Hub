@@ -524,7 +524,7 @@
   "NO": "Nej",
   "RESTORE_APPS_ACTION_INSTALL": "Köa installation",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Körs redan",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Hoppades över — ingen matchande app store-post",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Hoppades över. ingen matchande app store-post",
   "RESTORE_APPS_ACTION_START": "Starta befintlig installation",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Fortsätt till dashboard",
   "RESTORE_APPS_DESCRIPTION": "Vi installerar om appar från ditt CI Account och återanvänder befintliga data på den här datorn där det är möjligt.",

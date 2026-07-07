@@ -524,7 +524,7 @@
   "NO": "Non",
   "RESTORE_APPS_ACTION_INSTALL": "Mettre l'installation en file d'attente",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Déjà en cours d'exécution",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ignoré — aucune fiche correspondante dans l'app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Ignoré. aucune fiche correspondante dans l'app store",
   "RESTORE_APPS_ACTION_START": "Démarrer l'installation existante",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Continuer vers le tableau de bord",
   "RESTORE_APPS_DESCRIPTION": "Nous réinstallons les applications depuis votre CI Account et réutilisons les données existantes sur cette machine lorsque c'est possible.",

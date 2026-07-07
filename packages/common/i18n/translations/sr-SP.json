@@ -524,7 +524,7 @@
   "NO": "No",
   "RESTORE_APPS_ACTION_INSTALL": "Stavi instalaciju u red",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Već pokrenuto",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Preskočeno — nema odgovarajućeg unosa u app store-u",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Preskočeno. nema odgovarajućeg unosa u app store-u",
   "RESTORE_APPS_ACTION_START": "Pokreni postojeću instalaciju",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Nastavi na dashboard",
   "RESTORE_APPS_DESCRIPTION": "Ponovo instaliramo aplikacije iz vašeg CI Account-a i ponovo koristimo postojeće podatke na ovom računaru gde je moguće.",

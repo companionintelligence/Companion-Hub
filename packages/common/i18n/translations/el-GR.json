@@ -524,7 +524,7 @@
   "NO": "Όχι",
   "RESTORE_APPS_ACTION_INSTALL": "Προσθήκη εγκατάστασης στην ουρά",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Εκτελείται ήδη",
-  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Παραλείφθηκε — καμία αντίστοιχη καταχώριση app store",
+  "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Παραλείφθηκε. καμία αντίστοιχη καταχώριση app store",
   "RESTORE_APPS_ACTION_START": "Έναρξη υπάρχουσας εγκατάστασης",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Συνέχεια στο dashboard",
   "RESTORE_APPS_DESCRIPTION": "Επανεγκαθιστούμε εφαρμογές από το CI Account σας και επαναχρησιμοποιούμε υπάρχοντα δεδομένα σε αυτόν τον υπολογιστή όπου είναι δυνατό.",
