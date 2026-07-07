@@ -1,47 +1,20 @@
-import type { SystemSnapshot } from './core-server-banner';
+export const CORE_SERVER_DISK_USAGE_THRESHOLD = 90;
 
-/** Thresholds for "low spec" detection — shared with banner copy selection. */
-export const CORE_SERVER_LOW_RAM_GB = 8;
-export const CORE_SERVER_LOW_DISK_GB = 100;
-export const CORE_SERVER_LOW_CPU_CORES = 2;
+export type DiskSnapshot = {
+  diskUsed: number;
+  diskSize: number;
+};
 
-/** Companion Core Server units use FRANM-prefixed serials as device IDs. */
-const COMPANION_CORE_DEVICE_ID_PREFIX = 'FRANM';
-
-export type ClientPlatform = 'windows' | 'macos' | 'linux';
-
-export function detectClientPlatform(): ClientPlatform {
-  const ua = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
-  if (ua.includes('win')) return 'windows';
-  if (ua.includes('mac')) return 'macos';
-  return 'linux';
-}
-
-export function isCompanionCoreDevice(deviceId: string | undefined | null): boolean {
-  const id = deviceId?.trim().toUpperCase();
-  return Boolean(id?.startsWith(COMPANION_CORE_DEVICE_ID_PREFIX));
-}
-
-export function isBelowCoreServerHardwareThresholds(system: SystemSnapshot): boolean {
-  return system.memoryTotal < CORE_SERVER_LOW_RAM_GB || system.diskSize < CORE_SERVER_LOW_DISK_GB || system.cpuCores <= CORE_SERVER_LOW_CPU_CORES;
-}
-
-/**
- * Upsell banner: macOS/Windows clients with below-threshold hardware only.
- * Never shown on Linux or Companion Core Server devices (FRANM serials).
- */
-export function shouldShowCoreServerBanner(options: { clientPlatform: ClientPlatform; deviceId?: string | null; system?: SystemSnapshot }): boolean {
-  if (options.clientPlatform === 'linux') {
+export function isDiskUsageAboveThreshold(system: DiskSnapshot): boolean {
+  if (system.diskSize <= 0) {
     return false;
   }
-  if (options.clientPlatform !== 'windows' && options.clientPlatform !== 'macos') {
-    return false;
-  }
-  if (isCompanionCoreDevice(options.deviceId)) {
-    return false;
-  }
+  return (system.diskUsed / system.diskSize) * 100 > CORE_SERVER_DISK_USAGE_THRESHOLD;
+}
+
+export function shouldShowCoreServerBanner(options: { system?: DiskSnapshot }): boolean {
   if (!options.system) {
     return false;
   }
-  return isBelowCoreServerHardwareThresholds(options.system);
+  return isDiskUsageAboveThreshold(options.system);
 }
