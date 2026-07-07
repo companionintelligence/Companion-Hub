@@ -63,6 +63,14 @@ export class RegistrationController {
     return this.registrationService.getLiveRegistrationStatus();
   }
 
+  @Post('reconnect-tunnel')
+  @UseGuards(AuthGuard, DemoModeGuard)
+  @ApiOperation({ summary: 'Recover public/remote access for a registered but tunnel-degraded Hub' })
+  @ApiResponse({ status: 200, description: 'Returns the reconnect outcome (recovered, or an action the client should take)' })
+  async reconnectTunnel() {
+    return this.registrationService.reconnectTunnel();
+  }
+
   @Get('state-drift')
   @ApiOperation({ summary: 'Detect local vs CI Portal registration state drift' })
   @ApiResponse({ status: 200, description: 'Returns drift signals when local and portal state disagree' })

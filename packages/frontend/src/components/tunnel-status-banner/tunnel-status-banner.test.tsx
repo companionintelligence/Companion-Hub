@@ -1,10 +1,28 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const useRegistrationStatus = vi.fn();
+const { useRegistrationStatus, reconnectTunnel, navigate, invalidateQueries, toast } = vi.hoisted(() => ({
+  useRegistrationStatus: vi.fn(),
+  reconnectTunnel: vi.fn(),
+  navigate: vi.fn(),
+  invalidateQueries: vi.fn(),
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+}));
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({
   useRegistrationStatus: () => useRegistrationStatus(),
+}));
+
+vi.mock('@/lib/registration-api', () => ({
+  reconnectTunnel: () => reconnectTunnel(),
+}));
+
+vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getStatusQueryKey: () => ['getStatus'],
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({ invalidateQueries }),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -12,39 +30,74 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('react-router', () => ({
-  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+  useNavigate: () => navigate,
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: toast,
 }));
 
 import { TunnelStatusBanner } from './tunnel-status-banner';
 
+const degraded = { data: { phase: 'degraded', registered: true, degradedReasons: ['tunnel_token_missing'] } };
+
 describe('TunnelStatusBanner', () => {
-  it('renders a re-pair banner when the public tunnel is degraded', () => {
-    useRegistrationStatus.mockReturnValue({ data: { phase: 'degraded', registered: true, degradedReasons: ['tunnel_token_missing'] } });
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders a reconnect banner when the public tunnel is degraded', () => {
+    useRegistrationStatus.mockReturnValue(degraded);
 
     render(<TunnelStatusBanner />);
 
     expect(screen.getByTestId('tunnel-status-banner')).toBeInTheDocument();
     expect(screen.getByText('TUNNEL_DEGRADED_BANNER_TITLE')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' })).toHaveAttribute('href', '/device-registration');
+    expect(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' })).toBeInTheDocument();
   });
 
-  it('renders nothing when the device is fully operational', () => {
+  it('renders nothing when operational, for other degraded reasons, or while loading', () => {
     useRegistrationStatus.mockReturnValue({ data: { phase: 'locally_ready', registered: true, degradedReasons: [] } });
+    expect(render(<TunnelStatusBanner />).container).toBeEmptyDOMElement();
 
-    const { container } = render(<TunnelStatusBanner />);
-
-    expect(container).toBeEmptyDOMElement();
-  });
-
-  it('renders nothing for other degraded reasons', () => {
     useRegistrationStatus.mockReturnValue({ data: { phase: 'degraded', registered: true, degradedReasons: ['dns_pending'] } });
+    expect(render(<TunnelStatusBanner />).container).toBeEmptyDOMElement();
 
+    useRegistrationStatus.mockReturnValue({ data: undefined });
     expect(render(<TunnelStatusBanner />).container).toBeEmptyDOMElement();
   });
 
-  it('renders nothing while the status is still loading', () => {
-    useRegistrationStatus.mockReturnValue({ data: undefined });
+  it('recovers in place on reconnect success (refetches status, no navigation)', async () => {
+    useRegistrationStatus.mockReturnValue(degraded);
+    reconnectTunnel.mockResolvedValue({ recovered: true, reason: 'recovered_from_db' });
 
-    expect(render(<TunnelStatusBanner />).container).toBeEmptyDOMElement();
+    render(<TunnelStatusBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('TUNNEL_DEGRADED_RECONNECT_SUCCESS'));
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getStatus'] });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('routes to the re-pair screen when there are no recoverable credentials', async () => {
+    useRegistrationStatus.mockReturnValue(degraded);
+    reconnectTunnel.mockResolvedValue({ recovered: false, action: 're_pair', reason: 'no_credentials' });
+
+    render(<TunnelStatusBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/device-registration'));
+    expect(invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it('prompts a restart when the token cannot be written yet', async () => {
+    useRegistrationStatus.mockReturnValue(degraded);
+    reconnectTunnel.mockResolvedValue({ recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' });
+
+    render(<TunnelStatusBanner />);
+    fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART', expect.anything()));
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

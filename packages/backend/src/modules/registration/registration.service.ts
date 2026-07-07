@@ -653,6 +653,84 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Restore public/remote access for a *registered* Hub degraded with
+   * `tunnel_token_missing`. Pairing is refused once registered (see pairDevice),
+   * so this instead recovers the already-provisioned tunnel credentials from the
+   * database and rewrites the token file. Returns a structured outcome so the UI
+   * can route correctly instead of dead-ending on the pairing screen:
+   *  - { recovered: true }                       token rewritten, tunnel restarted
+   *  - { recovered: false, action: 'restart' }   creds exist but the token file
+   *      could not be written (tunnel dir not writable by the Hub uid) — a restart
+   *      lets the container entrypoint heal ownership, then boot recovery rewrites it
+   *  - { recovered: false, action: 're_pair' }   no recoverable credentials — the
+   *      tunnel must be re-provisioned, which requires resetting and re-pairing
+   */
+  public async reconnectTunnel(): Promise<{ recovered: boolean; action?: 're_pair' | 'restart'; reason: string }> {
+    await this.refreshPhaseFromSources();
+
+    // If the token is already on disk (or the device is degraded for a different
+    // reason), there is nothing for this action to recover.
+    if (this.hasTunnelToken()) {
+      return { recovered: true, reason: 'tunnel_token_present' };
+    }
+    if (!this._degradedReasons.includes('tunnel_token_missing')) {
+      return { recovered: false, reason: 'not_tunnel_token_missing' };
+    }
+
+    // Honor an explicit reconnect over a user-cleared token: drop the marker so
+    // credential recovery from the database is no longer skipped.
+    try {
+      await fs.promises.unlink(tunnelUserClearedMarkerPath());
+    } catch {
+      // marker not present — nothing to clear
+    }
+
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org) {
+      return { recovered: false, action: 're_pair', reason: 'not_registered' };
+    }
+    if (!org.tunnelToken || !org.tunnelId) {
+      // Portal never returned (or we lost) tunnel credentials — nothing to recover
+      // locally; the tunnel must be re-provisioned by resetting and re-pairing.
+      return { recovered: false, action: 're_pair', reason: 'no_credentials' };
+    }
+
+    // Credentials exist — rewrite the token file and bring the tunnel up.
+    const result = await this.cloudflareClientService.initializeTunnel(org.id, {
+      tunnelId: org.tunnelId,
+      token: org.tunnelToken,
+    });
+
+    if (result && this.hasTunnelToken()) {
+      await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
+      // Re-validate so a successful reconnect transitions degraded → locally_ready.
+      await this.validateRegistrationWithCloud().catch((e) => this.logger.warn('Post-reconnect validation failed (non-fatal)', e));
+      this.logger.info('Tunnel reconnected from stored credentials');
+      return { recovered: true, reason: 'recovered_from_db' };
+    }
+
+    // The write failed — almost always because the tunnel bind-mount dir is
+    // root-owned and not writable by the Hub uid. The Hub cannot chown it itself;
+    // the container entrypoint fixes ownership on the next start.
+    const writable = await this.isTunnelDirWritable();
+    return {
+      recovered: false,
+      action: 'restart',
+      reason: writable ? 'tunnel_init_failed' : 'tunnel_dir_not_writable',
+    };
+  }
+
+  /** Best-effort check that the Hub process can write into the tunnel directory. */
+  private async isTunnelDirWritable(): Promise<boolean> {
+    try {
+      await fs.promises.access(TUNNEL_DIR, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Detect when local Hub registration artifacts disagree with CI Portal or
    * persisted app-data. Only meaningful while the Hub is unregistered locally.
    */

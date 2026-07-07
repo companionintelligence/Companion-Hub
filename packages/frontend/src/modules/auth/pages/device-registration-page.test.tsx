@@ -15,6 +15,7 @@ const {
   markRegistrationRestoreIntentDetailed,
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
+  resetRegistrationForRePair,
 } = vi.hoisted(() => ({
   captureHubWarning: vi.fn(),
   navigate: vi.fn(),
@@ -30,6 +31,7 @@ const {
   markRegistrationRestoreIntentDetailed: vi.fn(),
   prepareFreshRegistrationDetailed: vi.fn(),
   probeRegistrationDomain: vi.fn(),
+  resetRegistrationForRePair: vi.fn(),
 }));
 
 vi.mock('react-router', async () => {
@@ -48,6 +50,7 @@ vi.mock('@/lib/registration-api', () => ({
   markRegistrationRestoreIntentDetailed,
   prepareFreshRegistrationDetailed,
   probeRegistrationDomain,
+  resetRegistrationForRePair,
 }));
 
 vi.mock('@/lib/sentry', () => ({
@@ -102,6 +105,7 @@ describe('DeviceRegistrationPage', () => {
     markRegistrationRestoreIntentDetailed.mockResolvedValue({ ok: true, data: { success: true } });
     prepareFreshRegistrationDetailed.mockResolvedValue({ ok: true, data: { success: true } });
     probeRegistrationDomain.mockResolvedValue({ ready: true });
+    resetRegistrationForRePair.mockResolvedValue({ ok: true });
   });
 
   it('shows the pairing form only after confirming the Hub is unregistered', async () => {
@@ -245,6 +249,29 @@ describe('DeviceRegistrationPage', () => {
     expect(await screen.findByText('device-123')).toBeInTheDocument();
     // ...and the page does NOT auto-bounce to the local app.
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('resets local registration before pairing a tunnel-degraded device (avoids "already registered")', async () => {
+    fetchRegistrationStatusResult.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { phase: 'degraded', registered: true, degradedReasons: ['tunnel_token_missing'] },
+    });
+
+    render(<DeviceRegistrationPage />);
+    await flushAsyncWork();
+
+    fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+    await waitFor(() => {
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+    });
+    // Reset must run first so the backend does not reject the code as "already registered".
+    expect(resetRegistrationForRePair).toHaveBeenCalled();
+    const resetOrder = resetRegistrationForRePair.mock.invocationCallOrder[0] ?? 0;
+    const pairOrder = pairWithCode.mock.invocationCallOrder[0] ?? 0;
+    expect(resetOrder).toBeLessThan(pairOrder);
   });
 
   it('points the login button at Portal home (not the Add Device intent URL) after choosing restore', async () => {
