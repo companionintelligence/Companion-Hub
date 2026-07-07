@@ -1,6 +1,18 @@
-import type { AltsCategory, AltEntry, AltAlternative } from './types';
+import { catalogAppSlug, findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
+import { ONBOARDING_CURATED_PICKS, type OnboardingCuratedPick } from './onboarding-curated-picks';
+import type { AltsCategory, AltAlternative, AltEntry } from './types';
 
 export type { AltsCategory, AltEntry, AltAlternative };
+
+export type OnboardingRecommendation = {
+  category: string;
+  proprietary: string[];
+  alternatives: AltAlternative[];
+  /** True when a detected Docker service matched this pick's proprietary target. */
+  boosted: boolean;
+};
+
+type CatalogApp = { id?: string | null; urn?: string | null; name?: string; icon?: string | null; short_desc?: string };
 
 /**
  * Get all alternatives data flattened with category info
@@ -15,9 +27,123 @@ export function getAllAlternatives(altsData: AltsCategory): Array<AltEntry & { c
   return result;
 }
 
+function normalizeName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isAlreadyRunning(slug: string, altName: string, detectedLower: Set<string>): boolean {
+  return detectedLower.has(slug.toLowerCase()) || detectedLower.has(altName.toLowerCase());
+}
+
+function findAltEntryForSlug(altsData: AltsCategory, slug: string): { category: string; entry: AltEntry; alt: AltAlternative } | null {
+  for (const [category, entries] of Object.entries(altsData)) {
+    for (const entry of entries) {
+      const alt = entry.alternatives.find((a) => a.appSlug === slug);
+      if (alt) {
+        return { category, entry, alt };
+      }
+    }
+  }
+  return null;
+}
+
+function proprietaryNamesForPick(pick: OnboardingCuratedPick, altsData: AltsCategory, resolvedSlug: string): string[] {
+  const fromAlt = findAltEntryForSlug(altsData, resolvedSlug);
+  if (fromAlt) {
+    return fromAlt.entry.proprietary.map((p) => p.name);
+  }
+  return [pick.proprietaryLabel];
+}
+
+function detectedMatchesPick(detectedLower: Set<string>, pick: OnboardingCuratedPick, altsData: AltsCategory): boolean {
+  const labels = new Set<string>([normalizeName(pick.proprietaryLabel)]);
+
+  for (const [category, entries] of Object.entries(altsData)) {
+    if (category !== pick.category) continue;
+    for (const entry of entries) {
+      for (const p of entry.proprietary) {
+        if (normalizeName(p.name) === normalizeName(pick.proprietaryLabel)) {
+          labels.add(normalizeName(p.name));
+          for (const alt of entry.alternatives) {
+            if (pick.preferredSlugs.includes(alt.appSlug ?? '')) {
+              labels.add(normalizeName(p.name));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (const detected of detectedLower) {
+    for (const label of labels) {
+      if (detected.includes(label) || label.includes(detected)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function resolvePickSlug(pick: OnboardingCuratedPick, storeApps: CatalogApp[]): string | null {
+  for (const slug of pick.preferredSlugs) {
+    if (findCatalogAppBySlug(storeApps, slug)) {
+      return slug;
+    }
+  }
+  return null;
+}
+
 /**
- * Get recommended apps based on detected services.
- * Returns alternatives for services that are NOT already running.
+ * Resolve curated onboarding recommendations: one high-value pick per category,
+ * intersected with the marketplace catalog and filtered for already-running services.
+ */
+export function resolveOnboardingRecommendations(
+  detectedServiceNames: string[],
+  altsData: AltsCategory,
+  storeApps: CatalogApp[],
+): OnboardingRecommendation[] {
+  const detectedLower = new Set(detectedServiceNames.map(normalizeName));
+  const resolved: OnboardingRecommendation[] = [];
+
+  for (const pick of ONBOARDING_CURATED_PICKS) {
+    const slug = resolvePickSlug(pick, storeApps);
+    if (!slug) continue;
+
+    const storeApp = findCatalogAppBySlug(storeApps, slug);
+    const altMeta = findAltEntryForSlug(altsData, slug);
+    const altName = altMeta?.alt.name ?? storeApp?.name ?? slug;
+
+    if (isAlreadyRunning(slug, altName, detectedLower)) continue;
+
+    const alt: AltAlternative = altMeta?.alt ?? {
+      name: altName,
+      icon: storeApp?.icon ?? '',
+      url: '',
+      appSlug: slug,
+    };
+
+    resolved.push({
+      category: pick.category,
+      proprietary: proprietaryNamesForPick(pick, altsData, slug),
+      alternatives: [alt],
+      boosted: detectedMatchesPick(detectedLower, pick, altsData),
+    });
+  }
+
+  resolved.sort((a, b) => {
+    if (a.boosted !== b.boosted) return a.boosted ? -1 : 1;
+    const aIndex = ONBOARDING_CURATED_PICKS.findIndex((p) => p.category === a.category);
+    const bIndex = ONBOARDING_CURATED_PICKS.findIndex((p) => p.category === b.category);
+    return aIndex - bIndex;
+  });
+
+  return resolved;
+}
+
+/**
+ * @deprecated Use resolveOnboardingRecommendations for onboarding step 4.
+ * Returns all alternative groups (legacy full dump).
  */
 export function getRecommendedApps(
   detectedServiceNames: string[],
@@ -26,8 +152,6 @@ export function getRecommendedApps(
   const allAlts = getAllAlternatives(altsData);
   const detectedLower = new Set(detectedServiceNames.map((n) => n.toLowerCase()));
 
-  // For each alt group, check if any detected service matches a proprietary name
-  // Also filter out alternatives that are already running
   const recommendations: Array<{ category: string; proprietary: string[]; alternatives: AltAlternative[] }> = [];
 
   for (const entry of allAlts) {

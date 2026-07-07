@@ -53,9 +53,14 @@ vi.mock('../helpers/use-marketplace-catalog-apps', () => ({
           },
         ],
     isLoading: mockCatalogState.isLoading,
+    isFetching: mockCatalogState.isLoading,
     isError: mockCatalogState.isError,
     refetch: vi.fn(),
   }),
+}));
+
+vi.mock('../helpers/prefetch-onboarding-marketplace', () => ({
+  prefetchOnboardingMarketplace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/context/user-context', () => ({
@@ -284,13 +289,22 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
   });
 
-  it('keeps Install & Finish disabled while the marketplace catalog is loading', async () => {
+  it('keeps Install & Finish enabled while the marketplace catalog is loading', async () => {
     mockCatalogState.isLoading = true;
     const user = userEvent.setup();
     renderPage();
 
     await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
-    expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
+    expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
+  });
+
+  it('keeps Install & Finish enabled when the marketplace catalog fails to load', async () => {
+    mockCatalogState.isError = true;
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
   });
 
   it('flows: AI config → Install & Finish → install → navigate to /store', async () => {

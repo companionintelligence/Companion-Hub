@@ -877,6 +877,8 @@
   "ONBOARDING_COMPANION_IMPORT_TOOLS_DESC": "Import files, social accounts, and cloud histories into your localized ecosystem.",
   "ONBOARDING_COMPANION_APP_UNAVAILABLE": "Not available in your app store yet.",
   "ONBOARDING_CATALOG_LOADING": "Catalog still loading…",
+  "ONBOARDING_RECOMMENDATIONS_LOADING": "Loading recommended apps…",
+  "ONBOARDING_RECOMMENDATIONS_UNAVAILABLE": "Could not load recommended apps; retry below or continue without them.",
   "ONBOARDING_REMOTE_ACCESS": "Remote access",
   "ONBOARDING_REMOTE_WEB": "Web",
   "ONBOARDING_REMOTE_TRANSPORT_TAILSCALE": "Tailscale",
