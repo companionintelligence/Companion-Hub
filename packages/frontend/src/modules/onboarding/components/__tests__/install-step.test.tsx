@@ -74,13 +74,11 @@ describe('InstallStep', () => {
   it('renders all apps in queued state initially', () => {
     const apps = [makeApp('nextcloud', 'Nextcloud', 'nextcloud:store1'), makeApp('gitea', 'Gitea', 'gitea:store1')];
 
-    render(<InstallStep apps={apps} onComplete={onComplete} />);
+    render(<InstallStep apps={apps} onComplete={onComplete} start={false} />);
 
     expect(screen.getByText('Nextcloud')).toBeInTheDocument();
     expect(screen.getByText('Gitea')).toBeInTheDocument();
-    // At least one should be queued (the second one hasn't started yet)
-    const queuedIcons = screen.queryAllByTestId('status-queued');
-    expect(queuedIcons.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByTestId('status-queued')).toHaveLength(2);
   });
 
   it('shows the correct progress text while installing', () => {
@@ -105,13 +103,9 @@ describe('InstallStep', () => {
   it('shows status labels for each state', () => {
     const apps = [makeApp('app1', 'App One', 'app1:store1'), makeApp('app2', 'App Two', 'app2:store1')];
 
-    render(<InstallStep apps={apps} onComplete={onComplete} />);
+    render(<InstallStep apps={apps} onComplete={onComplete} start={false} />);
 
-    // At least one should show Queued (the second hasn't started yet);
-    // the first may have already transitioned to Installing
-    const queued = screen.queryAllByText('Queued');
-    const installing = screen.queryAllByText('Installing…');
-    expect(queued.length + installing.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Queued')).toHaveLength(2);
   });
 
   it('provides a continue button that calls onComplete', async () => {

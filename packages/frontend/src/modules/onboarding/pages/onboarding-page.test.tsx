@@ -1,5 +1,6 @@
 import { render, screen } from '@/tests/test-utils';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -262,12 +263,16 @@ vi.mock('../components/install-step', () => ({
   ),
 }));
 
-const renderPage = () =>
-  render(
-    <MemoryRouter initialEntries={['/onboarding']}>
-      <OnboardingPage />
-    </MemoryRouter>,
+const renderPage = () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
+};
 
 describe('OnboardingPage (single vertical form)', () => {
   beforeEach(() => {
