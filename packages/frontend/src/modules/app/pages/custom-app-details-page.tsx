@@ -8,13 +8,15 @@ import { CustomAppDetailsPageContent } from './custom-app-details-page-content';
 
 export const CustomAppDetailsPage = () => {
   const params = useParams<{ appId: string }>();
+  const appId = params.appId;
 
   const getApp = useQuery({
-    ...getAppOptions({ path: { urn: `${params.appId}:_user` } }),
+    ...getAppOptions({ path: { urn: `${appId}:_user` } }),
     staleTime: 30_000,
+    enabled: Boolean(appId),
   });
 
-  if (getApp.isLoading || !getApp.data) {
+  if (!appId || getApp.isLoading || !getApp.data) {
     return <PageLoadingSpinner />;
   }
 
@@ -27,7 +29,7 @@ export const CustomAppDetailsPage = () => {
     return <PortExposeDetailsView app={app} info={info} />;
   }
 
-  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} appId={params.appId!} />;
+  return <CustomAppDetailsPageContent info={info} app={app} metadata={metadata} appId={appId} />;
 };
 
 export default CustomAppDetailsPage;
