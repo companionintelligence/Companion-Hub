@@ -558,6 +558,23 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ preferredModelId: 'phi-4-mini' }));
   });
 
+  it('links each agent to its available companion apps without changing the selection', async () => {
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByTestId('openclaw-client-ios')).toHaveAttribute(
+      'href',
+      'https://apps.apple.com/us/app/openclaw-ai-that-does-things/id6780396132',
+    );
+    expect(screen.getByTestId('openclaw-client-android')).toHaveAttribute('href', 'https://play.google.com/store/apps/details?id=ai.openclaw.app');
+    expect(screen.getByTestId('openclaw-client-desktop')).toHaveAttribute('href', 'https://github.com/openclaw/openclaw/releases');
+    expect(screen.getByTestId('hermes-client-hermex-for-ios')).toHaveAttribute('href', 'https://apps.apple.com/us/app/hermex/id6767006319');
+
+    await user.click(screen.getByTestId('openclaw-client-ios'));
+    expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('lets the user add Hermes as a second agent framework (multi-select)', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();

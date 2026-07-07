@@ -869,6 +869,7 @@
   "ONBOARDING_AGENT_FRAMEWORK_OPENCLAW_DESC": "Open source coding & computer-use agent that runs on your Hub.",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES": "Hermes",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES_DESC": "Advanced reasoning assistant for your tools, memory, and notifications.",
+  "ONBOARDING_AGENT_COMPANION_APPS": "Companion apps:",
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "No agent selected - you can add one later from the App Store.",
   "ONBOARDING_COMPANION_SECTION_TITLE": "Uncloud your life",
   "ONBOARDING_COMPANION_SECTION_DESC": "Own your memory on your Hub. These apps install with sensible defaults and can reach the public web when you choose.",
