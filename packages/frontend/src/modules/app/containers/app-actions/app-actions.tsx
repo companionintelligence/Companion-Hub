@@ -38,13 +38,14 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { useLocation, useNavigate, Link } from 'react-router';
+import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import type { AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
 import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
+import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
 
 const openExternalUrl = (url: string) => openExternal(url);
 
@@ -158,6 +159,8 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const autoInstallTriggeredRef = useRef(false);
 
   // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
   // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
@@ -166,6 +169,56 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       setIsCancellingInstall(false);
     }
   }, [app?.status]);
+
+  const [appSlug, storeId] = info.urn.split(':');
+
+  useEffect(() => {
+    if (autoInstallTriggeredRef.current) {
+      return;
+    }
+
+    if ((app?.status ?? 'missing') !== 'missing') {
+      return;
+    }
+
+    if (!shouldAutoOpenInstall(appSlug, storeId, location.search)) {
+      return;
+    }
+
+    autoInstallTriggeredRef.current = true;
+    installDisclosure.open();
+    clearStashedInstallIntentForApp(appSlug, storeId);
+
+    if (searchParams.get('install') === '1') {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('install');
+      const nextSearch = nextParams.toString();
+      void navigate(
+        {
+          pathname: location.pathname,
+          search: nextSearch ? `?${nextSearch}` : '',
+        },
+        { replace: true },
+      );
+    }
+  }, [app?.status, appSlug, storeId, location.pathname, location.search, navigate, searchParams, installDisclosure.open]);
+
+  useEffect(() => {
+    if (autoInstallTriggeredRef.current || (app?.status ?? 'missing') !== 'missing') {
+      return;
+    }
+
+    void (async () => {
+      const pending = await resolvePendingInstallIntent();
+      if (!pending || pending.appSlug !== appSlug || pending.storeId !== storeId) {
+        return;
+      }
+
+      autoInstallTriggeredRef.current = true;
+      installDisclosure.open();
+      clearStashedInstallIntentForApp(appSlug, storeId);
+    })();
+  }, [app?.status, appSlug, storeId, installDisclosure.open]);
 
   const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
