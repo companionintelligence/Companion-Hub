@@ -743,6 +743,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    if (isPortExposeApp(app.config)) {
+      this.logger.debug(`Ignoring stop for port-expose workload ${appUrn}`);
+      return { requestId: crypto.randomUUID() };
+    }
+
     await this.appRepository.updateAppById(app.id, { status: 'stopping' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
 

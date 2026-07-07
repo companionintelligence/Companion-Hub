@@ -14,7 +14,7 @@ import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app
 import { UninstallDialog } from '@/modules/app/components/dialogs/uninstall-dialog/uninstall-dialog';
 import { PortExposeSettingsDialog } from '@/modules/app/components/port-expose-settings-dialog/port-expose-settings-dialog';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import '../containers/app-actions/app-actions.css';
+import '../../containers/app-actions/app-actions.css';
 
 type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 

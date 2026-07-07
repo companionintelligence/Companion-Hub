@@ -12,6 +12,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
@@ -121,6 +122,25 @@ export class AppStatusSyncService {
             { appUrn, status: app.status, minutesStuck },
             { debounceKey: `app-status-sync:stuck:${appUrn}:${app.status}`, debounceMs: 30 * 60_000 },
           );
+        }
+
+        // Port-expose workloads are not Docker-managed; keep them running so Traefik
+        // and Cloudflare exposure sync continue to treat them as available.
+        if (isPortExposeApp(app.config)) {
+          if (app.status === 'uninstalling') {
+            skippedCount++;
+            continue;
+          }
+
+          if (app.status === 'running') {
+            skippedCount++;
+          } else {
+            await this.appRepository.updateAppById(app.id, { status: 'running' });
+            this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'running' });
+            this.logger.info(`Synced ${appUrn}: '${app.status}' -> 'running' (port-expose)`);
+            syncedCount++;
+          }
+          continue;
         }
 
         const dockerStatus = dockerStatusMap.get(appUrn);
