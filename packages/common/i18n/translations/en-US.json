@@ -866,7 +866,7 @@
   "ONBOARDING_AGENT_FRAMEWORK_HERMES_DESC": "Advanced reasoning assistant for your tools, memory, and notifications.",
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "No agent selected - you can add one later from the App Store.",
   "ONBOARDING_COMPANION_SECTION_TITLE": "Uncloud your life",
-  "ONBOARDING_COMPANION_SECTION_DESC": "Own and organize your memory on your Hub. These apps install with sensible defaults and are reachable on the public web.",
+  "ONBOARDING_COMPANION_SECTION_DESC": "Own your memory on your Hub. These apps install with sensible defaults and can reach the public web when you choose.",
   "ONBOARDING_COMPANION_MEMORY_DESC": "Connect your services and give your agents a memory that knows you; organize your digital life and keep what matters from slipping away.",
   "ONBOARDING_COMPANION_IMPORT_TOOLS_NAME": "Memory Import Tools",
   "ONBOARDING_COMPANION_IMPORT_TOOLS_DESC": "Import files, social accounts, and cloud histories into your localized ecosystem.",
