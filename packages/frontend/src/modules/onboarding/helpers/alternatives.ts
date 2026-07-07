@@ -1,4 +1,4 @@
-import { catalogAppSlug, findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
+import { findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
 import { ONBOARDING_CURATED_PICKS, type OnboardingCuratedPick } from './onboarding-curated-picks';
 import type { AltsCategory, AltAlternative, AltEntry } from './types';
 

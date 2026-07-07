@@ -14,7 +14,7 @@ vi.mock('react-i18next', () => ({
   }),
   Trans: ({ i18nKey, values }: { i18nKey: string; values?: Record<string, unknown> }) => (
     <span>
-      {i18nKey}:{values?.activeName}:{values?.count}
+      {i18nKey}:{String(values?.activeName ?? '')}:{String(values?.count ?? '')}
     </span>
   ),
 }));
