@@ -63,8 +63,13 @@ services:
     # /var/run/docker.sock (see docker.service.ts — it spawns `docker compose`
     # and uses dockerode against that socket). The daemon performs all
     # privileged work host-side; the Hub process only needs *access* to the
-    # socket, which is granted by `user: <uid>:<gid>` + `group_add: DOCKER_GID`
-    # + the read-only socket mount below. The backend performs no iptables /
+    # socket, which is granted by the entrypoint dropping to CI_HUB_CONTAINER_UID
+    # with DOCKER_GID applied via `setpriv --groups` (see docker-entrypoint.sh)
+    # + the read-only socket mount below. NOTE: the `group_add: DOCKER_GID` below
+    # only affects the brief pre-drop root phase — setpriv REPLACES the
+    # supplementary groups, so the dropped process's socket access comes solely
+    # from `--groups=$DOCKER_GID` (fed by the DOCKER_GID env var).
+    # The backend performs no iptables /
     # modprobe / mknod / device or kernel-module operations of its own, so it
     # needs no host devices, no extra capabilities, and no seccomp/AppArmor
     # opt-out. `privileged: true` would grant ALL of those and directly
@@ -98,11 +103,15 @@ services:
     container_name: ci-os-hub
     logging: *default-logging
     restart: unless-stopped
-    # Match the host user that owns ROOT_FOLDER_HOST (set CI_HUB_CONTAINER_UID/GID in .env).
-    # The desktop app always writes this from resolve_hub_container_identity():
-    # 0:0 on Windows (Docker Desktop / NTFS bind mounts require root),
-    # or the host UID:GID on Linux/macOS.
-    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
+    # The container starts as root and drops to CI_HUB_CONTAINER_UID:GID in its
+    # entrypoint (docker-entrypoint.sh) after chowning bind-mount dirs the Hub must
+    # write (notably /app/tunnel — Docker creates missing bind sources root-owned,
+    # which otherwise wedges the tunnel token as `tunnel_token_missing`). This
+    # replaces a compose `user:` directive, which cannot chown the dir first.
+    # The desktop app writes CI_HUB_CONTAINER_UID/GID/DOCKER_GID to the env file
+    # from resolve_hub_container_identity(): 0:0 on Windows (Docker Desktop / NTFS
+    # bind mounts require root — the entrypoint then skips the drop), or the host
+    # UID:GID on Linux/macOS.
     # Host docker.sock is root:docker (660); add the host docker group GID (see init-hub-data-dirs.ts).
     group_add:
       - "${DOCKER_GID:-973}"
@@ -172,6 +181,9 @@ services:
       DOCKER_CONFIG: /data/.docker
       CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
       CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
+      # Consumed by docker-entrypoint.sh to keep Docker-socket access after it
+      # drops privileges (matches the group_add below).
+      DOCKER_GID: ${DOCKER_GID:-973}
       POSTGRES_HOST: ci-hub-db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: companion

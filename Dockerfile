@@ -41,10 +41,10 @@ RUN chmod +x docker-binary && \
 FROM node_base AS runner_base
 
 RUN set -eux; \
-    apk add --no-cache curl openssl git docker-cli dmidecode pciutils || { \
+    apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv || { \
       echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
       sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
-      apk add --no-cache curl openssl git docker-cli dmidecode pciutils; \
+      apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv; \
     }
 
 # ---- BUILDER ----
@@ -193,6 +193,14 @@ EXPOSE 3000
 
     # Ensure Node treats .js as ESM (esbuild outputs ESM format)
     RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
+
+    # Entrypoint starts as root, heals bind-mount ownership (notably /app/tunnel),
+    # then drops to CI_HUB_CONTAINER_UID:GID with the DOCKER_GID supplementary
+    # group. This replaces the compose `user:` directive so the tunnel token can
+    # always be written. See docker-entrypoint.sh.
+    COPY docker-entrypoint.sh /usr/local/bin/hub-entrypoint.sh
+    RUN chmod +x /usr/local/bin/hub-entrypoint.sh
+    ENTRYPOINT ["/usr/local/bin/hub-entrypoint.sh"]
 
     # Hub runs as host UID/GID. /data/cache and /data/.docker are host bind mounts (init-hub-data-dirs.ts).
     CMD ["sh", "-c", "ln -sf /usr/local/bin/docker-compose /data/.docker/cli-plugins/docker-compose 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]

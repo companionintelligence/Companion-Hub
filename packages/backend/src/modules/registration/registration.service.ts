@@ -653,6 +653,102 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Restore public/remote access for a *registered* Hub degraded with
+   * `tunnel_token_missing`. Pairing is refused once registered (see pairDevice),
+   * so this instead recovers the already-provisioned tunnel credentials from the
+   * database and rewrites the token file. Returns a structured outcome so the UI
+   * can route correctly instead of dead-ending on the pairing screen:
+   *  - { recovered: true }                       token rewritten, tunnel restarted
+   *  - { recovered: false, action: 'restart' }   creds exist but the token file
+   *      could not be written (tunnel dir not writable by the Hub uid) — a restart
+   *      lets the container entrypoint heal ownership, then boot recovery rewrites it
+   *  - { recovered: false, action: 're_pair' }   no recoverable credentials — the
+   *      tunnel must be re-provisioned, which requires resetting and re-pairing
+   */
+  public async reconnectTunnel(): Promise<{ recovered: boolean; action?: 're_pair' | 'restart'; reason: string }> {
+    // The banner only surfaces this action for a degraded + tunnel_token_missing
+    // device, so trust the in-memory phase instead of re-deriving it — a
+    // refreshPhaseFromSources() here would re-persist a degraded→degraded
+    // transition (firing a redundant high-urgency agent notification) and could
+    // even flip an out-of-band-cleared registration to 'unregistered'.
+
+    // If the token is already on disk, the missing-token condition is resolved.
+    // Clear any stuck degraded phase so the UI reflects success — this state is
+    // reachable when boot recovery rewrote the token but Portal was unreachable,
+    // so the phase never transitioned out of degraded.
+    if (this.hasTunnelToken()) {
+      await this.clearTunnelTokenMissingDegraded();
+      return { recovered: true, reason: 'tunnel_token_present' };
+    }
+    if (!this._degradedReasons.includes('tunnel_token_missing')) {
+      return { recovered: false, reason: 'not_tunnel_token_missing' };
+    }
+
+    // Honor an explicit reconnect over a user-cleared token: drop the marker so
+    // credential recovery from the database is no longer skipped.
+    try {
+      await fs.promises.unlink(tunnelUserClearedMarkerPath());
+    } catch {
+      // marker not present — nothing to clear
+    }
+
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org) {
+      return { recovered: false, action: 're_pair', reason: 'not_registered' };
+    }
+    if (!org.tunnelToken || !org.tunnelId) {
+      // Portal never returned (or we lost) tunnel credentials — nothing to recover
+      // locally; the tunnel must be re-provisioned by resetting and re-pairing.
+      return { recovered: false, action: 're_pair', reason: 'no_credentials' };
+    }
+
+    // Credentials exist — rewrite the token file.
+    await this.cloudflareClientService.initializeTunnel(org.id, {
+      tunnelId: org.tunnelId,
+      token: org.tunnelToken,
+    });
+
+    // Success is determined by the token now being on disk, NOT by initializeTunnel's
+    // return value: it swallows transient cloudflared/Portal errors and returns null
+    // even after the token file was written. If the token still isn't there, the
+    // write itself failed (root-owned tunnel dir) — a restart lets the container
+    // entrypoint fix ownership before the next boot-time recovery.
+    if (!this.hasTunnelToken()) {
+      return { recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' };
+    }
+
+    // The missing-token condition is resolved, so clear the degraded phase directly —
+    // success must not hinge on a Portal round-trip. Bringing cloudflared up and the
+    // Portal reconcile both run in the background so the response returns promptly.
+    await this.clearTunnelTokenMissingDegraded();
+    void (async () => {
+      try {
+        await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
+      } catch (e) {
+        this.logger.warn('Post-reconnect cloudflared restart failed (non-fatal)', e);
+      }
+      // Deduped/throttled Portal check-in — shares cloudValidationInFlight with the
+      // status-poll path, so it won't double-run or double-reset on a Portal 400.
+      await this.maybeValidateWithCloud();
+    })();
+
+    this.logger.info('Tunnel reconnected from stored credentials');
+    return { recovered: true, reason: 'recovered_from_db' };
+  }
+
+  /**
+   * Clear a stuck `degraded` / `tunnel_token_missing` phase once the token is
+   * present again, resetting the transient-failure counter so a single stale
+   * strike cannot immediately re-degrade the just-restored phase.
+   */
+  private async clearTunnelTokenMissingDegraded(): Promise<void> {
+    if (this._currentPhase === 'degraded' && this._degradedReasons.includes('tunnel_token_missing')) {
+      this.consecutiveValidationFailures = 0;
+      await this.setPhase('locally_ready');
+    }
+  }
+
+  /**
    * Detect when local Hub registration artifacts disagree with CI Portal or
    * persisted app-data. Only meaningful while the Hub is unregistered locally.
    */
