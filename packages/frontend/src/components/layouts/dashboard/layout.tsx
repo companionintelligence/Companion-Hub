@@ -7,10 +7,9 @@ import { useLocation, Navigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
-import { detectClientPlatform, shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
+import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
-import { getDeviceIdOptions } from '@/api-client/@tanstack/react-query.gen';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -28,30 +27,22 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
-  const { isDismissed, dismiss } = useCoreServerBanner();
-  const clientPlatform = detectClientPlatform();
-
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
+    refetchInterval: 3000,
     staleTime: 30_000,
   });
 
-  const { data: deviceId } = useQuery({
-    ...getDeviceIdOptions(),
-    select: (payload) => (payload as { device_id?: string }).device_id,
-    staleTime: 300_000,
-  });
+  const diskSnapshot = systemData ? { diskUsed: systemData.diskUsed, diskSize: systemData.diskSize } : undefined;
 
-  const systemSnapshot = systemData
-    ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores }
-    : undefined;
+  const diskProbeKey =
+    diskSnapshot && shouldShowCoreServerBanner({ system: diskSnapshot }) ? diskSnapshot.diskUsed * 1_000_000_000 + diskSnapshot.diskSize : undefined;
+  const { isDismissed, dismiss } = useCoreServerBanner(diskProbeKey);
 
   const showCoreServerBanner =
     !isDismissed &&
     shouldShowCoreServerBanner({
-      clientPlatform,
-      deviceId,
-      system: systemSnapshot,
+      system: diskSnapshot,
     });
 
   useEffect(() => {
@@ -111,7 +102,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main className="relative flex flex-1 flex-col gap-4 pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
-        {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
+        {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
         <TunnelStatusBanner />
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div

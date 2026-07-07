@@ -141,7 +141,7 @@ test.describe('Scenario: First Install Path', () => {
     await page.getByPlaceholder('Confirm your password').fill('SecurePass123!');
     await page.getByRole('button', { name: 'Register' }).click();
 
-    await expect(page.getByText('Welcome to Companion Hub')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: 'Set Up Your Hub' })).toBeVisible({ timeout: 15000 });
   });
 });
 

@@ -133,7 +133,7 @@ describe('getDockerDesktopGuideContent', () => {
       alreadyInstalledSteps: [
         'Open Docker Desktop from your Start Menu',
         "Wait for Docker to start (you'll see the whale icon in your system tray)",
-        'Come back here — the Hub will continue automatically',
+        'Come back here. The Hub will continue automatically',
       ],
       notInstalledTitle: 'If Docker Desktop is NOT installed:',
       notInstalledSteps: [
@@ -141,7 +141,7 @@ describe('getDockerDesktopGuideContent', () => {
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
         'Start Docker Desktop',
-        'Come back here — the Hub will start automatically',
+        'Come back here. The Hub will start automatically',
       ],
       hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
     });
@@ -155,14 +155,14 @@ describe('getDockerDesktopGuideContent', () => {
       alreadyInstalledSteps: [
         'Open Docker Desktop from your Applications folder',
         "Wait for Docker to start (you'll see the whale icon in your menu bar)",
-        'Come back here — the Hub will continue automatically',
+        'Come back here. The Hub will continue automatically',
       ],
       notInstalledTitle: 'If Docker Desktop is NOT installed:',
       notInstalledSteps: [
         'Download Docker Desktop for Mac',
         'Open the .dmg and drag Docker to Applications',
         'Launch Docker Desktop and grant permissions',
-        'Come back here — the Hub will start automatically',
+        'Come back here. The Hub will start automatically',
       ],
     });
   });

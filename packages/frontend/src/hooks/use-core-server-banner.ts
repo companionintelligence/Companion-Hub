@@ -1,29 +1,20 @@
 import { useCallback, useState } from 'react';
 
-const DISMISSED_KEY = 'ci-hub-core-server-banner-dismissed';
-
 export interface UseCoreServerBannerResult {
   isDismissed: boolean;
   dismiss: () => void;
 }
 
-export function useCoreServerBanner(): UseCoreServerBannerResult {
-  const [isDismissed, setIsDismissed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(DISMISSED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+export function useCoreServerBanner(probeUpdatedAt: number | undefined): UseCoreServerBannerResult {
+  const [dismissedForUpdatedAt, setDismissedForUpdatedAt] = useState<number | undefined>(undefined);
+
+  const isDismissed = probeUpdatedAt !== undefined && dismissedForUpdatedAt === probeUpdatedAt;
 
   const dismiss = useCallback(() => {
-    try {
-      localStorage.setItem(DISMISSED_KEY, 'true');
-    } catch {
-      // Ignore storage errors
+    if (probeUpdatedAt !== undefined) {
+      setDismissedForUpdatedAt(probeUpdatedAt);
     }
-    setIsDismissed(true);
-  }, []);
+  }, [probeUpdatedAt]);
 
   return { isDismissed, dismiss };
 }

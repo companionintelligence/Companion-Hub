@@ -176,6 +176,26 @@ describe('AppsService', () => {
       expect(result.active).toEqual({ urn: 'plane:ci-marketplace', name: 'Plane' });
       expect(result.queued).toEqual([{ urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' }]);
     });
+
+    it('lists all installers as queued when the pipeline is idle', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 1, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 2, appName: 'cloudreve', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      marketplaceService.getAppInfoFromAppStore.mockImplementation(async (urn: AppUrn) => {
+        if (urn === 'plane:ci-marketplace') return { name: 'Plane' } as any;
+        return { name: 'Cloudreve' } as any;
+      });
+
+      const result = await service.getInstallQueueState();
+
+      expect(result.active).toBeNull();
+      expect(result.queued).toEqual([
+        { urn: 'plane:ci-marketplace', name: 'Plane' },
+        { urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' },
+      ]);
+    });
   });
 
   describe('getApp', () => {

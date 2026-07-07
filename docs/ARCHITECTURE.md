@@ -192,7 +192,7 @@ Frontend                    Backend API                    RabbitMQ             
 
 **Install pipeline:** Multiple install jobs may be queued in RabbitMQ, but `AppLifecycleService.invokeCommand` holds `INSTALL_PIPELINE_MUTEX_KEY` for the duration of each `install` worker run so Docker pulls do not run in parallel.
 
-**Install queue API (UI):** `GET /api/apps/install-queue` returns `{ active, queued }` (active = pipeline holder; queued = other apps in `installing`). SSE event `install_queue` pushes the same snapshot. The frontend updates React Query from SSE; progress-only `status_change` events update an in-memory progress map without refetching all queries.
+**Install queue API (UI):** `GET /api/apps/install-queue` returns `{ active, queued }`. `active` is the app holding the Docker install pipeline mutex; `queued` is every other app in `installing` status (FIFO by app id). When the pipeline is idle but installs are accepted, all pending apps appear in `queued` and `active` is null. SSE event `install_queue` pushes the same snapshot. The frontend polls while work is pending and updates React Query from SSE.
 
 All messages are validated with Zod schemas before processing. The `QueueFactory` handles connection pooling with exponential backoff reconnection. Cron scheduling is available for repeatable tasks like periodic app status reconciliation.
 
