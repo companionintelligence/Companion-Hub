@@ -507,19 +507,27 @@ export class AppHelpers {
       envMap.set('CI_APP_URN', appUrn);
 
       const operatorSetToken = (envMap.get(memoryIntegration.token_env) ?? '').trim().length > 0;
-      // Record connection state (best-effort — never fail env generation over it)
-      // so the Hub UI reflects reality: a manually-configured app shows as such
-      // (not "Not connected" with a Connect button that would mint a dead key).
+      // Best-effort (never fail env generation over it) so the Hub UI reflects
+      // reality: a brokered connection re-emits its creds, and a manually
+      // configured app shows as "manual" (not "Not connected" with a Connect
+      // button that would mint a dead key).
       try {
-        if (operatorSetToken) {
+        // A brokered connection the user completed takes precedence and MUST be
+        // re-emitted on every regeneration. Checking it first also prevents a
+        // manifest that ships a non-empty DEFAULT for token_env from pinning a
+        // genuinely connected app to `manual` (which would then stop injecting
+        // the real creds). getInjectableCreds is non-null only when connected.
+        const creds = await this.memoryConnection.getInjectableCreds(appUrn);
+        if (creds) {
+          envMap.set(memoryIntegration.url_env, creds.url);
+          envMap.set(memoryIntegration.token_env, creds.token);
+          this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
+        } else if (operatorSetToken) {
+          // Operator supplied creds at install and there is no brokered
+          // connection → record `manual` so the UI never prompts. markManual is
+          // itself idempotent (it skips the write when already manual), so this
+          // stays cheap across repeated env regenerations.
           await this.memoryConnection.markManual(appUrn);
-        } else {
-          const creds = await this.memoryConnection.getInjectableCreds(appUrn);
-          if (creds) {
-            envMap.set(memoryIntegration.url_env, creds.url);
-            envMap.set(memoryIntegration.token_env, creds.token);
-            this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
-          }
         }
       } catch (err) {
         this.logger.warn(`[AppHelpers] memory-connect env resolution failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);

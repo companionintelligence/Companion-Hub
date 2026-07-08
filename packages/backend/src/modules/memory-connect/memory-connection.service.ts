@@ -91,9 +91,20 @@ export class MemoryConnectionService {
   /**
    * Record that the operator supplied memory creds manually at install time, so
    * the Hub never prompts to connect and never manages a key for this app.
+   *
+   * Idempotent: env generation calls this on every install/update/restart of a
+   * manually-configured app, so skip the write when the state is already
+   * `manual` to avoid a redundant upsert on each regeneration.
    */
   async markManual(appUrn: string): Promise<void> {
+    const row = await this.repo.findByAppUrn(appUrn);
+
+    if (row?.state === 'manual') {
+      return;
+    }
+
     await this.repo.upsert(appUrn, { state: 'manual' });
+    this.logger.info(`[MemoryConnect] ${appUrn} marked manual (operator-configured)`);
   }
 
   /**

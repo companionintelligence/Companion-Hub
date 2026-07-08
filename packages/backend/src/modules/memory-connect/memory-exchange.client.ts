@@ -7,6 +7,17 @@ import { buildSignedConnectHeaders } from '@/modules/auth/utils/connect-request-
 /** Timeout for the server-to-server calls to CI-Server (internal docker network). */
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * CI-Server sits behind an nginx gateway that strips the `/api` prefix before
+ * forwarding to the API (`rewrite ^/api/(.*)$ /$1 break`), and the API declares
+ * no global route prefix. So the URL we POST to must carry `/api` for the
+ * gateway to route it, but the path the API actually receives — and therefore
+ * the path its ConnectRequestAuthGuard verifies the signature against — is
+ * WITHOUT `/api`. We must sign the server-relative path (`/connect/...`), not
+ * the gateway URL path, or every signature mismatches and the guard 401s.
+ */
+const GATEWAY_API_PREFIX = '/api';
+
 /** The raw key + owning app returned by a successful code exchange or rotation. */
 export interface MemoryExchangeResult {
   appUrn: string;
@@ -34,7 +45,7 @@ export class MemoryExchangeClient {
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
   async exchange(baseUrl: string, code: string): Promise<MemoryExchangeResult> {
-    return this.post<MemoryExchangeResult>(baseUrl, '/api/connect/exchange', { code });
+    return this.post<MemoryExchangeResult>(baseUrl, '/connect/exchange', { code });
   }
 
   /**
@@ -43,7 +54,7 @@ export class MemoryExchangeClient {
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
   async rotate(baseUrl: string, appUrn: string): Promise<MemoryExchangeResult> {
-    return this.post<MemoryExchangeResult>(baseUrl, '/api/connect/rotate', { app: appUrn });
+    return this.post<MemoryExchangeResult>(baseUrl, '/connect/rotate', { app: appUrn });
   }
 
   /**
@@ -77,23 +88,31 @@ export class MemoryExchangeClient {
    */
   async revoke(baseUrl: string, appUrn: string): Promise<void> {
     try {
-      await this.post(baseUrl, '/api/connect/revoke', { app: appUrn });
+      await this.post(baseUrl, '/connect/revoke', { app: appUrn });
       this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${baseUrl}`);
     } catch (err) {
       this.logger.warn(`[MemoryConnect] revoke request failed for ${appUrn}: ${this.describeError(err)}`);
     }
   }
 
-  /** POST a signed request to a connect endpoint and return its JSON body. */
-  private async post<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
+  /**
+   * POST a signed request to a connect endpoint and return its JSON body.
+   *
+   * @param apiPath the server-relative path CI-Server sees (no `/api` prefix,
+   *   e.g. `/connect/exchange`). This is the path that gets SIGNED, because the
+   *   gateway strips `/api` before the guard reconstructs the path it verifies.
+   *   The request is still POSTed to the `/api`-prefixed URL so nginx routes it.
+   */
+  private async post<T>(baseUrl: string, apiPath: string, body: Record<string, unknown>): Promise<T> {
     const secret = this.config.get('forwardAuthSecret');
 
     if (!secret) {
       throw new Error('Cannot call CI-Server connect endpoints without a forward-auth shared secret');
     }
 
-    const headers = buildSignedConnectHeaders(secret, 'POST', path, body) as unknown as Record<string, string>;
-    const response = await axios.post<T>(`${this.trimTrailingSlash(baseUrl)}${path}`, body, {
+    const headers = buildSignedConnectHeaders(secret, 'POST', apiPath, body) as unknown as Record<string, string>;
+    const url = `${this.trimTrailingSlash(baseUrl)}${GATEWAY_API_PREFIX}${apiPath}`;
+    const response = await axios.post<T>(url, body, {
       headers,
       timeout: REQUEST_TIMEOUT_MS,
     });

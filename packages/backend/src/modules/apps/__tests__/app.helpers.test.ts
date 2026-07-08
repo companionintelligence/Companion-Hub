@@ -7,13 +7,14 @@ import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
 import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
+import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -30,9 +31,14 @@ describe('AppHelpers', () => {
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
   let mcpApiKeys: MockProxy<McpApiKeyService>;
+  let memoryConnection: MockProxy<MemoryConnectionService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
+    // Clear call history between tests: useMocker reuses mock instances, so a
+    // prior test's calls (e.g. markManual) would otherwise leak into assertions.
+    vi.clearAllMocks();
+
     const moduleRef = await Test.createTestingModule({
       providers: [AppHelpers],
     })
@@ -48,6 +54,7 @@ describe('AppHelpers', () => {
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
     mcpApiKeys = moduleRef.get(McpApiKeyService);
+    memoryConnection = moduleRef.get(MemoryConnectionService);
   });
 
   describe('generateEnvFile', () => {
@@ -108,6 +115,68 @@ describe('AppHelpers', () => {
 
       // Act & Assert
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow(`App ${testAppUrn} not found`);
+    });
+
+    describe('Companion Memory credential injection', () => {
+      // A consumer app declaring the env vars it reads its memory URL + key from.
+      const memoryConsumerApp: AppInfo = {
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
+      };
+
+      it('injects brokered creds for a connected app and does not mark it manual', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_APP_URN')).toBe(testAppUrn);
+        expect(envMap.get('CI_SERVER_URL')).toBe('http://gateway:8642');
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
+
+      it('prefers the brokered connection even when the token env already carries a (default) value', async () => {
+        // Regression: a manifest default for token_env must NOT pin a genuinely
+        // connected app to `manual` (which would stop re-injecting the real creds).
+        const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'manifest-default']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
+
+      it('marks manual when the operator set a token and there is no brokered connection', async () => {
+        const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'operator-set']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        // markManual is idempotent at the service layer; env-gen just delegates.
+        expect(memoryConnection.markManual).toHaveBeenCalledWith(testAppUrn);
+        // The operator's own value is left untouched.
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('operator-set');
+      });
+
+      it('neither injects nor marks manual when there is no token and no brokered connection', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_SERVER_TOKEN')).toBe(false);
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
     });
 
     it('should set default env variables correctly', async () => {

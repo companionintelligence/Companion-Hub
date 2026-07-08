@@ -1,7 +1,13 @@
+import crypto from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 import { MemoryExchangeClient } from '../memory-exchange.client';
-import { CONNECT_NONCE_HEADER, CONNECT_SIGNATURE_HEADER, CONNECT_TIMESTAMP_HEADER } from '@/modules/auth/utils/connect-request-signing';
+import {
+  buildConnectMessage,
+  CONNECT_NONCE_HEADER,
+  CONNECT_SIGNATURE_HEADER,
+  CONNECT_TIMESTAMP_HEADER,
+} from '@/modules/auth/utils/connect-request-signing';
 
 vi.mock('axios');
 
@@ -37,6 +43,29 @@ describe('MemoryExchangeClient', () => {
     expect(url).toBe('http://gateway:8642/api/connect/exchange');
     expect(body).toEqual({ code: 'the-code' });
     expectSigned(opts as { headers: Record<string, string> });
+  });
+
+  it('signs the server-relative path (post-gateway, no /api) even though it POSTs to /api/...', async () => {
+    // Regression: CI-Server is behind an nginx gateway that strips `/api` and has
+    // no global route prefix, so its guard verifies the signature over
+    // `/connect/exchange`. Signing `/api/connect/exchange` (the URL path) makes
+    // every exchange/revoke/rotate 401. The URL keeps `/api`; the signature must not.
+    const { client } = makeClient('shared-secret');
+    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key' } });
+
+    await client.exchange('http://gateway:8642', 'the-code');
+
+    const [url, body, opts] = vi.mocked(axios.post).mock.calls[0];
+    const headers = (opts as { headers: Record<string, string> }).headers;
+    const ts = Number(headers[CONNECT_TIMESTAMP_HEADER]);
+    const nonce = headers[CONNECT_NONCE_HEADER];
+    const expected = crypto
+      .createHmac('sha256', 'shared-secret')
+      .update(buildConnectMessage('POST', '/connect/exchange', ts, nonce, body))
+      .digest('hex');
+
+    expect(url).toBe('http://gateway:8642/api/connect/exchange');
+    expect(headers[CONNECT_SIGNATURE_HEADER]).toBe(expected);
   });
 
   it('rotate posts to /api/connect/rotate and returns the new key', async () => {

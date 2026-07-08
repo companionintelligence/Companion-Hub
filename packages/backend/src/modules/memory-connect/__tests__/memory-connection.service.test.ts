@@ -110,6 +110,17 @@ describe('MemoryConnectionService', () => {
     expect(repo.upsert).toHaveBeenCalledWith('ci-hermes:local', { state: 'manual' });
   });
 
+  it('markManual is idempotent: no redundant upsert when already manual', async () => {
+    // Env generation calls markManual on every install/update/restart of a
+    // manually-configured app; it must not issue a write each time.
+    const { service, repo } = makeMocks();
+    repo.findByAppUrn.mockResolvedValue(row({ state: 'manual' }));
+
+    await service.markManual('ci-hermes:local');
+
+    expect(repo.upsert).not.toHaveBeenCalled();
+  });
+
   it('isConnected requires both connected state and a stored key', async () => {
     const { service, repo } = makeMocks();
     repo.findByAppUrn.mockResolvedValueOnce(row({ state: 'connected', encryptedKey: 'enc(k)' }));

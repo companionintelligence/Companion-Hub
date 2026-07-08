@@ -74,7 +74,7 @@ export class MemoryConnectService {
     // Open-redirect guard: only ever land the browser back on the Hub or on the
     // connecting app's own public URL. An attacker-supplied `next` (e.g. a
     // phishing hand-off right after the consent ceremony) falls back to the app.
-    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin, provider.publicUrl);
+    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin);
 
     const state = this.pending.create(appUrn, safeNext);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
@@ -216,16 +216,17 @@ export class MemoryConnectService {
    * (or an unparseable value) falls back to the app's public URL, then the Hub.
    * This closes the open-redirect the raw `next` param would otherwise allow.
    */
-  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, providerPublicUrl: string): Promise<string> {
+  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string): Promise<string> {
     const appPublicUrl = await this.resolver.getAppPublicUrl(appUrn);
+    // Only the Hub or the connecting app's own origin — NOT the memory
+    // provider's — as documented above. The provider is never a designed
+    // landing page, so it stays out of the allowlist.
     const allowedOrigins = new Set<string>([hubOrigin]);
-    for (const url of [appPublicUrl, providerPublicUrl]) {
-      if (url) {
-        try {
-          allowedOrigins.add(new URL(url).origin);
-        } catch {
-          /* ignore unparseable */
-        }
+    if (appPublicUrl) {
+      try {
+        allowedOrigins.add(new URL(appPublicUrl).origin);
+      } catch {
+        /* ignore unparseable */
       }
     }
 
