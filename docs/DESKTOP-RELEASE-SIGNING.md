@@ -56,7 +56,12 @@ Grant that service principal the **Artifact Signing Certificate Profile Signer**
 
 ## Behaviour when secrets are missing
 
-The workflow only attempts Windows signing when **all** required Azure secrets are present for the selected environment. If they are missing, the Windows build still completes, but the artifacts remain unsigned.
+A **green Windows release means Authenticode-signed installers**, matching the macOS guarantee. The workflow enforces this:
+
+- A preflight step (`Require Windows signing secrets`) fails the build before compiling if any of the six Azure signing secrets are missing for the selected environment (so `WINDOWS_SIGNING_CONFIGURED` is false).
+- After signing, a `Verify Windows artifacts are signed` step runs `Get-AuthenticodeSignature` on every `.msi` and `-setup.exe` and fails the job unless each reports `Valid`.
+
+This means you can no longer produce a green Windows release with unsigned installers — the job goes red instead.
 
 ## Azure signing runbook (CI)
 

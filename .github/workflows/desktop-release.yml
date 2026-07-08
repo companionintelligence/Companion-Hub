@@ -457,6 +457,20 @@ jobs:
       # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
       # See docs/DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
       # federated credential subjects this workflow expects.
+      # A green Windows release must mean Authenticode-signed installers. Fail fast
+      # (before building) if any of the six Azure signing secrets are missing, instead
+      # of silently shipping unsigned .msi / -setup.exe that trip SmartScreen.
+      - name: Require Windows signing secrets
+        if: env.BUILD_ENABLED && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_SIGNING_CONFIGURED:-}" ]; then
+            echo "::error::Windows release requires all six Azure Artifact Signing secrets on the '${{ inputs.environment }}' environment: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE."
+            echo "::error::A green Windows release guarantees Authenticode-signed installers, so this build is failing instead of shipping unsigned artifacts."
+            exit 1
+          fi
+          echo "Windows signing secrets are present."
       - name: Prepare Windows signing paths
         if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
         shell: pwsh
@@ -494,6 +508,33 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
+      # Encode "green == properly signed" for Windows: every shipped installer must
+      # carry a Valid Authenticode signature. Catches a signing step that ran but
+      # left an artifact unsigned or with a broken/unstrusted chain.
+      - name: Verify Windows artifacts are signed
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path $env:WINDOWS_BUNDLE_DIR -Recurse -Include *.msi,*-setup.exe -File
+          if (-not $files) {
+            Write-Host "::error::No Windows installers (.msi / -setup.exe) found to verify under $env:WINDOWS_BUNDLE_DIR"
+            exit 1
+          }
+          $failed = $false
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host "$($f.Name): $($sig.Status)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::$($f.Name) is not validly signed (status: $($sig.Status))"
+              $failed = $true
+            }
+          }
+          if ($failed) {
+            Write-Host "::error::One or more Windows installers are not properly signed"
+            exit 1
+          }
+          Write-Host "All Windows installers are Authenticode-signed and valid"
       - name: Upload desktop debug symbols to Sentry
         if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
         continue-on-error: true
