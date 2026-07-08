@@ -6,7 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildOriginServerName, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -40,14 +40,26 @@ export class PortExposeService {
 
     const { name, port, exposureMode, localSubdomain, publicDomain } = dto;
 
+    const displayName = name.trim();
+    // Derive a URL-safe slug from the free-form display name. The slug is the
+    // app identifier (URN, on-disk directory, routing subdomain); the display
+    // name is preserved verbatim for the UI.
+    const slug = deriveAppSlug(displayName);
+    if (!slug) {
+      throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
+    }
+    if (RESERVED_APP_NAMES.includes(slug)) {
+      throw new TranslatableError('CUSTOM_APP_NAME_RESERVED', undefined, HttpStatus.BAD_REQUEST);
+    }
+
     if (exposureMode === 'cloudflare' && !localSubdomain?.trim()) {
       throw new TranslatableError('PORT_EXPOSE_SUBDOMAIN_REQUIRED', undefined, HttpStatus.BAD_REQUEST);
     }
 
-    const appUrn = createAppUrn(name, APPS_FOLDER);
+    const appUrn = createAppUrn(slug, APPS_FOLDER);
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (existingApp) {
-      throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name }, HttpStatus.CONFLICT);
+      throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
 
     const appsWithSamePort = await this.appsRepository.getAppsByPort(port);
@@ -55,7 +67,7 @@ export class PortExposeService {
       throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
     }
 
-    const routingSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() || name);
+    const routingSubdomain = sanitizeAppSubdomain(localSubdomain?.trim() || slug);
     if (exposureMode === 'cloudflare') {
       const appsWithSameLocalSubdomain = await this.appsRepository.getAppsByLocalSubdomain(routingSubdomain);
       if (appsWithSameLocalSubdomain.length > 0) {
@@ -69,14 +81,14 @@ export class PortExposeService {
     try {
       await this.createAppDirectories(appUrn);
       await this.writePortExposeConfig(appUrn);
-      await this.createAppInfo(appUrn, name, port);
+      await this.createAppInfo(appUrn, displayName, port);
 
       const exposedLocal = exposureMode === 'cloudflare';
       const openPort = exposureMode === 'local' || exposedLocal;
 
       await this.appsRepository.createApp({
         appStoreSlug: APPS_FOLDER,
-        appName: name,
+        appName: slug,
         config: {
           kind: PORT_EXPOSE_KIND,
           port,
@@ -105,16 +117,16 @@ export class PortExposeService {
         await this.syncPortalRegistry(appUrn, 'upsert');
       }
 
-      this.logger.info(`Port-expose workload ${name} created on port ${port} (${exposureMode})`);
+      this.logger.info(`Port-expose workload ${displayName} (${slug}) created on port ${port} (${exposureMode})`);
 
-      return { appUrn, appName: name, storeId: APPS_FOLDER };
+      return { appUrn, appName: slug, storeId: APPS_FOLDER };
     } catch (error) {
-      this.logger.error(`Failed to create port-expose workload ${name}:`, error);
+      this.logger.error(`Failed to create port-expose workload ${slug}:`, error);
       await this.cleanupAppDirectories(appUrn).catch(() => undefined);
       if (error instanceof TranslatableError) {
         throw error;
       }
-      throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name }, HttpStatus.INTERNAL_SERVER_ERROR);
+      throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name: displayName }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -392,7 +404,9 @@ export class PortExposeService {
     } satisfies AppInfo;
 
     const descriptionPath = path.join(dataDir, 'apps', appStoreId, appName, 'metadata', 'description.md');
-    const descriptionContent = `---\nname: ${name}\nshort_desc: User workload exposed on a host port\nversion: 1.0.0\n---\n\n# ${name}\n\nThis workload is exposed via a host port on your Hub.\n`;
+    // JSON.stringify produces a valid double-quoted YAML scalar, keeping the
+    // frontmatter well-formed for free-form names (e.g. containing a colon).
+    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: User workload exposed on a host port\nversion: 1.0.0\n---\n\n# ${name}\n\nThis workload is exposed via a host port on your Hub.\n`;
 
     const ok = await this.filesystem.writeJsonFile(infoPath, appInfo);
     if (!ok) {

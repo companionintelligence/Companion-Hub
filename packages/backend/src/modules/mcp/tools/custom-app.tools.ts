@@ -21,7 +21,7 @@ export class CustomAppTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'App name (a-z, 0-9, hyphens, 1-50 chars)' },
+          name: { type: 'string', description: 'Display name (1-50 chars). A URL-safe identifier is derived from it.' },
           config: { type: 'object', description: 'Docker compose service config' },
         },
         required: ['name', 'config'],
