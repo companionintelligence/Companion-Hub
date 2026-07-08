@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
 import { AppsModule } from '../apps/apps.module';
+import { McpApiKeyModule } from '../mcp/mcp-api-key.module';
 import { RegistrationModule } from '../registration/registration.module';
+import { ManagedAppKeyGuard } from './managed-app-key.guard';
 import { MemoryConnectController } from './memory-connect.controller';
 import { MemoryConnectService } from './memory-connect.service';
 import { MemoryConnectionModule } from './memory-connection.module';
@@ -18,9 +20,9 @@ import { PendingConnectStore } from './pending-connect.store';
  * cycle with app-lifecycle.
  */
 @Module({
-  imports: [MemoryConnectionModule, AppsModule, RegistrationModule, LoggerModule],
+  imports: [MemoryConnectionModule, AppsModule, McpApiKeyModule, RegistrationModule, LoggerModule],
   controllers: [MemoryConnectController],
-  providers: [MemoryProviderResolver, MemoryExchangeClient, PendingConnectStore, MemoryConnectService],
+  providers: [MemoryProviderResolver, MemoryExchangeClient, PendingConnectStore, MemoryConnectService, ManagedAppKeyGuard],
   exports: [MemoryConnectService],
 })
 export class MemoryConnectModule {}

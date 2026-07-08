@@ -74,6 +74,25 @@ export class McpApiKeyService {
     return { ...toInfo(row), key: rawKey };
   }
 
+  /**
+   * Resolve the owning app URN for a raw managed key, or null when the key is
+   * absent, expired, or not a managed (app-owned) key. Lets a caller prove
+   * "this request came from app X" by presenting X's injected HUB_MCP_API_KEY.
+   */
+  async resolveManagedAppUrn(rawKey: string): Promise<string | null> {
+    if (!rawKey) {
+      return null;
+    }
+    const row = await this.repo.findByHash(this.hash(rawKey), MCP_AUDIENCE);
+    if (!row) {
+      return null;
+    }
+    if (!row.managed || this.isExpired(row)) {
+      return null;
+    }
+    return row.ownerAppUrn;
+  }
+
   /** True if the raw Bearer token matches a stored, non-expired key. Bumps last-used best-effort. */
   async validate(rawKey: string): Promise<boolean> {
     if (!rawKey) {

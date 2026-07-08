@@ -143,7 +143,20 @@ export class MemoryConnectService {
       this.buildLauncherUrl(appUrn),
     ]);
 
-    return { applicable, memoryInstalled: !!provider, state, connectUrl };
+    // Lazy staleness detection: if we think we're connected but ci-memory no
+    // longer accepts the stored key (e.g. it was reset), clear it so the app
+    // re-prompts instead of silently running with a dead credential.
+    let effectiveState = state;
+    if (state === 'connected' && provider) {
+      const creds = await this.connections.getInjectableCreds(appUrn);
+      if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+        await this.connections.clear(appUrn);
+        effectiveState = 'unconfigured';
+        this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
+      }
+    }
+
+    return { applicable, memoryInstalled: !!provider, state: effectiveState, connectUrl };
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */

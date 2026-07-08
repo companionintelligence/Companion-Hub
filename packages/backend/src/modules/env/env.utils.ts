@@ -76,9 +76,18 @@ export class EnvUtils {
    * @param {Map<string, string>} envMap - Map of environment variables
    */
   public envMapToString = (envMap: Map<string, string>) => {
-    const envArray = Array.from(envMap).map(([key, value]) => `${key}=${value}`);
+    const envArray = Array.from(envMap).map(([key, value]) => `${key}=${this.sanitizeEnvValue(value)}`);
     return envArray.join('\n');
   };
+
+  /**
+   * Strip CR/LF from a value before it is written as a `KEY=value` line. The
+   * .env format is one variable per line, so a newline in a value can never be
+   * represented faithfully — and left unescaped it would forge additional env
+   * lines (env injection). Stripping it is both correct for the format and a
+   * defense-in-depth guard for any value derived from external input.
+   */
+  private sanitizeEnvValue = (value: string) => value.replace(/[\r\n]+/g, ' ');
 
   /**
    * Convert a string of environment variables to a Map

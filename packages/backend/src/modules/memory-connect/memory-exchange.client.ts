@@ -2,30 +2,23 @@ import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { buildSignedForwardAuthHeaders } from '@/modules/auth/utils/forward-auth-signing';
-
-/**
- * Service identity the Hub attests when calling CI-Server's connect endpoints.
- * CI-Server's HubForwardAuthGuard only verifies the HMAC signature (it does not
- * use the username for the exchange/revoke calls), so a stable service label is
- * sufficient and keeps the signed message deterministic.
- */
-const HUB_SERVICE_USER = 'ci-hub';
+import { buildSignedConnectHeaders } from '@/modules/auth/utils/connect-request-signing';
 
 /** Timeout for the server-to-server calls to CI-Server (internal docker network). */
 const REQUEST_TIMEOUT_MS = 10_000;
 
-/** The raw key + owning app returned by a successful code exchange. */
+/** The raw key + owning app returned by a successful code exchange or rotation. */
 export interface MemoryExchangeResult {
   appUrn: string;
   key: string;
 }
 
 /**
- * Server-to-server client for CI-Server's connect endpoints, authenticated by
- * the signed Traefik forward-auth headers (`X-CI-Hub-User[/-Timestamp/-Signature]`)
- * keyed on the shared `forwardAuthSecret`. Used to swap a one-time code for the
- * minted memory key, and to revoke an app's key.
+ * Server-to-server client for CI-Server's connect endpoints. Each request is
+ * signed with a replay-resistant signature (see connect-request-signing: method
+ * + path + body hash + nonce + timestamp) keyed on the dedicated forward-auth
+ * shared secret. Used to swap a one-time code for the minted memory key, to
+ * revoke an app's key, and to rotate it before expiry.
  */
 @Injectable()
 export class MemoryExchangeClient {
@@ -41,13 +34,40 @@ export class MemoryExchangeClient {
    * @throws if the shared secret is unset or CI-Server rejects/does not answer.
    */
   async exchange(baseUrl: string, code: string): Promise<MemoryExchangeResult> {
-    const response = await axios.post<MemoryExchangeResult>(
-      `${this.trimTrailingSlash(baseUrl)}/api/connect/exchange`,
-      { code },
-      { headers: this.signedHeaders(), timeout: REQUEST_TIMEOUT_MS },
-    );
+    return this.post<MemoryExchangeResult>(baseUrl, '/api/connect/exchange', { code });
+  }
 
-    return response.data;
+  /**
+   * Rotate the app's memory key before expiry; returns the new raw key.
+   *
+   * @throws if the shared secret is unset or CI-Server rejects/does not answer.
+   */
+  async rotate(baseUrl: string, appUrn: string): Promise<MemoryExchangeResult> {
+    return this.post<MemoryExchangeResult>(baseUrl, '/api/connect/rotate', { app: appUrn });
+  }
+
+  /**
+   * Whether a stored memory key still authenticates against ci-memory. Used for
+   * lazy staleness detection: a `401` means the key was invalidated (e.g.
+   * ci-memory was reset) and should be cleared so the app re-prompts. Any other
+   * outcome (2xx, or a transient network/5xx error) is treated as "still valid"
+   * so a blip never drops a working connection.
+   */
+  async isKeyValid(baseUrl: string, token: string): Promise<boolean> {
+    try {
+      await axios.get(`${this.trimTrailingSlash(baseUrl)}/api/memory/context`, {
+        headers: { 'x-api-key': token },
+        timeout: REQUEST_TIMEOUT_MS,
+      });
+
+      return true;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 401) {
+        return false;
+      }
+
+      return true;
+    }
   }
 
   /**
@@ -57,27 +77,28 @@ export class MemoryExchangeClient {
    */
   async revoke(baseUrl: string, appUrn: string): Promise<void> {
     try {
-      await axios.post(
-        `${this.trimTrailingSlash(baseUrl)}/api/connect/revoke`,
-        { app: appUrn },
-        { headers: this.signedHeaders(), timeout: REQUEST_TIMEOUT_MS },
-      );
-
+      await this.post(baseUrl, '/api/connect/revoke', { app: appUrn });
       this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${baseUrl}`);
     } catch (err) {
       this.logger.warn(`[MemoryConnect] revoke request failed for ${appUrn}: ${this.describeError(err)}`);
     }
   }
 
-  /** Build the signed forward-auth headers, throwing if the shared secret is absent. */
-  private signedHeaders(): Record<string, string> {
+  /** POST a signed request to a connect endpoint and return its JSON body. */
+  private async post<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
     const secret = this.config.get('forwardAuthSecret');
 
     if (!secret) {
       throw new Error('Cannot call CI-Server connect endpoints without a forward-auth shared secret');
     }
 
-    return buildSignedForwardAuthHeaders(secret, HUB_SERVICE_USER) as unknown as Record<string, string>;
+    const headers = buildSignedConnectHeaders(secret, 'POST', path, body) as unknown as Record<string, string>;
+    const response = await axios.post<T>(`${this.trimTrailingSlash(baseUrl)}${path}`, body, {
+      headers,
+      timeout: REQUEST_TIMEOUT_MS,
+    });
+
+    return response.data;
   }
 
   private trimTrailingSlash(url: string): string {

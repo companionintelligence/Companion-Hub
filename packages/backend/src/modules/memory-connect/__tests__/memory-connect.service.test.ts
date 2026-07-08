@@ -10,14 +10,21 @@ function makeService() {
   const resolver = {
     findProvider: vi.fn(),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
+    isConsumerApp: vi.fn().mockResolvedValue(true),
   };
-  const exchange = { exchange: vi.fn(), revoke: vi.fn().mockResolvedValue(undefined) };
+  const exchange = {
+    exchange: vi.fn(),
+    revoke: vi.fn().mockResolvedValue(undefined),
+    rotate: vi.fn(),
+    isKeyValid: vi.fn().mockResolvedValue(true),
+  };
   const connections = {
     getState: vi.fn(),
     storeConnected: vi.fn().mockResolvedValue(undefined),
     markSkipped: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
+    getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://gateway:8642', token: 'tok' }),
   };
   const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn() };
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
@@ -154,6 +161,30 @@ describe('MemoryConnectService side effects', () => {
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:local');
     expect(lifecycle.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('getUiStatus clears a stale connection when ci-memory rejects the stored key', async () => {
+    const { service, resolver, exchange, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.getState.mockResolvedValue('connected');
+    exchange.isKeyValid.mockResolvedValue(false); // ci-memory reset → key dead
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(status.state).toBe('unconfigured');
+  });
+
+  it('getUiStatus keeps a connected state when the stored key is still valid', async () => {
+    const { service, resolver, exchange, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.getState.mockResolvedValue('connected');
+    exchange.isKeyValid.mockResolvedValue(true);
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(status.state).toBe('connected');
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {

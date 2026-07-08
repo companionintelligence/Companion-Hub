@@ -4,6 +4,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { InternalNetworkGuard } from '../auth/internal-network.guard';
+import { ManagedAppKeyGuard } from './managed-app-key.guard';
 import { MemoryConnectService } from './memory-connect.service';
 
 /**
@@ -65,7 +66,7 @@ export class MemoryConnectController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Get('apps/:urn/state')
   async state(@Param('urn') urn: string) {
     return this.service.getStatus(this.decodeUrn(urn));
@@ -77,7 +78,7 @@ export class MemoryConnectController {
     return this.service.getUiStatus(this.decodeUrn(urn));
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Post('apps/:urn/skip')
   async skip(@Param('urn') urn: string) {
     await this.service.skip(this.decodeUrn(urn));
