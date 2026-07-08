@@ -63,13 +63,52 @@ describe('SSEProvider', () => {
 
     render(<MemoryRouter>{toastMessage?.({ id: 'install-error-toast' })}</MemoryRouter>);
 
-    const logsLink = screen.getByRole('link', { name: 'Logs' });
+    const logsLink = screen.getByRole('link', { name: 'see logs' });
 
     expect(logsLink).toHaveAttribute('href', '/settings?tab=logs');
-    expect(logsLink.parentElement).toHaveTextContent('Failed to install app excalidraw, see Logs for more details');
+    expect(logsLink.parentElement).toHaveTextContent('Failed to install app excalidraw, see logs for more details');
 
     await userEvent.click(logsLink);
 
     expect(mockToastDismiss).toHaveBeenCalledWith('install-error-toast');
+  });
+
+  it('links app operation failures to the logs tab via "see logs"', async () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event: 'start_error', appUrn: 'excalidraw:community' });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+
+    const toastMessage = mockToastError.mock.calls[0]?.[0] as ((toast: { id: string }) => ReactNode) | undefined;
+    expect(toastMessage).toBeTypeOf('function');
+
+    render(<MemoryRouter>{toastMessage?.({ id: 'start-error-toast' })}</MemoryRouter>);
+
+    const logsLink = screen.getByRole('link', { name: 'see logs' });
+
+    expect(logsLink).toHaveAttribute('href', '/settings?tab=logs');
+    expect(logsLink.parentElement).toHaveTextContent('Failed to start app excalidraw, see logs for more details');
+
+    await userEvent.click(logsLink);
+
+    expect(mockToastDismiss).toHaveBeenCalledWith('start-error-toast');
   });
 });

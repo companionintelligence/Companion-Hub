@@ -116,8 +116,11 @@ jobs:
       - name: Build Tauri app
         env:
           RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
-          # CI=true skips Finder AppleScript DMG layout for reliable macOS CI builds.
-          # Do not set TAURI_BUNDLER_DMG_IGNORE_CI (tauri-action#1091).
+          # Force the styled DMG layout (background + icon positions) on macOS. CI=true
+          # would otherwise make tauri-bundler skip the Finder AppleScript layout
+          # (tauri#592). That step can time out on macos-latest (tauri-action#1091), so
+          # macOS builds are wrapped in retry_build below.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
         shell: bash
         run: |
           cd packages/desktop
