@@ -4,15 +4,13 @@ import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
-import { sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
-
-const RESERVED_APP_NAMES = ['create', 'expose'];
 
 export default () => {
   const { t } = useTranslation();
@@ -22,7 +20,7 @@ export default () => {
 
   // The display name is free-form; the URL-safe slug used as the app
   // identifier is derived from it. The backend re-derives and enforces it.
-  const derivedSlug = sanitizeAppSubdomain(appName || '');
+  const derivedSlug = deriveAppSlug(appName || '');
   const appNameSchema = z.string().min(1, t('CUSTOM_APP_NAME_REQUIRED')).max(50, t('CUSTOM_APP_NAME_MAX_LENGTH'));
 
   const createCustomApp = useMutation({
@@ -31,7 +29,7 @@ export default () => {
       toast.success(t('CUSTOM_APP_CREATE_SUCCESS', { name: appName }));
       // Navigate by the derived slug returned from the server, not the
       // free-form display name (the URL segment is the app identifier).
-      navigate(`/apps/${data?.appName ?? sanitizeAppSubdomain(appName)}`);
+      navigate(`/apps/${data?.appName ?? derivedSlug}`);
     },
     onError: (error: TranslatableError) => {
       toast.error(t(error.message || 'CUSTOM_APP_CREATE_ERROR', { ...error.intlParams }));
@@ -46,7 +44,7 @@ export default () => {
       return;
     }
 
-    const slug = sanitizeAppSubdomain(displayName);
+    const slug = deriveAppSlug(displayName);
     if (!slug) {
       setAppNameError(t('CUSTOM_APP_NAME_NO_SLUG'));
       return;

@@ -18,11 +18,9 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { useCallback } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
-import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { TranslatableError } from '@/types/error.types';
-
-const RESERVED_APP_NAMES = ['create', 'expose'];
 
 type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
@@ -68,8 +66,8 @@ export default function PortExposeCreatePage() {
   const watchPublicDomain = watch('publicDomain');
   const watchName = watch('name');
 
-  const derivedSlug = sanitizeAppSubdomain(watchName || '');
-  const defaultAppSubdomain = sanitizeAppSubdomain(watchName || 'app');
+  const derivedSlug = deriveAppSlug(watchName || '');
+  const defaultAppSubdomain = derivedSlug || 'app';
   const publicWebPreview =
     watchExposureMode === 'cloudflare' && orgSlug
       ? buildPublicWebIdentity({
@@ -120,7 +118,7 @@ export default function PortExposeCreatePage() {
       toast.success(t('PORT_EXPOSE_CREATE_SUCCESS', { name: variables.name }));
       // Navigate by the derived slug returned from the server, not the
       // free-form display name (the URL segment is the app identifier).
-      navigate(`/apps/${data?.appName ?? sanitizeAppSubdomain(variables.name)}`);
+      navigate(`/apps/${data?.appName ?? deriveAppSlug(variables.name)}`);
     },
     onError: (error: TranslatableError) => {
       toast.error(t(error.message || 'PORT_EXPOSE_CREATE_ERROR', { ...error.intlParams }));
@@ -140,7 +138,7 @@ export default function PortExposeCreatePage() {
       return;
     }
 
-    const slug = sanitizeAppSubdomain(displayName);
+    const slug = deriveAppSlug(displayName);
     if (!slug) {
       setError('name', { message: t('CUSTOM_APP_NAME_NO_SLUG') });
       return;

@@ -20,8 +20,10 @@ export {
   buildPublicWebIdentity,
   buildFqdnSubdomain,
   buildOriginServerName,
+  deriveAppSlug,
   extractDeviceSlug,
   resolvePublicDomainRoot,
+  RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';

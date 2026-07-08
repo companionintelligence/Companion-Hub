@@ -5,7 +5,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
@@ -13,7 +13,6 @@ import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
 import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/common/schemas';
 
 const APPS_FOLDER = '_user';
-const RESERVED_APP_NAMES = ['create', 'expose'];
 
 @Injectable()
 export class CustomAppService {
@@ -36,7 +35,7 @@ export class CustomAppService {
     // app identifier (URN, on-disk directory); the display name is preserved
     // verbatim for the UI, mirroring how marketplace apps keep `name` and `id`
     // separate.
-    const slug = sanitizeAppSubdomain(displayName);
+    const slug = deriveAppSlug(displayName);
     if (!slug) {
       throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
     }

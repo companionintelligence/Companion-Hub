@@ -6,7 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildOriginServerName, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { isPortExposeApp, PORT_EXPOSE_KIND, type AppInfo } from '@ci-hub/common/schemas';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
@@ -18,7 +18,6 @@ import { TraefikConfigService, type PortExposeRoute } from '../docker/traefik-co
 import type { CreatePortExposeAppDto, UpdatePortExposeAppDto } from './dto/custom-apps.dto';
 
 const APPS_FOLDER = '_user';
-const RESERVED_APP_NAMES = ['create', 'expose'];
 
 @Injectable()
 export class PortExposeService {
@@ -45,7 +44,7 @@ export class PortExposeService {
     // Derive a URL-safe slug from the free-form display name. The slug is the
     // app identifier (URN, on-disk directory, routing subdomain); the display
     // name is preserved verbatim for the UI.
-    const slug = sanitizeAppSubdomain(displayName);
+    const slug = deriveAppSlug(displayName);
     if (!slug) {
       throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
     }
