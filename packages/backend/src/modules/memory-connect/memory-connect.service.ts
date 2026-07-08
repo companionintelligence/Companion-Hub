@@ -54,7 +54,7 @@ export class MemoryConnectService {
    * browser should be redirected to. `next` is where the user lands after the
    * connection is applied.
    */
-  async startConnect(appUrn: AppUrn, next: string): Promise<string> {
+  async startConnect(appUrn: AppUrn, next: string | undefined): Promise<string> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
@@ -71,7 +71,12 @@ export class MemoryConnectService {
       throw new BadRequestException('This Hub has no public origin to return to');
     }
 
-    const state = this.pending.create(appUrn, next);
+    // Open-redirect guard: only ever land the browser back on the Hub or on the
+    // connecting app's own public URL. An attacker-supplied `next` (e.g. a
+    // phishing hand-off right after the consent ceremony) falls back to the app.
+    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin, provider.publicUrl);
+
+    const state = this.pending.create(appUrn, safeNext);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
     const consentUrl = new URL('/api/connect', new URL(provider.publicUrl).origin);
 
@@ -190,6 +195,38 @@ export class MemoryConnectService {
     }
 
     return `https://${org.hubSubdomain}.${domain}`;
+  }
+
+  /**
+   * Validate the post-connect destination. `next` is only honored when its
+   * origin is the Hub's or the connecting app's own public origin; anything else
+   * (or an unparseable value) falls back to the app's public URL, then the Hub.
+   * This closes the open-redirect the raw `next` param would otherwise allow.
+   */
+  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, providerPublicUrl: string): Promise<string> {
+    const appPublicUrl = await this.resolver.getAppPublicUrl(appUrn);
+    const allowedOrigins = new Set<string>([hubOrigin]);
+    for (const url of [appPublicUrl, providerPublicUrl]) {
+      if (url) {
+        try {
+          allowedOrigins.add(new URL(url).origin);
+        } catch {
+          /* ignore unparseable */
+        }
+      }
+    }
+
+    if (next) {
+      try {
+        if (allowedOrigins.has(new URL(next).origin)) {
+          return next;
+        }
+      } catch {
+        /* fall through to a safe default */
+      }
+    }
+
+    return appPublicUrl ?? hubOrigin;
   }
 
   /** The browser-reachable Hub launcher URL for an app, or null if no Hub origin. */

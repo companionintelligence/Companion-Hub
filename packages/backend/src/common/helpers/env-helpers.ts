@@ -378,6 +378,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
   const mcpApiKey = resolve('MCP_API_KEY', { envMap, settingsVal: settingsData.mcpApiKey, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
+  // Dedicated Hub<->consumer forward-auth secret (Traefik identity header + the
+  // memory-connect server-to-server calls). Derived from its OWN entropy label —
+  // NEVER JWT_SECRET — so injecting it into a consumer container (e.g. ci-memory)
+  // can never leak the Hub's master JWT/encryption key.
+  const forwardAuthSecret = resolve('CI_HUB_FORWARD_AUTH_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('forward_auth_secret');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -433,6 +438,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('MCP_API_KEY', mcpApiKey);
+  envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
   // ISSUE-MCP-2: gate for destructive MCP tools. Resolved from settings.json (admin toggle) so it
   // persists across restarts; the admin endpoint also sets process.env live for immediate effect.
   envMap.set(

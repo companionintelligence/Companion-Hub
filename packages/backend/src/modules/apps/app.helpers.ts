@@ -507,13 +507,22 @@ export class AppHelpers {
       envMap.set('CI_APP_URN', appUrn);
 
       const operatorSetToken = (envMap.get(memoryIntegration.token_env) ?? '').trim().length > 0;
-      if (!operatorSetToken) {
-        const creds = await this.memoryConnection.getInjectableCreds(appUrn);
-        if (creds) {
-          envMap.set(memoryIntegration.url_env, creds.url);
-          envMap.set(memoryIntegration.token_env, creds.token);
-          this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
+      // Record connection state (best-effort — never fail env generation over it)
+      // so the Hub UI reflects reality: a manually-configured app shows as such
+      // (not "Not connected" with a Connect button that would mint a dead key).
+      try {
+        if (operatorSetToken) {
+          await this.memoryConnection.markManual(appUrn);
+        } else {
+          const creds = await this.memoryConnection.getInjectableCreds(appUrn);
+          if (creds) {
+            envMap.set(memoryIntegration.url_env, creds.url);
+            envMap.set(memoryIntegration.token_env, creds.token);
+            this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
+          }
         }
+      } catch (err) {
+        this.logger.warn(`[AppHelpers] memory-connect env resolution failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

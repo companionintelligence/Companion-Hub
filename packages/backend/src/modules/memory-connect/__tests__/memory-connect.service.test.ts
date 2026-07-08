@@ -7,7 +7,10 @@ import { MemoryConnectService } from '../memory-connect.service';
  * disconnect + uninstall.
  */
 function makeService() {
-  const resolver = { findProvider: vi.fn() };
+  const resolver = {
+    findProvider: vi.fn(),
+    getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
+  };
   const exchange = { exchange: vi.fn(), revoke: vi.fn().mockResolvedValue(undefined) };
   const connections = {
     getState: vi.fn(),
@@ -58,6 +61,17 @@ describe('MemoryConnectService.startConnect', () => {
     expect(url.searchParams.get('state')).toBe('state-nonce');
     expect(url.searchParams.get('return')).toBe('https://core2-x.example.org/api/memory-connect/callback');
     expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org/');
+  });
+
+  it('rejects an off-origin `next` (open-redirect guard) and falls back to the app URL', async () => {
+    const { service, resolver, pending } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    resolver.getAppPublicUrl.mockResolvedValue('https://app.example.org');
+
+    await service.startConnect('ci-openclaw:local', 'https://evil.example.com/phish');
+
+    // The attacker-supplied next is discarded; the stored destination is the app's own URL.
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org');
   });
 
   it('throws when Companion Memory is not installed', async () => {

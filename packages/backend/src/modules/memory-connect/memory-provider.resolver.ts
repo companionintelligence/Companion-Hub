@@ -48,6 +48,21 @@ export class MemoryProviderResolver {
   }
 
   /**
+   * The browser-reachable public URL of an installed app, or undefined when it
+   * can't be resolved (not running / no public route). Used to allowlist the
+   * post-connect redirect destination.
+   */
+  async getAppPublicUrl(appUrn: AppUrn): Promise<string | undefined> {
+    try {
+      return (await this.appsService.checkAppAvailability(appUrn)).appUrl;
+    } catch (err) {
+      this.logger.warn(`[MemoryConnect] could not resolve public URL for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+
+      return undefined;
+    }
+  }
+
+  /**
    * Whether the installed app at `appUrn` is a memory consumer. Resolves the
    * app's info; returns false if the app can't be found.
    */

@@ -30,9 +30,11 @@ const envSchema = z
     JWT_SECRET: z.string(),
     // Shared HMAC secret for signing the forward-auth X-CI-Hub-User identity header.
     // Provisioned as a Hub<->consumer (CI-Server) shared secret. When unset, the
-    // forward-auth endpoint falls back to signing with JWT_SECRET so a lone Hub still
-    // produces valid signatures; a co-provisioned consumer should set this explicitly.
-    CI_HUB_FORWARD_AUTH_SECRET: z.string().optional(),
+    // Dedicated Hub<->consumer forward-auth secret, provisioned by
+    // generateSystemEnvFile (its own entropy — never JWT_SECRET). Defaults to ''
+    // (not JWT_SECRET): an empty value makes the signer throw / guard fail closed
+    // rather than silently leaking the master key into a consumer container.
+    CI_HUB_FORWARD_AUTH_SECRET: z.string().optional().default(''),
     APPS_REPO_URL: z.string().optional(),
     CI_CLOUD_URL: z.string(),
     DOMAIN: z.string(),
@@ -232,8 +234,11 @@ export class ConfigurationService {
       envFilePath: this.envPath,
       internalIp: env.data.INTERNAL_IP,
       jwtSecret: env.data.JWT_SECRET,
-      // Fall back to JWT_SECRET when a dedicated forward-auth secret is not provisioned.
-      forwardAuthSecret: env.data.CI_HUB_FORWARD_AUTH_SECRET || env.data.JWT_SECRET,
+      // Dedicated secret provisioned by generateSystemEnvFile. Intentionally NOT
+      // falling back to JWT_SECRET: this value is injected into consumer app
+      // containers (e.g. ci-memory), so it must never be the Hub's master key.
+      // Empty (misprovisioned) → the signer throws / the guard fails closed.
+      forwardAuthSecret: env.data.CI_HUB_FORWARD_AUTH_SECRET,
       __prod__: NODE_ENV === 'production',
     };
   }

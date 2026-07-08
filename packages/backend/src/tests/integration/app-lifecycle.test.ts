@@ -52,6 +52,7 @@ import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
+import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 
@@ -282,6 +283,12 @@ describe('App lifecycle', () => {
           provide: McpApiKeyService,
           useValue: mock<McpApiKeyService>({
             provisionManagedKey: vi.fn().mockResolvedValue('test-managed-mcp-key'),
+          }),
+        },
+        {
+          provide: MemoryConnectionService,
+          useValue: mock<MemoryConnectionService>({
+            getInjectableCreds: vi.fn().mockResolvedValue(null),
           }),
         },
         {

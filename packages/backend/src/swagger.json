@@ -4084,101 +4084,123 @@
         ]
       }
     },
-    "/api/debug/seed": {
-      "post": {
-        "operationId": "seedDatabase",
+    "/api/memory-connect/start": {
+      "get": {
+        "operationId": "start",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },
-    "/api/debug/set-all-app-update-available": {
-      "post": {
-        "operationId": "setAllAppUpdateAvailable",
+    "/api/memory-connect/callback": {
+      "get": {
+        "operationId": "callback",
         "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },
-    "/api/debug/set-all-subnets-to-null": {
-      "post": {
-        "operationId": "setAllAppSubnetToNull",
-        "parameters": [],
+    "/api/memory-connect/apps/{urn}/state": {
+      "get": {
+        "operationId": "state",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },
-    "/api/debug/start-all-apps": {
-      "post": {
-        "operationId": "startAllApps",
-        "parameters": [],
+    "/api/memory-connect/apps/{urn}/status": {
+      "get": {
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },
-    "/api/debug/backup-all-apps": {
+    "/api/memory-connect/apps/{urn}/skip": {
       "post": {
-        "operationId": "backupAllApps",
-        "parameters": [],
+        "operationId": "skip",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },
-    "/api/debug/increment-all-app-versions": {
+    "/api/memory-connect/apps/{urn}/disconnect": {
       "post": {
-        "operationId": "incrementAllAppVersions",
-        "parameters": [],
+        "operationId": "disconnect",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": ""
           }
         },
         "tags": [
-          "Debug"
-        ]
-      }
-    },
-    "/api/debug/uninstall-all-apps": {
-      "post": {
-        "operationId": "uninstallAllApps",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Debug"
+          "MemoryConnect"
         ]
       }
     },

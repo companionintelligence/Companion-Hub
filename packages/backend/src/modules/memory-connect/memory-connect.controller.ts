@@ -33,7 +33,9 @@ export class MemoryConnectController {
       throw new BadRequestException('app is required');
     }
 
-    const consentUrl = await this.service.startConnect(app as AppUrn, this.safeNext(next));
+    // `next` is validated server-side in startConnect (origin-allowlisted against
+    // the Hub + the connecting app), so an attacker can't use it as an open redirect.
+    const consentUrl = await this.service.startConnect(app as AppUrn, next);
     res.redirect(consentUrl);
   }
 
@@ -94,21 +96,5 @@ export class MemoryConnectController {
   /** URNs contain a colon and may arrive percent-encoded. */
   private decodeUrn(urn: string): AppUrn {
     return decodeURIComponent(urn) as AppUrn;
-  }
-
-  /**
-   * Validate the post-connect destination is an absolute URL; fall back to the
-   * dashboard otherwise (avoids a broken/attacker-controlled final redirect).
-   */
-  private safeNext(next: string | undefined): string {
-    if (next) {
-      try {
-        return new URL(next).toString();
-      } catch {
-        // fall through to default
-      }
-    }
-
-    return '/';
   }
 }
