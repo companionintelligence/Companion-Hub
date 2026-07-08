@@ -25,6 +25,13 @@ vi.mock('@tanstack/react-query', () => ({
   useQuery,
 }));
 
+// MemoryConnectionCard is a self-contained child with its own data dependencies
+// (useQuery/useMutation/useQueryClient); this page test focuses on page layout,
+// so stub it out rather than widening the narrow react-query mock above.
+vi.mock('../components/memory-connection-card/memory-connection-card', () => ({
+  MemoryConnectionCard: () => null,
+}));
+
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),
