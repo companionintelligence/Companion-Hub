@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
+import { sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input/Input';
@@ -19,19 +20,18 @@ export default () => {
   const [appName, setAppName] = useState('');
   const [appNameError, setAppNameError] = useState<string>();
 
-  const appNameSchema = z
-    .string()
-    .min(1, t('CUSTOM_APP_NAME_REQUIRED'))
-    .max(50, t('CUSTOM_APP_NAME_MAX_LENGTH'))
-    .regex(/^[a-z0-9-]+$/, t('CUSTOM_APP_NAME_VALIDATION_HELP'))
-    .refine((name) => !name.startsWith('-') && !name.endsWith('-'), t('CUSTOM_APP_NAME_NO_HYPHEN_EDGES'))
-    .refine((name) => !RESERVED_APP_NAMES.includes(name.toLowerCase()), t('CUSTOM_APP_NAME_RESERVED'));
+  // The display name is free-form; the URL-safe slug used as the app
+  // identifier is derived from it. The backend re-derives and enforces it.
+  const derivedSlug = sanitizeAppSubdomain(appName || '');
+  const appNameSchema = z.string().min(1, t('CUSTOM_APP_NAME_REQUIRED')).max(50, t('CUSTOM_APP_NAME_MAX_LENGTH'));
 
   const createCustomApp = useMutation({
     ...createCustomAppMutation(),
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast.success(t('CUSTOM_APP_CREATE_SUCCESS', { name: appName }));
-      navigate(`/apps/${appName}`);
+      // Navigate by the derived slug returned from the server, not the
+      // free-form display name (the URL segment is the app identifier).
+      navigate(`/apps/${data?.appName ?? sanitizeAppSubdomain(appName)}`);
     },
     onError: (error: TranslatableError) => {
       toast.error(t(error.message || 'CUSTOM_APP_CREATE_ERROR', { ...error.intlParams }));
@@ -39,14 +39,25 @@ export default () => {
   });
 
   const onSubmit = (data: z.infer<typeof dynamicComposeSchema>) => {
-    const validation = appNameSchema.safeParse(appName);
+    const displayName = appName.trim();
+    const validation = appNameSchema.safeParse(displayName);
     if (!validation.success) {
-      const pretty = z.prettifyError(validation.error);
-      setAppNameError(pretty);
+      setAppNameError(z.prettifyError(validation.error));
       return;
     }
 
-    createCustomApp.mutate({ body: { config: { ...data, schemaVersion: 2 }, name: appName } });
+    const slug = sanitizeAppSubdomain(displayName);
+    if (!slug) {
+      setAppNameError(t('CUSTOM_APP_NAME_NO_SLUG'));
+      return;
+    }
+    if (RESERVED_APP_NAMES.includes(slug)) {
+      setAppNameError(t('CUSTOM_APP_NAME_RESERVED'));
+      return;
+    }
+    setAppNameError(undefined);
+
+    createCustomApp.mutate({ body: { config: { ...data, schemaVersion: 2 }, name: displayName } });
   };
 
   return (
@@ -64,10 +75,13 @@ export default () => {
                 onChange={(e) => setAppName(e.target.value)}
                 error={appNameError}
                 placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
-                title={t('CUSTOM_APP_NAME_VALIDATION_HELP')}
+                title={t('CUSTOM_APP_NAME_HELP')}
                 disabled={createCustomApp.isPending}
               />
-              <div className="form-text">{t('CUSTOM_APP_NAME_HELP')}</div>
+              <div className="form-text">
+                {t('CUSTOM_APP_NAME_HELP')}
+                {appName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
+              </div>
             </div>
           </div>
         </CardContent>

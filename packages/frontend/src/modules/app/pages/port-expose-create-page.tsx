@@ -68,6 +68,7 @@ export default function PortExposeCreatePage() {
   const watchPublicDomain = watch('publicDomain');
   const watchName = watch('name');
 
+  const derivedSlug = sanitizeAppSubdomain(watchName || '');
   const defaultAppSubdomain = sanitizeAppSubdomain(watchName || 'app');
   const publicWebPreview =
     watchExposureMode === 'cloudflare' && orgSlug
@@ -113,11 +114,13 @@ export default function PortExposeCreatePage() {
       if (error) {
         throw error;
       }
-      return data;
+      return data as { appUrn: string; appName: string; storeId: string };
     },
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables) => {
       toast.success(t('PORT_EXPOSE_CREATE_SUCCESS', { name: variables.name }));
-      navigate(`/apps/${variables.name}`);
+      // Navigate by the derived slug returned from the server, not the
+      // free-form display name (the URL segment is the app identifier).
+      navigate(`/apps/${data?.appName ?? sanitizeAppSubdomain(variables.name)}`);
     },
     onError: (error: TranslatableError) => {
       toast.error(t(error.message || 'PORT_EXPOSE_CREATE_ERROR', { ...error.intlParams }));
@@ -125,17 +128,25 @@ export default function PortExposeCreatePage() {
   });
 
   const onSubmit = async (values: FormValues) => {
-    const nameSchema = z
-      .string()
-      .min(1, t('CUSTOM_APP_NAME_REQUIRED'))
-      .max(50, t('CUSTOM_APP_NAME_MAX_LENGTH'))
-      .regex(/^[a-z0-9-]+$/, t('CUSTOM_APP_NAME_VALIDATION_HELP'))
-      .refine((name) => !name.startsWith('-') && !name.endsWith('-'), t('CUSTOM_APP_NAME_NO_HYPHEN_EDGES'))
-      .refine((name) => !RESERVED_APP_NAMES.includes(name.toLowerCase()), t('CUSTOM_APP_NAME_RESERVED'));
+    // The display name is free-form; the URL-safe slug used as the app
+    // identifier is derived from it (the same helper that drives the
+    // subdomain preview). The backend re-derives and enforces the slug.
+    const displayName = values.name.trim();
+    const nameSchema = z.string().min(1, t('CUSTOM_APP_NAME_REQUIRED')).max(50, t('CUSTOM_APP_NAME_MAX_LENGTH'));
 
-    const nameValidation = nameSchema.safeParse(values.name.trim());
+    const nameValidation = nameSchema.safeParse(displayName);
     if (!nameValidation.success) {
       setError('name', { message: z.prettifyError(nameValidation.error) });
+      return;
+    }
+
+    const slug = sanitizeAppSubdomain(displayName);
+    if (!slug) {
+      setError('name', { message: t('CUSTOM_APP_NAME_NO_SLUG') });
+      return;
+    }
+    if (RESERVED_APP_NAMES.includes(slug)) {
+      setError('name', { message: t('CUSTOM_APP_NAME_RESERVED') });
       return;
     }
 
@@ -148,7 +159,7 @@ export default function PortExposeCreatePage() {
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
 
     if (exposureMode === 'cloudflare') {
-      const subdomain = (values.localSubdomain || nameValidation.data).trim();
+      const subdomain = (values.localSubdomain || slug).trim();
       if (!subdomain) {
         setError('localSubdomain', { message: t('PORT_EXPOSE_SUBDOMAIN_REQUIRED') });
         return;
@@ -178,10 +189,10 @@ export default function PortExposeCreatePage() {
     }
 
     createPortExpose.mutate({
-      name: nameValidation.data,
+      name: displayName,
       port,
       exposureMode,
-      localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || nameValidation.data) : undefined,
+      localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || slug) : undefined,
       publicDomain: exposureMode === 'cloudflare' ? values.publicDomain || domain : undefined,
     });
   };
@@ -206,6 +217,10 @@ export default function PortExposeCreatePage() {
               placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
               disabled={createPortExpose.isPending}
             />
+            <p className="text-xs text-muted-foreground -mt-2">
+              {t('CUSTOM_APP_NAME_HELP')}
+              {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
+            </p>
 
             <Input
               label={

@@ -5,6 +5,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { sanitizeAppSubdomain } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
@@ -12,6 +13,7 @@ import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
 import { frontmatterSchema, type AppInfo, type ServiceInput } from '@ci-hub/common/schemas';
 
 const APPS_FOLDER = '_user';
+const RESERVED_APP_NAMES = ['create', 'expose'];
 
 @Injectable()
 export class CustomAppService {
@@ -29,39 +31,52 @@ export class CustomAppService {
 
     const { name, config } = dto;
 
-    const appUrn = createAppUrn(name, APPS_FOLDER);
+    const displayName = name.trim();
+    // Derive a URL-safe slug from the free-form display name. The slug is the
+    // app identifier (URN, on-disk directory); the display name is preserved
+    // verbatim for the UI, mirroring how marketplace apps keep `name` and `id`
+    // separate.
+    const slug = sanitizeAppSubdomain(displayName);
+    if (!slug) {
+      throw new TranslatableError('CUSTOM_APP_NAME_NO_SLUG', undefined, HttpStatus.BAD_REQUEST);
+    }
+    if (RESERVED_APP_NAMES.includes(slug)) {
+      throw new TranslatableError('CUSTOM_APP_NAME_RESERVED', undefined, HttpStatus.BAD_REQUEST);
+    }
+
+    const appUrn = createAppUrn(slug, APPS_FOLDER);
 
     const existingApp = await this.appsRepository.getAppByUrn(appUrn);
     if (existingApp) {
-      throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name }, HttpStatus.CONFLICT);
+      throw new TranslatableError('CUSTOM_APP_ERROR_DUPLICATE_NAME', { name: displayName }, HttpStatus.CONFLICT);
     }
 
     try {
       await this.createAppDirectories(appUrn);
       await this.writeDockerComposeConfig(appUrn, config);
-      await this.createAppInfo(appUrn, name, config);
+      await this.createAppInfo(appUrn, displayName, config);
 
       await this.appsRepository.createApp({
         appStoreSlug: APPS_FOLDER,
-        appName: name,
+        appName: slug,
         config: {},
         status: 'missing',
       });
 
-      this.logger.info(`Custom app ${name} created successfully with URN ${appUrn}`);
+      this.logger.info(`Custom app ${displayName} (${slug}) created successfully with URN ${appUrn}`);
 
       return {
         appUrn,
-        appName: name,
+        appName: slug,
         storeId: APPS_FOLDER,
       };
     } catch (error) {
-      this.logger.error(`Failed to create custom app ${name}:`, error);
+      this.logger.error(`Failed to create custom app ${slug}:`, error);
       await this.cleanupAppDirectories(appUrn).catch(() => {
         // Noop
       });
       console.error(error);
-      throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name }, HttpStatus.INTERNAL_SERVER_ERROR);
+      throw new TranslatableError('CUSTOM_APP_ERROR_CREATION_FAILED', { name: displayName }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -149,7 +164,9 @@ export class CustomAppService {
     } satisfies AppInfo;
 
     const descriptionPath = path.join(dataDir, 'apps', appStoreId, appName, 'metadata', 'description.md');
-    const descriptionContent = `---\nname: ${name}\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# ${name}\n\nThis is a user-created custom application.\n`;
+    // JSON.stringify produces a valid double-quoted YAML scalar, keeping the
+    // frontmatter well-formed for free-form names (e.g. containing a colon).
+    const descriptionContent = `---\nname: ${JSON.stringify(name)}\nshort_desc: User-created custom app\nversion: 1.0.0\n---\n\n# ${name}\n\nThis is a user-created custom application.\n`;
 
     const ok = await this.filesystem.writeJsonFile(infoPath, appInfo);
     if (!ok) {

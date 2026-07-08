@@ -69,6 +69,27 @@ describe('CustomAppService', () => {
       expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
+    it('derives a URL-safe slug from a free-form display name', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      const config = { version: '3', services: [{ name: 'web', image: 'nginx', isMain: true }] };
+      const result = await service.createCustomApp({ name: 'My Cool App', config: config as any });
+
+      expect(result.appUrn).toBe('my-cool-app:_user' as any);
+      expect(result.appName).toBe('my-cool-app');
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ appName: 'my-cool-app' }));
+    });
+
+    it('throws when the display name has no slug-able characters', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      await expect(service.createCustomApp({ name: '///', config: {} as any })).rejects.toThrow('CUSTOM_APP_NAME_NO_SLUG');
+    });
+
+    it('throws when the derived slug is reserved', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      await expect(service.createCustomApp({ name: 'Create', config: {} as any })).rejects.toThrow('CUSTOM_APP_NAME_RESERVED');
+    });
+
     it('should throw if duplicate', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1 } as any);
       await expect(service.createCustomApp({ name: 'myapp', config: '' as any as any })).rejects.toThrow('CUSTOM_APP_ERROR_DUPLICATE_NAME');

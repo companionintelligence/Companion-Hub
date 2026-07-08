@@ -2,21 +2,26 @@ import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 import { dynamicComposeSchema } from '@ci-hub/common/schemas';
 
+// Free-form display name shared by the custom-app and port-expose create
+// flows. A URL-safe slug is derived from it server-side (see
+// CustomAppsService.createCustomApp / PortExposeService.createPortExposeApp),
+// mirroring how marketplace apps keep a human-readable `name` separate from
+// their `id`. Control characters (incl. line breaks) are rejected so the name
+// stays a single printable line when rendered into metadata/config files.
+const displayNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(50)
+  .regex(/^\P{Cc}+$/u);
+
 export const createCustomAppSchema = z.object({
-  name: z
-    .string()
-    .regex(/^[a-z0-9-]+$/)
-    .min(1)
-    .max(50),
+  name: displayNameSchema,
   config: dynamicComposeSchema,
 });
 
 export const createPortExposeAppSchema = z.object({
-  name: z
-    .string()
-    .regex(/^[a-z0-9-]+$/)
-    .min(1)
-    .max(50),
+  name: displayNameSchema,
   port: z.number().min(1024).max(65535),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']),
   localSubdomain: z
