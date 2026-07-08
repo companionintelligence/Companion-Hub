@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { MemoryConnectionCard } from '../components/memory-connection-card/memory-connection-card';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -173,6 +174,8 @@ export default () => {
       </Card>
 
       <AppAccessPoints app={app} info={info} />
+
+      <MemoryConnectionCard appUrn={appUrn} />
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs

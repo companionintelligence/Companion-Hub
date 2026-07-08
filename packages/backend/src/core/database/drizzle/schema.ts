@@ -203,3 +203,23 @@ export const deviceRegistration = pgTable('device_registration', {
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });
+
+/**
+ * Per-app Companion Memory connection state + the (encrypted) minted api key.
+ *
+ * One row per memory-consumer app (keyed by app URN). `state` drives the
+ * interstitial ('unconfigured' | 'connected' | 'skipped' | 'manual'); the
+ * transient 'deferred' choice lives in a wrapper cookie, not here. `encryptedKey`
+ * holds the CI-Server-issued key (AES-256-GCM via EncryptionService, salt = URN)
+ * — the Hub must retain the raw value because it re-emits it into the app's env
+ * on every restart, and CI-Server only ever reveals it once.
+ */
+export const memoryConnection = pgTable('memory_connection', {
+  id: serial().primaryKey().notNull(),
+  appUrn: varchar('app_urn').notNull().unique(),
+  state: varchar().default('unconfigured').notNull(), // 'unconfigured' | 'connected' | 'skipped' | 'manual'
+  encryptedKey: text('encrypted_key'), // encrypted CI-Server api key; null unless connected
+  serverUrl: varchar('server_url'), // resolved Companion Memory URL captured at connect time
+  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+});

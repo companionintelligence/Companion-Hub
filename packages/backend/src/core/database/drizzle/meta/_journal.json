@@ -330,6 +330,13 @@
       "when": 1780510000000,
       "tag": "0046_api_key_audience_scoped_index",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1780520000000,
+      "tag": "0047_add_memory_connection",
+      "breakpoints": true
     }
   ]
 }

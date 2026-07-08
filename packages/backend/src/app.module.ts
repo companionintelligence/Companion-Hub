@@ -42,6 +42,7 @@ import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 import { McpModule } from './modules/mcp/mcp.module';
 import { McpApiKeyModule } from './modules/mcp/mcp-api-key.module';
+import { MemoryConnectModule } from './modules/memory-connect/memory-connect.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 import { InferenceModule } from './modules/inference/inference.module';
 import { PortalModule } from './core/portal/portal.module';
@@ -86,6 +87,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   // SEC-MCP-8: always available (not gated on MCP_ENABLED) — AppsModule provisions companion-app
   // managed keys and AppService seeds the legacy key regardless of whether the MCP endpoint is mounted.
   McpApiKeyModule,
+  MemoryConnectModule,
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
