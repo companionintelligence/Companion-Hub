@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Wersja",
   "APP_DETAILS_WEBSITE": "Strona",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Nie udało się zainstalować aplikacji {{id}}, zobacz logi po więcej informacji",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Nie udało się zainstalować aplikacji {{id}}, zobacz <logsLink>{{logsLabel}}</logsLink> po więcej informacji",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Nie udało się zainstalować aplikacji {{id}}, zobacz <logsLink>Logs</logsLink> po więcej informacji",
   "APP_ERROR_APP_FAILED_TO_RESET": "Nie udało się zresetować aplikacji {{id}}, zobacz logi, po więcej informacji",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Nie udało się zrestartować aplikacji {{id}}, zobacz logi, po więcej informacji",
   "APP_ERROR_APP_FAILED_TO_START": "Nie udało się uruchomić aplikacji {{id}}, zobacz logi po więcej informacji",

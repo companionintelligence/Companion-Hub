@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Versione",
   "APP_DETAILS_WEBSITE": "Sito web",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Non possibile installare l'app {{id}}, guarda i log per maggiori dettagli",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Non possibile installare l'app {{id}}, guarda i <logsLink>{{logsLabel}}</logsLink> per maggiori dettagli",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Non possibile installare l'app {{id}}, guarda i <logsLink>Logs</logsLink> per maggiori dettagli",
   "APP_ERROR_APP_FAILED_TO_RESET": "Impossibile ripristinare l'app {{id}}, consulta i log per maggiori dettagli",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Impossibile riavviare l'app {{id}}, consulta i log per maggiori dettagli",
   "APP_ERROR_APP_FAILED_TO_START": "Non possibile avviare l'app {{id}}, guarda i log per maggiori dettagli",

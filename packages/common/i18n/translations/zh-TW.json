@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "版本",
   "APP_DETAILS_WEBSITE": "網址",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "安裝應用程式 {{id}} 失敗，請參閱日誌以瞭解更多詳細資訊",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "安裝應用程式 {{id}} 失敗，請參閱<logsLink>{{logsLabel}}</logsLink>以瞭解更多詳細資訊",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "安裝應用程式 {{id}} 失敗，請參閱<logsLink>Logs</logsLink>以瞭解更多詳細資訊",
   "APP_ERROR_APP_FAILED_TO_RESET": "重置應用程式 {{id}} 失敗，請參閱日誌以瞭解更多詳細資訊",
   "APP_ERROR_APP_FAILED_TO_RESTART": "重新啟用應用程式 {{id}} 失敗，請參閱日誌以瞭解更多詳細資訊",
   "APP_ERROR_APP_FAILED_TO_START": "啟動應用程式 {{id}} 失敗，請參閱日誌以瞭解更多詳細資訊",

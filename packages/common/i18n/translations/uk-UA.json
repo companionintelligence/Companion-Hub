@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Версія",
   "APP_DETAILS_WEBSITE": "Сайт",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Не вдалося встановити додаток {{id}}, див. журнали для отримання додаткових відомостей",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не вдалося встановити додаток {{id}}, див. <logsLink>{{logsLabel}}</logsLink> для отримання додаткових відомостей",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не вдалося встановити додаток {{id}}, див. <logsLink>Logs</logsLink> для отримання додаткових відомостей",
   "APP_ERROR_APP_FAILED_TO_RESET": "Не вдалося скинути додаток {{id}}, перегляньте журнали для деталей",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Не вдалося перезапустити додаток {{id}}, дивіться журнали для отримання додаткової інформації",
   "APP_ERROR_APP_FAILED_TO_START": "Не вдалося запустити додаток {{id}}, дивіться журнали для отримання додаткової інформації",
