@@ -63,6 +63,20 @@ export class MemoryProviderResolver {
   }
 
   /**
+   * The display name of an installed app (for the consent page's friendly
+   * label), or undefined when it can't be resolved.
+   */
+  async getAppName(appUrn: AppUrn): Promise<string | undefined> {
+    try {
+      const { info } = await this.appsService.getApp(appUrn);
+
+      return info.name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Whether the installed app at `appUrn` is a memory consumer. Resolves the
    * app's info; returns false if the app can't be found.
    */

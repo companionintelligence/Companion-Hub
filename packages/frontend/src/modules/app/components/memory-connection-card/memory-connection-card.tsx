@@ -30,14 +30,18 @@ export function MemoryConnectionCard({ appUrn }: { appUrn: string }) {
   const { data, isLoading } = useQuery({
     queryKey: memoryStatusQueryKey(appUrn),
     queryFn: async () => {
-      const { data } = await client.get({ url: `/api/memory-connect/apps/${encodeURIComponent(appUrn)}/status` });
+      // throwOnError: the generated client resolves (not rejects) on non-2xx by
+      // default, which would mask a failed status fetch as `data: undefined`.
+      const { data } = await client.get({ url: `/api/memory-connect/apps/${encodeURIComponent(appUrn)}/status`, throwOnError: true });
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
   });
 
   const disconnect = useMutation({
-    mutationFn: () => client.post({ url: `/api/memory-connect/apps/${encodeURIComponent(appUrn)}/disconnect` }),
+    // throwOnError so a non-2xx disconnect rejects into onError instead of
+    // silently firing the success toast while the app stays connected.
+    mutationFn: () => client.post({ url: `/api/memory-connect/apps/${encodeURIComponent(appUrn)}/disconnect`, throwOnError: true }),
     onSuccess: async () => {
       toast.success(t('MEMORY_CONNECT_DISCONNECTED_TOAST'));
       await queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });

@@ -497,8 +497,10 @@ export class AppHelpers {
     // through the memory-connect flow, the Hub-brokered, user-consented creds
     // are re-emitted here on every env generation (mirrors the inference/oidc
     // opt-in mappings). Recomputing on each generation is what makes the creds
-    // survive restarts — a bare app.env write would be clobbered. A value the
-    // operator entered manually at install always takes precedence.
+    // survive restarts — a bare app.env write would be clobbered. A brokered
+    // connection takes precedence and is re-emitted first; an operator-entered
+    // value is used only when no brokered connection exists (to point at an
+    // external CI-Server, the operator must Disconnect the brokered one first).
     const memoryIntegration = config.hub_integration?.memory;
     if (memoryIntegration?.url_env && memoryIntegration?.token_env) {
       // The app's own URN, so its wrapper can query the per-app memory-connect

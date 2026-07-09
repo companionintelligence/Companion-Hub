@@ -33,18 +33,27 @@ export function canonicalizeBody(body: unknown): string {
     if (value === null || typeof value !== 'object') {
       return value;
     }
+    // Track only ANCESTORS (add before recursing, remove after) so a genuine
+    // cycle collapses to null, while a DAG — the same object referenced twice on
+    // sibling branches — still serializes fully. A plain add-only WeakSet would
+    // null the second occurrence and diverge from the verifier, which re-parses
+    // the JSON wire body (JSON.parse never produces shared references).
     if (seen.has(value as object)) {
       return null;
     }
     seen.add(value as object);
+    let result: unknown;
     if (Array.isArray(value)) {
-      return value.map(walk);
+      result = value.map(walk);
+    } else {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        out[key] = walk((value as Record<string, unknown>)[key]);
+      }
+      result = out;
     }
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      out[key] = walk((value as Record<string, unknown>)[key]);
-    }
-    return out;
+    seen.delete(value as object);
+    return result;
   };
 
   return JSON.stringify(walk(body ?? {}));

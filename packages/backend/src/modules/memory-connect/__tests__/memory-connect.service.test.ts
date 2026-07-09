@@ -11,6 +11,7 @@ function makeService() {
     findProvider: vi.fn(),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
     isConsumerApp: vi.fn().mockResolvedValue(true),
+    getAppName: vi.fn().mockResolvedValue('OpenClaw'),
   };
   const exchange = {
     exchange: vi.fn(),
@@ -67,6 +68,7 @@ describe('MemoryConnectService.startConnect', () => {
     expect(url.searchParams.get('app')).toBe('ci-openclaw:local');
     expect(url.searchParams.get('state')).toBe('state-nonce');
     expect(url.searchParams.get('return')).toBe('https://core2-x.example.org/api/memory-connect/callback');
+    expect(url.searchParams.get('app_name')).toBe('OpenClaw');
     expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org/');
   });
 
@@ -163,8 +165,8 @@ describe('MemoryConnectService side effects', () => {
     expect(lifecycle.restartApp).not.toHaveBeenCalled();
   });
 
-  it('getUiStatus clears a stale connection when ci-memory rejects the stored key', async () => {
-    const { service, resolver, exchange, connections } = makeService();
+  it('getUiStatus clears a stale connection AND restarts the app when ci-memory rejects the stored key', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
     connections.getState.mockResolvedValue('connected');
     exchange.isKeyValid.mockResolvedValue(false); // ci-memory reset → key dead
@@ -172,7 +174,19 @@ describe('MemoryConnectService side effects', () => {
     const status = await service.getUiStatus('ci-openclaw:local');
 
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    // Must restart so the container drops the dead credential and re-prompts.
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
     expect(status.state).toBe('unconfigured');
+  });
+
+  it('getUiStatus short-circuits for a non-consumer app without probing the provider', async () => {
+    const { service, resolver } = makeService();
+    resolver.isConsumerApp.mockResolvedValue(false);
+
+    const status = await service.getUiStatus('some-random-app:local');
+
+    expect(status).toEqual({ applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null });
+    expect(resolver.findProvider).not.toHaveBeenCalled();
   });
 
   it('getUiStatus keeps a connected state when the stored key is still valid', async () => {

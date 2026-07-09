@@ -84,6 +84,13 @@ export class MemoryConnectService {
     consentUrl.searchParams.set('state', state);
     consentUrl.searchParams.set('return', callbackUrl);
 
+    // Pass the app's display name so the consent page can name the requester
+    // ("<app> is requesting access…") instead of falling back to the raw URN.
+    const appName = await this.resolver.getAppName(appUrn);
+    if (appName) {
+      consentUrl.searchParams.set('app_name', appName);
+    }
+
     this.logger.info(`[MemoryConnect] starting connect for ${appUrn}`);
 
     return consentUrl.toString();
@@ -136,8 +143,14 @@ export class MemoryConnectService {
    * state, and the launcher URL.
    */
   async getUiStatus(appUrn: AppUrn): Promise<MemoryConnectUiStatus> {
-    const [applicable, provider, state, connectUrl] = await Promise.all([
-      this.resolver.isConsumerApp(appUrn),
+    // Non-consumer apps render no card, so short-circuit before the provider
+    // availability probe + state/launcher lookups (the common case — most
+    // installed apps are not memory consumers).
+    if (!(await this.resolver.isConsumerApp(appUrn))) {
+      return { applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null };
+    }
+
+    const [provider, state, connectUrl] = await Promise.all([
       this.resolver.findProvider(),
       this.connections.getState(appUrn),
       this.buildLauncherUrl(appUrn),
@@ -150,13 +163,18 @@ export class MemoryConnectService {
     if (state === 'connected' && provider) {
       const creds = await this.connections.getInjectableCreds(appUrn);
       if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+        // Clear the dead key AND restart the app: clearing alone leaves the
+        // container running with the injected dead credential (401ing every
+        // memory call) until some unrelated restart. Restarting regenerates the
+        // env without creds, so the wrapper re-shows the connect interstitial.
         await this.connections.clear(appUrn);
+        await this.applyAndRestart(appUrn);
         effectiveState = 'unconfigured';
         this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
       }
     }
 
-    return { applicable, memoryInstalled: !!provider, state: effectiveState, connectUrl };
+    return { applicable: true, memoryInstalled: !!provider, state: effectiveState, connectUrl };
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */
