@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Versão",
   "APP_DETAILS_WEBSITE": "Website",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Falha ao instalar o aplicativo {{id}}. Consulte os logs para obter mais detalhes",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Falha ao instalar o aplicativo {{id}}. Consulte os <logsLink>{{logsLabel}}</logsLink> para obter mais detalhes",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Falha ao instalar o aplicativo {{id}}. Consulte os <logsLink>Logs</logsLink> para obter mais detalhes",
   "APP_ERROR_APP_FAILED_TO_RESET": "Falha ao redefinir os dados do aplicativo {{id}}.",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Falha ao reiniciar o aplicativo {{id}}, consulte os logs para obter mais detalhes",
   "APP_ERROR_APP_FAILED_TO_START": "Falha ao iniciar o aplicativo {{id}}. Consulte os logs para obter mais detalhes",

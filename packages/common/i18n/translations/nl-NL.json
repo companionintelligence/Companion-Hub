@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Versie",
   "APP_DETAILS_WEBSITE": "Website",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Installatie van app {{id}} mislukt, zie logs voor meer details",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Installatie van app {{id}} mislukt, zie <logsLink>{{logsLabel}}</logsLink> voor meer details",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Installatie van app {{id}} mislukt, zie <logsLink>Logs</logsLink> voor meer details",
   "APP_ERROR_APP_FAILED_TO_RESET": "Kon app {{id}} niet resetten, zie logs voor meer details",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Kon app {{id}} niet herstarten, zie logs voor meer details",
   "APP_ERROR_APP_FAILED_TO_START": "Starten van app {{id}} is mislukt, zie logs voor meer details",

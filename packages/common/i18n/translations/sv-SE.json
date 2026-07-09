@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Version",
   "APP_DETAILS_WEBSITE": "Webbsida",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Det gick inte att installera app {{id}}, se loggar för mer information",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Det gick inte att installera app {{id}}, se <logsLink>{{logsLabel}}</logsLink> för mer information",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Det gick inte att installera app {{id}}, se <logsLink>Logs</logsLink> för mer information",
   "APP_ERROR_APP_FAILED_TO_RESET": "Det gick inte att återställa appen {{id}}, se loggar för mer information",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Misslyckades med att starta om appen{{id}}. Se loggen för mer detaljer",
   "APP_ERROR_APP_FAILED_TO_START": "Det gick inte att starta app {{id}}, se loggar för mer information",

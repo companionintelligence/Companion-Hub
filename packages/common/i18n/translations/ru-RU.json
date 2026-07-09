@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Версия",
   "APP_DETAILS_WEBSITE": "Сайт",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Не удалось установить приложение {{id}}. См. подробности в логах",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не удалось установить приложение {{id}}. См. <logsLink>{{logsLabel}}</logsLink> для подробностей",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Не удалось установить приложение {{id}}. См. <logsLink>Logs</logsLink> для подробностей",
   "APP_ERROR_APP_FAILED_TO_RESET": "Не удалось сбросить приложение {{id}}. См. подробности в логах",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Не удалось перезапустить приложение {{id}}, см. подробности в логах",
   "APP_ERROR_APP_FAILED_TO_START": "Не удалось запустить приложение {{id}}. См. подробности в логах",
