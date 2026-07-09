@@ -13,6 +13,7 @@ export interface MemoryConnectionRow {
   state: MemoryConnectionState;
   encryptedKey: string | null;
   serverUrl: string | null;
+  keyExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -49,7 +50,10 @@ export class MemoryConnectionRepository {
    * Insert or update the row for an app (upsert on the unique `app_urn`).
    * Only the provided fields are written; `updatedAt` is always bumped.
    */
-  async upsert(appUrn: string, values: Partial<Pick<MemoryConnectionRow, 'state' | 'encryptedKey' | 'serverUrl'>>): Promise<MemoryConnectionRow> {
+  async upsert(
+    appUrn: string,
+    values: Partial<Pick<MemoryConnectionRow, 'state' | 'encryptedKey' | 'serverUrl' | 'keyExpiresAt'>>,
+  ): Promise<MemoryConnectionRow> {
     const now = new Date().toISOString();
     const [result] = await this.db
       .insert(memoryConnection)

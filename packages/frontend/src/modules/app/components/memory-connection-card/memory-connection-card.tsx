@@ -12,6 +12,19 @@ interface MemoryConnectionStatus {
   memoryInstalled: boolean;
   state: 'unconfigured' | 'connected' | 'skipped' | 'manual';
   connectUrl: string | null;
+  /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
+  keyExpiresAt: string | null;
+}
+
+/** Format an ISO instant as a short local date, or null if it isn't a valid date. */
+function formatExpiry(iso: string | null): string | null {
+  if (!iso) {
+    return null;
+  }
+
+  const date = new Date(iso);
+
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 const memoryStatusQueryKey = (appUrn: string) => ['memory-connection-status', appUrn];
@@ -55,6 +68,7 @@ export function MemoryConnectionCard({ appUrn }: { appUrn: string }) {
   }
 
   const connected = data.state === 'connected';
+  const expiryLabel = connected ? formatExpiry(data.keyExpiresAt) : null;
 
   const handleConnect = () => {
     if (!data.connectUrl) {
@@ -81,6 +95,13 @@ export function MemoryConnectionCard({ appUrn }: { appUrn: string }) {
         </div>
 
         <p className="text-sm text-muted-foreground">{t('MEMORY_CONNECT_DESC')}</p>
+
+        {connected && (
+          <p className="text-xs text-muted-foreground">
+            {t('MEMORY_CONNECT_RENEWS_AUTOMATICALLY')}
+            {expiryLabel && ` (${t('MEMORY_CONNECT_EXPIRES_IF_DISCONNECTED', { date: expiryLabel })})`}
+          </p>
+        )}
 
         {connected ? (
           <Button variant="outline" className="self-start" disabled={disconnect.isPending} onClick={() => disconnect.mutate()}>

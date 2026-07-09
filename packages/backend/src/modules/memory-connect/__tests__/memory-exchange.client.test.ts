@@ -34,11 +34,11 @@ describe('MemoryExchangeClient', () => {
 
   it('exchange posts to /api/connect/exchange with signed headers and returns the key', async () => {
     const { client } = makeClient('shared-secret');
-    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key' } });
+    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' } });
 
     const result = await client.exchange('http://gateway:8642/', 'the-code');
 
-    expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'raw-key' });
+    expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     const [url, body, opts] = vi.mocked(axios.post).mock.calls[0];
     expect(url).toBe('http://gateway:8642/api/connect/exchange');
     expect(body).toEqual({ code: 'the-code' });
@@ -70,11 +70,11 @@ describe('MemoryExchangeClient', () => {
 
   it('rotate posts to /api/connect/rotate and returns the new key', async () => {
     const { client } = makeClient('shared-secret');
-    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'new-key' } });
+    vi.mocked(axios.post).mockResolvedValue({ data: { appUrn: 'ci-openclaw:local', key: 'new-key', expiresAt: '2026-10-07T00:00:00.000Z' } });
 
     const result = await client.rotate('http://gateway:8642', 'ci-openclaw:local');
 
-    expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'new-key' });
+    expect(result).toEqual({ appUrn: 'ci-openclaw:local', key: 'new-key', expiresAt: '2026-10-07T00:00:00.000Z' });
     const [url, body] = vi.mocked(axios.post).mock.calls[0];
     expect(url).toBe('http://gateway:8642/api/connect/rotate');
     expect(body).toEqual({ app: 'ci-openclaw:local' });

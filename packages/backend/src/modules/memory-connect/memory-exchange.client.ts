@@ -22,6 +22,8 @@ const GATEWAY_API_PREFIX = '/api';
 export interface MemoryExchangeResult {
   appUrn: string;
   key: string;
+  /** ISO-8601 instant the key expires; the rotation sweep refreshes it before this. */
+  expiresAt: string;
 }
 
 /**

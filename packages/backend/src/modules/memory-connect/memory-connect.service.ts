@@ -35,6 +35,12 @@ export interface MemoryConnectUiStatus extends MemoryConnectStatus {
   applicable: boolean;
   /** Whether Companion Memory is installed to connect to. */
   memoryInstalled: boolean;
+  /**
+   * ISO instant the current key expires, when connected — else null. The key
+   * auto-rotates before this, so the UI frames it as "renews automatically" and
+   * only meaningful if the app is disconnected before the next rotation.
+   */
+  keyExpiresAt: string | null;
 }
 
 /**
@@ -134,7 +140,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
         try {
           const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key);
+          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
           await this.applyAndRestart(appUrn);
           this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
         } catch (err) {
@@ -234,7 +240,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       // Store the internal URL as CI_SERVER_URL — the agent container reaches
       // ci-memory over the same shared docker network the Hub used for exchange.
-      await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key);
+      await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
       await this.applyAndRestart(attempt.appUrn);
 
       return { next: attempt.next };
@@ -273,20 +279,22 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // availability probe + state/launcher lookups (the common case — most
     // installed apps are not memory consumers).
     if (!(await this.resolver.isConsumerApp(appUrn))) {
-      return { applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null };
+      return { applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null };
     }
 
-    const [provider, state, connectUrl] = await Promise.all([
+    // getRow (not getState) so we get the key's expiry in the same query.
+    const [provider, row, connectUrl] = await Promise.all([
       this.resolver.findProvider(),
-      this.connections.getState(appUrn),
+      this.connections.getRow(appUrn),
       this.buildLauncherUrl(appUrn),
     ]);
 
     // Lazy staleness detection: if we think we're connected but ci-memory no
     // longer accepts the stored key (e.g. it was reset), clear it so the app
     // re-prompts instead of silently running with a dead credential.
-    let effectiveState = state;
-    if (state === 'connected' && provider) {
+    let effectiveState = row?.state ?? 'unconfigured';
+    let keyExpiresAt = row?.keyExpiresAt ?? null;
+    if (effectiveState === 'connected' && provider) {
       const creds = await this.connections.getInjectableCreds(appUrn);
       if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
         // Clear the dead key AND restart the app: clearing alone leaves the
@@ -296,11 +304,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         await this.connections.clear(appUrn);
         await this.applyAndRestart(appUrn);
         effectiveState = 'unconfigured';
+        keyExpiresAt = null;
         this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
       }
     }
 
-    return { applicable: true, memoryInstalled: !!provider, state: effectiveState, connectUrl };
+    return { applicable: true, memoryInstalled: !!provider, state: effectiveState, connectUrl, keyExpiresAt };
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */

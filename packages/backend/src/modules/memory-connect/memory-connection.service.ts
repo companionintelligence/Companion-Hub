@@ -52,13 +52,16 @@ export class MemoryConnectionService {
 
   /**
    * Persist a successful connection: encrypt + store the CI-Server key and the
-   * resolved memory URL, and flip state to `connected`.
+   * resolved memory URL, record when the key expires, and flip state to
+   * `connected`. `keyExpiresAt` is the ISO instant CI-Server returned; the
+   * rotation sweep refreshes the key (and this value) well before it.
    */
-  async storeConnected(appUrn: string, serverUrl: string, rawKey: string): Promise<void> {
+  async storeConnected(appUrn: string, serverUrl: string, rawKey: string, keyExpiresAt: string): Promise<void> {
     await this.repo.upsert(appUrn, {
       state: 'connected',
       serverUrl,
       encryptedKey: this.encryption.encrypt(rawKey, appUrn),
+      keyExpiresAt,
     });
 
     this.logger.info(`[MemoryConnect] stored connection for ${appUrn}`);
@@ -118,7 +121,7 @@ export class MemoryConnectionService {
    * Drops the stored key.
    */
   async clear(appUrn: string): Promise<void> {
-    await this.repo.upsert(appUrn, { state: 'unconfigured', encryptedKey: null, serverUrl: null });
+    await this.repo.upsert(appUrn, { state: 'unconfigured', encryptedKey: null, serverUrl: null, keyExpiresAt: null });
 
     this.logger.info(`[MemoryConnect] cleared connection for ${appUrn}`);
   }

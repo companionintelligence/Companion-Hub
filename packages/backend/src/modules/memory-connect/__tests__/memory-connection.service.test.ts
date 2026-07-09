@@ -32,6 +32,7 @@ function row(overrides: Partial<MemoryConnectionRow>): MemoryConnectionRow {
     state: 'unconfigured',
     encryptedKey: null,
     serverUrl: null,
+    keyExpiresAt: null,
     createdAt: '2026-07-08T00:00:00Z',
     updatedAt: '2026-07-08T00:00:00Z',
     ...overrides,
@@ -51,13 +52,14 @@ describe('MemoryConnectionService', () => {
   it('storeConnected encrypts the key (salted by URN) and flips state to connected', async () => {
     const { service, repo, encryption } = makeMocks();
 
-    await service.storeConnected('ci-openclaw:local', 'http://gateway:8642', 'raw-key');
+    await service.storeConnected('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
 
     expect(encryption.encrypt).toHaveBeenCalledWith('raw-key', 'ci-openclaw:local');
     expect(repo.upsert).toHaveBeenCalledWith('ci-openclaw:local', {
       state: 'connected',
       serverUrl: 'http://gateway:8642',
       encryptedKey: 'enc(raw-key)',
+      keyExpiresAt: '2026-10-07T00:00:00.000Z',
     });
   });
 
@@ -97,6 +99,7 @@ describe('MemoryConnectionService', () => {
       state: 'unconfigured',
       encryptedKey: null,
       serverUrl: null,
+      keyExpiresAt: null,
     });
   });
 

@@ -21,6 +21,7 @@ function makeService() {
   };
   const connections = {
     getState: vi.fn(),
+    getRow: vi.fn(),
     storeConnected: vi.fn().mockResolvedValue(undefined),
     markSkipped: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
@@ -106,12 +107,12 @@ describe('MemoryConnectService.handleCallback', () => {
     const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
     pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key' });
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     const result = await service.handleCallback('the-code', 'state-nonce');
 
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
     expect(result).toEqual({ next: 'https://app.example.org/' });
   });
@@ -203,7 +204,7 @@ describe('MemoryConnectService side effects', () => {
   it('getUiStatus clears a stale connection AND restarts the app when ci-memory rejects the stored key', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getState.mockResolvedValue('connected');
+    connections.getRow.mockResolvedValue({ state: 'connected', keyExpiresAt: '2026-10-07T00:00:00.000Z' });
     exchange.isKeyValid.mockResolvedValue(false); // ci-memory reset → key dead
 
     const status = await service.getUiStatus('ci-openclaw:local');
@@ -212,6 +213,8 @@ describe('MemoryConnectService side effects', () => {
     // Must restart so the container drops the dead credential and re-prompts.
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
     expect(status.state).toBe('unconfigured');
+    // The stale key's expiry is cleared alongside the connection.
+    expect(status.keyExpiresAt).toBeNull();
   });
 
   it('getUiStatus short-circuits for a non-consumer app without probing the provider', async () => {
@@ -220,20 +223,22 @@ describe('MemoryConnectService side effects', () => {
 
     const status = await service.getUiStatus('some-random-app:local');
 
-    expect(status).toEqual({ applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null });
+    expect(status).toEqual({ applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null });
     expect(resolver.findProvider).not.toHaveBeenCalled();
   });
 
   it('getUiStatus keeps a connected state when the stored key is still valid', async () => {
     const { service, resolver, exchange, connections } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.getState.mockResolvedValue('connected');
+    connections.getRow.mockResolvedValue({ state: 'connected', keyExpiresAt: '2026-10-07T00:00:00.000Z' });
     exchange.isKeyValid.mockResolvedValue(true);
 
     const status = await service.getUiStatus('ci-openclaw:local');
 
     expect(connections.clear).not.toHaveBeenCalled();
     expect(status.state).toBe('connected');
+    // A valid connection surfaces the key's expiry for the UI's renewal note.
+    expect(status.keyExpiresAt).toBe('2026-10-07T00:00:00.000Z');
   });
 
   const daysAgoIso = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -242,12 +247,12 @@ describe('MemoryConnectService side effects', () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
     connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
-    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key' });
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     await service.rotateDueKeys();
 
     expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z');
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
   });
 
@@ -279,7 +284,9 @@ describe('MemoryConnectService side effects', () => {
       { appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) },
       { appUrn: 'ci-hermes:local', updatedAt: daysAgoIso(70) },
     ]);
-    exchange.rotate.mockRejectedValueOnce(new Error('ci-memory down')).mockResolvedValueOnce({ appUrn: 'ci-hermes:local', key: 'fresh-key' });
+    exchange.rotate
+      .mockRejectedValueOnce(new Error('ci-memory down'))
+      .mockResolvedValueOnce({ appUrn: 'ci-hermes:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     await service.rotateDueKeys();
 
