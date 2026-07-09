@@ -103,8 +103,13 @@ export class MemoryProviderResolver {
   /**
    * Find the installed Companion Memory provider, or null when ci-memory is not
    * installed (in which case connecting is not offered).
+   *
+   * `withPublicUrl` resolves the browser-reachable URL via a `checkAppAvailability`
+   * probe — a heavy multi-I/O call. Only the browser leg (`startConnect`) needs
+   * it; every other caller (rotation sweep, disconnect, uninstall, status polls)
+   * uses only the internal S2S URL, so the probe is skipped by default.
    */
-  async findProvider(): Promise<ResolvedMemoryProvider | null> {
+  async findProvider(opts: { withPublicUrl?: boolean } = {}): Promise<ResolvedMemoryProvider | null> {
     const installed = await this.appsService.getInstalledApps();
 
     // Trust is pinned to the reserved ci-memory id — NOT to a manifest-declared
@@ -123,11 +128,13 @@ export class MemoryProviderResolver {
     // Public URL is best-effort — the browser leg needs it, but the internal
     // exchange does not, so a provider is still "found" without it.
     let publicUrl: string | undefined;
-    try {
-      const availability = await this.appsService.checkAppAvailability(appUrn);
-      publicUrl = availability.appUrl;
-    } catch (err) {
-      this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
+    if (opts.withPublicUrl) {
+      try {
+        const availability = await this.appsService.checkAppAvailability(appUrn);
+        publicUrl = availability.appUrl;
+      } catch (err) {
+        this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     return { appUrn, internalUrl: `http://${service}:${port}`, publicUrl };

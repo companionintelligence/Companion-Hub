@@ -103,13 +103,23 @@ describe('MemoryProviderResolver.findProvider', () => {
       },
     ]);
 
-    const provider = await resolver.findProvider();
+    const provider = await resolver.findProvider({ withPublicUrl: true });
 
     expect(provider).toEqual({
       appUrn: 'ci-memory:ci-marketplace',
       internalUrl: 'http://gateway:8642',
       publicUrl: 'https://ci-memory.example.com',
     });
+  });
+
+  it('skips the (heavy) public-URL availability probe by default', async () => {
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
+
+    const provider = await resolver.findProvider();
+
+    expect(provider?.internalUrl).toBe('http://gateway:8642');
+    expect(provider?.publicUrl).toBeUndefined();
+    expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
   });
 
   it('falls back to gateway:8642 when the provider descriptor is absent', async () => {
@@ -124,7 +134,7 @@ describe('MemoryProviderResolver.findProvider', () => {
     const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
     appsService.checkAppAvailability.mockRejectedValue(new Error('not running'));
 
-    const provider = await resolver.findProvider();
+    const provider = await resolver.findProvider({ withPublicUrl: true });
 
     expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
     expect(provider?.publicUrl).toBeUndefined();

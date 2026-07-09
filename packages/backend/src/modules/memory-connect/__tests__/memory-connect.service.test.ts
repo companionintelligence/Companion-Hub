@@ -27,6 +27,7 @@ function makeService() {
     clear: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://gateway:8642', token: 'tok' }),
+    credsFromRow: vi.fn().mockReturnValue({ url: 'http://gateway:8642', token: 'tok' }),
     listConnected: vi.fn().mockResolvedValue([]),
   };
   const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn() };
@@ -331,12 +332,56 @@ describe('MemoryConnectService side effects', () => {
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
-    const { service, connections } = makeService();
+    const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
+    resolver.findProvider.mockResolvedValue(PROVIDER);
 
     const status = await service.getStatus('ci-openclaw:local');
 
     expect(status.state).toBe('unconfigured');
     expect(status.connectUrl).toBe('https://core2-x.example.org/api/memory-connect/start?app=ci-openclaw%3Alocal');
+  });
+
+  it('getStatus withholds the connectUrl when Companion Memory is not installed (no dead-end gate)', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.getState.mockResolvedValue('unconfigured');
+    resolver.findProvider.mockResolvedValue(null);
+
+    const status = await service.getStatus('ci-openclaw:local');
+
+    // A null connectUrl makes the wrapper suppress the connect gate rather than
+    // link to a startConnect that would 400 with "Companion Memory is not installed".
+    expect(status.connectUrl).toBeNull();
+  });
+
+  it('handleUninstall of Companion Memory clears + restarts every connected consumer', async () => {
+    const { service, resolver, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(null); // provider already gone from the install list
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-memory:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+
+    await service.handleUninstall('ci-memory:ci-marketplace');
+
+    // Each consumer is cleared + restarted; the provider row itself is skipped.
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
+    expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
+    expect(connections.clear).not.toHaveBeenCalledWith('ci-memory:ci-marketplace');
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace' });
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace' });
+  });
+
+  it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {
+    const { service, resolver, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' }]);
+
+    await service.handleUninstall('ci-openclaw:ci-marketplace');
+
+    // Only the uninstalled app's row is removed; no consumer is cleared.
+    expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
+    expect(connections.clear).not.toHaveBeenCalled();
   });
 });

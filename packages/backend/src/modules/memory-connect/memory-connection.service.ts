@@ -74,16 +74,24 @@ export class MemoryConnectionService {
    * generation).
    */
   async getInjectableCreds(appUrn: string): Promise<InjectableMemoryCreds | null> {
-    const row = await this.repo.findByAppUrn(appUrn);
+    return this.credsFromRow(await this.repo.findByAppUrn(appUrn));
+  }
 
+  /**
+   * Decrypt the injectable creds from an ALREADY-LOADED row — same result as
+   * {@link getInjectableCreds} without a second `findByAppUrn`, for callers (e.g.
+   * `getUiStatus`) that already hold the row. Returns null when the row is not a
+   * connected key or the ciphertext fails to decrypt.
+   */
+  credsFromRow(row: MemoryConnectionRow | undefined): InjectableMemoryCreds | null {
     if (!row || row.state !== 'connected' || !row.encryptedKey || !row.serverUrl) {
       return null;
     }
 
     try {
-      return { url: row.serverUrl, token: this.encryption.decrypt(row.encryptedKey, appUrn) };
+      return { url: row.serverUrl, token: this.encryption.decrypt(row.encryptedKey, row.appUrn) };
     } catch (err) {
-      this.logger.error(`[MemoryConnect] failed to decrypt stored key for ${appUrn}`, err);
+      this.logger.error(`[MemoryConnect] failed to decrypt stored key for ${row.appUrn}`, err);
 
       return null;
     }

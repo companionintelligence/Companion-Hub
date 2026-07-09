@@ -71,6 +71,10 @@ export class MemoryExchangeClient {
       await axios.get(`${this.trimTrailingSlash(baseUrl)}/api/memory/context`, {
         headers: { 'x-api-key': token },
         timeout: REQUEST_TIMEOUT_MS,
+        // Never follow a redirect: axios does not strip the x-api-key header on a
+        // cross-origin 3xx, so a redirect could leak the memory key. The S2S target
+        // is a trusted internal endpoint that answers JSON/4xx, never a redirect.
+        maxRedirects: 0,
       });
 
       return true;
@@ -124,6 +128,11 @@ export class MemoryExchangeClient {
     const response = await axios.post<T>(url, body, {
       headers,
       timeout: REQUEST_TIMEOUT_MS,
+      // Never follow a redirect: axios does not strip the signed connect headers
+      // (X-CI-Connect-Signature, derived from the forward-auth secret) on a
+      // cross-origin 3xx, so a redirect could leak them. Connect endpoints answer
+      // JSON/4xx, never a redirect.
+      maxRedirects: 0,
     });
 
     return response.data;

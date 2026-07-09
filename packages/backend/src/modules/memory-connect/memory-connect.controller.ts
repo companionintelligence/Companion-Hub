@@ -129,8 +129,17 @@ export class MemoryConnectController {
     return true;
   }
 
-  /** URNs contain a colon and may arrive percent-encoded. */
+  /**
+   * URNs contain a colon and may arrive percent-encoded. Express has already
+   * URL-decoded the route param, so this is normally a no-op; decode defensively
+   * inside try/catch so a malformed `%` sequence yields a clean 4xx (no match)
+   * rather than an unhandled URIError → 500.
+   */
   private decodeUrn(urn: string): AppUrn {
-    return decodeURIComponent(urn) as AppUrn;
+    try {
+      return decodeURIComponent(urn) as AppUrn;
+    } catch {
+      return urn as AppUrn;
+    }
   }
 }

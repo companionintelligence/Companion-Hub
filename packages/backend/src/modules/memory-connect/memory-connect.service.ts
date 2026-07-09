@@ -8,6 +8,7 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
+import { isMemoryProviderApp } from './memory-provider.predicate';
 import { MemoryProviderResolver } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
 
@@ -21,6 +22,19 @@ const ROTATE_KEY_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
 const ROTATE_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Delay before the first sweep so rotation never slows Hub startup. */
 const ROTATE_INITIAL_DELAY_MS = 60 * 1000;
+
+/**
+ * Parse a Postgres timestamp as UTC milliseconds. `updated_at` is a zoneless
+ * `timestamp` that Postgres returns space-separated (e.g. `2026-07-09 12:00:00`),
+ * which `new Date()` would read as LOCAL time. It is written as UTC (via
+ * `new Date().toISOString()`), so read it back as UTC too — this keeps the
+ * rotation age-gate independent of the container's timezone.
+ */
+function parseUtcMs(value: string): number {
+  const trimmed = value.trim();
+  const hasZone = /[Zz]$|[+-]\d\d(:?\d\d)?$/.test(trimmed);
+  return new Date(hasZone ? trimmed : `${trimmed.replace(' ', 'T')}Z`).getTime();
+}
 
 /** State + the browser-reachable launcher URL a wrapper needs to render its gate. */
 export interface MemoryConnectStatus {
@@ -132,7 +146,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
       for (const row of connected) {
         // updatedAt is when the current key was last stored; skip still-fresh keys.
-        if (new Date(row.updatedAt).getTime() > cutoff) {
+        if (parseUtcMs(row.updatedAt) > cutoff) {
           continue;
         }
 
@@ -141,8 +155,23 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         try {
           const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
           await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
-          await this.applyAndRestart(appUrn);
-          this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+
+          // The new key is stored + valid, but CI-Server has already retired the
+          // old one, so the running container 401s until its env is regenerated.
+          // Retry the restart once for a transient failure; if it still fails, log
+          // LOUDLY — the age gate now skips this app for ROTATE_KEY_AFTER_MS (its
+          // updatedAt is fresh), so a silent failure would strand it on the retired
+          // key until an unrelated restart (env generation re-reads the new key).
+          let applied = await this.applyAndRestart(appUrn);
+          if (!applied) {
+            applied = await this.applyAndRestart(appUrn);
+          }
+
+          if (applied) {
+            this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+          } else {
+            this.logger.error(`[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it will recover on its next restart`);
+          }
         } catch (err) {
           this.logger.warn(`[MemoryConnect] key rotation failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -161,7 +190,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * connection is applied.
    */
   async startConnect(appUrn: AppUrn, next: string | undefined): Promise<string> {
-    const provider = await this.resolver.findProvider();
+    // The browser leg needs the public consent URL, so this is the one caller
+    // that pays for the availability probe.
+    const provider = await this.resolver.findProvider({ withPublicUrl: true });
 
     if (!provider) {
       throw new BadRequestException('Companion Memory is not installed');
@@ -235,6 +266,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       if (exchanged.appUrn !== attempt.appUrn) {
         this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${attempt.appUrn}, got ${exchanged.appUrn}`);
 
+        // The exchange minted a key under `exchanged.appUrn` (CI-Server rotates by
+        // app name), but the Hub will not store it — revoke it so it does not
+        // linger unmanaged on CI-Server. revoke() never throws (logs on failure).
+        await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
+
         return { next: attempt.next, error: true };
       }
 
@@ -262,11 +298,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return attempt?.next ?? '/';
   }
 
-  /** Wrapper-facing status: current state + the launcher URL to start connecting. */
+  /**
+   * Wrapper-facing status: current state + the launcher URL to start connecting.
+   * `connectUrl` is null unless Companion Memory is actually installed — otherwise
+   * a wrapper would render a connect gate that dead-ends on startConnect's
+   * "Companion Memory is not installed" 400. `findProvider` here is the
+   * lightweight, probe-free variant, run in parallel with the other lookups.
+   */
   async getStatus(appUrn: AppUrn): Promise<MemoryConnectStatus> {
-    const [state, connectUrl] = await Promise.all([this.connections.getState(appUrn), this.buildLauncherUrl(appUrn)]);
+    const [state, launcherUrl, provider] = await Promise.all([
+      this.connections.getState(appUrn),
+      this.buildLauncherUrl(appUrn),
+      this.resolver.findProvider(),
+    ]);
 
-    return { state, connectUrl };
+    return { state, connectUrl: provider ? launcherUrl : null };
   }
 
   /**
@@ -298,7 +344,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // never see the raw column value.
     let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
     if (effectiveState === 'connected' && provider) {
-      const creds = await this.connections.getInjectableCreds(appUrn);
+      // Decrypt from the row already loaded above — avoids a second findByAppUrn.
+      const creds = this.connections.credsFromRow(row);
       if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
         // Clear the dead key AND restart the app: clearing alone leaves the
         // container running with the injected dead credential (401ing every
@@ -362,6 +409,39 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
 
     await this.connections.remove(appUrn);
+
+    // If Companion Memory ITSELF is being uninstalled, every consumer's stored key
+    // is now dead and no provider remains to lazily detect the staleness — so
+    // clear each connected consumer and regenerate its env, making them re-prompt
+    // instead of silently running with a 401ing credential.
+    if (isMemoryProviderApp({ urn: appUrn })) {
+      await this.clearConsumersAfterProviderUninstall(appUrn);
+    }
+  }
+
+  /**
+   * Companion Memory was uninstalled: nothing remains to revoke against, so just
+   * drop every consumer's now-dead connection and regenerate its env so the
+   * connect interstitial reappears. Best-effort per consumer.
+   */
+  private async clearConsumersAfterProviderUninstall(providerUrn: AppUrn): Promise<void> {
+    const connected = await this.connections.listConnected();
+
+    for (const row of connected) {
+      if (row.appUrn === providerUrn) {
+        continue;
+      }
+
+      const consumerUrn = row.appUrn as AppUrn;
+
+      try {
+        await this.connections.clear(consumerUrn);
+        await this.applyAndRestart(consumerUrn);
+        this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: Companion Memory was uninstalled`);
+      } catch (err) {
+        this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after Companion Memory uninstall`, err);
+      }
+    }
   }
 
   /**
@@ -439,13 +519,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return hubOrigin ? `${hubOrigin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}` : null;
   }
 
-  /** Regenerate the app's env (picks up the stored creds) and restart it. Best-effort. */
-  private async applyAndRestart(appUrn: AppUrn): Promise<void> {
+  /**
+   * Regenerate the app's env (picks up the stored creds) and restart it.
+   * Best-effort: returns true on success, false when the restart failed (logged),
+   * so callers that need the new env actually applied (rotation) can react.
+   */
+  private async applyAndRestart(appUrn: AppUrn): Promise<boolean> {
     try {
       const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
       await lifecycle.restartApp({ appUrn });
+
+      return true;
     } catch (err) {
       this.logger.error(`[MemoryConnect] failed to restart ${appUrn} after connection change`, err);
+
+      return false;
     }
   }
 }

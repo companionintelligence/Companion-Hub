@@ -22,8 +22,17 @@ export class ManagedAppKeyGuard implements CanActivate {
     const rawKey = bearer || (req.get('x-api-key') ?? '');
 
     const ownerAppUrn = await this.mcpApiKeys.resolveManagedAppUrn(rawKey);
+    // Express has already URL-decoded the route param, so decoding again is
+    // normally a no-op; do it inside try/catch so a malformed `%` sequence yields
+    // a mismatch (401) rather than an unhandled URIError → 500.
     const urnParam = req.params.urn;
-    const targetUrn = decodeURIComponent(typeof urnParam === 'string' ? urnParam : '');
+    const raw = typeof urnParam === 'string' ? urnParam : '';
+    let targetUrn: string;
+    try {
+      targetUrn = decodeURIComponent(raw);
+    } catch {
+      targetUrn = raw;
+    }
 
     if (!ownerAppUrn || ownerAppUrn !== targetUrn) {
       throw new UnauthorizedException('Invalid or mismatched app key');
