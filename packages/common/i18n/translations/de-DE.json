@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Version",
   "APP_DETAILS_WEBSITE": "Webseite",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Installieren der App {{id}} fehlgeschlagen, schau dir die Logs an für weitere Informationen",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Installieren der App {{id}} fehlgeschlagen, schau dir <logsLink>{{logsLabel}}</logsLink> an für weitere Informationen",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Installieren der App {{id}} fehlgeschlagen, schau dir <logsLink>Logs</logsLink> an für weitere Informationen",
   "APP_ERROR_APP_FAILED_TO_RESET": "Zurücksetzen der App {{id}} fehlgeschlagen, schau dir die Logs an für weitere Details",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Neustart der App {{id}} fehlgeschlagen, schau dir die Logs an für weitere Details",
   "APP_ERROR_APP_FAILED_TO_START": "Starten der App {{id}} fehlgeschlagen. Siehe die Logs für weitere Informationen",

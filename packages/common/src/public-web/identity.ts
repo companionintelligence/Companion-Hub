@@ -46,6 +46,25 @@ export function sanitizeAppSubdomain(subdomain: string): string {
     .replace(/^-|-$/g, '');
 }
 
+/** App names/slugs that collide with reserved UI routes and must be rejected. */
+export const RESERVED_APP_NAMES = ['create', 'expose'];
+
+/**
+ * Derive a URL-safe app slug from a free-form display name. Unlike
+ * {@link sanitizeAppSubdomain}, dots are treated like any other separator
+ * (replaced with a hyphen) rather than truncating the name — a display name is
+ * not a subdomain label, so "Node.js Dashboard" becomes "node-js-dashboard",
+ * not "node". Returns an empty string when the name has no slug-able (ASCII
+ * alphanumeric) characters.
+ */
+export function deriveAppSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 export function extractDeviceSlug(hubSubdomain: string | null | undefined, orgSlug: string): string | null {
   if (!hubSubdomain) return null;
   const withoutPrefix = hubSubdomain.replace(/^hub-/, '');

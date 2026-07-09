@@ -63,7 +63,7 @@
   "APP_DETAILS_VERSION": "版本",
   "APP_DETAILS_WEBSITE": "网址",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "安装应用程序 {{id}} 失败，查看日志获取更多详细信息",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "安装应用程序 {{id}} 失败，查看<logsLink>{{logsLabel}}</logsLink>获取更多详细信息",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "安装应用程序 {{id}} 失败，查看<logsLink>Logs</logsLink>获取更多详细信息",
   "APP_ERROR_APP_FAILED_TO_RESET": "重置应用程序 {{id}} 失败，查看日志获取更多详细信息",
   "APP_ERROR_APP_FAILED_TO_RESTART": "重启应用程序 {{id}} 失败，查看日志获取更多详细信息",
   "APP_ERROR_APP_FAILED_TO_START": "启动应用程序 {{id}} 失败，查看日志获取更多详细信息",

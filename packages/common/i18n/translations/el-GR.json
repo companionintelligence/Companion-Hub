@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Έκδοση",
   "APP_DETAILS_WEBSITE": "Ιστοσελίδα",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Αποτυχία εγκατάστασης της εφαρμογής {{id}}, δείτε τα logs για περισσότερες λεπτομέρειες",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Αποτυχία εγκατάστασης της εφαρμογής {{id}}, δείτε τα <logsLink>{{logsLabel}}</logsLink> για περισσότερες λεπτομέρειες",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Αποτυχία εγκατάστασης της εφαρμογής {{id}}, δείτε τα <logsLink>Logs</logsLink> για περισσότερες λεπτομέρειες",
   "APP_ERROR_APP_FAILED_TO_RESET": "Αποτυχία επαναφοράς της εφαρμογής {{id}}, δείτε τα logs για περισσότερες λεπτομέρειες",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Αποτυχία επανεκκίνησης της εφαρμογής {{id}}, δείτε τα logs για περισσότερες λεπτομέρειες",
   "APP_ERROR_APP_FAILED_TO_START": "Αποτυχία εκκίνησης της εφαρμογής {{id}}, δείτε τα logs για περισσότερες λεπτομέρειες",

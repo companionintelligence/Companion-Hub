@@ -217,6 +217,24 @@ jobs:
           echo "tauri.conf.json: $(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")"
           echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
       # ── macOS Code Signing ──────────────────────────────────────────
+      # A green macOS release must mean a Developer ID signed AND notarized DMG.
+      # Fail fast (before building) if either the signing or notarization secrets
+      # are missing for this environment, instead of silently shipping an ad-hoc
+      # signed / unnotarized DMG that Gatekeeper refuses to open.
+      - name: Require macOS signing + notarization secrets
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${APPLE_SIGNING_CONFIGURED:-}" ] || missing+=("APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD")
+          [ -n "${APPLE_NOTARIZATION_CONFIGURED:-}" ] || missing+=("APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::macOS release requires Developer ID signing and notarization secrets on the '${{ inputs.environment }}' environment. Missing: ${missing[*]}"
+            echo "::error::A green macOS release guarantees a signed + notarized DMG, so this build is failing instead of shipping an unsigned/unnotarized artifact."
+            exit 1
+          fi
+          echo "macOS signing + notarization secrets are present."
       - name: Import Apple certificate
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
@@ -304,9 +322,12 @@ jobs:
         env:
           # Fail the release if platform-gated helpers regress to dead_code on macOS.
           RUSTFLAGS: '-D dead_code'
-          # CI=true skips Finder AppleScript DMG layout (reliable on GitHub runners).
-          # Do not set TAURI_BUNDLER_DMG_IGNORE_CI — it forces custom layout and
-          # AppleEvent timeouts on current macos-latest images (tauri-action#1091).
+          # Force the styled DMG layout (background image + drag-to-Applications icon
+          # positions). Without this, CI=true makes tauri-bundler skip the Finder
+          # AppleScript layout and ship a plain DMG (tauri#592). That AppleScript step can
+          # transiently time out on macos-latest (tauri-action#1091), so the build is
+          # wrapped in retry_build below to re-attempt the bundle.
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           # macOS codesign only — Tauri reads APPLE_SIGNING_IDENTITY automatically.
           # Notarization runs later via notarytool on the DMG (see Notarize macOS DMG).
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
@@ -338,7 +359,8 @@ jobs:
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
           RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
-          # CI=true skips Finder AppleScript DMG layout (see signed macOS build step).
+          # Force the styled DMG layout on macOS (see signed macOS build step). Retried below.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
           SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
@@ -379,34 +401,76 @@ jobs:
             retry_build "${base_args[@]}"
           fi
       # ── macOS Notarization ──────────────────────────────────────────
+      # Always fatal on failure (no continue-on-error), for every environment.
+      # A notarization failure means the DMG would not open off the internet, so
+      # the release must go red rather than green.
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_NOTARIZATION_CONFIGURED
-        continue-on-error: ${{ inputs.environment == 'dev' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
+          set -euo pipefail
           DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
-          if [ -n "$DMG_PATH" ]; then
-            echo "Notarizing $DMG_PATH..."
-            if ! xcrun notarytool submit "$DMG_PATH" \
-              --apple-id "$APPLE_ID" \
-              --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" \
-              --wait --timeout 600; then
-              echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID for this environment)"
-              exit 1
-            fi
-            xcrun stapler staple "$DMG_PATH"
-            echo "✅ Notarization complete"
-          else
-            echo "::warning::No DMG found to notarize"
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::No DMG found to notarize"
+            exit 1
           fi
+          echo "Notarizing $DMG_PATH..."
+          if ! xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 600; then
+            echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID for this environment)"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG_PATH"
+          echo "✅ Notarization complete"
+      # Encode "green == properly signed" as an explicit gate: the DMG must be
+      # accepted by Gatekeeper as a Notarized Developer ID artifact and carry a
+      # stapled ticket. This catches ad-hoc signing, missed stapling, or a
+      # notarytool "success" that did not actually produce an openable DMG.
+      - name: Verify macOS DMG is signed & notarized
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::No DMG found to verify"
+            exit 1
+          fi
+          echo "Verifying $DMG_PATH"
+          if ! spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH" 2>&1 | tee /tmp/spctl-dmg.txt; then
+            echo "::error::Gatekeeper rejected the DMG — it is not properly signed/notarized"
+            exit 1
+          fi
+          if ! grep -q "source=Notarized Developer ID" /tmp/spctl-dmg.txt; then
+            echo "::error::DMG is not a Notarized Developer ID artifact"
+            exit 1
+          fi
+          xcrun stapler validate "$DMG_PATH"
+          echo "✅ DMG is Developer ID signed, notarized, and stapled"
       # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
       # See docs/DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
       # federated credential subjects this workflow expects.
+      # A green Windows release must mean Authenticode-signed installers. Fail fast
+      # (before building) if any of the six Azure signing secrets are missing, instead
+      # of silently shipping unsigned .msi / -setup.exe that trip SmartScreen.
+      - name: Require Windows signing secrets
+        if: env.BUILD_ENABLED && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_SIGNING_CONFIGURED:-}" ]; then
+            echo "::error::Windows release requires all six Azure Artifact Signing secrets on the '${{ inputs.environment }}' environment: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE."
+            echo "::error::A green Windows release guarantees Authenticode-signed installers, so this build is failing instead of shipping unsigned artifacts."
+            exit 1
+          fi
+          echo "Windows signing secrets are present."
       - name: Prepare Windows signing paths
         if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
         shell: pwsh
@@ -444,6 +508,33 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
+      # Encode "green == properly signed" for Windows: every shipped installer must
+      # carry a Valid Authenticode signature. Catches a signing step that ran but
+      # left an artifact unsigned or with a broken/unstrusted chain.
+      - name: Verify Windows artifacts are signed
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path $env:WINDOWS_BUNDLE_DIR -Recurse -Include *.msi,*-setup.exe -File
+          if (-not $files) {
+            Write-Host "::error::No Windows installers (.msi / -setup.exe) found to verify under $env:WINDOWS_BUNDLE_DIR"
+            exit 1
+          }
+          $failed = $false
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host "$($f.Name): $($sig.Status)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::$($f.Name) is not validly signed (status: $($sig.Status))"
+              $failed = $true
+            }
+          }
+          if ($failed) {
+            Write-Host "::error::One or more Windows installers are not properly signed"
+            exit 1
+          }
+          Write-Host "All Windows installers are Authenticode-signed and valid"
       - name: Upload desktop debug symbols to Sentry
         if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
         continue-on-error: true

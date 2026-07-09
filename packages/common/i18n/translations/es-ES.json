@@ -105,7 +105,7 @@
   "APP_DETAILS_WEBSITE": "Sitio web",
   "APP_DETAILS_ZERO_RATINGS": "0 Calificaciones",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Error al instalar la aplicación {{id}}, consulta los registros para más detalles",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Error al instalar la aplicación {{id}}, consulta <logsLink>{{logsLabel}}</logsLink> para más detalles",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Error al instalar la aplicación {{id}}, consulta <logsLink>Registros</logsLink> para más detalles",
   "APP_ERROR_APP_FAILED_TO_RESET": "Error al restablecer la aplicación {{id}}, consulta los registros para más detalles",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Error al reiniciar la aplicación {{id}}, consulta los registros para más detalles",
   "APP_ERROR_APP_FAILED_TO_START": "Error al iniciar la aplicación {{id}}, consulta los registros para más detalles",

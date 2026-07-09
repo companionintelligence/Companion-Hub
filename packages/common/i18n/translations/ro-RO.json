@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Versiune",
   "APP_DETAILS_WEBSITE": "Site web",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Instalarea aplicației {{id}} a eșuat, vezi jurnalele pentru mai multe detalii",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Instalarea aplicației {{id}} a eșuat, vezi <logsLink>{{logsLabel}}</logsLink> pentru mai multe detalii",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Instalarea aplicației {{id}} a eșuat, vezi <logsLink>Logs</logsLink> pentru mai multe detalii",
   "APP_ERROR_APP_FAILED_TO_RESET": "Failed to reset app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Failed to restart app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_START": "Nu s-a putut porni aplicația {{id}}, vezi jurnalele pentru mai multe detalii",

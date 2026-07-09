@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Versió",
   "APP_DETAILS_WEBSITE": "Lloc web",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Ha fallat la instal·lació de l'aplicació {{id}}, consulta els logs pels detalls",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Ha fallat la instal·lació de l'aplicació {{id}}, consulta <logsLink>{{logsLabel}}</logsLink> pels detalls",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Ha fallat la instal·lació de l'aplicació {{id}}, consulta <logsLink>Logs</logsLink> pels detalls",
   "APP_ERROR_APP_FAILED_TO_RESET": "Ha fallat l'inici de l'aplicació {{id}}, consulta els logs pels detalls",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Failed to restart app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_START": "Ha fallat l'inici de l'aplicació {{id}}, consulta els logs pels detalls",

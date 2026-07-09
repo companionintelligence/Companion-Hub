@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "バージョン",
   "APP_DETAILS_WEBSITE": "ウェブサイト",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "アプリ {{id}} のインストールに失敗しました。詳細はログを参照してください。",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "アプリ {{id}} のインストールに失敗しました。詳細は<logsLink>{{logsLabel}}</logsLink>を参照してください。",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "アプリ {{id}} のインストールに失敗しました。詳細は<logsLink>Logs</logsLink>を参照してください。",
   "APP_ERROR_APP_FAILED_TO_RESET": "Failed to reset app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Failed to restart app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_START": "アプリ {{id}} の起動に失敗しました。詳細はログを参照してください。",

@@ -101,6 +101,38 @@ describe('PortExposeService', () => {
       expect(traefikConfigService.syncPortExposeRoutes).toHaveBeenCalled();
     });
 
+    it('derives a URL-safe slug from a free-form display name', async () => {
+      const result = await service.createPortExposeApp({
+        name: 'Adguard Home Sync',
+        port: 8080,
+        exposureMode: 'local',
+      });
+
+      expect(result.appUrn).toBe('adguard-home-sync:_user');
+      expect(result.appName).toBe('adguard-home-sync');
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ appName: 'adguard-home-sync' }));
+    });
+
+    it('throws when the display name has no slug-able characters', async () => {
+      await expect(
+        service.createPortExposeApp({
+          name: '///',
+          port: 8080,
+          exposureMode: 'local',
+        }),
+      ).rejects.toThrow('CUSTOM_APP_NAME_NO_SLUG');
+    });
+
+    it('throws when the derived slug is reserved', async () => {
+      await expect(
+        service.createPortExposeApp({
+          name: 'Create',
+          port: 8080,
+          exposureMode: 'local',
+        }),
+      ).rejects.toThrow('CUSTOM_APP_NAME_RESERVED');
+    });
+
     it('throws when cloudflare mode is missing a subdomain', async () => {
       await expect(
         service.createPortExposeApp({

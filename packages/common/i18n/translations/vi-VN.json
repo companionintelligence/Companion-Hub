@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Phiên bản",
   "APP_DETAILS_WEBSITE": "Trang web",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Cài đặt ứng dụng {{id}} thất bại, xem nhật kí để biết chi tiết",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Cài đặt ứng dụng {{id}} thất bại, xem <logsLink>{{logsLabel}}</logsLink> để biết chi tiết",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "Cài đặt ứng dụng {{id}} thất bại, xem <logsLink>Logs</logsLink> để biết chi tiết",
   "APP_ERROR_APP_FAILED_TO_RESET": "Cài đặt lại ứng dụng {{id}} thất bại, xem nhật kí biết thêm",
   "APP_ERROR_APP_FAILED_TO_RESTART": "Khởi động lại ứng dụng {{id}} thất bại, xem nhật kí biết thêm",
   "APP_ERROR_APP_FAILED_TO_START": "Khởi động ứng dụng {{id}} thất bại, vui lòng xem log để biết chi tiết",

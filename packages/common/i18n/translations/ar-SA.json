@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "الإصدار",
   "APP_DETAILS_WEBSITE": "موقع",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "فشل تثبيت التطبيق {{id}}، أنظر إلى السجلات للمزيد من التفاصيل",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "فشل تثبيت التطبيق {{id}}، أنظر إلى <logsLink>{{logsLabel}}</logsLink> للمزيد من التفاصيل",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "فشل تثبيت التطبيق {{id}}، أنظر إلى <logsLink>Logs</logsLink> للمزيد من التفاصيل",
   "APP_ERROR_APP_FAILED_TO_RESET": "فشل إعادة تعيين التطبيق {{id}}، أنظر إلى السجلات للمزيد من التفاصيل",
   "APP_ERROR_APP_FAILED_TO_RESTART": "فشل إعادة تشغيل التطبيق {{id}}، أنظر إلى السجلات للمزيد من التفاصيل",
   "APP_ERROR_APP_FAILED_TO_START": "فشل تشغيل التطبيق {{id}}، أنظر إلى السجلات للمزيد من التفاصيل",

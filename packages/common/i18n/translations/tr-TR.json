@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "Sürüm",
   "APP_DETAILS_WEBSITE": "Web Sitesi",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "{{id}} uygulaması yüklenemedi, daha fazla ayrıntı için loglara bakın",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "{{id}} uygulaması yüklenemedi, daha fazla ayrıntı için <logsLink>{{logsLabel}}</logsLink> bakın",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "{{id}} uygulaması yüklenemedi, daha fazla ayrıntı için <logsLink>Logs</logsLink> bakın",
   "APP_ERROR_APP_FAILED_TO_RESET": "{{id}} uygulaması sıfırlanamadı, daha fazla ayrıntı için loglara bakın",
   "APP_ERROR_APP_FAILED_TO_RESTART": "{{id}} uygulaması yeniden başlatılamadı, daha fazla ayrıntı için loglara bakın",
   "APP_ERROR_APP_FAILED_TO_START": "{{id}} uygulaması başlatılamadı, daha fazla ayrıntı için loglara bakın",

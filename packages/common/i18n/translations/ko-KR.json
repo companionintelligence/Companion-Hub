@@ -65,7 +65,7 @@
   "APP_DETAILS_VERSION": "버전",
   "APP_DETAILS_WEBSITE": "웹사이트",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "앱 {{id}} 설치 실패, 자세한 내용은 로그를 참조하세요",
-  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "앱 {{id}} 설치 실패, 자세한 내용은 <logsLink>{{logsLabel}}</logsLink>를 참조하세요",
+  "APP_ERROR_APP_FAILED_TO_INSTALL_TOAST": "앱 {{id}} 설치 실패, 자세한 내용은 <logsLink>Logs</logsLink>를 참조하세요",
   "APP_ERROR_APP_FAILED_TO_RESET": "앱 {{id}} 초기화 실패, 자세한 내용은 로그를 참조하세요",
   "APP_ERROR_APP_FAILED_TO_RESTART": "앱 {{id}} 재시작 실패, 자세한 내용은 로그를 참조하세요",
   "APP_ERROR_APP_FAILED_TO_START": "앱 {{id}} 시작 실패, 자세한 내용은 로그를 참조하세요",
