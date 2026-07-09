@@ -337,20 +337,6 @@
       "when": 1780520000000,
       "tag": "0047_add_memory_connection",
       "breakpoints": true
-    },
-    {
-      "idx": 48,
-      "version": "7",
-      "when": 1780530000000,
-      "tag": "0048_add_memory_key_expiry",
-      "breakpoints": true
-    },
-    {
-      "idx": 49,
-      "version": "7",
-      "when": 1780540000000,
-      "tag": "0049_memory_key_expiry_tz",
-      "breakpoints": true
     }
   ]
 }
