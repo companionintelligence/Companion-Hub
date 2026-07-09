@@ -15,7 +15,7 @@ function makeService() {
   };
   const exchange = {
     exchange: vi.fn(),
-    revoke: vi.fn().mockResolvedValue(undefined),
+    revoke: vi.fn().mockResolvedValue(true),
     rotate: vi.fn(),
     isKeyValid: vi.fn().mockResolvedValue(true),
   };
@@ -188,6 +188,28 @@ describe('MemoryConnectService side effects', () => {
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+  });
+
+  it('disconnect throws and keeps the connection (no clear/restart) when the revoke fails', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.revoke.mockResolvedValue(false); // CI-Server never confirmed revocation
+
+    await expect(service.disconnect('ci-openclaw:local')).rejects.toThrow(/still connected/);
+
+    // Must NOT falsely report disconnected while the key is still live server-side.
+    expect(connections.clear).not.toHaveBeenCalled();
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+  });
+
+  it('disconnect clears locally when the provider is unresolvable (nothing to revoke)', async () => {
+    const { service, resolver, exchange, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(null);
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(exchange.revoke).not.toHaveBeenCalled();
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
   });
 
   it('handleUninstall revokes and removes state without restarting', async () => {

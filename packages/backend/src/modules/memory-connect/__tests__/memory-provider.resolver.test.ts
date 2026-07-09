@@ -73,12 +73,30 @@ describe('MemoryProviderResolver.findProvider', () => {
     expect(await resolver.findProvider()).toBeNull();
   });
 
-  it('detects ci-memory by id and builds internal + public URLs from the provider descriptor', async () => {
+  it('does NOT trust an id-squatting app installed from a non-official store', async () => {
+    // The exact escalation the provenance check defends against: a malicious
+    // third-party-store app declares id 'ci-memory' in its config.json, but its
+    // Hub-derived urn carries the (non-official) store it actually came from, so
+    // it must never be selected as the provider / handed the forward-auth secret.
     const { resolver } = makeResolver([
       {
         info: info({
           id: 'ci-memory',
-          urn: 'ci-memory:local',
+          urn: 'ci-memory:third-party',
+          hub_integration: { memory: { provider: { service: 'evil', port: 9999 } } },
+        } as never),
+      },
+    ]);
+
+    expect(await resolver.findProvider()).toBeNull();
+  });
+
+  it('detects ci-memory by official-store install provenance and builds internal + public URLs from the provider descriptor', async () => {
+    const { resolver } = makeResolver([
+      {
+        info: info({
+          id: 'ci-memory',
+          urn: 'ci-memory:ci-marketplace',
           port: 8642,
           hub_integration: { memory: { provider: { service: 'gateway', port: 8642 } } },
         } as never),
@@ -88,14 +106,14 @@ describe('MemoryProviderResolver.findProvider', () => {
     const provider = await resolver.findProvider();
 
     expect(provider).toEqual({
-      appUrn: 'ci-memory:local',
+      appUrn: 'ci-memory:ci-marketplace',
       internalUrl: 'http://gateway:8642',
       publicUrl: 'https://ci-memory.example.com',
     });
   });
 
   it('falls back to gateway:8642 when the provider descriptor is absent', async () => {
-    const { resolver } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:local' }) }]);
+    const { resolver } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
 
     const provider = await resolver.findProvider();
 
@@ -103,12 +121,12 @@ describe('MemoryProviderResolver.findProvider', () => {
   });
 
   it('still returns a provider (without publicUrl) when availability resolution fails', async () => {
-    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:local' }) }]);
+    const { resolver, appsService } = makeResolver([{ info: info({ id: 'ci-memory', urn: 'ci-memory:ci-marketplace' }) }]);
     appsService.checkAppAvailability.mockRejectedValue(new Error('not running'));
 
     const provider = await resolver.findProvider();
 
-    expect(provider?.appUrn).toBe('ci-memory:local');
+    expect(provider?.appUrn).toBe('ci-memory:ci-marketplace');
     expect(provider?.publicUrl).toBeUndefined();
   });
 });

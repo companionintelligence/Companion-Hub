@@ -87,15 +87,22 @@ describe('MemoryExchangeClient', () => {
     expect(axios.post).not.toHaveBeenCalled();
   });
 
-  it('revoke posts the app urn and is best-effort (never throws on transport failure)', async () => {
+  it('revoke posts the app urn and returns false (never throws) on transport failure', async () => {
     const { client, logger } = makeClient('shared-secret');
     vi.mocked(axios.post).mockRejectedValue(new Error('connection refused'));
 
-    await expect(client.revoke('http://gateway:8642', 'ci-openclaw:local')).resolves.toBeUndefined();
+    await expect(client.revoke('http://gateway:8642', 'ci-openclaw:local')).resolves.toBe(false);
     const [url, body] = vi.mocked(axios.post).mock.calls[0];
     expect(url).toBe('http://gateway:8642/api/connect/revoke');
     expect(body).toEqual({ app: 'ci-openclaw:local' });
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('revoke returns true when CI-Server confirms the revocation', async () => {
+    const { client } = makeClient('shared-secret');
+    vi.mocked(axios.post).mockResolvedValue({ data: { revoked: 1 } });
+
+    await expect(client.revoke('http://gateway:8642', 'ci-openclaw:local')).resolves.toBe(true);
   });
 
   describe('isKeyValid', () => {

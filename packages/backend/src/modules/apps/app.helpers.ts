@@ -542,9 +542,10 @@ export class AppHelpers {
     // exchange, revoke) via signed forward-auth headers keyed on the Hub-global
     // forwardAuthSecret, and only redirects the browser back to allowlisted Hub
     // origins. Inject the shared secret + enable flag + the Hub's public origin
-    // so the connect flow works out of the box on this appliance. Trust is pinned
-    // to the reserved ci-memory id (isMemoryProviderApp) — NOT a manifest-declared
-    // provider role, so no other app can be handed the forward-auth secret.
+    // so the connect flow works out of the box on this appliance. Trust is keyed
+    // on install provenance (isMemoryProviderApp: official-store install URN) —
+    // NOT a manifest field like id/source/provider, so no third-party-store app
+    // can spoof its way into being handed the forward-auth master secret.
     if (isMemoryProviderApp(config)) {
       const forwardAuthSecret = this.config.get('forwardAuthSecret');
       if (forwardAuthSecret) {

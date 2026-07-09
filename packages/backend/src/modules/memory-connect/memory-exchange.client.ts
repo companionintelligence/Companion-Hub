@@ -85,15 +85,22 @@ export class MemoryExchangeClient {
 
   /**
    * Revoke the memory key for an app (agent uninstall / user disconnect /
-   * ci-memory reset). Best-effort: logs and swallows transport errors so a
-   * revoke never blocks the caller (the key also expires on its own).
+   * ci-memory reset). Returns true ONLY when CI-Server confirmed the revocation;
+   * on any transport/rejection it logs and returns false (never throws) so the
+   * caller decides whether that is fatal — `disconnect` keeps the connection so
+   * the UI never falsely shows "disconnected" while the key is still live, while
+   * uninstall proceeds regardless (the key then lapses on its own TTL).
    */
-  async revoke(baseUrl: string, appUrn: string): Promise<void> {
+  async revoke(baseUrl: string, appUrn: string): Promise<boolean> {
     try {
       await this.post(baseUrl, '/connect/revoke', { app: appUrn });
       this.logger.info(`[MemoryConnect] revoked key for ${appUrn} at ${baseUrl}`);
+
+      return true;
     } catch (err) {
       this.logger.warn(`[MemoryConnect] revoke request failed for ${appUrn}: ${this.describeError(err)}`);
+
+      return false;
     }
   }
 

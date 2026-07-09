@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -321,14 +321,24 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Disconnect an app: revoke the key on ci-memory (best-effort), clear the
-   * stored connection, and restart the app so it drops the creds.
+   * Disconnect an app: revoke the key on ci-memory, clear the stored connection,
+   * and restart the app so it drops the creds.
+   *
+   * Only report success once the key is actually gone on CI-Server. If the
+   * provider is reachable but the revoke fails, we KEEP the connection (and the
+   * injected creds) and surface an error so the user can retry — clearing here
+   * would falsely show "disconnected" while the key stays valid for its full
+   * ~90-day TTL. When the provider is unresolvable (ci-memory uninstalled) there
+   * is nothing to revoke against, so we clear locally.
    */
   async disconnect(appUrn: AppUrn): Promise<void> {
     const provider = await this.resolver.findProvider();
 
     if (provider) {
-      await this.exchange.revoke(provider.internalUrl, appUrn);
+      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+      if (!revoked) {
+        throw new ServiceUnavailableException('Could not revoke the memory key on Companion Memory; the app is still connected. Please try again.');
+      }
     }
 
     await this.connections.clear(appUrn);
@@ -336,14 +346,19 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Uninstall cleanup: revoke the key on ci-memory (best-effort) and drop all
-   * local connection state. No restart — the app is going away.
+   * Uninstall cleanup: revoke the key on ci-memory and drop all local connection
+   * state. No restart — the app is going away. Unlike disconnect this is
+   * best-effort: the app is being removed regardless, so a failed revoke cannot
+   * block it (the key then lapses on its own TTL) — but it is logged loudly.
    */
   async handleUninstall(appUrn: AppUrn): Promise<void> {
     const provider = await this.resolver.findProvider();
 
     if (provider) {
-      await this.exchange.revoke(provider.internalUrl, appUrn);
+      const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
+      if (!revoked) {
+        this.logger.error(`[MemoryConnect] uninstall of ${appUrn}: key revocation failed; it stays valid on CI-Server until its TTL expires`);
+      }
     }
 
     await this.connections.remove(appUrn);
