@@ -9,6 +9,7 @@ import { MemoryConnectService } from '../memory-connect.service';
 function makeService() {
   const resolver = {
     findProvider: vi.fn(),
+    isProviderInstalled: vi.fn().mockResolvedValue(true),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
     isConsumerApp: vi.fn().mockResolvedValue(true),
     getAppName: vi.fn().mockResolvedValue('OpenClaw'),
@@ -334,7 +335,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.findProvider.mockResolvedValue(PROVIDER);
+    resolver.isProviderInstalled.mockResolvedValue(true);
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -345,12 +346,24 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus withholds the connectUrl when Companion Memory is not installed (no dead-end gate)', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.findProvider.mockResolvedValue(null);
+    resolver.isProviderInstalled.mockResolvedValue(false);
 
     const status = await service.getStatus('ci-openclaw:local');
 
     // A null connectUrl makes the wrapper suppress the connect gate rather than
     // link to a startConnect that would 400 with "Companion Memory is not installed".
+    expect(status.connectUrl).toBeNull();
+  });
+
+  it('getStatus still returns state (connectUrl null) when the provider lookup fails', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.getState.mockResolvedValue('unconfigured');
+    resolver.isProviderInstalled.mockRejectedValue(new Error('db blip'));
+
+    const status = await service.getStatus('ci-openclaw:local');
+
+    // Resilience: a transient provider-lookup failure must not 500 the poll.
+    expect(status.state).toBe('unconfigured');
     expect(status.connectUrl).toBeNull();
   });
 

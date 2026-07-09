@@ -101,6 +101,21 @@ export class MemoryProviderResolver {
   }
 
   /**
+   * Cheap existence check: is Companion Memory installed? Uses the DB-only lite
+   * listing (no per-app manifest/compose fan-out that {@link findProvider} pays via
+   * `getInstalledApps`), so callers that only need "is there a provider" — e.g. the
+   * wrapper status poll — don't do filesystem work per installed app. Reconstructs
+   * each app's urn from its DB row (`<appName>:<appStoreSlug>`).
+   */
+  async isProviderInstalled(): Promise<boolean> {
+    const installed = await this.appsService.getInstalledAppsLite();
+
+    return installed.some((row: { appName: string; appStoreSlug: string }) =>
+      isMemoryProviderApp({ urn: `${row.appName}:${row.appStoreSlug}` as AppUrn }),
+    );
+  }
+
+  /**
    * Find the installed Companion Memory provider, or null when ci-memory is not
    * installed (in which case connecting is not offered).
    *

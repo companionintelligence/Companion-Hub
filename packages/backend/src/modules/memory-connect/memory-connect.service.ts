@@ -306,13 +306,16 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * lightweight, probe-free variant, run in parallel with the other lookups.
    */
   async getStatus(appUrn: AppUrn): Promise<MemoryConnectStatus> {
-    const [state, launcherUrl, provider] = await Promise.all([
+    const [state, launcherUrl, memoryInstalled] = await Promise.all([
       this.connections.getState(appUrn),
       this.buildLauncherUrl(appUrn),
-      this.resolver.findProvider(),
+      // Cheap DB-only existence check, and fault-tolerant: a transient failure
+      // degrades to "no connect URL" rather than 500ing the whole status poll
+      // (the state + launcher URL are independent of the provider lookup).
+      this.resolver.isProviderInstalled().catch(() => false),
     ]);
 
-    return { state, connectUrl: provider ? launcherUrl : null };
+    return { state, connectUrl: memoryInstalled ? launcherUrl : null };
   }
 
   /**

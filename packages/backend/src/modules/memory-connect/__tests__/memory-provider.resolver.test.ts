@@ -13,6 +13,7 @@ function info(partial: Partial<AppInfo> & { id: string; urn: string }): AppInfo 
 function makeResolver(installed: Array<{ info: AppInfo }>) {
   const appsService = {
     getInstalledApps: vi.fn().mockResolvedValue(installed),
+    getInstalledAppsLite: vi.fn().mockResolvedValue([]),
     checkAppAvailability: vi.fn().mockResolvedValue({ available: true, appUrl: 'https://ci-memory.example.com' }),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -45,6 +46,36 @@ describe('MemoryProviderResolver.consumerEnv', () => {
 
   it('does not classify an app without a memory block', () => {
     expect(resolver.isConsumer(info({ id: 'x', urn: 'x:local' }))).toBe(false);
+  });
+});
+
+describe('MemoryProviderResolver.isProviderInstalled', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('is true for an official-store ci-memory row via the DB-only lite check (no availability/full probe)', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([
+      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' },
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace' },
+    ]);
+
+    expect(await resolver.isProviderInstalled()).toBe(true);
+    expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
+    expect(appsService.getInstalledApps).not.toHaveBeenCalled();
+  });
+
+  it('is false for a ci-memory row from a non-official store (no id-squat)', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party' }]);
+
+    expect(await resolver.isProviderInstalled()).toBe(false);
+  });
+
+  it('is false when ci-memory is not installed', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' }]);
+
+    expect(await resolver.isProviderInstalled()).toBe(false);
   });
 });
 
