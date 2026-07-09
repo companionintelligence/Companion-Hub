@@ -200,8 +200,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Handle the browser returning from ci-memory: validate `state`, exchange the
    * one-time code for the key (server-to-server), persist it, apply it to the
    * app (regenerate env + restart), and return where to send the browser next.
+   *
+   * Only an unknown/expired `state` throws (there is no app to return to). Once
+   * the state is resolved, ANY downstream failure (provider gone, app mismatch,
+   * exchange error) still returns the originating app's URL with `error: true`,
+   * so the user lands back on their app (where the interstitial re-appears)
+   * rather than dead-ending on the Hub dashboard.
    */
-  async handleCallback(code: string, state: string): Promise<{ next: string }> {
+  async handleCallback(code: string, state: string): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state);
 
     if (!attempt) {
@@ -211,23 +217,43 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
-      throw new BadRequestException('Companion Memory is no longer installed');
+      this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${attempt.appUrn}`);
+
+      return { next: attempt.next, error: true };
     }
 
-    const exchanged = await this.exchange.exchange(provider.internalUrl, code);
+    try {
+      const exchanged = await this.exchange.exchange(provider.internalUrl, code);
 
-    // Defense in depth: the code must be for the same app the flow started for.
-    if (exchanged.appUrn !== attempt.appUrn) {
-      this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${attempt.appUrn}, got ${exchanged.appUrn}`);
-      throw new BadRequestException('Connect code did not match the requested app');
+      // Defense in depth: the code must be for the same app the flow started for.
+      if (exchanged.appUrn !== attempt.appUrn) {
+        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${attempt.appUrn}, got ${exchanged.appUrn}`);
+
+        return { next: attempt.next, error: true };
+      }
+
+      // Store the internal URL as CI_SERVER_URL — the agent container reaches
+      // ci-memory over the same shared docker network the Hub used for exchange.
+      await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key);
+      await this.applyAndRestart(attempt.appUrn);
+
+      return { next: attempt.next };
+    } catch (err) {
+      this.logger.error(`[MemoryConnect] exchange failed for ${attempt.appUrn}`, err);
+
+      return { next: attempt.next, error: true };
     }
+  }
 
-    // Store the internal URL as CI_SERVER_URL — the agent container reaches
-    // ci-memory over the same shared docker network the Hub used for exchange.
-    await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key);
-    await this.applyAndRestart(attempt.appUrn);
+  /**
+   * Abandon a pending connect (the user denied consent on ci-memory, or an
+   * upstream error): free the pending `state` and return where to send the
+   * browser — the originating app if the state is still known, else the Hub.
+   */
+  abandonConnect(state: string | undefined): string {
+    const attempt = state ? this.pending.consume(state) : null;
 
-    return { next: attempt.next };
+    return attempt?.next ?? '/';
   }
 
   /** Wrapper-facing status: current state + the launcher URL to start connecting. */

@@ -57,6 +57,22 @@ describe('MemoryProviderResolver.findProvider', () => {
     expect(await resolver.findProvider()).toBeNull();
   });
 
+  it('does NOT treat an app that self-declares a provider role (but is not ci-memory) as the provider', async () => {
+    // Trust is pinned to the reserved id; a manifest-declared provider role must
+    // not make an arbitrary app the exchange target / forward-auth-secret holder.
+    const { resolver } = makeResolver([
+      {
+        info: info({
+          id: 'evil-app',
+          urn: 'evil-app:third-party',
+          hub_integration: { memory: { provider: { service: 'evil', port: 9999 } } },
+        } as never),
+      },
+    ]);
+
+    expect(await resolver.findProvider()).toBeNull();
+  });
+
   it('detects ci-memory by id and builds internal + public URLs from the provider descriptor', async () => {
     const { resolver } = makeResolver([
       {

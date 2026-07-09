@@ -17,6 +17,7 @@ import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 import { McpApiKeyService } from '../mcp/mcp-api-key.service';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
@@ -541,9 +542,10 @@ export class AppHelpers {
     // exchange, revoke) via signed forward-auth headers keyed on the Hub-global
     // forwardAuthSecret, and only redirects the browser back to allowlisted Hub
     // origins. Inject the shared secret + enable flag + the Hub's public origin
-    // so the connect flow works out of the box on this appliance.
-    const isMemoryProvider = config.id === 'ci-memory' || !!config.hub_integration?.memory?.provider;
-    if (isMemoryProvider) {
+    // so the connect flow works out of the box on this appliance. Trust is pinned
+    // to the reserved ci-memory id (isMemoryProviderApp) — NOT a manifest-declared
+    // provider role, so no other app can be handed the forward-auth secret.
+    if (isMemoryProviderApp(config)) {
       const forwardAuthSecret = this.config.get('forwardAuthSecret');
       if (forwardAuthSecret) {
         envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');

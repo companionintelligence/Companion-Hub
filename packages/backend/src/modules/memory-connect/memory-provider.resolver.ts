@@ -3,9 +3,8 @@ import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { isMemoryProviderApp } from './memory-provider.predicate';
 
-/** Well-known id of the Companion Memory app (CI-Server). */
-const CI_MEMORY_APP_ID = 'ci-memory';
 /** Fallbacks when ci-memory's manifest omits an explicit provider descriptor. */
 const DEFAULT_PROVIDER_SERVICE = 'gateway';
 const DEFAULT_PROVIDER_PORT = 8642;
@@ -108,7 +107,9 @@ export class MemoryProviderResolver {
   async findProvider(): Promise<ResolvedMemoryProvider | null> {
     const installed = await this.appsService.getInstalledApps();
 
-    const provider = installed.find(({ info }) => info.id === CI_MEMORY_APP_ID || !!info.hub_integration?.memory?.provider);
+    // Trust is pinned to the reserved ci-memory id — NOT to a manifest-declared
+    // provider role, which any app could set to be selected here.
+    const provider = installed.find(({ info }) => isMemoryProviderApp(info));
 
     if (!provider) {
       return null;

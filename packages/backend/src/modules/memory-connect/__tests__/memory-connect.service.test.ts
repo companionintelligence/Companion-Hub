@@ -124,14 +124,48 @@ describe('MemoryConnectService.handleCallback', () => {
     expect(exchange.exchange).not.toHaveBeenCalled();
   });
 
-  it('rejects when the exchanged app does not match the attempt (code/app mismatch)', async () => {
+  it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: '/' });
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-hermes:local', key: 'raw-key' });
 
-    await expect(service.handleCallback('the-code', 'state-nonce')).rejects.toThrow(/did not match/);
+    const result = await service.handleCallback('the-code', 'state-nonce');
+
     expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+  });
+
+  it('returns the app URL with error when the exchange throws (no dead-end on the dashboard)', async () => {
+    const { service, resolver, exchange, connections, pending } = makeService();
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
+
+    const result = await service.handleCallback('the-code', 'state-nonce');
+
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+  });
+});
+
+describe('MemoryConnectService.abandonConnect', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('consumes the pending state and returns the originating app URL', () => {
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+
+    expect(service.abandonConnect('state-nonce')).toBe('https://app.example.org/');
+    expect(pending.consume).toHaveBeenCalledWith('state-nonce');
+  });
+
+  it('falls back to the Hub root when the state is missing or unknown', () => {
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue(null);
+
+    expect(service.abandonConnect(undefined)).toBe('/');
+    expect(service.abandonConnect('gone')).toBe('/');
   });
 });
 

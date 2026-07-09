@@ -27,9 +27,19 @@ export class MemoryConnectController {
     private readonly logger: LoggerService,
   ) {}
 
-  @UseGuards(AuthGuard)
   @Get('start')
-  async start(@Query('app') app: string | undefined, @Query('next') next: string | undefined, @Res() res: Response): Promise<void> {
+  async start(
+    @Query('app') app: string | undefined,
+    @Query('next') next: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    // These are top-level browser navigations, so an unauthenticated session
+    // must bounce to the login page — not receive a raw 401 JSON body.
+    if (this.redirectIfUnauthenticated(req, res)) {
+      return;
+    }
+
     if (!app) {
       throw new BadRequestException('app is required');
     }
@@ -40,27 +50,35 @@ export class MemoryConnectController {
     res.redirect(consentUrl);
   }
 
-  @UseGuards(AuthGuard)
   @Get('callback')
   async callback(
     @Query('code') code: string | undefined,
     @Query('state') state: string | undefined,
     @Query('error') error: string | undefined,
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    // The user denied consent on ci-memory (or an upstream error) — return to
-    // the dashboard rather than dead-ending; nothing was minted.
+    if (this.redirectIfUnauthenticated(req, res)) {
+      return;
+    }
+
+    // The user denied consent on ci-memory (or an upstream error). Nothing was
+    // minted; return them to the app they started from (where the interstitial
+    // re-appears) rather than dead-ending on the Hub dashboard.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect('/');
+      res.redirect(this.service.abandonConnect(state));
 
       return;
     }
 
     try {
+      // handleCallback returns the app URL even on a downstream failure, so the
+      // user always lands back on their app rather than the dashboard.
       const { next } = await this.service.handleCallback(code, state);
       res.redirect(next);
     } catch (err) {
+      // Only an unknown/expired state reaches here (no app to return to).
       this.logger.error('[MemoryConnect] callback failed', err);
       res.redirect('/?memoryConnect=error');
     }
@@ -92,6 +110,23 @@ export class MemoryConnectController {
     await this.service.disconnect(this.decodeUrn(urn));
 
     return { ok: true };
+  }
+
+  /**
+   * For the browser-facing GET routes: if there is no authenticated Hub session,
+   * redirect to the login page and return true (handled). The session is
+   * populated by the auth middleware the same way AuthGuard consumes it; unlike
+   * AuthGuard (which 401s with JSON), a top-level navigation must land on a page.
+   */
+  private redirectIfUnauthenticated(req: Request, res: Response): boolean {
+    if ((req as Request & { user?: unknown }).user) {
+      return false;
+    }
+
+    this.logger.warn('[MemoryConnect] unauthenticated browser navigation → redirecting to /login');
+    res.redirect('/login');
+
+    return true;
   }
 
   /** URNs contain a colon and may arrive percent-encoded. */
