@@ -293,7 +293,10 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // longer accepts the stored key (e.g. it was reset), clear it so the app
     // re-prompts instead of silently running with a dead credential.
     let effectiveState = row?.state ?? 'unconfigured';
-    let keyExpiresAt = row?.keyExpiresAt ?? null;
+    // Normalize to a canonical UTC ISO string: Postgres hands back a
+    // space-separated form that Safari's `new Date()` rejects, so the UI must
+    // never see the raw column value.
+    let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
     if (effectiveState === 'connected' && provider) {
       const creds = await this.connections.getInjectableCreds(appUrn);
       if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
@@ -394,6 +397,24 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
 
     return appPublicUrl ?? hubOrigin;
+  }
+
+  /**
+   * Normalize a stored key expiry into a canonical ISO-8601 UTC instant. The
+   * `key_expires_at` column is `timestamptz`, but Postgres returns it in a
+   * space-separated form (e.g. `2026-10-07 00:00:00+00`) that Safari's
+   * `new Date()` treats as Invalid Date — so the status DTO always hands the UI
+   * a `…Z` string it can parse everywhere. Returns null for a missing or
+   * unparseable value.
+   */
+  private toIsoInstant(value: string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
   /** The browser-reachable Hub launcher URL for an app, or null if no Hub origin. */

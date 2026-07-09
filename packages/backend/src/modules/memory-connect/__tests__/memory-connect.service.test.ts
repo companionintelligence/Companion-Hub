@@ -241,6 +241,18 @@ describe('MemoryConnectService side effects', () => {
     expect(status.keyExpiresAt).toBe('2026-10-07T00:00:00.000Z');
   });
 
+  it('getUiStatus normalizes the Postgres timestamptz form into a canonical UTC ISO string', async () => {
+    const { service, resolver, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    // Postgres returns timestamptz as a space-separated, offset-qualified string
+    // (not `…Z`); the UI must receive a browser-parseable ISO instant.
+    connections.getRow.mockResolvedValue({ state: 'connected', keyExpiresAt: '2026-10-07 00:00:00+00' });
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(status.keyExpiresAt).toBe('2026-10-07T00:00:00.000Z');
+  });
+
   const daysAgoIso = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
   it('rotateDueKeys rotates a key older than the threshold and restarts the app', async () => {

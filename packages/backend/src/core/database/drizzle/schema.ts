@@ -220,7 +220,7 @@ export const memoryConnection = pgTable('memory_connection', {
   state: varchar().default('unconfigured').notNull(), // 'unconfigured' | 'connected' | 'skipped' | 'manual'
   encryptedKey: text('encrypted_key'), // encrypted CI-Server api key; null unless connected
   serverUrl: varchar('server_url'), // resolved Companion Memory URL captured at connect time
-  keyExpiresAt: timestamp('key_expires_at', { mode: 'string' }), // ISO instant the CI-Server key expires; null unless connected. Rotation refreshes it well before this.
+  keyExpiresAt: timestamp('key_expires_at', { withTimezone: true, mode: 'string' }), // instant the CI-Server key expires (timestamptz preserves the UTC offset); null unless connected. Rotation refreshes it well before this.
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });

@@ -62,7 +62,7 @@ describe('MemoryConnectionCard', () => {
     expect(screen.getByText('MEMORY_CONNECT_ACTION_DISCONNECT')).toBeInTheDocument();
   });
 
-  it('shows the auto-renew note with the expiry date when connected with an expiry', () => {
+  it('shows the with-expiry renewal message when connected with an expiry', () => {
     mockStatus({
       applicable: true,
       memoryInstalled: true,
@@ -71,16 +71,15 @@ describe('MemoryConnectionCard', () => {
       keyExpiresAt: '2026-10-07T00:00:00.000Z',
     });
     render(<MemoryConnectionCard appUrn="ci-openclaw:local" />);
-    // t() echoes the key, so both the renewal text and the expiry clause show.
-    expect(screen.getByText(/MEMORY_CONNECT_RENEWS_AUTOMATICALLY/)).toBeInTheDocument();
-    expect(screen.getByText(/MEMORY_CONNECT_EXPIRES_IF_DISCONNECTED/)).toBeInTheDocument();
+    // t() echoes the key; the with-expiry sentence is a single message.
+    expect(screen.getByText('MEMORY_CONNECT_RENEWS_WITH_EXPIRY')).toBeInTheDocument();
   });
 
-  it('shows the auto-renew note without an expiry clause when the expiry is missing', () => {
+  it('shows the plain renewal message (no expiry clause) when the expiry is missing', () => {
     mockStatus({ applicable: true, memoryInstalled: true, state: 'connected', connectUrl: 'https://hub/start', keyExpiresAt: null });
     render(<MemoryConnectionCard appUrn="ci-openclaw:local" />);
-    expect(screen.getByText(/MEMORY_CONNECT_RENEWS_AUTOMATICALLY/)).toBeInTheDocument();
-    expect(screen.queryByText(/MEMORY_CONNECT_EXPIRES_IF_DISCONNECTED/)).not.toBeInTheDocument();
+    expect(screen.getByText('MEMORY_CONNECT_RENEWS_AUTOMATICALLY')).toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_RENEWS_WITH_EXPIRY')).not.toBeInTheDocument();
   });
 
   it('prompts to install Companion Memory when it is not installed', () => {

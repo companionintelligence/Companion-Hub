@@ -68,7 +68,8 @@ export function MemoryConnectionCard({ appUrn }: { appUrn: string }) {
   }
 
   const connected = data.state === 'connected';
-  const expiryLabel = connected ? formatExpiry(data.keyExpiresAt) : null;
+  // Only read inside the `connected` block below; keyExpiresAt is null when disconnected.
+  const expiryLabel = formatExpiry(data.keyExpiresAt);
 
   const handleConnect = () => {
     if (!data.connectUrl) {
@@ -98,8 +99,7 @@ export function MemoryConnectionCard({ appUrn }: { appUrn: string }) {
 
         {connected && (
           <p className="text-xs text-muted-foreground">
-            {t('MEMORY_CONNECT_RENEWS_AUTOMATICALLY')}
-            {expiryLabel && ` (${t('MEMORY_CONNECT_EXPIRES_IF_DISCONNECTED', { date: expiryLabel })})`}
+            {expiryLabel ? t('MEMORY_CONNECT_RENEWS_WITH_EXPIRY', { date: expiryLabel }) : t('MEMORY_CONNECT_RENEWS_AUTOMATICALLY')}
           </p>
         )}
 

@@ -1565,8 +1565,8 @@
   "MEMORY_CONNECT_ACTION_CONNECT": "Connect",
   "MEMORY_CONNECT_ACTION_DISCONNECT": "Disconnect",
   "MEMORY_CONNECT_NOT_INSTALLED": "Install Companion Memory first to connect this app.",
-  "MEMORY_CONNECT_RENEWS_AUTOMATICALLY": "Access renews automatically",
-  "MEMORY_CONNECT_EXPIRES_IF_DISCONNECTED": "expires {{date}} if disconnected",
+  "MEMORY_CONNECT_RENEWS_AUTOMATICALLY": "Access renews automatically.",
+  "MEMORY_CONNECT_RENEWS_WITH_EXPIRY": "Access renews automatically (expires {{date}} if disconnected).",
   "MEMORY_CONNECT_DISCONNECTED_TOAST": "Disconnected from Companion Memory.",
   "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again."
 }
