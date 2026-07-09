@@ -38,6 +38,11 @@ export class MemoryConnectionService {
     return row?.state ?? 'unconfigured';
   }
 
+  /** All connected apps holding a stored key (for the key-rotation sweep). */
+  async listConnected(): Promise<MemoryConnectionRow[]> {
+    return this.repo.findAllConnected();
+  }
+
   /** Whether the app currently has a stored, connected memory key. */
   async isConnected(appUrn: string): Promise<boolean> {
     const row = await this.repo.findByAppUrn(appUrn);

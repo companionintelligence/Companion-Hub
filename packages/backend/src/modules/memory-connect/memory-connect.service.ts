@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -10,6 +10,17 @@ import { MemoryConnectionService } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { MemoryProviderResolver } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
+
+/**
+ * Rotate a connected key once it reaches this age — comfortably before
+ * CI-Server's ~90-day key expiry (CONNECT_KEY_TTL_DAYS) — so a running agent
+ * never wakes up to a dead credential. MUST stay below that TTL.
+ */
+const ROTATE_KEY_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
+/** How often to sweep connected apps for keys that are due to rotate. */
+const ROTATE_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
+/** Delay before the first sweep so rotation never slows Hub startup. */
+const ROTATE_INITIAL_DELAY_MS = 60 * 1000;
 
 /** State + the browser-reachable launcher URL a wrapper needs to render its gate. */
 export interface MemoryConnectStatus {
@@ -36,7 +47,14 @@ export interface MemoryConnectUiStatus extends MemoryConnectStatus {
  * app-lifecycle statically would form a cycle (app-lifecycle depends on apps).
  */
 @Injectable()
-export class MemoryConnectService {
+export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDestroy {
+  /** Periodic rotation-sweep timer; null until bootstrap / after shutdown. */
+  private rotationTimer: ReturnType<typeof setInterval> | null = null;
+  /** One-shot initial-sweep timer (fires shortly after boot). */
+  private initialRotationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Guards against a slow sweep (each rotation restarts an app) overlapping itself. */
+  private rotating = false;
+
   constructor(
     private readonly resolver: MemoryProviderResolver,
     private readonly exchange: MemoryExchangeClient,
@@ -47,6 +65,88 @@ export class MemoryConnectService {
     private readonly logger: LoggerService,
     private readonly moduleRef: ModuleRef,
   ) {}
+
+  /**
+   * Start the key-rotation sweep. Connect keys expire (~90 days on CI-Server) on
+   * the assumption the Hub rotates them first; this is the driver that does so.
+   * An initial delayed sweep covers Hubs that restart before the first interval.
+   */
+  onApplicationBootstrap(): void {
+    this.initialRotationTimer = setTimeout(() => {
+      void this.rotateDueKeys();
+    }, ROTATE_INITIAL_DELAY_MS);
+
+    this.rotationTimer = setInterval(() => {
+      void this.rotateDueKeys();
+    }, ROTATE_SWEEP_INTERVAL_MS);
+  }
+
+  onModuleDestroy(): void {
+    if (this.initialRotationTimer) {
+      clearTimeout(this.initialRotationTimer);
+      this.initialRotationTimer = null;
+    }
+
+    if (this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+  }
+
+  /**
+   * Rotate the memory key of every connected app whose current key is older than
+   * {@link ROTATE_KEY_AFTER_MS}. Rotation re-mints on CI-Server (which retires
+   * the old key), so each rotated app is restarted to pick up the new key —
+   * hence the age gate, so we rotate rarely and only when actually due. Runs on
+   * a timer; never throws (a failure for one app is logged and skipped).
+   */
+  async rotateDueKeys(): Promise<void> {
+    if (this.rotating) {
+      return;
+    }
+
+    this.rotating = true;
+
+    try {
+      const connected = await this.connections.listConnected();
+
+      if (connected.length === 0) {
+        return;
+      }
+
+      const provider = await this.resolver.findProvider();
+
+      if (!provider) {
+        this.logger.warn('[MemoryConnect] rotation sweep skipped: Companion Memory not resolvable');
+
+        return;
+      }
+
+      const cutoff = Date.now() - ROTATE_KEY_AFTER_MS;
+
+      for (const row of connected) {
+        // updatedAt is when the current key was last stored; skip still-fresh keys.
+        if (new Date(row.updatedAt).getTime() > cutoff) {
+          continue;
+        }
+
+        const appUrn = row.appUrn as AppUrn;
+
+        try {
+          const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
+          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key);
+          await this.applyAndRestart(appUrn);
+          this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+        } catch (err) {
+          this.logger.warn(`[MemoryConnect] key rotation failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      this.logger.error('[MemoryConnect] rotation sweep failed', err);
+    } finally {
+      this.rotating = false;
+    }
+  }
 
   /**
    * Begin a connect attempt: verify ci-memory is installed + reachable, mint a

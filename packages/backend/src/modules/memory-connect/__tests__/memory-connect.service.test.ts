@@ -26,6 +26,7 @@ function makeService() {
     clear: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     getInjectableCreds: vi.fn().mockResolvedValue({ url: 'http://gateway:8642', token: 'tok' }),
+    listConnected: vi.fn().mockResolvedValue([]),
   };
   const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn() };
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
@@ -199,6 +200,59 @@ describe('MemoryConnectService side effects', () => {
 
     expect(connections.clear).not.toHaveBeenCalled();
     expect(status.state).toBe('connected');
+  });
+
+  const daysAgoIso = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  it('rotateDueKeys rotates a key older than the threshold and restarts the app', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key');
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+  });
+
+  it('rotateDueKeys leaves a still-fresh key untouched', async () => {
+    const { service, resolver, exchange, connections } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(3) }]);
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+  });
+
+  it('rotateDueKeys skips the sweep when Companion Memory is not resolvable', async () => {
+    const { service, resolver, exchange, connections } = makeService();
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    resolver.findProvider.mockResolvedValue(null);
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+  });
+
+  it('rotateDueKeys keeps going when one app fails to rotate', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) },
+      { appUrn: 'ci-hermes:local', updatedAt: daysAgoIso(70) },
+    ]);
+    exchange.rotate.mockRejectedValueOnce(new Error('ci-memory down')).mockResolvedValueOnce({ appUrn: 'ci-hermes:local', key: 'fresh-key' });
+
+    await service.rotateDueKeys();
+
+    // The second app still rotates despite the first throwing.
+    expect(exchange.rotate).toHaveBeenCalledTimes(2);
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local' });
+    expect(lifecycle.restartApp).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
