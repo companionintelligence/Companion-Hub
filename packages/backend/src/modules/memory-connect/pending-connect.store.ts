@@ -5,6 +5,14 @@ import type { AppUrn } from '@ci-hub/common/types';
 /** How long a started connect flow may take before its state nonce expires. */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Hard cap on concurrent in-flight attempts. A started flow only lives for one
+ * browser round trip, so this is far above any legitimate concurrent-connect
+ * count on a single-owner appliance; it bounds both memory and the O(n) prune
+ * scan if `create()` is ever called in a tight loop.
+ */
+const MAX_PENDING = 1000;
+
 interface PendingEntry {
   appUrn: AppUrn;
   /** Where to send the browser after the connection is applied. */
@@ -33,6 +41,16 @@ export class PendingConnectStore {
    */
   create(appUrn: AppUrn, next: string): string {
     this.prune();
+
+    // Bound the map under a flood: after pruning expired entries, if still at the
+    // cap, evict the oldest (insertion order) — an in-flight attempt that hasn't
+    // completed by then is almost certainly abandoned; a real user just retries.
+    if (this.entries.size >= MAX_PENDING) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) {
+        this.entries.delete(oldest);
+      }
+    }
 
     const state = randomBytes(32).toString('hex');
     this.entries.set(state, { appUrn, next, expiresAt: Date.now() + PENDING_TTL_MS });

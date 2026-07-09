@@ -7,10 +7,16 @@ import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
+import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreRepository } from './app-store.repository';
 import { ReposHelpers } from './repos.helpers';
 
-export const RESERVED_APP_STORE_SLUGS = ['_user'];
+// `ci-marketplace` is reserved so a user-added git store can never claim the
+// official store's slug: memory-provider trust (isMemoryProviderApp) is pinned to
+// the `ci-memory:ci-marketplace` urn, so letting a user store slugify to
+// `ci-marketplace` would let it id-squat the provider and be handed the
+// forward-auth secret. `_user` is the built-in per-user store namespace.
+export const RESERVED_APP_STORE_SLUGS = ['_user', CI_MARKETPLACE_STORE_SLUG];
 
 @Injectable()
 export class AppStoreService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -199,7 +205,12 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    if (RESERVED_APP_STORE_SLUGS.includes(body.name.trim().toLowerCase())) {
+    const slug = slugify(body.name, { lower: true, trim: true });
+
+    // Check the DERIVED slug (not just the raw name) against the reserved list:
+    // slugify('CI Marketplace') === 'ci-marketplace', which a user-added store must
+    // never be able to claim (see RESERVED_APP_STORE_SLUGS).
+    if (RESERVED_APP_STORE_SLUGS.includes(slug) || RESERVED_APP_STORE_SLUGS.includes(body.name.trim().toLowerCase())) {
       throw new TranslatableError('SERVER_ERROR_APP_STORE_NAME_RESERVED', { name: body.name }, HttpStatus.BAD_REQUEST);
     }
 
@@ -208,8 +219,6 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     if (existing) {
       throw new TranslatableError('SERVER_ERROR_APP_STORE_ALREADY_EXISTS', {}, HttpStatus.CONFLICT);
     }
-
-    const slug = slugify(body.name, { lower: true, trim: true });
 
     const existingSlug = await this.appStoreRepository.getAppStoreBySlug(slug);
     if (existingSlug) {
