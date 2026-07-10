@@ -7,15 +7,17 @@ import { useMemoryConnection } from '../../helpers/use-memory-connection';
  * Compact Companion Memory status pill for the app-detail header (rendered under
  * the FREE price badge). Mirrors the access-points status badge styling:
  * emerald when connected, neutral otherwise. Renders nothing unless the app is a
- * memory consumer (`applicable`), so non-memory apps are unaffected. The
- * Connect/Disconnect action lives in the header action row (see AppActions);
- * this is status only.
+ * memory consumer (`applicable`) AND Companion Memory is installed
+ * (`memoryInstalled`) — matching the Connect button, which is also hidden when
+ * there's nothing to connect to, so "Memory not connected" never shows with no
+ * way to act on it. The Connect/Disconnect action lives in the header action row
+ * (see AppActions); this is status only.
  */
 export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const { t } = useTranslation();
-  const { applicable, connected } = useMemoryConnection(appUrn);
+  const { applicable, connected, memoryInstalled } = useMemoryConnection(appUrn);
 
-  if (!applicable) {
+  if (!applicable || !memoryInstalled) {
     return null;
   }
 
