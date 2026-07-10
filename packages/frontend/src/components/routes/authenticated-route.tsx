@@ -101,8 +101,23 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
 }
 
 export default () => {
-  const { isLoggedIn, isGuestDashboardEnabled } = useUserContext();
+  const { isLoggedIn, isGuestDashboardEnabled, isLoading } = useUserContext();
   const outlet = useOutlet();
+
+  // Wait for the session query to settle before deciding where to send the user.
+  // On a cold refresh the user-context query is still pending and reads its
+  // unauthenticated DEFAULTS (isLoggedIn: false); acting on that bounces a
+  // logged-in user to /login, whose loader then redirects to /home — silently
+  // discarding a deep link like /apps/<store>/<app>. `isLoading` is only true on
+  // the first uncached load, so cached navigations stay instant. Mirrors the
+  // isAppLoading gate in AuthenticatedContent below.
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-5">
+        <output className="spinner-border text-secondary" />
+      </div>
+    );
+  }
 
   if (!isLoggedIn && !isGuestDashboardEnabled) {
     return <Navigate to="/login" replace />;

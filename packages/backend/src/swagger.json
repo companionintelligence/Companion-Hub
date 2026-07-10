@@ -4084,6 +4084,126 @@
         ]
       }
     },
+    "/api/memory-connect/start": {
+      "get": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/callback": {
+      "get": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/state": {
+      "get": {
+        "operationId": "state",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/status": {
+      "get": {
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/skip": {
+      "post": {
+        "operationId": "skip",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/disconnect": {
+      "post": {
+        "operationId": "disconnect",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
     "/api/debug/seed": {
       "post": {
         "operationId": "seedDatabase",

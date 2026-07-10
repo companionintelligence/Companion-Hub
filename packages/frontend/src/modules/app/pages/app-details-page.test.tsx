@@ -25,6 +25,14 @@ vi.mock('@tanstack/react-query', () => ({
   useQuery,
 }));
 
+// MemoryStatusBadge is a self-contained child with its own data dependencies
+// (useMemoryConnection → useQuery/useMutation/useQueryClient); this page test
+// focuses on page layout, so stub it out rather than widening the narrow
+// react-query mock above.
+vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
+  MemoryStatusBadge: () => null,
+}));
+
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),

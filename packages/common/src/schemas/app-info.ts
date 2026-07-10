@@ -90,6 +90,58 @@ export const hubIntegrationSchema = z
         issuer_path: z.string().regex(/^\S*$/, 'issuer_path must not contain whitespace').optional(),
       })
       .optional(),
+    /**
+     * Opt-in Companion Memory (ci-memory / CI-Server) integration.
+     *
+     * Two independent roles:
+     *
+     * - **Consumer** (OpenClaw / Hermes / Import-Tools): declares the env
+     *   variable names the app reads its memory URL + api key from. When the
+     *   user connects the app (see the memory-connect flow), the Hub injects the
+     *   resolved values into these vars at env-generation time — mirroring the
+     *   `inference` / `oidc` opt-in mappings, so only apps that opt in are
+     *   touched. Presence of BOTH `url_env` and `token_env` marks a consumer.
+     *
+     * - **Provider** (ci-memory): declares the internal compose service + port
+     *   so the Hub can reach it on the shared network for the server-to-server
+     *   code exchange (the public URL is resolved separately for the browser).
+     *
+     * Example (consumer, ci-openclaw):
+     * ```json
+     * "hub_integration": {
+     *   "memory": { "url_env": "CI_SERVER_URL", "token_env": "CI_SERVER_TOKEN" }
+     * }
+     * ```
+     * Example (provider, ci-memory):
+     * ```json
+     * "hub_integration": {
+     *   "memory": { "provider": { "service": "gateway", "port": 8642 } }
+     * }
+     * ```
+     */
+    memory: z
+      .object({
+        /** Env var to receive the resolved Companion Memory URL (must be a valid env name). */
+        url_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name')
+          .optional(),
+        /** Env var to receive the minted, memory-scoped api key (must be a valid env name). */
+        token_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
+          .optional(),
+        /** Provider role (ci-memory only): where the Hub reaches it on the shared docker network. */
+        provider: z
+          .object({
+            service: z.string().min(1),
+            port: z.number().min(1).max(65535),
+          })
+          .optional(),
+      })
+      .optional(),
   })
   .optional();
 

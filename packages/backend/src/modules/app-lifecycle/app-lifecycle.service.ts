@@ -882,6 +882,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
+    // Revoke any Companion Memory key minted for this app and drop its connection
+    // state so access dies with the app. Best-effort + lazily resolved (via
+    // ModuleRef) to avoid a static module cycle with memory-connect.
+    try {
+      const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
+      const memoryConnect = this.moduleRef.get(MemoryConnectService, { strict: false });
+      await memoryConnect?.handleUninstall(appUrn);
+    } catch (err) {
+      this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
     const isPortExpose = isPortExposeApp(installedInfo) || isPortExposeApp(app.config);
 

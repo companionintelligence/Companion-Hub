@@ -16,6 +16,8 @@ import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 import { McpApiKeyService } from '../mcp/mcp-api-key.service';
+import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
@@ -39,6 +41,7 @@ export class AppHelpers {
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
     private readonly mcpApiKeys: McpApiKeyService,
+    private readonly memoryConnection: MemoryConnectionService,
   ) {}
 
   /**
@@ -486,6 +489,74 @@ export class AppHelpers {
         config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
       if (isFirstPartyPortalOidcApp) {
         envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+      }
+    }
+
+    // --- Companion Memory credential injection (consumer apps) ---
+    // Apps opt in via hub_integration.memory (declaring the env vars they read
+    // their memory URL + api key from). Once the user has connected the app
+    // through the memory-connect flow, the Hub-brokered, user-consented creds
+    // are re-emitted here on every env generation (mirrors the inference/oidc
+    // opt-in mappings). Recomputing on each generation is what makes the creds
+    // survive restarts — a bare app.env write would be clobbered. A brokered
+    // connection takes precedence and is re-emitted first; an operator-entered
+    // value is used only when no brokered connection exists (to point at an
+    // external CI-Server, the operator must Disconnect the brokered one first).
+    const memoryIntegration = config.hub_integration?.memory;
+    if (memoryIntegration?.url_env && memoryIntegration?.token_env) {
+      // The app's own URN, so its wrapper can query the per-app memory-connect
+      // state endpoint (`/api/memory-connect/apps/:urn/state`) to decide whether
+      // to show the connect interstitial.
+      envMap.set('CI_APP_URN', appUrn);
+
+      const operatorSetToken = (envMap.get(memoryIntegration.token_env) ?? '').trim().length > 0;
+      // Best-effort (never fail env generation over it) so the Hub UI reflects
+      // reality: a brokered connection re-emits its creds, and a manually
+      // configured app shows as "manual" (not "Not connected" with a Connect
+      // button that would mint a dead key).
+      try {
+        // A brokered connection the user completed takes precedence and MUST be
+        // re-emitted on every regeneration. Checking it first also prevents a
+        // manifest that ships a non-empty DEFAULT for token_env from pinning a
+        // genuinely connected app to `manual` (which would then stop injecting
+        // the real creds). getInjectableCreds is non-null only when connected.
+        const creds = await this.memoryConnection.getInjectableCreds(appUrn);
+        if (creds) {
+          envMap.set(memoryIntegration.url_env, creds.url);
+          envMap.set(memoryIntegration.token_env, creds.token);
+          this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
+        } else if (operatorSetToken) {
+          // Operator supplied creds at install and there is no brokered
+          // connection → record `manual` so the UI never prompts. markManual is
+          // itself idempotent (it skips the write when already manual), so this
+          // stays cheap across repeated env regenerations.
+          await this.memoryConnection.markManual(appUrn);
+        }
+      } catch (err) {
+        this.logger.warn(`[AppHelpers] memory-connect env resolution failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // --- Companion Memory provider (ci-memory) forward-auth provisioning ---
+    // ci-memory verifies the Hub's server-to-server connect calls (code
+    // exchange, revoke) via signed forward-auth headers keyed on the Hub-global
+    // forwardAuthSecret, and only redirects the browser back to allowlisted Hub
+    // origins. Inject the shared secret + enable flag + the Hub's public origin
+    // so the connect flow works out of the box on this appliance. Trust is keyed
+    // on install provenance (isMemoryProviderApp: official-store install URN) —
+    // NOT a manifest field like id/source/provider, so no third-party-store app
+    // can spoof its way into being handed the forward-auth master secret.
+    if (isMemoryProviderApp(config)) {
+      const forwardAuthSecret = this.config.get('forwardAuthSecret');
+      if (forwardAuthSecret) {
+        envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
+        envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
+      }
+      // The Hub's browser-reachable origin (its Traefik/tunnel route,
+      // `<hubSubdomain>.<domain>` — see traefik-config.service.writeHubRoute).
+      // This is the origin ci-memory allowlists as a valid connect return target.
+      if (org?.hubSubdomain && domain && domain !== 'example.com') {
+        envMap.set('CI_HUB_ORIGINS', `https://${org.hubSubdomain}.${domain}`);
       }
     }
 

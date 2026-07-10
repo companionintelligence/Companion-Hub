@@ -55,6 +55,13 @@
   }
 }
 
+/* Companion Memory connect/disconnect: same footprint as the Open button but
+   without the primary-tinted glow — it's a secondary (outline) action, so the
+   drop shadow reads as visual noise here. */
+.memory-action-button {
+  box-shadow: none;
+}
+
 .hero-action-bar {
   display: inline-flex;
   align-items: center;

@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Ban,
+  BrainCircuit,
   CheckCircle,
   CircleStop,
   Download,
@@ -29,6 +30,7 @@ import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
 import { CancelInstallDialog } from '../../components/dialogs/cancel-install-dialog/cancel-install-dialog';
+import { DisconnectMemoryDialog } from '../../components/dialogs/disconnect-memory-dialog/disconnect-memory-dialog';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
@@ -38,6 +40,7 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
+import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import type { AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -149,6 +152,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const updateSettingsDisclosure = useDisclosure();
   const uninstallDisclosure = useDisclosure();
   const resetAppDisclosure = useDisclosure();
+  const disconnectMemoryDisclosure = useDisclosure();
 
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
@@ -161,6 +165,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const autoInstallTriggeredRef = useRef(false);
+  const memory = useMemoryConnection(info.urn);
 
   // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
   // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.
@@ -529,9 +534,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Brief loading spinner for first few attempts
+    // Brief loading spinner for first few attempts. Match the enabled Open
+    // button's footprint (size="lg" + launch-action-button) so the button does
+    // not shrink while loading, nor jump size when it flips to enabled.
     if (isCheckingUrl && attempt < 3) {
-      return <ActionButton key="open-loading" title={t('APP_ACTION_OPEN')} disabled loading />;
+      return <ActionButton key="open-loading" title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />;
     }
 
     // Available — show enabled Open button
@@ -554,7 +561,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
       return (
         <div key="open-propagating" className="flex flex-col items-start gap-1">
-          <ActionButton title={t('COMMON_STARTING')} disabled loading />
+          <ActionButton title={t('COMMON_STARTING')} disabled loading size="lg" className="launch-action-button" />
           {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
@@ -606,8 +613,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Fallback: still checking
-    return <ActionButton key="open-checking" title={t('APP_ACTION_OPEN')} disabled loading />;
+    // Fallback: still checking. Same full-size footprint as the enabled Open
+    // button so the spinner state doesn't render smaller.
+    return <ActionButton key="open-checking" title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />;
   };
 
   // If there was an install error for this app, show it under the open/action area
@@ -669,6 +677,52 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       />
     ) : null;
 
+  // Companion Memory connect/disconnect, sized to match the Open button and
+  // placed just before it (running case). Only for memory-consumer apps; the
+  // status itself is shown by the header badge. When Companion Memory isn't
+  // installed there is nothing to connect to, so no button is rendered.
+  const memoryButton = ((): React.JSX.Element | null => {
+    if (!memory.applicable) {
+      return null;
+    }
+
+    if (memory.connected) {
+      return (
+        <ActionButton
+          key="memory-disconnect"
+          IconComponent={BrainCircuit}
+          title={t('MEMORY_CONNECT_ACTION_DISCONNECT_MEMORY')}
+          onClick={disconnectMemoryDisclosure.open}
+          disabled={memory.isDisconnecting}
+          variant="outline"
+          size="lg"
+          className="launch-action-button memory-action-button"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t('MEMORY_CONNECT_DISCONNECT_DESC')}
+        />
+      );
+    }
+
+    if (memory.memoryInstalled) {
+      return (
+        <ActionButton
+          key="memory-connect"
+          IconComponent={BrainCircuit}
+          title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
+          onClick={memory.connect}
+          disabled={!memory.connectUrl}
+          variant="outline"
+          size="lg"
+          className="launch-action-button memory-action-button"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t('MEMORY_CONNECT_DESC')}
+        />
+      );
+    }
+
+    return null;
+  })();
+
   switch (app?.status ?? 'missing') {
     case 'stopped':
       buttons.push(StartButton);
@@ -727,6 +781,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           className="text-destructive hover:text-destructive"
         />,
       );
+
+      // Companion Memory connect/disconnect sits just before Open.
+      if (memoryButton) buttons.push(memoryButton);
 
       // Open button area for running apps with a GUI
       const openArea = renderOpenButtonArea();
@@ -857,6 +914,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
       <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
+      <DisconnectMemoryDialog
+        isOpen={disconnectMemoryDisclosure.isOpen}
+        onClose={disconnectMemoryDisclosure.close}
+        info={info}
+        onConfirm={memory.disconnect}
+        isDisconnecting={memory.isDisconnecting}
+      />
       <UpdateSettingsDialog
         isOpen={updateSettingsDisclosure.isOpen}
         onClose={updateSettingsDisclosure.close}
