@@ -82,8 +82,16 @@ export function isUserInitiatedPageReload(): boolean {
   if (typeof performance === 'undefined') {
     return false;
   }
-  const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-  return entry?.type === 'reload';
+  const getEntriesByType = performance.getEntriesByType?.bind(performance);
+  if (!getEntriesByType) {
+    return false;
+  }
+  try {
+    const entry = getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    return entry?.type === 'reload';
+  } catch {
+    return false;
+  }
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
@@ -768,9 +776,10 @@ export function HubStatus({ children }: HubStatusProps) {
               return;
             }
 
-            if (!hubSteadyRunningRef.current) {
-              sawNonRunningRef.current = true;
-            }
+            // API probe failed — treat as non-running even if we were steady before.
+            hubSteadyRunningRef.current = false;
+            clearHubSteadySession();
+            sawNonRunningRef.current = true;
             setStatus('Starting');
             return;
           }
