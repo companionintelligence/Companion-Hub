@@ -30,6 +30,7 @@ import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
 import { CancelInstallDialog } from '../../components/dialogs/cancel-install-dialog/cancel-install-dialog';
+import { DisconnectMemoryDialog } from '../../components/dialogs/disconnect-memory-dialog/disconnect-memory-dialog';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
@@ -151,6 +152,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const updateSettingsDisclosure = useDisclosure();
   const uninstallDisclosure = useDisclosure();
   const resetAppDisclosure = useDisclosure();
+  const disconnectMemoryDisclosure = useDisclosure();
 
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
@@ -690,7 +692,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           key="memory-disconnect"
           IconComponent={BrainCircuit}
           title={t('MEMORY_CONNECT_ACTION_DISCONNECT_MEMORY')}
-          onClick={memory.disconnect}
+          onClick={disconnectMemoryDisclosure.open}
           disabled={memory.isDisconnecting}
           variant="outline"
           size="lg"
@@ -912,6 +914,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
       <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
+      <DisconnectMemoryDialog
+        isOpen={disconnectMemoryDisclosure.isOpen}
+        onClose={disconnectMemoryDisclosure.close}
+        info={info}
+        onConfirm={memory.disconnect}
+        isDisconnecting={memory.isDisconnecting}
+      />
       <UpdateSettingsDialog
         isOpen={updateSettingsDisclosure.isOpen}
         onClose={updateSettingsDisclosure.close}

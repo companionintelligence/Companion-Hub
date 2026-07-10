@@ -1584,5 +1584,7 @@
   "MEMORY_CONNECT_RENEWS_AUTOMATICALLY": "Access renews automatically.",
   "MEMORY_CONNECT_RENEWS_WITH_EXPIRY": "Access renews automatically (expires {{date}} if disconnected).",
   "MEMORY_CONNECT_DISCONNECTED_TOAST": "Disconnected from Companion Memory.",
-  "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again."
+  "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again.",
+  "MEMORY_CONNECT_DISCONNECT_TITLE": "Disconnect {{name}} from Companion Memory?",
+  "MEMORY_CONNECT_DISCONNECT_CONFIRM": "This revokes the app's access to your Companion Memory and restarts it. You can reconnect at any time."
 }
