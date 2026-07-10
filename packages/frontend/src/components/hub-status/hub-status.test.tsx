@@ -7,10 +7,13 @@ const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
 
 const revalidateMock = vi.fn();
 
-const probeMocks = vi.hoisted(() => ({
-  probeHealthyHubApiPort: vi.fn<(configureClient?: boolean) => Promise<number | null>>(),
-  defaultProbe: async (_configureClient?: boolean) => null,
-}));
+const probeMocks = vi.hoisted(() => {
+  const defaultProbe: (configureClient?: boolean) => Promise<number | null> = async () => null;
+  return {
+    probeHealthyHubApiPort: vi.fn<(configureClient?: boolean) => Promise<number | null>>(),
+    defaultProbe,
+  };
+});
 
 vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/tauri-hub-probe')>();
