@@ -9,7 +9,7 @@ const revalidateMock = vi.fn();
 
 const probeMocks = vi.hoisted(() => ({
   probeHealthyHubApiPort: vi.fn<(configureClient?: boolean) => Promise<number | null>>(),
-  defaultProbe: null as ((configureClient?: boolean) => Promise<number | null>) | null,
+  defaultProbe: async (_configureClient?: boolean) => null,
 }));
 
 vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
@@ -38,7 +38,7 @@ beforeEach(() => {
   revalidateMock.mockClear();
   sessionStorage.clear();
   probeMocks.probeHealthyHubApiPort.mockReset();
-  probeMocks.probeHealthyHubApiPort.mockImplementation(probeMocks.defaultProbe!);
+  probeMocks.probeHealthyHubApiPort.mockImplementation(probeMocks.defaultProbe);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => ({
