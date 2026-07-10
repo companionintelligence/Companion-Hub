@@ -566,16 +566,19 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
   const showSlowMessage = elapsedSeconds > 90;
   const showVerySlowMessage = elapsedSeconds > 180;
 
+  // Optional sidecars (Private VPN, tunnel, Ollama) must not block or clutter startup
+  // when disconnected — only show them once ready; never count them in progress stats.
+  const visibleServices = (progress?.services ?? []).filter((svc) => !svc.optional || svc.state === 'ready');
+
   const serviceCounts = (progress?.services ?? []).reduce(
     (acc, svc) => {
-      if (svc.optional && svc.state === 'unavailable') {
-        acc.optionalUnavailable += 1;
+      if (svc.optional) {
         return acc;
       }
       acc[svc.state] += 1;
       return acc;
     },
-    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0, optionalUnavailable: 0 } as Record<ServiceState | 'optionalUnavailable', number>,
+    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0 } as Record<ServiceState, number>,
   );
 
   const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
@@ -615,9 +618,6 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
                 {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
-                {serviceCounts.optionalUnavailable > 0
-                  ? ` · ${serviceCounts.optionalUnavailable} ${t('HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE')}`
-                  : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
                 <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
@@ -628,9 +628,9 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           )}
         </div>
 
-        {progress && progress.services.length > 0 ? (
+        {visibleServices.length > 0 ? (
           <div className="w-full rounded-lg border border-border bg-muted/30 px-4 divide-y divide-border/50">
-            {progress.services.map((svc) => (
+            {visibleServices.map((svc) => (
               <ServiceRow key={svc.container} service={svc} />
             ))}
           </div>
