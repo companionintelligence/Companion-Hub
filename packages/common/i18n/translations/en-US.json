@@ -1579,6 +1579,7 @@
   "MEMORY_CONNECT_ACTION_DISCONNECT_MEMORY": "Disconnect Memory",
   "MEMORY_CONNECT_BADGE_CONNECTED": "Memory connected",
   "MEMORY_CONNECT_BADGE_NOT_CONNECTED": "Memory not connected",
+  "MEMORY_CONNECT_BADGE_NOT_INSTALLED": "Install Companion Memory first",
   "MEMORY_CONNECT_NOT_INSTALLED": "Install Companion Memory first to connect this app.",
   "MEMORY_CONNECT_RENEWS_AUTOMATICALLY": "Access renews automatically.",
   "MEMORY_CONNECT_RENEWS_WITH_EXPIRY": "Access renews automatically (expires {{date}} if disconnected).",
