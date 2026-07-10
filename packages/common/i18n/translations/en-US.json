@@ -1570,6 +1570,7 @@
   "HUB_STATUS_NO_LOGS_AVAILABLE": "No logs available.",
   "MEMORY_CONNECT_TITLE": "Companion Memory",
   "MEMORY_CONNECT_DESC": "Let this app remember your context across sessions by connecting it to your Companion Memory.",
+  "MEMORY_CONNECT_DISCONNECT_DESC": "Stop this app from remembering your context by disconnecting it from your Companion Memory.",
   "MEMORY_CONNECT_STATUS_CONNECTED": "Connected",
   "MEMORY_CONNECT_STATUS_NOT_CONNECTED": "Not connected",
   "MEMORY_CONNECT_ACTION_CONNECT": "Connect",
