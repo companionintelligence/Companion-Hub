@@ -5,11 +5,43 @@ import * as hubStatusModule from './hub-status';
 
 const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
 
+const revalidateMock = vi.fn();
+
+const probeMocks = vi.hoisted(() => {
+  const defaultProbe: (configureClient?: boolean) => Promise<number | null> = async () => null;
+  return {
+    probeHealthyHubApiPort: vi.fn<(configureClient?: boolean) => Promise<number | null>>(),
+    defaultProbe,
+  };
+});
+
+vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tauri-hub-probe')>();
+  probeMocks.defaultProbe = actual.probeHealthyHubApiPort;
+  probeMocks.probeHealthyHubApiPort.mockImplementation(actual.probeHealthyHubApiPort);
+  return {
+    ...actual,
+    probeHealthyHubApiPort: probeMocks.probeHealthyHubApiPort,
+  };
+});
+
+vi.mock('react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router')>();
+  return {
+    ...actual,
+    useRevalidator: () => ({ revalidate: revalidateMock, state: 'idle' as const }),
+  };
+});
+
 vi.mock('@/lib/theme/theme', () => ({
   getLogo: () => '/logo.svg',
 }));
 
 beforeEach(() => {
+  revalidateMock.mockClear();
+  sessionStorage.clear();
+  probeMocks.probeHealthyHubApiPort.mockReset();
+  probeMocks.probeHealthyHubApiPort.mockImplementation(probeMocks.defaultProbe);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => ({
@@ -492,10 +524,6 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
   });
 
   it('renders Hub child immediately when status starts as Running (no prior non-running state)', async () => {
-    // The sawNonRunningRef guard ensures we don't attempt a reload when the Hub
-    // was already Running on first check. We can only observe this indirectly
-    // in JSDOM (reload is a no-op there), but we verify the component renders
-    // normally without error.
     mockMacTauriWithStatus(['Running']);
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     // No blocking screens should be shown
@@ -527,5 +555,50 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
 
     expect(reloadSpy).not.toHaveBeenCalled();
     expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('opens the app when Docker reports Starting but the local API is already healthy', async () => {
+    mockMacTauriWithStatus(['Starting']);
+
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+  });
+
+  it('revalidates routes instead of reloading when the user refreshed while the hub was waking up', async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem('ci-hub-steady-running', '1');
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    const navEntry = { type: 'reload' } as PerformanceNavigationTiming;
+    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([navEntry]);
+    probeMocks.probeHealthyHubApiPort.mockResolvedValueOnce(null).mockResolvedValue(5002);
+
+    mockMacTauriWithStatus(['Starting', 'Starting']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(revalidateMock).toHaveBeenCalled();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('isUserInitiatedPageReload returns false when navigation timing is unavailable', () => {
+    const original = performance.getEntriesByType;
+    Object.defineProperty(performance, 'getEntriesByType', {
+      configurable: true,
+      value: undefined,
+    });
+
+    expect(hubStatusModule.isUserInitiatedPageReload()).toBe(false);
+
+    Object.defineProperty(performance, 'getEntriesByType', {
+      configurable: true,
+      value: original,
+    });
   });
 });

@@ -1891,13 +1891,17 @@ fn service_state_score(state: &ServiceState) -> u8 {
 
 /// Derive startup state for optional compose sidecars and host probes.
 ///
-/// Missing containers are reported as `Unavailable` rather than `Pending` so the
-/// loading screen does not look blocked when Tunnel, VPN, or Ollama are absent.
+/// Optional rows (Private VPN, tunnel, Ollama) must never surface as `Starting` or
+/// `Failed` — those states block or alarm the loading UI even though the hub API
+/// is already healthy. Disconnected or churning sidecars report `Unavailable` only.
 fn derive_optional_service_state(state: &str, health: &str) -> ServiceState {
     if state.is_empty() {
         return ServiceState::Unavailable;
     }
-    derive_service_state(state, health)
+    match derive_service_state(state, health) {
+        ServiceState::Ready => ServiceState::Ready,
+        _ => ServiceState::Unavailable,
+    }
 }
 
 fn startup_service_definitions(
@@ -1915,6 +1919,7 @@ fn startup_service_definitions(
 
     let mut optional = Vec::new();
     if vpn_on {
+        // Informational only — never in `core`, never blocks `all_ready` or hub health.
         optional.push(("hub-tailscale", "Private VPN", false));
     }
     optional.push(("cloudflared", "Tunnel", false));
@@ -8991,10 +8996,34 @@ mod tests {
     }
 
     #[test]
-    fn optional_starting_sidecar_still_reports_starting() {
+    fn optional_sidecar_never_reports_starting_or_failed() {
+        assert!(matches!(
+            derive_optional_service_state("", "none"),
+            ServiceState::Unavailable
+        ));
         assert!(matches!(
             derive_optional_service_state("created", "none"),
-            ServiceState::Starting
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("restarting", "starting"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "starting"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("exited", "none"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "healthy"),
+            ServiceState::Ready
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "none"),
+            ServiceState::Ready
         ));
     }
 

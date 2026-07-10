@@ -101,9 +101,11 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
-      <main className="relative flex flex-1 flex-col gap-4 pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
-        {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
-        <TunnelStatusBanner />
+      <main className="relative flex flex-1 flex-col pt-16 px-2 sm:px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+        <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
+          {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
+          <TunnelStatusBanner />
+        </div>
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={getAnimationKey(location.pathname)}
