@@ -694,7 +694,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           disabled={memory.isDisconnecting}
           variant="outline"
           size="lg"
-          className="launch-action-button"
+          className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
           data-tooltip-content={t('MEMORY_CONNECT_DESC')}
         />
@@ -711,7 +711,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           disabled={!memory.connectUrl}
           variant="outline"
           size="lg"
-          className="launch-action-button"
+          className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
           data-tooltip-content={t('MEMORY_CONNECT_DESC')}
         />

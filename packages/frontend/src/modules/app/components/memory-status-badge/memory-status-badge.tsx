@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, Unplug } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 
@@ -28,7 +28,7 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
           : 'border-border/70 bg-muted/30 text-muted-foreground',
       )}
     >
-      {connected ? <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> : null}
+      {connected ? <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> : <Unplug className="mr-1 h-3.5 w-3.5" />}
       {connected ? t('MEMORY_CONNECT_BADGE_CONNECTED') : t('MEMORY_CONNECT_BADGE_NOT_CONNECTED')}
     </span>
   );
