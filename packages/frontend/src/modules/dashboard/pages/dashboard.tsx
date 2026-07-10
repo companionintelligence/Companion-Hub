@@ -49,7 +49,7 @@ export default () => {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="flex flex-col gap-4 py-4 px-1">
+      <div className="flex flex-col gap-4 pt-2 pb-4 px-1">
         {/* System stats — stacked on mobile, three columns from sm */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {isLoading ? (

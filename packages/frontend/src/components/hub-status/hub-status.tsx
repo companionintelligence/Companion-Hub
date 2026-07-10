@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { useRevalidator } from 'react-router';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
@@ -48,6 +49,41 @@ function getErrorMessage(err: unknown): string {
 
 export function reloadCurrentWindow() {
   window.location.reload();
+}
+
+const HUB_STEADY_SESSION_KEY = 'ci-hub-steady-running';
+
+function readHubSteadySession(): boolean {
+  try {
+    return sessionStorage.getItem(HUB_STEADY_SESSION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markHubSteadySession(): void {
+  try {
+    sessionStorage.setItem(HUB_STEADY_SESSION_KEY, '1');
+  } catch {
+    // sessionStorage unavailable — steady-state hints are best-effort only.
+  }
+}
+
+function clearHubSteadySession(): void {
+  try {
+    sessionStorage.removeItem(HUB_STEADY_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** True when the user explicitly reloaded the WebView (context menu → Reload). */
+export function isUserInitiatedPageReload(): boolean {
+  if (typeof performance === 'undefined') {
+    return false;
+  }
+  const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  return entry?.type === 'reload';
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
@@ -623,6 +659,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 
 export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
+  const { revalidate } = useRevalidator();
   useDeepLinkPairCapture();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
@@ -641,7 +678,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const sawNonRunningRef = useRef(false);
   const hasReloadedRef = useRef(false);
   /** Once the hub has reached Running, ignore transient Starting (e.g. Tailscale sidecar or health blips). */
-  const hubSteadyRunningRef = useRef(false);
+  const hubSteadyRunningRef = useRef(readHubSteadySession());
 
   const checkHealthFallback = useCallback(async () => {
     const port = await probeHealthyHubApiPort(true);
@@ -709,28 +746,37 @@ export function HubStatus({ children }: HubStatusProps) {
             }
           }
 
-          // When running in Tauri release builds, verify the HTTP endpoints
-          // are actually reachable before declaring 'Running'. This avoids a
-          // flicker where children mount briefly then hide again when the
-          // health-check fails.
-          // Match Docker's ci-os-hub healthcheck (`/api/health` only — not `/api/registration/status`,
-          // which can lag right after boot and wedge the loading UI).
-          if (result !== 'Running' && !(result === 'Starting' && hubSteadyRunningRef.current)) {
+          const isHardNonRunning =
+            result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
+
+          if (isHardNonRunning) {
+            hubSteadyRunningRef.current = false;
+            clearHubSteadySession();
             sawNonRunningRef.current = true;
+            setStatus(result);
+            return;
           }
 
-          if (result === 'Running') {
+          // Docker may report Starting while ci-os-hub is already serving HTTP (healthcheck
+          // lag, sidecar churn). The local API probe is the UI gate — not container health alone.
+          // Match Docker's ci-os-hub healthcheck (`/api/health/live` only).
+          if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
-            if (alivePort === null) {
-              sawNonRunningRef.current = true;
-              setStatus('Starting');
-            } else {
+            if (alivePort !== null) {
               configureHubApiPort(alivePort);
               setStatus('Running');
+              return;
             }
-          } else {
-            setStatus(result);
+
+            if (!hubSteadyRunningRef.current) {
+              sawNonRunningRef.current = true;
+            }
+            setStatus('Starting');
+            return;
           }
+
+          sawNonRunningRef.current = true;
+          setStatus(result);
         } catch {
           await checkHealthFallback();
         }
@@ -746,8 +792,10 @@ export function HubStatus({ children }: HubStatusProps) {
   useEffect(() => {
     if (status === 'Running') {
       hubSteadyRunningRef.current = true;
+      markHubSteadySession();
     } else if (status === 'Stopped' || status === 'DockerNotAvailable' || (typeof status === 'object' && status !== null && 'Error' in status)) {
       hubSteadyRunningRef.current = false;
+      clearHubSteadySession();
     }
   }, [status]);
 
@@ -785,15 +833,21 @@ export function HubStatus({ children }: HubStatusProps) {
   // that failed during startup (backend wasn't ready) would stay stale in React
   // Router's cache. Reload once so clientLoader runs against the healthy backend.
   useEffect(() => {
-    if (isTauri && status === 'Running' && sawNonRunningRef.current && !hasReloadedRef.current) {
-      hasReloadedRef.current = true;
-      try {
-        reloadCurrentWindow();
-      } catch {
-        // JSDOM in tests doesn't support navigation; ignore safely.
-      }
+    if (!isTauri || status !== 'Running' || !sawNonRunningRef.current || hasReloadedRef.current) {
+      return;
     }
-  }, [status, isTauri]);
+    hasReloadedRef.current = true;
+    // User reload already re-ran clientLoader — revalidate routes instead of reloading again.
+    if (isUserInitiatedPageReload()) {
+      void revalidate();
+      return;
+    }
+    try {
+      reloadCurrentWindow();
+    } catch {
+      // JSDOM in tests doesn't support navigation; ignore safely.
+    }
+  }, [status, isTauri, revalidate]);
 
   const handleViewLogs = useCallback(async () => {
     const invoke = getTauriInvoke();
