@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
-import { MemoryConnectionCard } from '../components/memory-connection-card/memory-connection-card';
+import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -133,9 +133,12 @@ export default () => {
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
-                  <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
-                    {t('APP_PRICE_FREE')}
-                  </span>
+                  <div className="flex shrink-0 flex-col items-end gap-2">
+                    <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
+                      {t('APP_PRICE_FREE')}
+                    </span>
+                    <MemoryStatusBadge appUrn={appUrn} />
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -174,8 +177,6 @@ export default () => {
       </Card>
 
       <AppAccessPoints app={app} info={info} />
-
-      <MemoryConnectionCard appUrn={appUrn} />
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs
