@@ -17,6 +17,8 @@ interface PendingEntry {
   appUrn: AppUrn;
   /** Where to send the browser after the connection is applied. */
   next: string;
+  /** Hub user who initiated the flow; the callback must be the same user. */
+  userId: string;
   expiresAt: number;
 }
 
@@ -36,10 +38,10 @@ export class PendingConnectStore {
   private readonly entries = new Map<string, PendingEntry>();
 
   /**
-   * Start an attempt for `appUrn` and return the opaque `state` nonce to carry
-   * through CI-Server and back.
+   * Start an attempt for `appUrn` (initiated by Hub user `userId`) and return the
+   * opaque `state` nonce to carry through CI-Server and back.
    */
-  create(appUrn: AppUrn, next: string): string {
+  create(appUrn: AppUrn, next: string, userId: string): string {
     this.prune();
 
     // Bound the map under a flood: after pruning expired entries, if still at the
@@ -53,16 +55,16 @@ export class PendingConnectStore {
     }
 
     const state = randomBytes(32).toString('hex');
-    this.entries.set(state, { appUrn, next, expiresAt: Date.now() + PENDING_TTL_MS });
+    this.entries.set(state, { appUrn, next, userId, expiresAt: Date.now() + PENDING_TTL_MS });
 
     return state;
   }
 
   /**
-   * Consume a `state` nonce exactly once. Returns the bound attempt, or null if
-   * the nonce is unknown or expired.
+   * Consume a `state` nonce exactly once. Returns the bound attempt (incl. the
+   * initiating `userId`), or null if the nonce is unknown or expired.
    */
-  consume(state: string): { appUrn: AppUrn; next: string } | null {
+  consume(state: string): { appUrn: AppUrn; next: string; userId: string } | null {
     this.prune();
 
     const entry = this.entries.get(state);
@@ -77,7 +79,7 @@ export class PendingConnectStore {
       return null;
     }
 
-    return { appUrn: entry.appUrn, next: entry.next };
+    return { appUrn: entry.appUrn, next: entry.next, userId: entry.userId };
   }
 
   /** Drop expired entries so an abandoned flow never leaks memory. */

@@ -12,13 +12,17 @@ import { MemoryConnectService } from './memory-connect.service';
  *
  *   GET  /api/memory-connect/start            → browser: begin connect (→ ci-memory consent)
  *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to `next`
- *   GET  /api/memory-connect/apps/:urn/state  → wrapper: {state, connectUrl} (internal network)
- *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped (internal network)
+ *   GET  /api/memory-connect/apps/:urn/state  → wrapper: {state, connectUrl}
+ *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
- * Browser routes are session-guarded (the user is signed into the Hub); the
- * wrapper-facing state/skip routes are reachable only from the internal docker
- * network (the app wrapper calls the Hub at CI_HUB_URL).
+ * Browser routes are session-guarded (the user is signed into the Hub). The
+ * wrapper-facing state/skip routes are authorized by {@link ManagedAppKeyGuard}
+ * (the app presents its own managed key, bound to its URN) — that is the real
+ * boundary. {@link InternalNetworkGuard} is layered on as best-effort defense in
+ * depth only; it is NOT an internal-network guarantee, since these routes are
+ * reachable through the public tunnel and `req.ip` reflects the proxy unless
+ * `HUB_TRUST_PROXY` is configured (see main.ts).
  */
 @Controller('memory-connect')
 export class MemoryConnectController {
@@ -46,7 +50,8 @@ export class MemoryConnectController {
 
     // `next` is validated server-side in startConnect (origin-allowlisted against
     // the Hub + the connecting app), so an attacker can't use it as an open redirect.
-    const consentUrl = await this.service.startConnect(app as AppUrn, next);
+    // Bind the flow to the initiating user so the callback must be the same user.
+    const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
     res.redirect(consentUrl);
   }
 
@@ -74,8 +79,9 @@ export class MemoryConnectController {
 
     try {
       // handleCallback returns the app URL even on a downstream failure, so the
-      // user always lands back on their app rather than the dashboard.
-      const { next } = await this.service.handleCallback(code, state);
+      // user always lands back on their app rather than the dashboard. The current
+      // user must match the one who started the flow (login-CSRF guard).
+      const { next } = await this.service.handleCallback(code, state, this.currentUserId(req));
       res.redirect(next);
     } catch (err) {
       // Only an unknown/expired state reaches here (no app to return to).
@@ -127,6 +133,17 @@ export class MemoryConnectController {
     res.redirect('/login');
 
     return true;
+  }
+
+  /**
+   * The authenticated Hub user's id as a string. Only called after
+   * {@link redirectIfUnauthenticated} has confirmed `req.user` is present, so the
+   * flow's `state` can be bound to (and re-verified against) this user.
+   */
+  private currentUserId(req: Request): string {
+    const id = (req as Request & { user?: { id?: number | string } }).user?.id;
+
+    return String(id ?? '');
   }
 
   /**

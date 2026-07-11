@@ -6,16 +6,20 @@ import { PendingConnectStore } from '../pending-connect.store';
  * guard for the cross-origin connect hop.
  */
 describe('PendingConnectStore', () => {
-  it('round-trips: consume returns the app + next bound to the created state', () => {
+  it('round-trips: consume returns the app + next + userId bound to the created state', () => {
     const store = new PendingConnectStore();
-    const state = store.create('ci-openclaw:local', 'https://app.example.com/');
+    const state = store.create('ci-openclaw:local', 'https://app.example.com/', 'user-1');
 
-    expect(store.consume(state)).toEqual({ appUrn: 'ci-openclaw:local', next: 'https://app.example.com/' });
+    expect(store.consume(state)).toEqual({
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.com/',
+      userId: 'user-1',
+    });
   });
 
   it('is single-use: a second consume of the same state returns null', () => {
     const store = new PendingConnectStore();
-    const state = store.create('ci-openclaw:local', 'https://app.example.com/');
+    const state = store.create('ci-openclaw:local', 'https://app.example.com/', 'user-1');
 
     expect(store.consume(state)).not.toBeNull();
     expect(store.consume(state)).toBeNull();
@@ -29,8 +33,8 @@ describe('PendingConnectStore', () => {
 
   it('issues distinct, high-entropy state nonces', () => {
     const store = new PendingConnectStore();
-    const a = store.create('app-a:local', '/a');
-    const b = store.create('app-b:local', '/b');
+    const a = store.create('app-a:local', '/a', 'user-1');
+    const b = store.create('app-b:local', '/b', 'user-1');
 
     expect(a).not.toBe(b);
     expect(a).toMatch(/^[0-9a-f]{64}$/);

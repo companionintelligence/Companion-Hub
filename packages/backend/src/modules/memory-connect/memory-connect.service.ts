@@ -189,7 +189,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * browser should be redirected to. `next` is where the user lands after the
    * connection is applied.
    */
-  async startConnect(appUrn: AppUrn, next: string | undefined): Promise<string> {
+  async startConnect(appUrn: AppUrn, next: string | undefined, userId: string): Promise<string> {
     // The browser leg needs the public consent URL, so this is the one caller
     // that pays for the availability probe.
     const provider = await this.resolver.findProvider({ withPublicUrl: true });
@@ -213,7 +213,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // phishing hand-off right after the consent ceremony) falls back to the app.
     const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin);
 
-    const state = this.pending.create(appUrn, safeNext);
+    const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
     const consentUrl = new URL('/api/connect', new URL(provider.publicUrl).origin);
 
@@ -240,15 +240,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    *
    * Only an unknown/expired `state` throws (there is no app to return to). Once
    * the state is resolved, ANY downstream failure (provider gone, app mismatch,
-   * exchange error) still returns the originating app's URL with `error: true`,
-   * so the user lands back on their app (where the interstitial re-appears)
-   * rather than dead-ending on the Hub dashboard.
+   * user mismatch, exchange error) still returns the originating app's URL with
+   * `error: true`, so the user lands back on their app (where the interstitial
+   * re-appears) rather than dead-ending on the Hub dashboard.
    */
-  async handleCallback(code: string, state: string): Promise<{ next: string; error?: boolean }> {
+  async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state);
 
     if (!attempt) {
       throw new BadRequestException('Invalid or expired connect state');
+    }
+
+    // Login-CSRF / authorization-code-injection guard: the browser completing the
+    // callback must be the SAME Hub user who started the flow. On the single-owner
+    // appliance this always holds; on a multi-user Hub it stops a low-priv user
+    // from binding the owner's app to the attacker's memory account (or vice
+    // versa). No key is exchanged when it fails.
+    if (attempt.userId !== currentUserId) {
+      this.logger.error(`[MemoryConnect] callback user mismatch for ${attempt.appUrn}: started by ${attempt.userId}, completed by ${currentUserId}`);
+
+      return { next: attempt.next, error: true };
     }
 
     const provider = await this.resolver.findProvider();

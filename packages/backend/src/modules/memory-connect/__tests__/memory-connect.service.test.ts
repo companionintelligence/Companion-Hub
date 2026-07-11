@@ -65,7 +65,7 @@ describe('MemoryConnectService.startConnect', () => {
     const { service, resolver, pending } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
 
-    const url = new URL(await service.startConnect('ci-openclaw:local', 'https://app.example.org/'));
+    const url = new URL(await service.startConnect('ci-openclaw:local', 'https://app.example.org/', 'user-1'));
 
     expect(url.origin).toBe('https://ci-memory.example.org');
     expect(url.pathname).toBe('/api/connect');
@@ -73,7 +73,7 @@ describe('MemoryConnectService.startConnect', () => {
     expect(url.searchParams.get('state')).toBe('state-nonce');
     expect(url.searchParams.get('return')).toBe('https://core2-x.example.org/api/memory-connect/callback');
     expect(url.searchParams.get('app_name')).toBe('OpenClaw');
-    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org/');
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org/', 'user-1');
   });
 
   it('rejects an off-origin `next` (open-redirect guard) and falls back to the app URL', async () => {
@@ -81,24 +81,24 @@ describe('MemoryConnectService.startConnect', () => {
     resolver.findProvider.mockResolvedValue(PROVIDER);
     resolver.getAppPublicUrl.mockResolvedValue('https://app.example.org');
 
-    await service.startConnect('ci-openclaw:local', 'https://evil.example.com/phish');
+    await service.startConnect('ci-openclaw:local', 'https://evil.example.com/phish', 'user-1');
 
     // The attacker-supplied next is discarded; the stored destination is the app's own URL.
-    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org');
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org', 'user-1');
   });
 
   it('throws when Companion Memory is not installed', async () => {
     const { service, resolver } = makeService();
     resolver.findProvider.mockResolvedValue(null);
 
-    await expect(service.startConnect('ci-openclaw:local', '/')).rejects.toThrow(/not installed/);
+    await expect(service.startConnect('ci-openclaw:local', '/', 'user-1')).rejects.toThrow(/not installed/);
   });
 
   it('throws when the provider has no resolvable public URL yet', async () => {
     const { service, resolver } = makeService();
     resolver.findProvider.mockResolvedValue({ ...PROVIDER, publicUrl: undefined });
 
-    await expect(service.startConnect('ci-openclaw:local', '/')).rejects.toThrow(/not reachable/);
+    await expect(service.startConnect('ci-openclaw:local', '/', 'user-1')).rejects.toThrow(/not reachable/);
   });
 });
 
@@ -107,11 +107,11 @@ describe('MemoryConnectService.handleCallback', () => {
 
   it('exchanges the code, stores the key (internal URL), restarts, and returns next', async () => {
     const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
-    const result = await service.handleCallback('the-code', 'state-nonce');
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
@@ -123,29 +123,41 @@ describe('MemoryConnectService.handleCallback', () => {
     const { service, pending, exchange } = makeService();
     pending.consume.mockReturnValue(null);
 
-    await expect(service.handleCallback('the-code', 'bad-state')).rejects.toThrow(/Invalid or expired/);
+    await expect(service.handleCallback('the-code', 'bad-state', 'user-1')).rejects.toThrow(/Invalid or expired/);
     expect(exchange.exchange).not.toHaveBeenCalled();
   });
 
   it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-hermes:local', key: 'raw-key' });
 
-    const result = await service.handleCallback('the-code', 'state-nonce');
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
+  });
+
+  it('returns error without exchanging when the callback user differs from the initiator (login-CSRF guard)', async () => {
+    const { service, exchange, connections, pending } = makeService();
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
+
+    // A different Hub user completes the callback than the one who started the flow.
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-2');
+
+    expect(exchange.exchange).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
     expect(result).toEqual({ next: 'https://app.example.org/', error: true });
   });
 
   it('returns the app URL with error when the exchange throws (no dead-end on the dashboard)', async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
 
-    const result = await service.handleCallback('the-code', 'state-nonce');
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(connections.storeConnected).not.toHaveBeenCalled();
     expect(result).toEqual({ next: 'https://app.example.org/', error: true });
@@ -157,7 +169,7 @@ describe('MemoryConnectService.abandonConnect', () => {
 
   it('consumes the pending state and returns the originating app URL', () => {
     const { service, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/' });
+    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
 
     expect(service.abandonConnect('state-nonce')).toBe('https://app.example.org/');
     expect(pending.consume).toHaveBeenCalledWith('state-nonce');
