@@ -86,8 +86,15 @@ export class EnvUtils {
    * represented faithfully — and left unescaped it would forge additional env
    * lines (env injection). Stripping it is both correct for the format and a
    * defense-in-depth guard for any value derived from external input.
+   *
+   * `value` is typed `string`, but the Map it comes from is populated from resolvers,
+   * manifests and form data — any of which can hand back a non-string and make this a
+   * type lie. `.replace` on one throws a TypeError that takes down boot with a stack
+   * trace naming no variable. String() the value instead: a stringified value is
+   * recoverable, a crashed bootstrap is not. Note `?? ''` alone is NOT enough — it
+   * rescues null/undefined but a number or boolean still has no `.replace`.
    */
-  private sanitizeEnvValue = (value: string) => value.replace(/[\r\n]+/g, ' ');
+  private sanitizeEnvValue = (value: string | undefined) => String(value ?? '').replace(/[\r\n]+/g, ' ');
 
   /**
    * Convert a string of environment variables to a Map

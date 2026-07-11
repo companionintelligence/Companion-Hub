@@ -17,6 +17,7 @@ import {
   DEFAULT_RABBITMQ_PASSWORD,
   DEFAULT_FORWARD_AUTH_URL,
   DEFAULT_DNS_IP,
+  DEFAULT_TZ,
   DEFAULT_CI_CLOUD_URL,
   DEFAULT_PUBLIC_DOMAIN,
   DEFAULT_DEMO_MODE,
@@ -58,6 +59,37 @@ const getArchitecture = () => {
   if (arch === 'x64') return 'amd64';
 
   throw new Error(`Unsupported architecture: ${arch}`);
+};
+
+/**
+ * True when `zone` is a time zone Intl will actually accept.
+ *
+ * ICU has two distinct failure modes when it cannot determine a zone, and a truthiness
+ * check only catches one of them:
+ *   - `undefined` — no zoneinfo db to match a bind-mounted /etc/localtime against (an
+ *     image without tzdata). This is what crashed the .env writer on boot.
+ *   - `'Etc/Unknown'` — the CLDR sentinel, returned when TZ is set but empty. It is
+ *     TRUTHY, so `|| DEFAULT_TZ` would pass it straight through, and it then throws
+ *     `RangeError: Invalid time zone specified` in every downstream Intl consumer and
+ *     lands in every app container's env.
+ *
+ * So validate the zone rather than testing it for truthiness.
+ */
+const isUsableTimeZone = (zone: string | undefined): zone is string => {
+  if (!zone || zone === 'Etc/Unknown') return false;
+
+  try {
+    return Boolean(Intl.DateTimeFormat(undefined, { timeZone: zone }));
+  } catch {
+    // RangeError: not an IANA zone.
+    return false;
+  }
+};
+
+/** The host's IANA zone as ICU reports it, or undefined when ICU cannot determine a usable one. */
+const getHostTimeZone = (): string | undefined => {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return isUsableTimeZone(zone) ? zone : undefined;
 };
 
 /**
@@ -331,6 +363,13 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
 /** Apply resolved env to process.env without clobbering runtime / .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
+    // The Map is typed `string`, but a resolver returning an undefined default can still land
+    // one here — that is the type lie this module exists to survive. Assigning it would store
+    // the literal string "undefined" (process.env stringifies), which is TRUTHY: it would win
+    // priority 1 in every later resolve() and, for TZ, make ICU report undefined for the rest
+    // of the process. Skip instead — an absent key still falls back, a poisoned one never does.
+    if (typeof value !== 'string') continue;
+
     if (!processEnvHasValue(key)) {
       process.env[key] = value;
     }
@@ -449,7 +488,22 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
-  envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+  // Validate the *resolved* zone, not just the default. getHostTimeZone() only fills resolve()'s
+  // priority-4 slot, so an invalid TZ from process.env, settings.json, or a stale data .env
+  // outranks it and would otherwise be written through unchecked — and an invalid process.env.TZ
+  // makes ICU report `undefined` for the rest of the process, recreating the original fault from
+  // the inside. Both degraded paths warn: silently running on the wrong clock is its own bug.
+  const hostTimeZone = getHostTimeZone();
+  const resolvedTz = resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: hostTimeZone ?? DEFAULT_TZ });
+  const timeZone = isUsableTimeZone(resolvedTz) ? resolvedTz : DEFAULT_TZ;
+
+  if (timeZone !== resolvedTz) {
+    logger.warn(`TZ '${resolvedTz}' is not a valid IANA time zone. Falling back to ${DEFAULT_TZ}.`);
+  } else if (!hostTimeZone && timeZone === DEFAULT_TZ) {
+    logger.warn(`Could not determine the host time zone — is tzdata missing from the image? Using ${DEFAULT_TZ}.`);
+  }
+
+  envMap.set('TZ', timeZone);
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
   envMap.set(

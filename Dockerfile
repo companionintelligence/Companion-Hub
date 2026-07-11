@@ -40,11 +40,14 @@ RUN chmod +x docker-binary && \
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
+# tzdata is required, not cosmetic: compose bind-mounts the host's /etc/localtime into
+# this container. Without a zoneinfo db, ICU cannot map that tzfile back to an IANA name
+# and Intl.DateTimeFormat().resolvedOptions().timeZone yields undefined instead of a zone.
 RUN set -eux; \
-    apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv || { \
+    apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv tzdata || { \
       echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
       sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
-      apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv; \
+      apk add --no-cache curl openssl git docker-cli dmidecode pciutils setpriv tzdata; \
     }
 
 # ---- BUILDER ----

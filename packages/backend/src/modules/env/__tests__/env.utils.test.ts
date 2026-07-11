@@ -94,6 +94,36 @@ describe('EnvUtils', () => {
       expect(result).toContain('KEY1=VALUE1');
       expect(result).toContain('KEY2=VALUE2');
     });
+
+    it('should write an empty value rather than throw when a resolver hands back undefined', () => {
+      const map = new Map<string, string>();
+      map.set('KEY1', 'VALUE1');
+      map.set('TZ', undefined as unknown as string);
+
+      // A TypeError here is a boot-killer: this runs in bootstrap before anything is up.
+      let result = '';
+      expect(() => {
+        result = service.envMapToString(map);
+      }).not.toThrow();
+
+      // Assert exactly. `toContain('TZ=')` would also be satisfied by the line `TZ=undefined`,
+      // which is precisely the bug — that value gets injected into every app container.
+      expect(result).toBe('KEY1=VALUE1\nTZ=');
+    });
+
+    it('should stringify a non-string value rather than throw', () => {
+      const map = new Map<string, string>();
+      map.set('PORT', 8080 as unknown as string);
+      map.set('ENABLED', true as unknown as string);
+
+      // `?? ''` alone would not save us here: a number has no `.replace`.
+      let result = '';
+      expect(() => {
+        result = service.envMapToString(map);
+      }).not.toThrow();
+
+      expect(result).toBe('PORT=8080\nENABLED=true');
+    });
   });
 
   describe('envStringToMap', () => {
