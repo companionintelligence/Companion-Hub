@@ -1,7 +1,7 @@
-import { installAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getInstalledAppsQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
-import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
+import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
@@ -32,6 +32,11 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
     ...installAppMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+      // The install never happened, so retract the row we invented. Left behind it would sit on the
+      // dashboard as a permanent "installing" spinner, and the store page would keep counting the
+      // app as installed.
+      removeOptimisticInstalledApp(queryClient, info.urn);
+      void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
     },
     onMutate: () => {
       setOptimisticStatus('installing', info.urn);

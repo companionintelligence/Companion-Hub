@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
+import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
@@ -256,7 +256,9 @@ export const InstallStep = ({
         try {
           addOptimisticInstalledApp(queryClient, {
             urn: app.urn,
-            name: app.name,
+            // The dashboard's name, not the wizard's: `app.name` can be an onboarding-only override,
+            // and using it here makes the tile rename itself once the real row lands.
+            name: app.storeName ?? app.name,
             slug: app.appSlug,
             localSubdomain: app.localSubdomain,
           });
@@ -280,6 +282,9 @@ export const InstallStep = ({
         } catch (e) {
           finalStates[index] = { ...stateAt(index, app), status: 'failed', error: (e as Error).message };
           setStates([...finalStates]);
+          // The app never made it into the database, so retract the row we invented for it. Left in
+          // the cache it renders on the dashboard as a spinner for an app that will never exist.
+          removeOptimisticInstalledApp(queryClient, app.urn);
           try {
             await queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
             await queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
