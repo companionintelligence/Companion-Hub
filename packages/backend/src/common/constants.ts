@@ -57,6 +57,15 @@ export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik'
 // DNS
 export const DEFAULT_DNS_IP = '9.9.9.9';
 
+/**
+ * Last-resort fallback when TZ is unset everywhere and the host time zone cannot be
+ * determined. `Intl.DateTimeFormat().resolvedOptions().timeZone` returns undefined —
+ * not a zone name — when ICU cannot map /etc/localtime back to an IANA id, which
+ * happens whenever the host's /etc/localtime is bind-mounted into an image without
+ * tzdata. Without a fallback that undefined reaches the .env writer and kills boot.
+ */
+export const DEFAULT_TZ = 'UTC';
+
 /** Last-resort fallback when LOCAL_DOMAIN and DOMAIN are both unset. Prefer localhost:port for local app access. */
 export const DEFAULT_LOCAL_DOMAIN = 'localhost';
 

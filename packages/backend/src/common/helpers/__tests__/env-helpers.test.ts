@@ -35,9 +35,11 @@ vi.mock('@/modules/env/env.utils', () => {
       }
       return map;
     }
+    // Mirrors the real EnvUtils.sanitizeEnvValue. Keep it faithful: a mock that never
+    // touched the value is why an undefined env value reached production undetected.
     envMapToString(map: Map<string, string>) {
       return Array.from(map)
-        .map(([k, v]) => `${k}=${v}`)
+        .map(([k, v]) => `${k}=${String(v ?? '').replace(/[\r\n]+/g, ' ')}`)
         .join('\n');
     }
     deriveEntropy() {
@@ -188,6 +190,198 @@ describe('env-helpers — resolve() priority chain', () => {
     process.env.ROOT_FOLDER_HOST = input;
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('ROOT_FOLDER_HOST')).toBe(expected);
+  });
+});
+
+describe('env-helpers — TZ resolves even when the host time zone is undeterminable', () => {
+  // generateSystemEnvFile writes ~30 keys into process.env via applyEnvMapToProcess, so restore
+  // the whole environment rather than an enumerated subset — an enumerated list silently leaks
+  // JWT_SECRET/DOMAIN/RABBITMQ_PASSWORD into the describes that follow.
+  let envSnapshot: NodeJS.ProcessEnv;
+  let intlSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  /** This machine's real zone, captured before any spy — the marker for "this is the host lookup". */
+  const REAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  /**
+   * Stub what ICU reports as the *host* zone — the zero-arg `Intl.DateTimeFormat()` lookup.
+   *
+   * A blanket mockReturnValue on the prototype would also intercept the `resolvedOptions()` call
+   * inside canonicalTimeZone(), which is what turns 'america/new_york' into 'America/New_York' —
+   * canonicalization would become unobservable and its tests would pass vacuously. So delegate to
+   * the real implementation and only rewrite the answer for the host lookup, which is identifiable
+   * because it resolves to this machine's actual zone.
+   */
+  const stubHostZone = (timeZone: string | undefined) => {
+    const original = Intl.DateTimeFormat.prototype.resolvedOptions;
+
+    intlSpy = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockImplementation(function (this: Intl.DateTimeFormat) {
+      const options = original.call(this);
+      if (options.timeZone !== REAL_HOST_ZONE) return options;
+      return { ...options, timeZone } as Intl.ResolvedDateTimeFormatOptions;
+    });
+
+    return intlSpy;
+  };
+
+  /** Contents the mocked fs serves for the data .env and settings.json. */
+  let dataEnv: string;
+  let settingsJson: Record<string, unknown>;
+
+  const setDataEnv = (content: string) => {
+    dataEnv = content;
+  };
+  const setSettings = (settings: Record<string, unknown>) => {
+    settingsJson = settings;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    envSnapshot = { ...process.env };
+
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    delete process.env.TZ;
+
+    dataEnv = '';
+    settingsJson = {};
+
+    mockedFs.existsSync.mockReturnValue(true);
+    // vi.clearAllMocks() clears calls but NOT implementations, and an earlier test in this file
+    // leaves an EACCES-throwing writeFile behind. Without this reset these tests would silently
+    // run the "could not write .env.resolved" degraded branch instead of the real writer path.
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return JSON.stringify(settingsJson);
+      if (p.includes('.env')) return dataEnv;
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in envSnapshot)) delete process.env[key];
+    }
+    Object.assign(process.env, envSnapshot);
+
+    // Restore only our own spy. vi.restoreAllMocks() would drain every spy registered in this
+    // file and, under `restoreMocks: true` or Vitest <=3 semantics, reset the module-level
+    // fs/dotenv vi.fn() implementations the later describes depend on.
+    intlSpy?.mockRestore();
+    intlSpy = undefined;
+  });
+
+  // Regression: ICU returns undefined — not a zone name — when it cannot map /etc/localtime back
+  // to an IANA id, which is what happens on a clean install whose image lacks tzdata but whose
+  // compose bind-mounts the host's /etc/localtime. That undefined reached the .env writer and
+  // killed bootstrap with "Cannot read properties of undefined (reading 'replace')".
+  it('MUST fall back to UTC when Intl reports no host time zone', async () => {
+    stubHostZone(undefined);
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('UTC');
+  });
+
+  // ICU's OTHER failure mode. 'Etc/Unknown' is TRUTHY, so a `|| DEFAULT_TZ` guard passes it
+  // straight through — and it then throws `RangeError: Invalid time zone specified` in every
+  // downstream Intl consumer and lands in every app container's env.
+  it("MUST fall back to UTC when Intl reports the 'Etc/Unknown' sentinel", async () => {
+    stubHostZone('Etc/Unknown');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('UTC');
+  });
+
+  it('MUST prefer the real host time zone when Intl can resolve one', async () => {
+    // Deliberately NOT the machine's own zone: stubbing the host zone to whatever the developer
+    // already runs makes the assertion pass even if the spy never intercepts.
+    const spy = stubHostZone('Pacific/Kiritimati');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('Pacific/Kiritimati');
+    expect(spy).toHaveBeenCalled();
+  });
+
+  // A bad zone is delivered through the data .env / settings.json rather than process.env, because
+  // an invalid process.env.TZ ALSO makes ICU report the host zone as undefined (see the dedicated
+  // test below) — which would leave nothing to degrade to and mask what these cases are pinning.
+  it('MUST degrade to the host zone, not UTC, when the data .env carries an invalid TZ', async () => {
+    setDataEnv('TZ=Nowhere/Bogus');
+    stubHostZone('Europe/Berlin');
+
+    const envMap = await generateSystemEnvFile();
+
+    // Degrades to the known-good host zone: a typo should not move a correctly-configured
+    // appliance to UTC when we know perfectly well what zone the host is in.
+    expect(envMap.get('TZ')).toBe('Europe/Berlin');
+  });
+
+  it('MUST reject an invalid TZ coming from settings.json', async () => {
+    setSettings({ timeZone: 'Not/AZone' });
+    stubHostZone('Europe/Berlin');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('Europe/Berlin');
+  });
+
+  it('MUST fall back to UTC for an invalid TZ when the host zone is also undeterminable', async () => {
+    setDataEnv('TZ=Nowhere/Bogus');
+    stubHostZone(undefined);
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('UTC');
+  });
+
+  // ICU matches zone ids case-insensitively, so 'america/new_york' passes a mere validity check.
+  // Keeping the raw string is what poisons us: once a non-canonical id lands in process.env.TZ, ICU
+  // reports the host zone as `undefined` — the original fault, recreated from the inside.
+  it('MUST canonicalize a non-canonical zone id rather than pass it through raw', async () => {
+    setDataEnv('TZ=america/new_york');
+    stubHostZone('Europe/Berlin');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('America/New_York');
+    expect(process.env.TZ).toBe('America/New_York');
+  });
+
+  // ICU accepts UTC-offset ids, but POSIX TZ parsing in the app containers ignores them and falls
+  // back to UTC — the Hub would run on +05:00 while every container it launched ran UTC.
+  it('MUST reject a UTC-offset id, which is not an IANA zone', async () => {
+    setDataEnv('TZ=+05:00');
+    stubHostZone('Europe/Berlin');
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('Europe/Berlin');
+  });
+
+  // applyEnvMapToProcess never clobbers an existing process.env value, so a poisoned inherited TZ
+  // would survive in-process — keeping ICU broken — and win in ConfigurationService, which merges
+  // `{ ...envMap, ...process.env }`. Note the poison also destroys the host lookup, so UTC is the
+  // only zone left to fall back to; the point of this test is that process.env.TZ gets REPAIRED.
+  it('MUST repair a poisoned process.env.TZ, not just the env map', async () => {
+    process.env.TZ = 'Nowhere/Bogus';
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('TZ')).toBe('UTC');
+    expect(process.env.TZ).toBe('UTC');
+  });
+
+  it('MUST apply the resolved zone to process.env, not just the env file', async () => {
+    stubHostZone(undefined);
+
+    await generateSystemEnvFile();
+
+    expect(process.env.TZ).toBe('UTC');
   });
 });
 
