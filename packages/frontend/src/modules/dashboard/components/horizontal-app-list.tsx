@@ -1,5 +1,6 @@
 import { SimpleAppTile } from './simple-app-tile';
 import { Link } from 'react-router';
+import { useMemo } from 'react';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import { useTranslation } from 'react-i18next';
 
@@ -15,7 +16,22 @@ interface HorizontalAppListProps {
 export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
   const { t } = useTranslation();
 
-  if (apps.length === 0) {
+  // A urn identifies an installed app exactly once, so it — not `app.id` — is the tile's identity.
+  // Optimistic rows carry a synthetic id, and the DB has no unique index on (app_name, app_store_slug),
+  // so ids are the less trustworthy key of the two. Duplicate React keys are not a cosmetic problem:
+  // React keeps one fiber per key, so a collision leaves the surplus fibers undeleted and their DOM
+  // nodes stranded on screen — which is how N apps rendered as 2N-1 tiles after onboarding.
+  const visibleApps = useMemo(() => {
+    const seen = new Set<string>();
+
+    return apps.filter(({ info }) => {
+      if (!info.urn || seen.has(info.urn)) return false;
+      seen.add(info.urn);
+      return true;
+    });
+  }, [apps]);
+
+  if (visibleApps.length === 0) {
     return (
       <Link to="/store" className="flex justify-center items-center no-underline py-16 sm:py-0 w-full" style={{ minHeight: 0 }}>
         <h1 className="text-center text-xl sm:text-3xl text-muted-foreground/30 font-medium px-4">
@@ -37,10 +53,10 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
           alignContent: 'start',
         }}
       >
-        {apps.map(({ info, app }) => {
+        {visibleApps.map(({ info, app }) => {
           const [appName, storeId] = info.urn.split(':');
           return (
-            <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="no-underline text-inherit">
+            <Link key={info.urn} to={`/apps/${storeId}/${appName}`} className="no-underline text-inherit">
               <SimpleAppTile
                 name={info.name}
                 urn={info.urn}

@@ -22,7 +22,15 @@ import type { ExposureMode } from './ai-setup-types';
 
 export interface OnboardingApp {
   appSlug: string;
+  /** Display name for the onboarding wizard. May be an onboarding-only override — see `storeName`. */
   name: string;
+  /**
+   * The app's canonical name in the marketplace. Onboarding sometimes shows a friendlier label than
+   * the store does ("Memory Import Tools" vs "Import Tools"), and that override must not leak into
+   * the dashboard: the optimistic row would render under the onboarding name and then visibly rename
+   * itself the moment the real row arrives. Falls back to `name` when the two agree.
+   */
+  storeName?: string;
   icon: string;
   category: string;
   replacesNames: string[];

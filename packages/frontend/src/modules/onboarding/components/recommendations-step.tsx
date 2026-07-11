@@ -149,7 +149,11 @@ export const RecommendationsStep = ({
           const storeApp = findCatalogAppBySlug(storeApps, alt.appSlug);
           apps.push({
             appSlug: alt.appSlug,
+            // `alt.name` comes from the alternatives dataset, which is free to label an app
+            // differently from the marketplace. Carry the store's own name so the dashboard tile does
+            // not render under one name and then rename itself once the real row arrives.
             name: alt.name,
+            storeName: storeApp?.name,
             icon: alt.icon,
             category: rec.category,
             replacesNames: rec.proprietary,
