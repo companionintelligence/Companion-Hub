@@ -1,4 +1,4 @@
-import { getInstalledAppsQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getInstalledAppsQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { TranslatableError } from '@/types/error.types';
@@ -32,6 +32,10 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
       // `install_failed` row that onMutate optimistically overwrote. Removing it would make the tile
       // disappear rather than return it to its failed state (with this retry button on it).
       void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+      // `onMutate` also forced the app's own cache entry to `installing`. A request that fails before
+      // the backend starts work emits no SSE event, and this query does not poll — so without this the
+      // details page keeps spinning on a status that will never arrive.
+      void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn } }) });
     },
     onMutate: () => {
       setOptimisticStatus('installing', urn);

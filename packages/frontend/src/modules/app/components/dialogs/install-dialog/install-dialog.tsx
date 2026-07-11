@@ -1,4 +1,4 @@
-import { getInstalledAppsQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getInstalledAppsQueryKey, installAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { addOptimisticInstalledApp, removeOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
@@ -37,6 +37,10 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
       // app as installed.
       removeOptimisticInstalledApp(queryClient, info.urn);
       void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+      // `onMutate` also forced the app's own cache entry to `installing`. A request that fails before
+      // the backend starts work emits no SSE event, and this query does not poll — so without this the
+      // details page we were opened from keeps spinning on a status that will never arrive.
+      void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: info.urn } }) });
     },
     onMutate: () => {
       setOptimisticStatus('installing', info.urn);
