@@ -96,6 +96,7 @@ describe('EnvUtils', () => {
     });
 
     it('should write an empty value rather than throw when a resolver hands back undefined', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const map = new Map<string, string>();
       map.set('KEY1', 'VALUE1');
       map.set('TZ', undefined as unknown as string);
@@ -109,9 +110,16 @@ describe('EnvUtils', () => {
       // Assert exactly. `toContain('TZ=')` would also be satisfied by the line `TZ=undefined`,
       // which is precisely the bug — that value gets injected into every app container.
       expect(result).toBe('KEY1=VALUE1\nTZ=');
+      // Coercion must not be silent — the writer that produced the bad value needs to be findable.
+      // The warning names the key, never the value (env values are secrets).
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("'TZ'"));
+
+      warn.mockRestore();
     });
 
     it('should stringify a non-string value rather than throw', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const map = new Map<string, string>();
       map.set('PORT', 8080 as unknown as string);
       map.set('ENABLED', true as unknown as string);
@@ -123,6 +131,10 @@ describe('EnvUtils', () => {
       }).not.toThrow();
 
       expect(result).toBe('PORT=8080\nENABLED=true');
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('8080'));
+
+      warn.mockRestore();
     });
   });
 

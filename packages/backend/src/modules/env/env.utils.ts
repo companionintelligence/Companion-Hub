@@ -76,7 +76,17 @@ export class EnvUtils {
    * @param {Map<string, string>} envMap - Map of environment variables
    */
   public envMapToString = (envMap: Map<string, string>) => {
-    const envArray = Array.from(envMap).map(([key, value]) => `${key}=${this.sanitizeEnvValue(value)}`);
+    const envArray = Array.from(envMap).map(([key, value]) => {
+      if (typeof value !== 'string') {
+        // Backstop, not a code path — every writer is supposed to String() its values. Coercing
+        // keeps boot alive, but doing it silently would let `KEY=[object Object]` ship into a
+        // container env with no trace, so name the key (never the value: env values are secrets).
+        console.warn(
+          `Env value for '${key}' is ${value === null || value === undefined ? String(value) : typeof value}, not a string — coercing. Fix the writer that produced it.`,
+        );
+      }
+      return `${key}=${this.sanitizeEnvValue(value)}`;
+    });
     return envArray.join('\n');
   };
 
