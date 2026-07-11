@@ -14,7 +14,7 @@ type InstalledEntry = GetInstalledAppsResponse['installed'][number];
  * (N apps rendered as 2N-1 tiles after onboarding). Deriving the id from the urn also makes it
  * idempotent, so a double-clicked retry re-uses the same row instead of minting a new one.
  */
-export function optimisticAppId(urn: string): number {
+function optimisticAppId(urn: string): number {
   let hash = 5381;
   for (let i = 0; i < urn.length; i++) {
     hash = ((hash << 5) + hash + urn.charCodeAt(i)) | 0;

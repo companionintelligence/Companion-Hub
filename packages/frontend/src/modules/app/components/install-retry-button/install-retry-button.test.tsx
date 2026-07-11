@@ -2,9 +2,9 @@ import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InstallRetryButton } from './install-retry-button';
 
-const { capturedOptions, invalidateQueries, removeOptimisticInstalledApp } = vi.hoisted(() => ({
+const { capturedOptions, invalidateAppQueries, removeOptimisticInstalledApp } = vi.hoisted(() => ({
   capturedOptions: { current: null as { onError?: (e: unknown) => void } | null },
-  invalidateQueries: vi.fn(),
+  invalidateAppQueries: vi.fn(),
   removeOptimisticInstalledApp: vi.fn(),
 }));
 
@@ -12,6 +12,10 @@ vi.mock('@/modules/app/helpers/use-app-status', () => ({
   useAppStatus: () => ({
     setOptimisticStatus: vi.fn(),
   }),
+}));
+
+vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
+  invalidateAppQueries,
 }));
 
 vi.mock('@/modules/app/helpers/optimistic-installed-apps', () => ({
@@ -25,13 +29,11 @@ vi.mock('@tanstack/react-query', () => ({
     capturedOptions.current = options;
     return { mutate: vi.fn(), isPending: false };
   },
-  useQueryClient: () => ({ invalidateQueries }),
+  useQueryClient: () => ({}),
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   installAppMutation: () => ({}),
-  getInstalledAppsQueryKey: () => ['getInstalledApps'],
-  getAppQueryKey: ({ path }: { path: { urn: string } }) => ['getApp', path.urn],
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -49,8 +51,6 @@ vi.mock('react-i18next', () => ({
 vi.mock('react-tooltip', () => ({
   Tooltip: () => null,
 }));
-
-const invalidatedKeys = () => invalidateQueries.mock.calls.map(([arg]) => JSON.stringify(arg?.queryKey));
 
 describe('InstallRetryButton', () => {
   beforeEach(() => {
@@ -70,16 +70,15 @@ describe('InstallRetryButton', () => {
   });
 
   describe('when the retry fails', () => {
-    // `onMutate` optimistically forces the app to `installing` in BOTH caches. A request that fails
-    // before the backend starts work emits no SSE event, and neither query polls — so if we do not
-    // refetch them here, the tile and the details page spin forever on a status that never arrives.
-    it('MUST refetch the installed list and the app itself', () => {
+    // `onMutate` optimistically forces the app to `installing`. A request that fails before the
+    // backend starts work emits no SSE event and none of these queries poll — so without a refetch
+    // the tile and the details page spin forever on a status that never arrives.
+    it('MUST refetch the app', () => {
       render(<InstallRetryButton urn="test-app:community" name="Test App" slug="test-app" />);
 
       capturedOptions.current?.onError?.({ message: 'BOOM' });
 
-      expect(invalidatedKeys()).toContain(JSON.stringify(['getInstalledApps']));
-      expect(invalidatedKeys()).toContain(JSON.stringify(['getApp', 'test-app:community']));
+      expect(invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), 'test-app:community');
     });
 
     // Unlike a first install, the row behind this button is a REAL `install_failed` row that onMutate
