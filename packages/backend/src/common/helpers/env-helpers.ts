@@ -62,35 +62,43 @@ const getArchitecture = () => {
 };
 
 /**
- * True when `zone` is a time zone Intl will actually accept.
+ * ICU's canonical id for `zone`, or undefined when it is not a zone we can safely use.
  *
- * ICU has two distinct failure modes when it cannot determine a zone, and a truthiness
- * check only catches one of them:
- *   - `undefined` — no zoneinfo db to match a bind-mounted /etc/localtime against (an
- *     image without tzdata). This is what crashed the .env writer on boot.
- *   - `'Etc/Unknown'` — the CLDR sentinel, returned when TZ is set but empty. It is
- *     TRUTHY, so `|| DEFAULT_TZ` would pass it straight through, and it then throws
- *     `RangeError: Invalid time zone specified` in every downstream Intl consumer and
- *     lands in every app container's env.
+ * Canonicalize rather than merely validate — ICU is lenient in three ways that all bite:
  *
- * So validate the zone rather than testing it for truthiness.
+ *   - It has no zone to report at all (`undefined`) when there is no zoneinfo db to match a
+ *     bind-mounted /etc/localtime against, i.e. an image without tzdata. This is the undefined
+ *     that crashed the .env writer on boot.
+ *   - `'Etc/Unknown'` is the CLDR "could not determine" sentinel, and it is TRUTHY — a `||`
+ *     guard passes it straight through, and it then throws `RangeError: Invalid time zone
+ *     specified` in every downstream Intl consumer.
+ *   - Zone ids match case-insensitively, so `'america/new_york'` is *accepted*. Keeping that raw
+ *     string is what poisons us: once a non-canonical id lands in process.env.TZ, ICU reports the
+ *     host zone as `undefined` — recreating the exact fault this module exists to prevent. So keep
+ *     the canonical form ICU resolves to, never the string we were handed.
+ *   - It accepts UTC-offset ids (`'+05:00'`, `'-0800'`). Those are not IANA zones: POSIX TZ parsing
+ *     in the app containers ignores them and silently falls back to UTC, so the Hub would run on
+ *     +05:00 while every container it launched ran UTC. Reject them.
  */
-const isUsableTimeZone = (zone: string | undefined): zone is string => {
-  if (!zone || zone === 'Etc/Unknown') return false;
+const canonicalTimeZone = (zone: string | undefined): string | undefined => {
+  if (!zone) return undefined;
 
+  let canonical: string | undefined;
   try {
-    return Boolean(Intl.DateTimeFormat(undefined, { timeZone: zone }));
+    canonical = Intl.DateTimeFormat(undefined, { timeZone: zone }).resolvedOptions().timeZone;
   } catch {
-    // RangeError: not an IANA zone.
-    return false;
+    // RangeError: not a zone ICU knows.
+    return undefined;
   }
+
+  if (!canonical || canonical === 'Etc/Unknown') return undefined;
+  if (canonical.startsWith('+') || canonical.startsWith('-')) return undefined;
+
+  return canonical;
 };
 
-/** The host's IANA zone as ICU reports it, or undefined when ICU cannot determine a usable one. */
-const getHostTimeZone = (): string | undefined => {
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return isUsableTimeZone(zone) ? zone : undefined;
-};
+/** The host's canonical IANA zone, or undefined when ICU cannot determine a usable one. */
+const getHostTimeZone = (): string | undefined => canonicalTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
 /**
  * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
@@ -488,22 +496,32 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
-  // Validate the *resolved* zone, not just the default. getHostTimeZone() only fills resolve()'s
-  // priority-4 slot, so an invalid TZ from process.env, settings.json, or a stale data .env
-  // outranks it and would otherwise be written through unchecked — and an invalid process.env.TZ
-  // makes ICU report `undefined` for the rest of the process, recreating the original fault from
-  // the inside. Both degraded paths warn: silently running on the wrong clock is its own bug.
+  // Canonicalize the *resolved* zone, not just the default. getHostTimeZone() only fills resolve()'s
+  // priority-4 slot, so a bad TZ from process.env, settings.json or a stale data .env outranks it
+  // and would otherwise be written through unchecked.
   const hostTimeZone = getHostTimeZone();
-  const resolvedTz = resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: hostTimeZone ?? DEFAULT_TZ });
-  const timeZone = isUsableTimeZone(resolvedTz) ? resolvedTz : DEFAULT_TZ;
+  const requestedTz = resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: hostTimeZone ?? DEFAULT_TZ });
+  const canonicalTz = canonicalTimeZone(requestedTz);
+  // Degrade to the host zone before the last-resort constant: a typo in Settings should not move a
+  // correctly-configured appliance to UTC when we know perfectly well what zone the host is in.
+  const timeZone = canonicalTz ?? hostTimeZone ?? DEFAULT_TZ;
 
-  if (timeZone !== resolvedTz) {
-    logger.warn(`TZ '${resolvedTz}' is not a valid IANA time zone. Falling back to ${DEFAULT_TZ}.`);
-  } else if (!hostTimeZone && timeZone === DEFAULT_TZ) {
-    logger.warn(`Could not determine the host time zone — is tzdata missing from the image? Using ${DEFAULT_TZ}.`);
+  if (!canonicalTz) {
+    // JSON.stringify, not raw interpolation: this is the one branch where the value is guaranteed to
+    // be garbage, settingsSchema does not strip interior newlines, and a CR/LF would forge log lines.
+    logger.warn(`TZ ${JSON.stringify(requestedTz)} is not a valid IANA time zone. Falling back to ${timeZone}.`);
+  } else if (!hostTimeZone && !process.env.TZ && !settingsData.timeZone && !envMap.get('TZ')) {
+    // Only when nothing configured a zone at all — otherwise this fires at someone who deliberately
+    // chose UTC and sends them hunting a tzdata bug they do not have.
+    logger.warn(`Could not determine the host time zone — is tzdata missing from the image? Using ${timeZone}.`);
   }
 
   envMap.set('TZ', timeZone);
+  // applyEnvMapToProcess deliberately never clobbers an existing process.env value, so an invalid or
+  // non-canonical inherited TZ would survive in-process: ICU would keep reporting the host zone as
+  // undefined, and ConfigurationService — which merges `{ ...envMap, ...process.env }`, letting
+  // process.env win — would serve the garbage zone to every browser. Normalize it at the source.
+  process.env.TZ = timeZone;
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
   envMap.set(
