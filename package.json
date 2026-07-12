@@ -39,7 +39,9 @@
     "agent:test-inventory": "pnpm exec tsx scripts/agent/generate-test-inventory.ts",
     "agent:precommit-fix": "pnpm exec tsx scripts/agent/precommit-fix.ts",
     "agent:review": "bin/agent-review",
-    "agent:sweep": "bin/agent-sweep"
+    "agent:sweep": "bin/agent-sweep",
+    "test:visual": "pnpm exec playwright test e2e/visual/",
+    "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual"
   },
   "lint-staged": {
     "*": [
@@ -60,6 +62,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
     "@playwright/test": "^1.52.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
