@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Globe, Shield } from 'lucide-react';
+import { ExternalLink, Globe, Shield } from 'lucide-react';
 import type { AgentFramework, RemoteAccessMode } from '../../helpers/ai-setup-types';
 import { ONBOARDING_REMOTE_VPN_HINT, ONBOARDING_REMOTE_WEB_HINT } from '@/components/hub-status/hub-status-tooltips';
 import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
@@ -18,18 +18,36 @@ interface AgentFrameworkCardProps {
   tailscaleAvailable?: boolean;
 }
 
-const FRAMEWORKS: Array<{ key: AgentFramework; nameKey: string; Icon: typeof OpenClawIcon; descriptionKey: string }> = [
+interface CompanionAppLink {
+  label: string;
+  testId: string;
+  url: string;
+}
+
+const FRAMEWORKS: Array<{
+  key: AgentFramework;
+  nameKey: string;
+  Icon: typeof OpenClawIcon;
+  descriptionKey: string;
+  companionApps: CompanionAppLink[];
+}> = [
   {
     key: 'openclaw',
     nameKey: 'ONBOARDING_AGENT_FRAMEWORK_OPENCLAW',
     Icon: OpenClawIcon,
     descriptionKey: 'ONBOARDING_AGENT_FRAMEWORK_OPENCLAW_DESC',
+    companionApps: [
+      { label: 'iOS', testId: 'ios', url: 'https://apps.apple.com/us/app/openclaw-ai-that-does-things/id6780396132' },
+      { label: 'Android', testId: 'android', url: 'https://play.google.com/store/apps/details?id=ai.openclaw.app' },
+      { label: 'Desktop', testId: 'desktop', url: 'https://github.com/openclaw/openclaw/releases' },
+    ],
   },
   {
     key: 'hermes',
     nameKey: 'ONBOARDING_AGENT_FRAMEWORK_HERMES',
     Icon: HermesIcon,
     descriptionKey: 'ONBOARDING_AGENT_FRAMEWORK_HERMES_DESC',
+    companionApps: [{ label: 'Hermex iOS (separate backend)', testId: 'hermex-for-ios', url: 'https://apps.apple.com/us/app/hermex/id6767006319' }],
   },
 ];
 
@@ -59,17 +77,34 @@ export const AgentFrameworkCard = ({
     <StepSection number={1} title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
       <div className="space-y-4" data-testid="agent-apps-card">
         <div className="grid gap-4 sm:grid-cols-2">
-          {FRAMEWORKS.map(({ key, nameKey, Icon, descriptionKey }) => (
-            <OptionCard
-              key={key}
-              testId={`agent-${key}`}
-              title={t(nameKey)}
-              description={t(descriptionKey)}
-              icon={<Icon />}
-              selected={frameworks.includes(key)}
-              badge={undefined}
-              onSelect={() => onToggleFramework(key)}
-            />
+          {FRAMEWORKS.map(({ key, nameKey, Icon, descriptionKey, companionApps }) => (
+            <div key={key}>
+              <OptionCard
+                testId={`agent-${key}`}
+                title={t(nameKey)}
+                description={t(descriptionKey)}
+                icon={<Icon />}
+                selected={frameworks.includes(key)}
+                badge={undefined}
+                onSelect={() => onToggleFramework(key)}
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1 text-xs text-muted-foreground">
+                <span>{t('ONBOARDING_AGENT_COMPANION_APPS')}</span>
+                {companionApps.map((app) => (
+                  <a
+                    key={app.url}
+                    href={app.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid={`${key}-client-${app.testId}`}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-foreground/[0.02] px-2 py-1 font-medium text-foreground/80 transition-colors hover:border-primary/50 hover:text-primary"
+                  >
+                    {app.label}
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
 
