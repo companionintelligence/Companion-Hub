@@ -55,7 +55,13 @@ function runtimeHealthQueryKey(appUrn: string) {
   return ['app-runtime-health', appUrn];
 }
 
-function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
+/**
+ * Refetch everything that describes one app. Also the canonical way to unwind an optimistic install
+ * write: `onMutate` forces the app to `installing` in several caches at once, and a request that
+ * fails before the backend starts work emits no SSE event and none of these queries poll — so
+ * without this they keep spinning on a status that will never arrive.
+ */
+export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
   void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: appUrn } }) });
   void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
@@ -199,6 +205,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   if (appStatus === 'installing' && progress === undefined) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     updateInstallErrorCache(queryClient, appUrn, { error, errorCode, errorDetail, settingsPath }, appStatus);
+    void queryClient.invalidateQueries({ queryKey: installQueueQueryKey });
     invalidateAppQueries(queryClient, appUrn);
     return;
   }

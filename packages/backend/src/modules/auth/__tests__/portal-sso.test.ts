@@ -48,10 +48,12 @@ describe('portal-sso helpers', () => {
 
   it('builds the Tauri deep link for desktop auth handoff', () => {
     expect(buildPortalDesktopDeepLink('handoff-token')).toBe('cihub://auth?token=handoff-token');
+    expect(buildPortalDesktopDeepLink('handoff-token', 'http://127.0.0.1:5002')).toBe('cihub-dev://auth?token=handoff-token');
   });
 
   it('builds the Tauri deep link for desktop auth errors', () => {
     expect(buildPortalDesktopErrorDeepLink('callback_error')).toBe('cihub://auth?error=callback_error');
+    expect(buildPortalDesktopErrorDeepLink('callback_error', 'http://localhost:5002')).toBe('cihub-dev://auth?error=callback_error');
   });
 
   it('redirects browser portal errors to the login page', () => {
@@ -73,7 +75,7 @@ describe('portal-sso helpers', () => {
         errorCode: 'account_mismatch',
         fallbackOrigin: 'http://localhost:5002',
       }),
-    ).toBe('cihub://auth?error=account_mismatch');
+    ).toBe('cihub-dev://auth?error=account_mismatch');
   });
 
   it('builds the hub callback URL from the initiating origin', () => {

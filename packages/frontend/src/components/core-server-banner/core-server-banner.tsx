@@ -1,38 +1,14 @@
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CORE_SERVER_LOW_CPU_CORES, CORE_SERVER_LOW_DISK_GB, CORE_SERVER_LOW_RAM_GB } from './core-server-banner-visibility';
 
 const CORE_SERVER_URL = 'https://www.ci.computer/store/p/core';
 
-export interface SystemSnapshot {
-  memoryTotal: number;
-  diskSize: number;
-  cpuCores: number;
-}
-
 interface CoreServerBannerProps {
   onDismiss: () => void;
-  system?: SystemSnapshot;
 }
 
-function getMessageKeys(system?: SystemSnapshot): { titleKey: string; messageKey: string } {
-  if (system) {
-    if (system.memoryTotal < CORE_SERVER_LOW_RAM_GB) {
-      return { titleKey: 'CORE_SERVER_BANNER_LOW_RAM_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_RAM_MESSAGE' };
-    }
-    if (system.diskSize < CORE_SERVER_LOW_DISK_GB) {
-      return { titleKey: 'CORE_SERVER_BANNER_LOW_DISK_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_DISK_MESSAGE' };
-    }
-    if (system.cpuCores <= CORE_SERVER_LOW_CPU_CORES) {
-      return { titleKey: 'CORE_SERVER_BANNER_LOW_CPU_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_CPU_MESSAGE' };
-    }
-  }
-  return { titleKey: 'CORE_SERVER_BANNER_DEFAULT_TITLE', messageKey: 'CORE_SERVER_BANNER_DEFAULT_MESSAGE' };
-}
-
-export function CoreServerBanner({ onDismiss, system }: CoreServerBannerProps) {
+export function CoreServerBanner({ onDismiss }: CoreServerBannerProps) {
   const { t } = useTranslation();
-  const { titleKey, messageKey } = getMessageKeys(system);
 
   return (
     <div
@@ -42,7 +18,8 @@ export function CoreServerBanner({ onDismiss, system }: CoreServerBannerProps) {
       className="flex flex-col gap-3 rounded-lg border border-primary/30 bg-primary/[0.08] px-4 py-3 text-sm shadow-sm md:flex-row md:items-center md:justify-between"
     >
       <span className="leading-relaxed text-foreground">
-        <strong className="font-semibold text-primary">{t(titleKey)}</strong> <span className="text-muted-foreground">— {t(messageKey)}</span>
+        <strong className="font-semibold text-primary">{t('CORE_SERVER_BANNER_LOW_DISK_TITLE')}</strong>{' '}
+        <span className="text-muted-foreground">{t('CORE_SERVER_BANNER_LOW_DISK_MESSAGE')}</span>
       </span>
       <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
         <a

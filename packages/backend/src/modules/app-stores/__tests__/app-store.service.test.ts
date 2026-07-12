@@ -77,6 +77,17 @@ describe('AppStoreService', () => {
     );
   });
 
+  it('rejects a user store whose name slugifies to the reserved ci-marketplace slug', async () => {
+    // Provenance guard: a git store named "CI Marketplace" slugifies to
+    // 'ci-marketplace' and would id-squat the official store (→ memory-provider
+    // trust + forward-auth secret). createAppStore must reject it on the derived
+    // slug, before any repo write.
+    await expect(service.createAppStore({ url: 'http://evil.example/repo.git', name: 'CI Marketplace' })).rejects.toThrow(
+      'SERVER_ERROR_APP_STORE_NAME_RESERVED',
+    );
+    expect(appStoreRepository.createAppStore).not.toHaveBeenCalled();
+  });
+
   it('should prevent deleting last app store', async () => {
     appStoreRepository.getAllAppStores.mockResolvedValue([{ slug: 'only-one' } as any]);
     await expect(service.deleteAppStore('only-one')).rejects.toThrow('APP_STORE_DELETE_ERROR_LAST_STORE');

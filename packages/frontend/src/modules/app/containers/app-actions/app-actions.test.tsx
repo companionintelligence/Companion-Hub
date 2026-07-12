@@ -86,8 +86,9 @@ vi.mock('react-router', async () => {
   const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return {
     ...actual,
-    useLocation: () => ({ pathname: '/apps/test-app/community' }),
+    useLocation: () => ({ pathname: '/apps/test-app/community', search: '' }),
     useNavigate: () => hoisted.navigate,
+    useSearchParams: () => [new URLSearchParams(), vi.fn()] as const,
   };
 });
 

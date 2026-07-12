@@ -76,9 +76,35 @@ export class EnvUtils {
    * @param {Map<string, string>} envMap - Map of environment variables
    */
   public envMapToString = (envMap: Map<string, string>) => {
-    const envArray = Array.from(envMap).map(([key, value]) => `${key}=${value}`);
+    const envArray = Array.from(envMap).map(([key, value]) => {
+      if (typeof value !== 'string') {
+        // Backstop, not a code path — every writer is supposed to String() its values. Coercing
+        // keeps boot alive, but doing it silently would let `KEY=[object Object]` ship into a
+        // container env with no trace, so name the key (never the value: env values are secrets).
+        console.warn(
+          `Env value for '${key}' is ${value === null || value === undefined ? String(value) : typeof value}, not a string — coercing. Fix the writer that produced it.`,
+        );
+      }
+      return `${key}=${this.sanitizeEnvValue(value)}`;
+    });
     return envArray.join('\n');
   };
+
+  /**
+   * Strip CR/LF from a value before it is written as a `KEY=value` line. The
+   * .env format is one variable per line, so a newline in a value can never be
+   * represented faithfully — and left unescaped it would forge additional env
+   * lines (env injection). Stripping it is both correct for the format and a
+   * defense-in-depth guard for any value derived from external input.
+   *
+   * `value` is typed `string`, but the Map it comes from is populated from resolvers,
+   * manifests and form data — any of which can hand back a non-string and make this a
+   * type lie. `.replace` on one throws a TypeError that takes down boot with a stack
+   * trace naming no variable. String() the value instead: a stringified value is
+   * recoverable, a crashed bootstrap is not. Note `?? ''` alone is NOT enough — it
+   * rescues null/undefined but a number or boolean still has no `.replace`.
+   */
+  private sanitizeEnvValue = (value: string | undefined) => String(value ?? '').replace(/[\r\n]+/g, ' ');
 
   /**
    * Convert a string of environment variables to a Map

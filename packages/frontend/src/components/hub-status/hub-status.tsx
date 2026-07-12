@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
 import { isTauriMobileSync } from '@/lib/mobile-connection';
@@ -50,6 +51,49 @@ function getErrorMessage(err: unknown): string {
 
 export function reloadCurrentWindow() {
   window.location.reload();
+}
+
+const HUB_STEADY_SESSION_KEY = 'ci-hub-steady-running';
+
+function readHubSteadySession(): boolean {
+  try {
+    return sessionStorage.getItem(HUB_STEADY_SESSION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markHubSteadySession(): void {
+  try {
+    sessionStorage.setItem(HUB_STEADY_SESSION_KEY, '1');
+  } catch {
+    // sessionStorage unavailable — steady-state hints are best-effort only.
+  }
+}
+
+function clearHubSteadySession(): void {
+  try {
+    sessionStorage.removeItem(HUB_STEADY_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** True when the user explicitly reloaded the WebView (context menu → Reload). */
+export function isUserInitiatedPageReload(): boolean {
+  if (typeof performance === 'undefined') {
+    return false;
+  }
+  const getEntriesByType = performance.getEntriesByType?.bind(performance);
+  if (!getEntriesByType) {
+    return false;
+  }
+  try {
+    const entry = getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    return entry?.type === 'reload';
+  } catch {
+    return false;
+  }
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
@@ -532,16 +576,19 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
   const showSlowMessage = elapsedSeconds > 90;
   const showVerySlowMessage = elapsedSeconds > 180;
 
+  // Optional sidecars (Private VPN, tunnel, Ollama) must not block or clutter startup
+  // when disconnected — only show them once ready; never count them in progress stats.
+  const visibleServices = (progress?.services ?? []).filter((svc) => !svc.optional || svc.state === 'ready');
+
   const serviceCounts = (progress?.services ?? []).reduce(
     (acc, svc) => {
-      if (svc.optional && svc.state === 'unavailable') {
-        acc.optionalUnavailable += 1;
+      if (svc.optional) {
         return acc;
       }
       acc[svc.state] += 1;
       return acc;
     },
-    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0, optionalUnavailable: 0 } as Record<ServiceState | 'optionalUnavailable', number>,
+    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0 } as Record<ServiceState, number>,
   );
 
   const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
@@ -581,9 +628,6 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
                 {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
-                {serviceCounts.optionalUnavailable > 0
-                  ? ` · ${serviceCounts.optionalUnavailable} ${t('HUB_STATUS_SERVICE_OPTIONAL_UNAVAILABLE')}`
-                  : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
                 <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
@@ -594,9 +638,9 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           )}
         </div>
 
-        {progress && progress.services.length > 0 ? (
+        {visibleServices.length > 0 ? (
           <div className="w-full rounded-lg border border-border bg-muted/30 px-4 divide-y divide-border/50">
-            {progress.services.map((svc) => (
+            {visibleServices.map((svc) => (
               <ServiceRow key={svc.container} service={svc} />
             ))}
           </div>
@@ -625,6 +669,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 
 export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
+  const { revalidate } = useRevalidator();
   useDeepLinkPairCapture();
   useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
@@ -644,7 +689,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const sawNonRunningRef = useRef(false);
   const hasReloadedRef = useRef(false);
   /** Once the hub has reached Running, ignore transient Starting (e.g. Tailscale sidecar or health blips). */
-  const hubSteadyRunningRef = useRef(false);
+  const hubSteadyRunningRef = useRef(readHubSteadySession());
 
   const checkHealthFallback = useCallback(async () => {
     const port = await probeHealthyHubApiPort(true);
@@ -712,28 +757,38 @@ export function HubStatus({ children }: HubStatusProps) {
             }
           }
 
-          // When running in Tauri release builds, verify the HTTP endpoints
-          // are actually reachable before declaring 'Running'. This avoids a
-          // flicker where children mount briefly then hide again when the
-          // health-check fails.
-          // Match Docker's ci-os-hub healthcheck (`/api/health` only — not `/api/registration/status`,
-          // which can lag right after boot and wedge the loading UI).
-          if (result !== 'Running' && !(result === 'Starting' && hubSteadyRunningRef.current)) {
+          const isHardNonRunning =
+            result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
+
+          if (isHardNonRunning) {
+            hubSteadyRunningRef.current = false;
+            clearHubSteadySession();
             sawNonRunningRef.current = true;
+            setStatus(result);
+            return;
           }
 
-          if (result === 'Running') {
+          // Docker may report Starting while ci-os-hub is already serving HTTP (healthcheck
+          // lag, sidecar churn). The local API probe is the UI gate — not container health alone.
+          // Match Docker's ci-os-hub healthcheck (`/api/health/live` only).
+          if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
-            if (alivePort === null) {
-              sawNonRunningRef.current = true;
-              setStatus('Starting');
-            } else {
+            if (alivePort !== null) {
               configureHubApiPort(alivePort);
               setStatus('Running');
+              return;
             }
-          } else {
-            setStatus(result);
+
+            // API probe failed — treat as non-running even if we were steady before.
+            hubSteadyRunningRef.current = false;
+            clearHubSteadySession();
+            sawNonRunningRef.current = true;
+            setStatus('Starting');
+            return;
           }
+
+          sawNonRunningRef.current = true;
+          setStatus(result);
         } catch {
           await checkHealthFallback();
         }
@@ -749,8 +804,10 @@ export function HubStatus({ children }: HubStatusProps) {
   useEffect(() => {
     if (status === 'Running') {
       hubSteadyRunningRef.current = true;
+      markHubSteadySession();
     } else if (status === 'Stopped' || status === 'DockerNotAvailable' || (typeof status === 'object' && status !== null && 'Error' in status)) {
       hubSteadyRunningRef.current = false;
+      clearHubSteadySession();
     }
   }, [status]);
 
@@ -788,15 +845,21 @@ export function HubStatus({ children }: HubStatusProps) {
   // that failed during startup (backend wasn't ready) would stay stale in React
   // Router's cache. Reload once so clientLoader runs against the healthy backend.
   useEffect(() => {
-    if (isTauri && status === 'Running' && sawNonRunningRef.current && !hasReloadedRef.current) {
-      hasReloadedRef.current = true;
-      try {
-        reloadCurrentWindow();
-      } catch {
-        // JSDOM in tests doesn't support navigation; ignore safely.
-      }
+    if (!isTauri || status !== 'Running' || !sawNonRunningRef.current || hasReloadedRef.current) {
+      return;
     }
-  }, [status, isTauri]);
+    hasReloadedRef.current = true;
+    // User reload already re-ran clientLoader — revalidate routes instead of reloading again.
+    if (isUserInitiatedPageReload()) {
+      void revalidate();
+      return;
+    }
+    try {
+      reloadCurrentWindow();
+    } catch {
+      // JSDOM in tests doesn't support navigation; ignore safely.
+    }
+  }, [status, isTauri, revalidate]);
 
   const handleViewLogs = useCallback(async () => {
     const invoke = getTauriInvoke();

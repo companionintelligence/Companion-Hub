@@ -14,6 +14,13 @@ export interface HardwareProfile {
     hostRocmAvailable?: boolean;
     /** Host /dev/kfd is available for ROCm container apps (ComfyUI, etc.). Optional on older profiles. */
     hostRocmKfdAvailable?: boolean;
+    /**
+     * Which Docker backend the daemon is (from `docker info` OS/kernel). Drives GPU
+     * setup guidance: Docker Desktop manages the container GPU runtime itself, a
+     * native engine inside WSL2 needs nvidia-container-toolkit installed in the
+     * distro, and native Linux needs it on the host. Optional on older profiles.
+     */
+    containerHostKind?: 'docker-desktop' | 'wsl-engine' | 'native-linux' | 'unknown';
   };
   npu: {
     available: boolean;

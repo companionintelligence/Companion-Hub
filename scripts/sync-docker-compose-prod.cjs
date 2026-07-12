@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * Copies the canonical docker-compose.prod.yml into the Tauri desktop bundle.
- * Run before desktop build and in CI to prevent drift.
+ * Sync docker-compose.prod.yml into the Tauri desktop bundle.
+ *
+ * The root compose is for source checkouts (build from Dockerfile). The desktop
+ * bundle must pull a prebuilt image via CI_HUB_IMAGE — the data dir has no
+ * Dockerfile and cannot build locally.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,5 +13,19 @@ const repoRoot = path.resolve(__dirname, '..');
 const source = path.join(repoRoot, 'docker-compose.prod.yml');
 const target = path.join(repoRoot, 'packages/desktop/src-tauri/resources/docker-compose.prod.yml');
 
-fs.copyFileSync(source, target);
-console.log(`Synced ${path.relative(repoRoot, source)} → ${path.relative(repoRoot, target)}`);
+const rootCompose = fs.readFileSync(source, 'utf-8');
+
+const buildBlockRe = /(\n {2}ci-os-hub:[\s\S]*?\n)( {4}build:[\s\S]*?\n)( {4}depends_on:)/;
+
+const desktopHubService = `    image: \${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
+    pull_policy: if_not_present
+`;
+
+const patched = rootCompose.replace(buildBlockRe, `$1${desktopHubService}$3`);
+if (patched === rootCompose) {
+  console.error('sync-docker-compose-prod: expected ci-os-hub build block in root compose; sync aborted');
+  process.exit(1);
+}
+
+fs.writeFileSync(target, patched);
+console.log(`Synced ${path.relative(repoRoot, source)} → ${path.relative(repoRoot, target)} (desktop image pull)`);

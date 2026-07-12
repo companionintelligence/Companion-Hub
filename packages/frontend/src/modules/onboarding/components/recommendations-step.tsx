@@ -6,7 +6,8 @@ import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getRecommendedApps } from '../helpers/alternatives';
+import { resolveOnboardingRecommendations } from '../helpers/alternatives';
+import { ONBOARDING_CURATED_PICKS } from '../helpers/onboarding-curated-picks';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
@@ -54,22 +55,17 @@ export const RecommendationsStep = ({
     data: altsData,
     isLoading: isAltsLoading,
     isError: isAltsError,
-    error: altsError,
     refetch,
   } = useQuery({
     ...portalAlternativesQueryOptions(),
   });
-  // Filter recommendations to only include alternatives available in the app store
+  // Curated cross-category picks intersected with the marketplace catalog.
   const recommendations = useMemo(() => {
-    if (!altsData) return [];
-    const storeSlugs = new Set(storeApps.map((a) => catalogAppSlug(a)).filter((slug): slug is string => Boolean(slug)));
-    return getRecommendedApps(detectedNames, altsData)
-      .map((rec) => ({
-        ...rec,
-        alternatives: rec.alternatives.filter((alt) => alt.appSlug && storeSlugs.has(alt.appSlug)),
-      }))
-      .filter((rec) => rec.alternatives.length > 0);
+    if (storeApps.length === 0) return [];
+    return resolveOnboardingRecommendations(detectedNames, altsData ?? {}, storeApps);
   }, [altsData, detectedNames, storeApps]);
+
+  const recommendationsLoading = (isCatalogLoading || isRetryingEmptyCatalog || isAltsLoading) && recommendations.length === 0;
 
   // Pinned apps that exist in the store, shown at the top and pre-selected.
   // biome-ignore lint/correctness/useExhaustiveDependencies: pinnedSlugs is stable (passed from parent constant)
@@ -153,7 +149,11 @@ export const RecommendationsStep = ({
           const storeApp = findCatalogAppBySlug(storeApps, alt.appSlug);
           apps.push({
             appSlug: alt.appSlug,
+            // `alt.name` comes from the alternatives dataset, which is free to label an app
+            // differently from the marketplace. Carry the store's own name so the dashboard tile does
+            // not render under one name and then rename itself once the real row arrives.
             name: alt.name,
+            storeName: storeApp?.name,
             icon: alt.icon,
             category: rec.category,
             replacesNames: rec.proprietary,
@@ -238,23 +238,22 @@ export const RecommendationsStep = ({
     ...flatAppsFromAlts,
   ];
 
-  const showCatalogLoading = isCatalogLoading || isRetryingEmptyCatalog;
+  const showCatalogLoading = recommendationsLoading;
 
   const content = (
     <>
       {isCatalogError && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {t('APP_STORE_COULD_NOT_LOAD_FEATURED')}.{' '}
+          {t('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE')}{' '}
           <button type="button" className="font-medium underline" onClick={() => void refetchCatalog()}>
             {t('COMMON_RETRY')}
           </button>
         </div>
       )}
 
-      {isAltsError && (
+      {isAltsError && recommendations.length === 0 && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
-          {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
+          {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}{' '}
           <button type="button" className="font-medium underline" onClick={() => refetch()}>
             {t('COMMON_RETRY')}
           </button>
@@ -272,23 +271,19 @@ export const RecommendationsStep = ({
       )}
 
       <div className="max-h-[420px] overflow-y-auto pr-1">
-        {(showCatalogLoading || isAltsLoading) && (
+        {showCatalogLoading && (
           <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
-            {Array.from({ length: 6 }).map((_, i) => (
+            {Array.from({ length: ONBOARDING_CURATED_PICKS.length }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
               <div key={i} className="h-16 animate-pulse rounded-md bg-muted/50" />
             ))}
           </div>
         )}
-        {showCatalogLoading && !isAltsLoading && <p className="py-2 text-sm text-muted-foreground">{t('ONBOARDING_CATALOG_LOADING')}</p>}
-        {isCatalogSettled &&
-          !isCatalogError &&
-          !isAltsLoading &&
-          !isAltsError &&
-          flatApps.length === 0 &&
-          altsData &&
-          Object.keys(altsData).length > 0 && <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>}
-        {!showCatalogLoading && !isAltsLoading && flatApps.length > 0 && (
+        {showCatalogLoading && <p className="py-2 text-sm text-muted-foreground">{t('ONBOARDING_RECOMMENDATIONS_LOADING')}</p>}
+        {!showCatalogLoading && !isCatalogError && !isAltsError && flatApps.length === 0 && isCatalogSettled && !isAltsLoading && (
+          <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
+        )}
+        {!showCatalogLoading && flatApps.length > 0 && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {flatApps.map((app) => {
               const isSelected = selected.has(app.slug);

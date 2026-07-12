@@ -168,6 +168,19 @@ export class PortalClientService {
     return this.postJson('/devices/check-in', payload, { authenticated: true });
   }
 
+  async postDeviceApplicationsRegistry(payload: {
+    organizationId: string;
+    apps: Array<{
+      name: string;
+      slug: string;
+      port: number;
+      publicDomain?: string;
+      remove?: boolean;
+    }>;
+  }): Promise<{ success?: boolean }> {
+    return this.postJson('/devices/applications/registry', payload, { authenticated: true });
+  }
+
   async postDeviceDeregister(deviceId: string): Promise<unknown> {
     return this.postJson('/devices/deregister', { device_id: deviceId }, { authenticated: true });
   }

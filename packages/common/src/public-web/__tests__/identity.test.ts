@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { buildFqdnSubdomain, buildOriginServerName, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '../identity.js';
+import {
+  buildFqdnSubdomain,
+  buildOriginServerName,
+  buildPublicWebIdentity,
+  deriveAppSlug,
+  resolvePublicDomainRoot,
+  sanitizeAppSubdomain,
+} from '../identity.js';
+
+describe('deriveAppSlug', () => {
+  it('hyphenates dots instead of truncating (unlike sanitizeAppSubdomain)', () => {
+    expect(deriveAppSlug('Node.js Dashboard')).toBe('node-js-dashboard');
+    expect(deriveAppSlug('Home Assistant 2024.1')).toBe('home-assistant-2024-1');
+  });
+
+  it('sanitizes spaces, capitals and punctuation to a URL-safe slug', () => {
+    expect(deriveAppSlug('Adguard Home Sync')).toBe('adguard-home-sync');
+    expect(deriveAppSlug('My!App')).toBe('my-app');
+  });
+
+  it('returns an empty string when there are no slug-able characters', () => {
+    expect(deriveAppSlug('///')).toBe('');
+    expect(deriveAppSlug('日本語')).toBe('');
+  });
+});
 
 describe('sanitizeAppSubdomain', () => {
   it('strips dots and sanitizes invalid characters', () => {

@@ -138,10 +138,9 @@ export class AppsService {
 
     entries.sort((a, b) => a.id - b.id);
 
-    let active = activeUrn ? (entries.find((e) => e.urn === activeUrn) ?? null) : null;
-    if (!active && entries.length > 0) {
-      active = entries[0] ?? null;
-    }
+    // Active = app currently holding the Docker install pipeline mutex only.
+    // Everything else in `installing` is queued behind it (FIFO by app id).
+    const active = activeUrn ? (entries.find((e) => e.urn === activeUrn) ?? null) : null;
 
     const queued = entries.filter((e) => e.urn !== active?.urn).map(({ urn, name }) => ({ urn, name }));
 

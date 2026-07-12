@@ -7,6 +7,12 @@ import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
 import { DOCKERODE } from './constants';
 
+export interface PortExposeRoute {
+  appUrn: string;
+  traefikHost: string;
+  upstreamPort: number;
+}
+
 interface TraefikRouter {
   rule: string;
   service: string;
@@ -63,6 +69,52 @@ export class TraefikConfigService {
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {
     this.mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+  }
+
+  /**
+   * Write Traefik routes for port-expose workloads (host port proxies).
+   */
+  public async syncPortExposeRoutes(routes: PortExposeRoute[]): Promise<void> {
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/port-expose.yml`;
+
+      if (routes.length === 0) {
+        if (await this.filesystem.pathExists(configPath)) {
+          await this.filesystem.removeFile(configPath);
+          this.logger.info('Removed empty port-expose Traefik config');
+        }
+        return;
+      }
+
+      const config: TraefikConfig = {
+        http: {
+          routers: {},
+          services: {},
+        },
+      };
+
+      for (const route of routes) {
+        const routerId = route.appUrn.replace(':', '-');
+        config.http.routers[routerId] = {
+          rule: `Host(\`${route.traefikHost}\`)`,
+          service: routerId,
+          entryPoints: ['web'],
+        };
+        config.http.services[routerId] = {
+          loadBalancer: {
+            servers: [{ url: `http://host.docker.internal:${route.upstreamPort}` }],
+          },
+        };
+      }
+
+      const yamlContent = yaml.stringify(config, { indent: 2 });
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
+      this.logger.info(`Wrote ${routes.length} port-expose Traefik route(s) to ${configPath}`);
+    } catch (error) {
+      this.logger.error('Failed to sync port-expose Traefik routes:', error);
+      throw error;
+    }
   }
 
   /**

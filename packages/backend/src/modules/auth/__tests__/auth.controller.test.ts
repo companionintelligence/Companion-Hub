@@ -189,7 +189,7 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=callback_error');
+      expect(res.redirect).toHaveBeenCalledWith('cihub-dev://auth?error=callback_error');
     });
 
     it('redirects browser flows to the login page with a portal_error query param', async () => {
@@ -226,7 +226,7 @@ describe('AuthController', () => {
 
       await authController.startPortalLogin(req, res, undefined, '1');
 
-      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=not_configured');
+      expect(res.redirect).toHaveBeenCalledWith('cihub-dev://auth?error=not_configured');
     });
   });
 

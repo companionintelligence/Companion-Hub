@@ -1,10 +1,14 @@
 import { Test } from '@nestjs/testing';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { McpService } from '../mcp.service';
+import { McpServerFactory } from '../mcp-server.factory';
+import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
+import { McpApiKeyService } from '../mcp-api-key.service';
 import { AppDiscoveryTools } from '../tools/app-discovery.tools';
 import { AppLifecycleTools } from '../tools/app-lifecycle.tools';
 import { AppConfigTools } from '../tools/app-config.tools';
@@ -32,9 +36,12 @@ import { LoggerService } from '@/core/logger/logger.service';
 describe('McpModule', () => {
   it('should compile as a standalone NestJS module without the full application', async () => {
     const module = await Test.createTestingModule({
+      imports: [ThrottlerModule.forRoot([{ ttl: 60_000, limit: 1000 }])],
       controllers: [McpController],
       providers: [
         McpService,
+        McpServerFactory,
+        McpSessionRegistry,
         McpToolRegistry,
         McpAuthGuard,
         AppDiscoveryTools,
@@ -60,11 +67,15 @@ describe('McpModule', () => {
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
         { provide: LinksService, useValue: mock<LinksService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: McpApiKeyService, useValue: mock<McpApiKeyService>() },
       ],
     }).compile();
 
     expect(module).toBeDefined();
     expect(module.get(McpService)).toBeDefined();
     expect(module.get(McpToolRegistry)).toBeDefined();
+
+    // Closes the module so McpSessionRegistry's reaper interval is cleared (no leaked handle).
+    await module.close();
   });
 });

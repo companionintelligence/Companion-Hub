@@ -7,6 +7,7 @@ import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { StepSection } from '../components/ai-setup/primitives';
@@ -19,6 +20,7 @@ import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
+import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
@@ -96,8 +98,15 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 
 function OnboardingWizard() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { user, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
-  const { apps: storeApps, isLoading: isCatalogLoading, isError: isCatalogError, refetch: refetchCatalog } = useMarketplaceCatalogApps();
+  const {
+    apps: storeApps,
+    isLoading: isCatalogLoading,
+    isError: isCatalogError,
+    isFetching: isCatalogFetching,
+    refetch: refetchCatalog,
+  } = useMarketplaceCatalogApps();
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
@@ -123,14 +132,23 @@ function OnboardingWizard() {
   }, []);
 
   useEffect(() => {
+    void prefetchOnboardingMarketplace(queryClient);
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (isCatalogLoading || isCatalogFetching || isCatalogError || storeApps.length > 0) {
+      return;
+    }
+
     const timer = setTimeout(() => {
       void refetchCatalog();
     }, 1500);
-    return () => clearTimeout(timer);
-  }, [refetchCatalog]);
 
-  const catalogReady = !isCatalogLoading && !isCatalogError;
-  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked && catalogReady;
+    return () => clearTimeout(timer);
+  }, [isCatalogError, isCatalogFetching, isCatalogLoading, refetchCatalog, storeApps.length]);
+
+  const recommendationsLoading = (isCatalogLoading || isCatalogFetching) && !isCatalogError;
+  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
   const publicExposureMode = resolveExposureMode('cloudflare', { cloudflareAvailable, tailscaleAvailable });
 
@@ -222,19 +240,12 @@ function OnboardingWizard() {
           <div className="flex flex-col gap-0.5 min-w-0">
             <ModelDownloadFooterSummary pullState={modelPullState} />
             <p className="text-sm text-muted-foreground">
-              {isCatalogLoading
-                ? t('COMMON_LOADING')
-                : isCatalogError
-                  ? t('APP_STORE_COULD_NOT_LOAD_FEATURED')
-                  : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
+              {recommendationsLoading
+                ? t('ONBOARDING_RECOMMENDATIONS_LOADING')
+                : (aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE')))}
             </p>
           </div>
           <div className="flex gap-2 sm:justify-end">
-            {isCatalogError && (
-              <Button variant="outline" size="lg" onClick={() => void refetchCatalog()}>
-                {t('COMMON_RETRY')}
-              </Button>
-            )}
             <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
               {t('ONBOARDING_INSTALL_AND_FINISH')}
             </Button>

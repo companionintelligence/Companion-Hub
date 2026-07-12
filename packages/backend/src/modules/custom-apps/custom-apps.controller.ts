@@ -2,13 +2,39 @@ import { Body, Controller, Param, Patch, Post, UploadedFile, UseGuards, UseInter
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '../auth/auth.guard';
 import { CustomAppService } from './custom-apps.service';
-import { CreateCustomAppDto, CreateCustomAppResponseDto, UpdateAppMetadataDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
+import { PortExposeService } from './port-expose.service';
+import {
+  CreateCustomAppDto,
+  CreateCustomAppResponseDto,
+  CreatePortExposeAppDto,
+  UpdateAppMetadataDto,
+  UpdateCustomAppDto,
+  UpdatePortExposeAppDto,
+} from './dto/custom-apps.dto';
 import { ApiResponse, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 
 @Controller('custom-apps')
 export class CustomAppController {
-  constructor(private readonly customAppService: CustomAppService) {}
+  constructor(
+    private readonly customAppService: CustomAppService,
+    private readonly portExposeService: PortExposeService,
+  ) {}
+
+  @Post('port-expose')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: CreateCustomAppResponseDto })
+  async createPortExposeApp(@Body() body: CreatePortExposeAppDto) {
+    const result = await this.portExposeService.createPortExposeApp(body);
+    return CreateCustomAppResponseDto.parse(
+      {
+        appUrn: result.appUrn,
+        appName: result.appName,
+        storeId: result.storeId,
+      },
+      { reportOnly: true },
+    );
+  }
 
   @Post()
   @UseGuards(AuthGuard)
@@ -23,6 +49,14 @@ export class CustomAppController {
       },
       { reportOnly: true },
     );
+  }
+
+  @Patch('port-expose/:urn')
+  @UseGuards(AuthGuard)
+  @ApiResponse({})
+  async updatePortExposeApp(@Param('urn') appUrn: string, @Body() body: UpdatePortExposeAppDto) {
+    await this.portExposeService.updatePortExposeApp(castAppUrn(appUrn), body);
+    return { success: true };
   }
 
   @Patch(':urn')

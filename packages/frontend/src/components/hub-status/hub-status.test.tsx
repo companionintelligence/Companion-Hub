@@ -5,6 +5,34 @@ import * as hubStatusModule from './hub-status';
 
 const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
 
+const revalidateMock = vi.fn();
+
+const probeMocks = vi.hoisted(() => {
+  const defaultProbe: (configureClient?: boolean) => Promise<number | null> = async () => null;
+  return {
+    probeHealthyHubApiPort: vi.fn<(configureClient?: boolean) => Promise<number | null>>(),
+    defaultProbe,
+  };
+});
+
+vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tauri-hub-probe')>();
+  probeMocks.defaultProbe = actual.probeHealthyHubApiPort;
+  probeMocks.probeHealthyHubApiPort.mockImplementation(actual.probeHealthyHubApiPort);
+  return {
+    ...actual,
+    probeHealthyHubApiPort: probeMocks.probeHealthyHubApiPort,
+  };
+});
+
+vi.mock('react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router')>();
+  return {
+    ...actual,
+    useRevalidator: () => ({ revalidate: revalidateMock, state: 'idle' as const }),
+  };
+});
+
 vi.mock('@/lib/theme/theme', () => ({
   getLogo: () => '/logo.svg',
 }));
@@ -17,6 +45,10 @@ vi.mock('react-router', async (orig) => ({
 }));
 
 beforeEach(() => {
+  revalidateMock.mockClear();
+  sessionStorage.clear();
+  probeMocks.probeHealthyHubApiPort.mockReset();
+  probeMocks.probeHealthyHubApiPort.mockImplementation(probeMocks.defaultProbe);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => ({
@@ -140,7 +172,7 @@ describe('getDockerDesktopGuideContent', () => {
       alreadyInstalledSteps: [
         'Open Docker Desktop from your Start Menu',
         "Wait for Docker to start (you'll see the whale icon in your system tray)",
-        'Come back here — the Hub will continue automatically',
+        'Come back here. The Hub will continue automatically',
       ],
       notInstalledTitle: 'If Docker Desktop is NOT installed:',
       notInstalledSteps: [
@@ -148,7 +180,7 @@ describe('getDockerDesktopGuideContent', () => {
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
         'Start Docker Desktop',
-        'Come back here — the Hub will start automatically',
+        'Come back here. The Hub will start automatically',
       ],
       hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
     });
@@ -162,14 +194,14 @@ describe('getDockerDesktopGuideContent', () => {
       alreadyInstalledSteps: [
         'Open Docker Desktop from your Applications folder',
         "Wait for Docker to start (you'll see the whale icon in your menu bar)",
-        'Come back here — the Hub will continue automatically',
+        'Come back here. The Hub will continue automatically',
       ],
       notInstalledTitle: 'If Docker Desktop is NOT installed:',
       notInstalledSteps: [
         'Download Docker Desktop for Mac',
         'Open the .dmg and drag Docker to Applications',
         'Launch Docker Desktop and grant permissions',
-        'Come back here — the Hub will start automatically',
+        'Come back here. The Hub will start automatically',
       ],
     });
   });
@@ -499,10 +531,6 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
   });
 
   it('renders Hub child immediately when status starts as Running (no prior non-running state)', async () => {
-    // The sawNonRunningRef guard ensures we don't attempt a reload when the Hub
-    // was already Running on first check. We can only observe this indirectly
-    // in JSDOM (reload is a no-op there), but we verify the component renders
-    // normally without error.
     mockMacTauriWithStatus(['Running']);
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     // No blocking screens should be shown
@@ -534,5 +562,50 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
 
     expect(reloadSpy).not.toHaveBeenCalled();
     expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('opens the app when Docker reports Starting but the local API is already healthy', async () => {
+    mockMacTauriWithStatus(['Starting']);
+
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+  });
+
+  it('revalidates routes instead of reloading when the user refreshed while the hub was waking up', async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem('ci-hub-steady-running', '1');
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    const navEntry = { type: 'reload' } as PerformanceNavigationTiming;
+    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([navEntry]);
+    probeMocks.probeHealthyHubApiPort.mockResolvedValueOnce(null).mockResolvedValue(5002);
+
+    mockMacTauriWithStatus(['Starting', 'Starting']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(revalidateMock).toHaveBeenCalled();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('isUserInitiatedPageReload returns false when navigation timing is unavailable', () => {
+    const original = performance.getEntriesByType;
+    Object.defineProperty(performance, 'getEntriesByType', {
+      configurable: true,
+      value: undefined,
+    });
+
+    expect(hubStatusModule.isUserInitiatedPageReload()).toBe(false);
+
+    Object.defineProperty(performance, 'getEntriesByType', {
+      configurable: true,
+      value: original,
+    });
   });
 });

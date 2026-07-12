@@ -4,7 +4,7 @@ import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PropsWithChildren } from 'react';
-import toast from 'react-hot-toast';
+import toast, { type Toast } from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
 
@@ -14,6 +14,19 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+
+  // Renders an error toast whose "see logs" text links to the Settings logs tab.
+  const renderLogsErrorToast = (i18nKey: string, appName: string) => (toastInstance: Toast) => (
+    <span className="text-sm">
+      <Trans
+        i18nKey={i18nKey}
+        values={{ id: appName, logsLabel: t('COMMON_LOGS') }}
+        components={{
+          logsLink: <Link to={logsPageHref} className="font-medium underline" onClick={() => toast.dismiss(toastInstance.id)} />,
+        }}
+      />
+    </span>
+  );
 
   useSSE({
     topic: 'app',
@@ -75,17 +88,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
             break;
           }
-          toast.error((toastInstance) => (
-            <span className="text-sm">
-              <Trans
-                i18nKey="APP_ERROR_APP_FAILED_TO_INSTALL_TOAST"
-                values={{ id: appName, logsLabel: t('COMMON_LOGS') }}
-                components={{
-                  logsLink: <Link to={logsPageHref} className="font-medium underline" onClick={() => toast.dismiss(toastInstance.id)} />,
-                }}
-              />
-            </span>
-          ));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_INSTALL_TOAST', appName));
           break;
         case 'install_cancelled':
           toast.success(t('APP_INSTALL_CANCELLED', { id: appName }));
@@ -98,49 +101,49 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
             toast.error(t('APP_ERROR_NETWORK_OVERLAP_TOAST', { id: appName }));
             break;
           }
-          toast.error(t('APP_ERROR_APP_FAILED_TO_START', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_START_TOAST', appName));
           break;
         case 'stop_success':
           toast.success(t('APP_STOP_SUCCESS', { id: appName }));
           break;
         case 'stop_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_STOP', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_STOP_TOAST', appName));
           break;
         case 'uninstall_success':
           toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
           break;
         case 'uninstall_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_UNINSTALL', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName));
           break;
         case 'update_success':
           toast.success(t('APP_UPDATE_SUCCESS', { id: appName }));
           break;
         case 'update_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_UPDATE', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_UPDATE_TOAST', appName));
           break;
         case 'reset_success':
           toast.success(t('APP_RESET_SUCCESS', { id: appName }));
           break;
         case 'reset_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_RESET', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_RESET_TOAST', appName));
           break;
         case 'restart_success':
           toast.success(t('APP_RESTART_SUCCESS', { id: appName }));
           break;
         case 'restart_error':
-          toast.error(t('APP_ERROR_APP_FAILED_TO_RESTART', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_RESTART_TOAST', appName));
           break;
         case 'backup_success':
           toast.success(t('APP_BACKUP_SUCCESS', { id: appName }));
           break;
         case 'backup_error':
-          toast.error(t('APP_BACKUP_ERROR', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_BACKUP_ERROR_TOAST', appName));
           break;
         case 'restore_success':
           toast.success(t('APP_RESTORE_SUCCESS', { id: appName }));
           break;
         case 'restore_error':
-          toast.error(t('APP_RESTORE_ERROR', { id: appName }));
+          toast.error(renderLogsErrorToast('APP_RESTORE_ERROR_TOAST', appName));
           break;
         case 'public_dns_error':
           toast.error(t('APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));

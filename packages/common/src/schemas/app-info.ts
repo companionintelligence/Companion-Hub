@@ -44,6 +44,104 @@ export const hubIntegrationSchema = z
      * ```
      */
     inference: inferenceEnvMappingSchema.optional(),
+    /**
+     * Opt-in Portal OIDC issuer injection. Apps that "Sign in with CI-Portal"
+     * must authenticate against the *paired* Portal IdP (CI_CLOUD_URL), not a
+     * hardcoded default — otherwise an exposed app is redirected to the wrong
+     * IdP and fails with `INVALID_REDIRECT_URI`.
+     *
+     * When declared, the Hub resolves the paired Portal origin (CI_CLOUD_URL)
+     * at env-generation time and writes it into the app's `app.env` under the
+     * app-declared env variable name. This mirrors the `inference` opt-in
+     * mapping: only apps that opt in are touched, so a third-party app that
+     * reads a same-named var for its own IdP is never clobbered.
+     *
+     * Example in config.json:
+     * ```json
+     * "hub_integration": {
+     *   "oidc": {
+     *     "issuer_env": "CI_OIDC_ISSUER",
+     *     "issuer_path": "/api/auth"
+     *   }
+     * }
+     * ```
+     */
+    oidc: z
+      .object({
+        /**
+         * Env variable name the app reads its OIDC issuer from (e.g. "CI_OIDC_ISSUER").
+         * Must be a valid environment variable name so it is never written as a
+         * malformed/whitespace-padded key (which would silently misconfigure OIDC).
+         */
+        issuer_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'issuer_env must be a valid environment variable name'),
+        /**
+         * Optional path appended to the paired Portal origin to form the issuer
+         * (e.g. "/api/auth" for discovery-based clients that resolve
+         * `<issuer>/.well-known/openid-configuration`). Omit for a bare-origin
+         * issuer (e.g. CI-Server, which appends its own auth paths).
+         *
+         * Must not contain whitespace: the composed issuer is written verbatim
+         * into the app's `app.env` (an unescaped `KEY=value` line), so a newline
+         * here would inject an arbitrary extra environment line.
+         */
+        issuer_path: z.string().regex(/^\S*$/, 'issuer_path must not contain whitespace').optional(),
+      })
+      .optional(),
+    /**
+     * Opt-in Companion Memory (ci-memory / CI-Server) integration.
+     *
+     * Two independent roles:
+     *
+     * - **Consumer** (OpenClaw / Hermes / Import-Tools): declares the env
+     *   variable names the app reads its memory URL + api key from. When the
+     *   user connects the app (see the memory-connect flow), the Hub injects the
+     *   resolved values into these vars at env-generation time — mirroring the
+     *   `inference` / `oidc` opt-in mappings, so only apps that opt in are
+     *   touched. Presence of BOTH `url_env` and `token_env` marks a consumer.
+     *
+     * - **Provider** (ci-memory): declares the internal compose service + port
+     *   so the Hub can reach it on the shared network for the server-to-server
+     *   code exchange (the public URL is resolved separately for the browser).
+     *
+     * Example (consumer, ci-openclaw):
+     * ```json
+     * "hub_integration": {
+     *   "memory": { "url_env": "CI_SERVER_URL", "token_env": "CI_SERVER_TOKEN" }
+     * }
+     * ```
+     * Example (provider, ci-memory):
+     * ```json
+     * "hub_integration": {
+     *   "memory": { "provider": { "service": "gateway", "port": 8642 } }
+     * }
+     * ```
+     */
+    memory: z
+      .object({
+        /** Env var to receive the resolved Companion Memory URL (must be a valid env name). */
+        url_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'url_env must be a valid environment variable name')
+          .optional(),
+        /** Env var to receive the minted, memory-scoped api key (must be a valid env name). */
+        token_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
+          .optional(),
+        /** Provider role (ci-memory only): where the Hub reaches it on the shared docker network. */
+        provider: z
+          .object({
+            service: z.string().min(1),
+            port: z.number().min(1).max(65535),
+          })
+          .optional(),
+      })
+      .optional(),
   })
   .optional();
 
@@ -153,6 +251,10 @@ export const appInfoObjectSchema = z.object({
   force_pull: z.boolean().optional().default(false),
   /** When set, Hub pins all compose services to this Docker platform (e.g. linux/amd64 on Apple Silicon). */
   runtime_platform: z.string().optional(),
+  /** Discriminator for user workloads that proxy an existing host port (no Docker app). */
+  kind: z.enum(['port-expose']).optional(),
+  /** Host port the workload listens on when `kind` is `port-expose`. */
+  upstreamPort: z.number().min(1).max(65535).optional(),
   agents: agentConfigSchema,
   hub_integration: hubIntegrationSchema,
 });

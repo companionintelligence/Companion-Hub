@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
+import { canonicalTimeZone } from '@/common/helpers/timezone-helpers';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 
@@ -47,6 +48,13 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
+  // ISSUE-MCP-2 / ENH-MCP-4: MCP admin-managed settings, persisted so they survive restarts.
+  // mcpAllowDestructive gates destructive MCP tools. mcpApiKey overrides the derived MCP_API_KEY
+  // (see env-helpers) that seeds the key store's "Default" key on FIRST boot only — after that,
+  // keys are managed in Settings → MCP (SEC-MCP-8) and the env value is not a live credential.
+  // Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
+  mcpAllowDestructive: z.boolean().optional(),
+  mcpApiKey: z.string().trim().optional(),
 });
 
 const simpleAppInfoSchema = appInfoObjectSchema.pick({
@@ -85,7 +93,23 @@ const appContextSchema = z.object({
   tailscaleHttpsEnabled: z.boolean().optional(),
 });
 
-export class UserSettingsBody extends createZodDto(settingsSchema.partial()) {}
+// timeZone is validated here, on the WRITE path only — deliberately not on `settingsSchema`
+// itself. That base schema also parses settings.json at boot (generateSystemEnvFile), where an
+// invalid persisted zone must degrade gracefully to the host zone, not fail the parse and take
+// down boot. Rejecting it here means a bad zone gets a 400 at the moment it is chosen instead of
+// being persisted and silently overridden on every subsequent boot.
+export class UserSettingsBody extends createZodDto(
+  settingsSchema.partial().extend({
+    timeZone: z
+      .string()
+      .trim()
+      .refine((zone) => canonicalTimeZone(zone) !== undefined, { message: 'Must be a valid IANA time zone (e.g. Europe/Berlin)' })
+      // Persist ICU's canonical form ('america/new_york' → 'America/New_York'), so settings.json
+      // never holds a case-variant that the boot path would have to repair on every start.
+      .transform((zone) => canonicalTimeZone(zone) as string)
+      .optional(),
+  }),
+) {}
 
 export type { z as ZodType } from 'zod';
 

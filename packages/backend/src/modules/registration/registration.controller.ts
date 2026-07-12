@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/comm
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
@@ -41,6 +42,7 @@ export class RegistrationController {
   constructor(
     private readonly registrationService: RegistrationService,
     private readonly config: ConfigurationService,
+    private readonly logger: LoggerService,
   ) {}
 
   @Post('reset')
@@ -59,6 +61,14 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the explicit provisioning status' })
   async getStatus() {
     return this.registrationService.getLiveRegistrationStatus();
+  }
+
+  @Post('reconnect-tunnel')
+  @UseGuards(AuthGuard, DemoModeGuard)
+  @ApiOperation({ summary: 'Recover public/remote access for a registered but tunnel-degraded Hub' })
+  @ApiResponse({ status: 200, description: 'Returns the reconnect outcome (recovered, or an action the client should take)' })
+  async reconnectTunnel() {
+    return this.registrationService.reconnectTunnel();
   }
 
   @Get('state-drift')
@@ -366,6 +376,8 @@ export class RegistrationController {
   @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
   async pairDevice(@Body() body: PairDeviceDto) {
     const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    this.logger.info(`Received local pairing request: codeLength=${pairingCode?.length ?? 0} validShape=${pairingCode?.length === 6}`);
 
     if (!pairingCode || pairingCode.length !== 6) {
       return { success: false, message: 'A valid 6-character pairing code is required.' };

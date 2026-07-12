@@ -232,6 +232,21 @@
         ]
       }
     },
+    "/api/registration/reconnect-tunnel": {
+      "post": {
+        "operationId": "reconnectTunnel",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the reconnect outcome (recovered, or an action the client should take)"
+          }
+        },
+        "summary": "Recover public/remote access for a registered but tunnel-degraded Hub",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/state-drift": {
       "get": {
         "operationId": "getStateDrift",
@@ -3801,6 +3816,37 @@
         ]
       }
     },
+    "/api/custom-apps/port-expose": {
+      "post": {
+        "operationId": "createPortExposeApp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePortExposeAppDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCustomAppResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
     "/api/custom-apps": {
       "post": {
         "operationId": "createCustomApp",
@@ -3825,6 +3871,39 @@
                 }
               }
             }
+          }
+        },
+        "tags": [
+          "CustomApp"
+        ]
+      }
+    },
+    "/api/custom-apps/port-expose/{urn}": {
+      "patch": {
+        "operationId": "updatePortExposeApp",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePortExposeAppDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": ""
           }
         },
         "tags": [
@@ -4005,6 +4084,126 @@
         ]
       }
     },
+    "/api/memory-connect/start": {
+      "get": {
+        "operationId": "start",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/callback": {
+      "get": {
+        "operationId": "callback",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/state": {
+      "get": {
+        "operationId": "state",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/status": {
+      "get": {
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/skip": {
+      "post": {
+        "operationId": "skip",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
+    "/api/memory-connect/apps/{urn}/disconnect": {
+      "post": {
+        "operationId": "disconnect",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
     "/api/debug/seed": {
       "post": {
         "operationId": "seedDatabase",
@@ -4103,9 +4302,9 @@
         ]
       }
     },
-    "/api/mcp/sse": {
-      "get": {
-        "operationId": "sse",
+    "/api/mcp": {
+      "post": {
+        "operationId": "handlePost",
         "parameters": [],
         "responses": {
           "200": {
@@ -4115,19 +4314,173 @@
         "tags": [
           "Mcp"
         ]
+      },
+      "get": {
+        "operationId": "handleGet",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
+      },
+      "delete": {
+        "operationId": "handleDelete",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
       }
     },
-    "/api/mcp/messages": {
-      "post": {
-        "operationId": "messages",
+    "/api/mcp-admin/status": {
+      "get": {
+        "operationId": "getStatus",
         "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools": {
+      "get": {
+        "operationId": "listTools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools/{name}/call": {
+      "post": {
+        "operationId": "callTool",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpToolCallBody"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": ""
           }
         },
         "tags": [
-          "Mcp"
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/settings": {
+      "post": {
+        "operationId": "updateSettings",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpAdminSettingsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpCreateKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
         ]
       }
     }
@@ -4390,11 +4743,19 @@
         "type": "object",
         "properties": {}
       },
-      "CreateCustomAppDto": {
+      "CreatePortExposeAppDto": {
         "type": "object",
         "properties": {}
       },
       "CreateCustomAppResponseDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateCustomAppDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdatePortExposeAppDto": {
         "type": "object",
         "properties": {}
       },
@@ -4403,6 +4764,18 @@
         "properties": {}
       },
       "UpdateAppMetadataDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpToolCallBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpAdminSettingsBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "McpCreateKeyBody": {
         "type": "object",
         "properties": {}
       }

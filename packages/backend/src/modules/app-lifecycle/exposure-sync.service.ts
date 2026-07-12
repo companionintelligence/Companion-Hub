@@ -7,7 +7,9 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
+import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
 import { DockerService } from '../docker/docker.service';
 import { RegistrationService } from '../registration/registration.service';
@@ -95,6 +97,7 @@ export class ExposureSyncService {
       );
 
       const serveStatus = await tailscaleService.getServeStatus();
+      const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
       const desiredPorts = new Map<
         number,
         {
@@ -112,18 +115,26 @@ export class ExposureSyncService {
         }
 
         const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-        const target = await this.dockerService.getAppNetworkTarget(appUrn);
+        const installedInfo = appFilesManager ? await appFilesManager.getInstalledAppInfo(appUrn) : null;
 
-        if (!target) {
-          this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
-          continue;
+        let upstreamUrl: string | null = null;
+        if (installedInfo && isPortExposeApp(installedInfo)) {
+          const upstreamPort = installedInfo.upstreamPort ?? installedInfo.port ?? app.port;
+          upstreamUrl = `http://host.docker.internal:${upstreamPort}`;
+        } else {
+          const target = await this.dockerService.getAppNetworkTarget(appUrn);
+          if (!target) {
+            this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
+            continue;
+          }
+          upstreamUrl = target.url;
         }
 
         desiredPorts.set(app.port, {
           appName: app.localSubdomain || app.appName,
           appUrn,
           port: app.port,
-          upstreamUrl: target.url,
+          upstreamUrl,
         });
       }
 

@@ -10,8 +10,8 @@ test.describe('Error States', () => {
     await page.getByPlaceholder('Enter your password').fill('wrong-password');
     await page.getByRole('button', { name: 'Login' }).click();
 
-    // Should show some error indication (stay on login page)
     await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByText(/email or password didn't match|invalid credentials/i)).toBeVisible({ timeout: 5000 });
   });
 
   test('should show error for non-existent user login', async ({ page }) => {
@@ -23,6 +23,7 @@ test.describe('Error States', () => {
     await page.getByRole('button', { name: 'Login' }).click();
 
     await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByText(/email or password didn't match|invalid credentials/i)).toBeVisible({ timeout: 5000 });
   });
 
   test('should have disabled login button when fields are empty', async ({ page }) => {

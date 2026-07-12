@@ -1,5 +1,6 @@
 import type { AppContextDto } from '@/api-client';
 import { appContextOptions, appContextQueryKey, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { prefetchOnboardingMarketplace } from '@/modules/onboarding/helpers/prefetch-onboarding-marketplace';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
@@ -64,6 +65,14 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   const resolved = appContext ?? APP_CONTEXT_DEFAULTS;
+
+  useEffect(() => {
+    if (isLoading || resolved.user.hasCompletedOnboarding) {
+      return;
+    }
+
+    void prefetchOnboardingMarketplace(queryClient);
+  }, [isLoading, queryClient, resolved.user.hasCompletedOnboarding]);
 
   const value = {
     ...resolved,

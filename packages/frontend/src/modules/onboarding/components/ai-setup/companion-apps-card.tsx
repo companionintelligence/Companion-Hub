@@ -37,6 +37,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
         return {
           slug,
           name: COMPANION_NAME_KEYS[slug] ? t(COMPANION_NAME_KEYS[slug]) : (storeApp?.name ?? slug),
+          storeName: storeApp?.name ?? slug,
           urn: storeApp?.urn,
           icon: storeApp?.icon ?? undefined,
           shortDesc: storeApp?.short_desc ?? '',
@@ -90,6 +91,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
       apps.push({
         appSlug: entry.slug,
         name: entry.name,
+        storeName: entry.storeName,
         icon: '',
         category: 'companion-intelligence',
         replacesNames: [],

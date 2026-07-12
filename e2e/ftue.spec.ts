@@ -22,6 +22,6 @@ test.describe('First-Time User Experience', () => {
     await page.getByRole('button', { name: 'Register' }).click();
 
     // New users go to onboarding wizard
-    await expect(page.getByText('Welcome to Companion Hub')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: 'Set Up Your Hub' })).toBeVisible({ timeout: 15000 });
   });
 });

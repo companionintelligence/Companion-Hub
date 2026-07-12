@@ -15,8 +15,13 @@ Optional notarization (DMG stapling for Gatekeeper): `APPLE_ID`, `APPLE_PASSWORD
 
 **Important:** Do not pass notarization credentials to `tauri build`. The workflow signs during the Tauri bundle step and notarizes the **DMG afterward** with `xcrun notarytool`. If `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` are exported during `tauri build`, the CLI notarizes the `.app` inline and the release fails when credentials are invalid.
 
-- **dev** environment: notarization is attempted when all three notarization secrets are set; failure is **non-fatal** (signed but unnotarized DMGs still upload).
-- **production** environment: notarization failure fails the release job.
+A **green macOS release means a Developer ID signed *and* notarized DMG, in every environment**. The workflow enforces this:
+
+- A preflight step (`Require macOS signing + notarization secrets`) fails the build before compiling if either the signing secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`) or the notarization secrets (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) are missing for the selected environment.
+- Notarization has **no `continue-on-error`** — a failure fails the job for `dev` and `production` alike.
+- A `Verify macOS DMG is signed & notarized` step then asserts, via `spctl -a -t open` (must report `source=Notarized Developer ID`) and `xcrun stapler validate`, that the shipped DMG is signed, notarized, and stapled.
+
+This means you can no longer produce a green macOS release with an unsigned, ad-hoc signed, or unnotarized DMG — the job goes red instead.
 
 ## Where to store the secrets
 
@@ -51,7 +56,12 @@ Grant that service principal the **Artifact Signing Certificate Profile Signer**
 
 ## Behaviour when secrets are missing
 
-The workflow only attempts Windows signing when **all** required Azure secrets are present for the selected environment. If they are missing, the Windows build still completes, but the artifacts remain unsigned.
+A **green Windows release means Authenticode-signed installers**, matching the macOS guarantee. The workflow enforces this:
+
+- A preflight step (`Require Windows signing secrets`) fails the build before compiling if any of the six Azure signing secrets are missing for the selected environment (so `WINDOWS_SIGNING_CONFIGURED` is false).
+- After signing, a `Verify Windows artifacts are signed` step runs `Get-AuthenticodeSignature` on every `.msi` and `-setup.exe` and fails the job unless each reports `Valid`.
+
+This means you can no longer produce a green Windows release with unsigned installers — the job goes red instead.
 
 ## Azure signing runbook (CI)
 

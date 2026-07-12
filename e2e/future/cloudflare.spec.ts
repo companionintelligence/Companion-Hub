@@ -8,7 +8,7 @@
  * - Test tunnel reconnection
  */
 
-import { expect, loginUser, test } from './fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 // Test configuration - use environment variables for secrets
 const CLOUDFLARE_CONFIG = {

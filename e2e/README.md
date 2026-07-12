@@ -1,6 +1,43 @@
 # E2E Tests
 
-CI-Hub has two kinds of Playwright coverage:
+CI-Hub has multiple Playwright lanes. The default config ([`playwright.config.ts`](../playwright.config.ts)) ignores `future/`, `cross-domain/`, and `platform/` to keep PR/release CI fast.
+
+## CI lanes
+
+| Lane | Local command | CI workflow | What it covers |
+|------|---------------|-------------|----------------|
+| **Default** | `pnpm test:e2e:ci` | [`e2e.yml`](../.github/workflows/e2e.yml) (release/nightly) | Auth, dashboard, store, lifecycle reconciliation; mock Portal on **4444** |
+| **Cross-domain** | `pnpm e2e:cross-domain` | [`e2e-extended.yml`](../.github/workflows/e2e-extended.yml) | Real Portal (wrangler **8012**) + Hub Docker; device registration, Traefik |
+| **Future onboarding** | `pnpm e2e:future:onboarding` | `e2e-extended.yml` | Onboarding AI setup wizard (`e2e/future/onboarding-ai-setup.spec.ts`) |
+| **Platform** | `npx playwright test e2e/platform/` | [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml) | Self-hosted Hub + seeded test app (networking, lifecycle) |
+| **Fleet** | — | [`e2e-fleet.yml`](../.github/workflows/e2e-fleet.yml) | Tailscale-connected hardware; Cloudflare/Tailscale specs in `e2e/future/` |
+
+### Running extended lanes locally
+
+**Cross-domain** (Docker + CI-Portal checkout):
+
+```bash
+# ci-core monorepo: Portal at ../ci-portal
+PORTAL_DIR=../ci-portal pnpm e2e:cross-domain
+```
+
+**Future onboarding** (same stack as default E2E — postgres, rabbitmq, mock portal):
+
+```bash
+pnpm e2e:future:onboarding
+```
+
+### Triggering extended CI
+
+- **Nightly:** `e2e-extended` runs on schedule (3:00 UTC).
+- **Manual:** Actions → **E2E Extended** → **Run workflow**.
+- **PR label:** Add label `e2e-extended` to a pull request to run cross-domain + future onboarding on that branch.
+
+---
+
+## Test types overview
+
+CI-Hub has two kinds of Playwright coverage beyond the lanes above:
 
 | Test type | Use it when | What it does | Typical command |
 |---|---|---|---|

@@ -3,11 +3,14 @@ ARG ALPINE_VERSION="3.21"
 
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
 
+# tzdata must match the prod runner: docker-compose.local.yml bind-mounts the host's
+# /etc/localtime into this image too, so without a zoneinfo db ICU cannot resolve a zone
+# and dev would silently run on the UTC fallback while prod runs the host zone.
 RUN set -eux; \
-    apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode || { \
+    apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode tzdata || { \
       echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
       sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
-      apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode; \
+      apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode tzdata; \
     }
 
 ARG TARGETARCH

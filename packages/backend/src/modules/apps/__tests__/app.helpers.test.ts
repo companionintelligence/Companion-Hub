@@ -7,12 +7,14 @@ import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type MockProxy, mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
+import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
+import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -28,9 +30,15 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
+  let mcpApiKeys: MockProxy<McpApiKeyService>;
+  let memoryConnection: MockProxy<MemoryConnectionService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
+    // Clear call history between tests: useMocker reuses mock instances, so a
+    // prior test's calls (e.g. markManual) would otherwise leak into assertions.
+    vi.clearAllMocks();
+
     const moduleRef = await Test.createTestingModule({
       providers: [AppHelpers],
     })
@@ -45,6 +53,8 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
+    mcpApiKeys = moduleRef.get(McpApiKeyService);
+    memoryConnection = moduleRef.get(MemoryConnectionService);
   });
 
   describe('generateEnvFile', () => {
@@ -105,6 +115,68 @@ describe('AppHelpers', () => {
 
       // Act & Assert
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow(`App ${testAppUrn} not found`);
+    });
+
+    describe('Companion Memory credential injection', () => {
+      // A consumer app declaring the env vars it reads its memory URL + key from.
+      const memoryConsumerApp: AppInfo = {
+        ...mockAppInfo,
+        hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
+      };
+
+      it('injects brokered creds for a connected app and does not mark it manual', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_APP_URN')).toBe(testAppUrn);
+        expect(envMap.get('CI_SERVER_URL')).toBe('http://gateway:8642');
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
+
+      it('prefers the brokered connection even when the token env already carries a (default) value', async () => {
+        // Regression: a manifest default for token_env must NOT pin a genuinely
+        // connected app to `manual` (which would stop re-injecting the real creds).
+        const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'manifest-default']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
+
+      it('marks manual when the operator set a token and there is no brokered connection', async () => {
+        const envMap = new Map<string, string>([['CI_SERVER_TOKEN', 'operator-set']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        // markManual is idempotent at the service layer; env-gen just delegates.
+        expect(memoryConnection.markManual).toHaveBeenCalledWith(testAppUrn);
+        // The operator's own value is left untouched.
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('operator-set');
+      });
+
+      it('neither injects nor marks manual when there is no token and no brokered connection', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(memoryConsumerApp);
+        memoryConnection.getInjectableCreds.mockResolvedValue(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_SERVER_TOKEN')).toBe(false);
+        expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
     });
 
     it('should set default env variables correctly', async () => {
@@ -923,7 +995,8 @@ describe('AppHelpers', () => {
     });
 
     describe('R-ENV: MCP env injection for agent harness apps', () => {
-      it('R-ENV-1/2/3: should inject HUB_URL, HUB_MCP_URL, and HUB_MCP_MESSAGES_URL when hub_integration.mcp_client is true', async () => {
+      // BUG-MCP-1: single Streamable HTTP endpoint (/api/mcp); the old /sse + /messages pair is gone.
+      it('R-ENV-1/2: should inject HUB_URL and the single HUB_MCP_URL when hub_integration.mcp_client is true', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
@@ -932,8 +1005,8 @@ describe('AppHelpers', () => {
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
-        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp/sse');
-        expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:3000/api/mcp/messages');
+        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+        expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
       });
 
       it('R-ENV-1: should use HUB_CONTAINER_NAME env var when set', async () => {
@@ -946,7 +1019,7 @@ describe('AppHelpers', () => {
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
           expect(envMap.get('HUB_URL')).toBe('http://my-custom-hub:3000');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://my-custom-hub:3000/api/mcp/sse');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://my-custom-hub:3000/api/mcp');
         } finally {
           delete process.env.HUB_CONTAINER_NAME;
         }
@@ -962,37 +1035,39 @@ describe('AppHelpers', () => {
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
           expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:5002');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp/sse');
-          expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:5002/api/mcp/messages');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp');
+          expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
         } finally {
           delete process.env.API_PORT;
         }
       });
 
-      it('R-ENV: should inject HUB_MCP_API_KEY when MCP_API_KEY is set', async () => {
+      it('R-ENV/SEC-MCP-8: provisions a dedicated managed key and injects it as HUB_MCP_API_KEY', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+        mcpApiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
 
-        process.env.MCP_API_KEY = 'test-mcp-key-12345';
-        try {
-          await appHelpers.generateEnvFile(testAppUrn, {});
-          expect(envMap.get('HUB_MCP_API_KEY')).toBe('test-mcp-key-12345');
-        } finally {
-          delete process.env.MCP_API_KEY;
-        }
-      });
-
-      it('R-ENV: should NOT inject HUB_MCP_API_KEY when MCP_API_KEY is not set', async () => {
-        const envMap = new Map<string, string>();
-        envUtils.envStringToMap.mockReturnValue(envMap);
-        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
-        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-
+        // Independent of process.env.MCP_API_KEY now — the app gets its OWN managed key.
         delete process.env.MCP_API_KEY;
         await appHelpers.generateEnvFile(testAppUrn, {});
-        expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+
+        expect(envMap.get('HUB_MCP_API_KEY')).toBe('managed-key-xyz');
+        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
+      });
+
+      it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
+        // The same mocked map is the app's existing env; seed it with a prior key.
+        const envMap = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+        mcpApiKeys.provisionManagedKey.mockResolvedValue('old-key');
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
       });
 
       it('R-ENV-4: should generate a HUB_WAKE_SECRET', async () => {
@@ -1041,6 +1116,157 @@ describe('AppHelpers', () => {
 
         expect(envMap.has('HUB_MCP_URL')).toBe(false);
         expect(envMap.has('HUB_WAKE_SECRET')).toBe(false);
+      });
+    });
+
+    // CI-Hub#870: exposed apps that "Sign in with CI-Portal" must authenticate against the
+    // paired Portal (CI_CLOUD_URL). The Hub injects that issuer into the app-declared env var.
+    describe('Portal OIDC issuer injection', () => {
+      const CI_CLOUD_URL = 'https://hub.ci.computer';
+
+      beforeEach(() => {
+        // Re-mock with a paired Portal URL present (the base beforeEach omits ciCloudUrl).
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: CI_CLOUD_URL,
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+      });
+
+      it('injects <origin>/api/auth into the app-declared env var when a path suffix is set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+        // The legacy OIDC_ISSUER_URL is not written for a manifest-declared app.
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('injects the bare Portal origin when no path suffix is declared', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer');
+      });
+
+      it('normalizes trailing slashes on the origin and leading/trailing slashes on the path', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: 'https://hub.ci.computer///',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth/' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+      });
+
+      it('joins an issuer_path that has no leading slash', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: 'api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_OIDC_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+      });
+
+      it('does not inject any issuer for a third-party app that does not opt in', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        // mockAppInfo is a third-party app (source http://example.com) with no hub_integration.
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('injects bare OIDC_ISSUER_URL for the legacy first-party app id (ci-memory)', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const firstPartyApp = { ...mockAppInfo, id: 'ci-memory' };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('OIDC_ISSUER_URL')).toBe('https://hub.ci.computer');
+      });
+
+      it('injects bare OIDC_ISSUER_URL for a legacy first-party app by CI-Server source', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const firstPartyApp = { ...mockAppInfo, source: 'https://github.com/companionintelligence/CI-Server' };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('OIDC_ISSUER_URL')).toBe('https://hub.ci.computer');
+      });
+
+      it('lets a manifest oidc declaration take precedence over the legacy first-party branch', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        // A first-party app that also opts in via the manifest: only the declared var is written.
+        const firstPartyOidcApp = {
+          ...mockAppInfo,
+          id: 'ci-memory',
+          hub_integration: { oidc: { issuer_env: 'CUSTOM_ISSUER', issuer_path: '/api/auth' } },
+        };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(firstPartyOidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CUSTOM_ISSUER')).toBe('https://hub.ci.computer/api/auth');
+        expect(envMap.has('OIDC_ISSUER_URL')).toBe(false);
+      });
+
+      it('skips injection (no env written) when the manifest opts in but CI_CLOUD_URL is empty', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: '',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        const oidcApp = { ...mockAppInfo, hub_integration: { oidc: { issuer_env: 'CI_OIDC_ISSUER', issuer_path: '/api/auth' } } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(oidcApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
       });
     });
   });

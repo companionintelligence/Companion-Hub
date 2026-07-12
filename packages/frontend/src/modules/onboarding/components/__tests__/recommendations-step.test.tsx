@@ -43,7 +43,7 @@ vi.mock('@/lib/portal-alternatives', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({
     data: {
-      photos: [{ proprietary: [{ name: 'Google Photos' }], alternatives: [{ appSlug: 'immich', name: 'Immich', icon: '' }] }],
+      media: [{ proprietary: [{ name: 'Google Photos' }], alternatives: [{ appSlug: 'immich', name: 'Immich', icon: '' }] }],
     },
     isLoading: false,
     isError: false,
@@ -130,7 +130,7 @@ describe('RecommendationsStep (embedded emit)', () => {
 
     render(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
 
-    expect(screen.getByText('ONBOARDING_CATALOG_LOADING')).toBeInTheDocument();
+    expect(screen.getByText('ONBOARDING_RECOMMENDATIONS_LOADING')).toBeInTheDocument();
     expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
   });
 });

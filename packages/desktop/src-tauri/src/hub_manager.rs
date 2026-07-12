@@ -223,13 +223,31 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
 
     #[cfg(target_os = "windows")]
     {
+        let script = "$smi = (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue).Source; 
+if (-not $smi) { 
+    $candidates = @($env:SystemRoot + '\\System32\\nvidia-smi.exe', $env:ProgramFiles + '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe', ${env:ProgramFiles(x86)} + '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe'); 
+    $smi = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1; 
+}; 
+if ($smi) { 
+    $rows = & $smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits 2>$null; 
+    $best = $rows | ForEach-Object { 
+        $parts = $_.Split(','); 
+        if ($parts.Length -ge 2) { 
+            [PSCustomObject]@{ Name = $parts[0].Trim(); VramMb = [int64]$parts[1].Trim(); DriverVersion = $(if ($parts.Length -ge 3) { $parts[2].Trim() } else { '' }); Source = 'desktop-host-windows-nvidia-smi' } 
+        } 
+    } | Sort-Object VramMb -Descending | Select-Object -First 1; 
+    if ($best -ne $null) { $best | ConvertTo-Json -Compress; exit 0 } 
+}; 
+$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; 
+if ($null -eq $gpu) { exit 3 }; 
+[PSCustomObject]@{ Name = $gpu.Name; AdapterRAM = [int64]$gpu.AdapterRAM; DriverVersion = $gpu.DriverVersion; Source = 'desktop-host-windows-wmi' } | ConvertTo-Json -Compress";
         let mut command = Command::new("powershell.exe");
         command
             .creation_flags(CREATE_NO_WINDOW)
             .arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-Command")
-            .arg("$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress");
+            .arg(script);
 
         let output = match command.output() {
             Ok(value) => value,
@@ -290,9 +308,18 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
         }
 
         let vram_mb = parsed
-            .get("AdapterRAM")
-            .and_then(|value| value.as_u64())
-            .map(|bytes| bytes / (1024 * 1024))
+            .get("VramMb")
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+            })
+            .or_else(|| {
+                parsed
+                    .get("AdapterRAM")
+                    .and_then(|value| value.as_u64())
+                    .map(|bytes| bytes / (1024 * 1024))
+            })
             .unwrap_or(0);
         let driver_version = parsed
             .get("DriverVersion")
@@ -300,12 +327,16 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
             .unwrap_or("")
             .trim()
             .to_string();
+        let source = parsed
+            .get("Source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("desktop-host-windows-wmi");
 
         let payload = serde_json::json!({
             "model": model,
             "vramMb": vram_mb,
             "driverVersion": driver_version,
-            "source": "desktop-host-windows-wmi"
+            "source": source
         });
 
         let serialized = match serde_json::to_string_pretty(&payload) {
@@ -1860,13 +1891,17 @@ fn service_state_score(state: &ServiceState) -> u8 {
 
 /// Derive startup state for optional compose sidecars and host probes.
 ///
-/// Missing containers are reported as `Unavailable` rather than `Pending` so the
-/// loading screen does not look blocked when Tunnel, VPN, or Ollama are absent.
+/// Optional rows (Private VPN, tunnel, Ollama) must never surface as `Starting` or
+/// `Failed` — those states block or alarm the loading UI even though the hub API
+/// is already healthy. Disconnected or churning sidecars report `Unavailable` only.
 fn derive_optional_service_state(state: &str, health: &str) -> ServiceState {
     if state.is_empty() {
         return ServiceState::Unavailable;
     }
-    derive_service_state(state, health)
+    match derive_service_state(state, health) {
+        ServiceState::Ready => ServiceState::Ready,
+        _ => ServiceState::Unavailable,
+    }
 }
 
 fn startup_service_definitions(
@@ -1884,6 +1919,7 @@ fn startup_service_definitions(
 
     let mut optional = Vec::new();
     if vpn_on {
+        // Informational only — never in `core`, never blocks `all_ready` or hub health.
         optional.push(("hub-tailscale", "Private VPN", false));
     }
     optional.push(("cloudflared", "Tunnel", false));
@@ -3181,8 +3217,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#[cfg(any(target_os = "linux", windows, test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -3190,8 +3226,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#[cfg(any(target_os = "linux", windows, test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -3356,6 +3392,7 @@ fn host_docker_socket_path() -> PathBuf {
     PathBuf::from("/var/run/docker.sock")
 }
 
+#[cfg(not(target_os = "windows"))]
 fn docker_socket_mount_arg() -> String {
     format!(
         "{}:/var/run/docker.sock:ro",
@@ -3364,6 +3401,7 @@ fn docker_socket_mount_arg() -> String {
 }
 
 /// Parse `stat -c "%u:%g"` output from a container probing the mounted Docker socket.
+#[cfg(not(target_os = "windows"))]
 fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
     let trimmed = raw.trim();
     let (uid_raw, gid_raw) = trimmed.split_once(':')?;
@@ -3371,6 +3409,7 @@ fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
 }
 
 /// How the mounted Docker socket appears *inside* a throwaway container (authoritative for compose `user:`).
+#[cfg(not(target_os = "windows"))]
 fn docker_socket_uid_gid_inside_container() -> Option<(u32, u32)> {
     let socket_mount = docker_socket_mount_arg();
     let output = docker_command()
@@ -3418,6 +3457,8 @@ fn default_docker_gid() -> u32 {
     }
 }
 
+// Platform-neutral (env var + home-dir check); used by the Unix container-identity
+// fallback below and by Windows backend-style detection.
 fn likely_docker_desktop() -> bool {
     if std::env::var("DOCKER_HOST")
         .map(|value| value.contains("docker-desktop"))
@@ -3462,12 +3503,6 @@ pub(crate) fn resolve_hub_container_identity() -> (u32, u32, u32) {
         let (host_uid, host_gid) = host_container_uid_gid();
         (host_uid, host_gid, default_docker_gid())
     }
-}
-
-#[cfg(windows)]
-pub(crate) fn host_container_uid_gid() -> (u32, u32) {
-    // Docker Desktop file shares typically map the Linux VM user to 1000:1000.
-    (1000, 1000)
 }
 
 /// Host paths bind-mounted into `/data/*` in the Hub container. Create as the current host user
@@ -3557,7 +3592,12 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
                 ),
             );
-            heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
+            heal_bind_mount_permissions_via_docker(
+                data_dir,
+                "state",
+                container_uid,
+                container_gid,
+            )?;
         }
 
         if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
@@ -3567,8 +3607,10 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                     format!("Failed to recreate {}: {}", settings_path.display(), error)
                 })?;
                 #[cfg(unix)]
-                let _ =
-                    std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+                let _ = std::fs::set_permissions(
+                    &settings_path,
+                    std::fs::Permissions::from_mode(0o666),
+                );
             }
         }
 
@@ -3634,6 +3676,7 @@ fn remove_host_root_owned_state_files(data_dir: &Path) {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool {
     let host_dir = match host_file.parent() {
         Some(dir) => dir,
@@ -3675,6 +3718,7 @@ fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     if !host_dir.exists() {
         return false;
@@ -3703,6 +3747,7 @@ fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn heal_bind_mount_permissions_via_docker(
     data_dir: &Path,
     subdir: &str,
@@ -4709,6 +4754,15 @@ pub fn refresh_host_metrics_probe_cache(data_dir: &Path) {
     refresh_linux_host_metrics_probe_cache(data_dir);
 }
 
+pub fn refresh_host_hardware_probe_cache(data_dir: &Path) {
+    refresh_nvidia_host_probe_cache(data_dir);
+    #[cfg(target_os = "linux")]
+    refresh_rocm_host_probe_cache(data_dir);
+    #[cfg(target_os = "windows")]
+    refresh_amd_host_probe_cache(data_dir);
+    refresh_host_metrics_probe_cache(data_dir);
+}
+
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
@@ -4895,6 +4949,16 @@ fn start_hub_inner(
     // direct GPU devices; this enables runtime-missing warnings instead of
     // misclassifying NVIDIA hosts as "no GPU detected".
     refresh_nvidia_host_probe_cache(data_dir);
+    // On a native WSL2 Docker engine, configure the in-distro NVIDIA container
+    // runtime (Docker Desktop does this automatically; a native engine does not).
+    // Runs before compose up so the backend container comes up GPU-capable.
+    #[cfg(target_os = "windows")]
+    ensure_wsl_engine_gpu_runtime(data_dir);
+    // Likewise, make an already-installed in-distro Ollama reachable from the Hub
+    // container by binding it to 0.0.0.0 (a native WSL2 engine has no
+    // host.docker.internal bridge). No-op once configured or if Ollama isn't present.
+    #[cfg(target_os = "windows")]
+    ensure_wsl_engine_ollama_reachable(data_dir);
     #[cfg(target_os = "linux")]
     refresh_rocm_host_probe_cache(data_dir);
 
@@ -5521,6 +5585,12 @@ fn get_non_empty_env_value(
         .map(|value| value.to_string())
 }
 
+pub fn host_data_dir_from_env_path(env_path: &Path) -> Option<PathBuf> {
+    let values = parse_env_file(env_path);
+    get_non_empty_env_value(&values, "ROOT_FOLDER_HOST")
+        .map(|value| host_path_from_docker_path(&value))
+}
+
 fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
@@ -5667,10 +5737,41 @@ fn generate_hex(bytes: usize) -> String {
         .collect()
 }
 
+/// How a Windows host path must be rendered for the active Docker backend's bind
+/// mounts. The two backends resolve host paths through entirely different layers:
+///
+/// - **Docker Desktop** shares the Windows filesystem into its VM, translating the
+///   MSYS `/c/Users/...` form (and `C:\...`) back to the real Windows file.
+/// - **Docker Engine running natively inside WSL2** has no such translation: its
+///   filesystem *is* the WSL Linux root, where Windows drives are visible only under
+///   `/mnt/<drive>/...`. A `/c/...` source does not exist there, so the daemon
+///   silently creates an empty directory at that path and bind-mounts it — turning
+///   every config/env *file* into a *directory* inside the container (EISDIR).
+/// Name of the docker CLI context the in-app WSL2-engine installer creates and
+/// activates (`docker context use …`, see `wsl2_engine_user_script`). Also the
+/// primary daemon-independent signal for Windows bind-mount style detection — keep
+/// the installer and the detector on this single constant so they cannot drift.
+/// Gated to match its consumers (all Windows-only or test-only); on a non-Windows
+/// release build there are none, and an ungated const would be a `-D warnings`
+/// dead-code error.
+#[cfg(any(test, target_os = "windows"))]
+const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WindowsDockerHostStyle {
+    /// `/c/Users/...` — Docker Desktop.
+    Drive,
+    /// `/mnt/c/Users/...` — native Docker Engine inside WSL2.
+    WslMnt,
+}
+
 /// Host path formatted for Docker bind mounts (`-v`, compose volume sources).
-/// On Windows the canonical form is `/mnt/<drive>/...` (lowercase drive); `C:/...`,
-/// `C:\...`, and MSYS `/c/...` are normalized to that form (Docker Desktop rejects
-/// `C:/...` because the drive colon is parsed as the host/container delimiter).
+/// On Windows the drive form is chosen from the active backend (see
+/// [`WindowsDockerHostStyle`]); `C:/...`, `C:\...`, MSYS `/c/...`, `/mnt/c/...`, and
+/// `\\?\C:\...` are all accepted as input and normalized to the backend-correct form.
+/// (Docker rejects a raw `C:/...` source because the drive colon is parsed as the
+/// host/container delimiter, so the drive letter always moves into the leading path.)
 fn docker_bind_mount_path(path: &Path) -> String {
     normalize_docker_host_path(&path.to_string_lossy())
 }
@@ -5679,7 +5780,13 @@ fn docker_bind_mount_path(path: &Path) -> String {
 fn normalize_docker_host_path(value: &str) -> String {
     #[cfg(windows)]
     {
-        return normalize_windows_docker_host_path(value);
+        // Resolve the backend style only for actual drive paths — non-drive values
+        // (unix sockets, named pipes) never need detection, so they must not pay
+        // for it (detection can spawn `docker info` in the fallback case).
+        if split_windows_drive(value).is_some() {
+            return normalize_windows_docker_host_path(value, windows_docker_host_style());
+        }
+        return value.trim().replace('\\', "/");
     }
     #[cfg(not(windows))]
     {
@@ -5687,27 +5794,68 @@ fn normalize_docker_host_path(value: &str) -> String {
     }
 }
 
+/// Extract `(lowercase_drive, "/rest/with/forward/slashes")` from any Windows path
+/// form: `C:\...`, `C:/...`, `/c/...`, `/mnt/c/...`, or the `\\?\C:\...`
+/// extended-length prefix. Returns `None` for non-drive paths (e.g. a `/var/run`
+/// unix socket or a `//./pipe/...` named pipe), which callers pass through unchanged.
+#[cfg(any(windows, test))]
+fn split_windows_drive(value: &str) -> Option<(char, String)> {
+    let replaced = value.trim().replace('\\', "/");
+    // `\\?\C:\...` becomes `//?/C:/...` after the slash swap — strip the prefix.
+    let trimmed = replaced.strip_prefix("//?/").unwrap_or(replaced.as_str());
+
+    // `/mnt/<drive>` or `/mnt/<drive>/...`
+    if let Some(rest) = trimmed.strip_prefix("/mnt/") {
+        let bytes = rest.as_bytes();
+        if !bytes.is_empty()
+            && bytes[0].is_ascii_alphabetic()
+            && (bytes.len() == 1 || bytes[1] == b'/')
+        {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            return Some((drive, rest[1..].to_string()));
+        }
+    }
+
+    // `/<drive>` or `/<drive>/...` (MSYS/Git-Bash)
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes.len() == 2 || bytes[2] == b'/')
+    {
+        let drive = (bytes[1] as char).to_ascii_lowercase();
+        return Some((drive, trimmed[2..].to_string()));
+    }
+
+    // `<drive>:` or `<drive>:/...`
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        let rest = trimmed[2..].trim_start_matches('/');
+        let rest = if rest.is_empty() {
+            String::new()
+        } else {
+            format!("/{rest}")
+        };
+        return Some((drive, rest));
+    }
+
+    None
+}
+
 /// Convert a Docker bind-mount path back to a native host path for filesystem access.
+/// Built on the same [`split_windows_drive`] grammar as the forward normalizer so the
+/// two cannot drift — every form `normalize_windows_docker_host_path` emits (including
+/// bare drive roots like `/c` and `/mnt/c`) round-trips to the native `C:\...` path.
 #[cfg(windows)]
 pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
-    let trimmed = value.trim().replace('\\', "/");
-    if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
-        let bytes = trimmed.as_bytes();
-        if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
-            let drive = (bytes[5] as char).to_ascii_uppercase();
-            let rest = trimmed[7..].replace('/', "\\");
-            return PathBuf::from(format!("{drive}:\\{rest}"));
+    match split_windows_drive(value) {
+        Some((drive, rest)) => {
+            let drive = drive.to_ascii_uppercase();
+            let rest = rest.trim_start_matches('/').replace('/', "\\");
+            PathBuf::from(format!("{drive}:\\{rest}"))
         }
+        None => PathBuf::from(value),
     }
-    if trimmed.len() >= 3 {
-        let bytes = trimmed.as_bytes();
-        if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
-            let drive = (bytes[1] as char).to_ascii_uppercase();
-            let rest = trimmed[3..].replace('/', "\\");
-            return PathBuf::from(format!("{drive}:\\{rest}"));
-        }
-    }
-    PathBuf::from(value)
 }
 
 #[cfg(not(windows))]
@@ -5715,46 +5863,414 @@ pub(crate) fn host_path_from_docker_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-/// Windows Docker Desktop bind-mount normalization (also unit-tested on other hosts).
-/// Canonical output: `/mnt/<drive>/...` with lowercase drive letter.
+/// Windows bind-mount normalization (also unit-tested on other hosts). Rewrites any
+/// recognized Windows path form to the drive form the active backend understands
+/// (see [`WindowsDockerHostStyle`]). Non-drive inputs (unix sockets, named pipes)
+/// pass through with only backslashes normalized to forward slashes.
 #[cfg(any(windows, test))]
-fn normalize_windows_docker_host_path(value: &str) -> String {
-    let trimmed = value.trim().replace('\\', "/");
+fn normalize_windows_docker_host_path(value: &str, style: WindowsDockerHostStyle) -> String {
+    match split_windows_drive(value) {
+        Some((drive, rest)) => match style {
+            WindowsDockerHostStyle::Drive => format!("/{drive}{rest}"),
+            WindowsDockerHostStyle::WslMnt => format!("/mnt/{drive}{rest}"),
+        },
+        None => value.trim().replace('\\', "/"),
+    }
+}
 
-    // Already `/mnt/<drive>/...` — normalize drive letter to lowercase.
-    if trimmed.len() >= 7 && trimmed.starts_with("/mnt/") {
-        let bytes = trimmed.as_bytes();
-        if bytes[5].is_ascii_alphabetic() && bytes[6] == b'/' {
-            let drive = (bytes[5] as char).to_ascii_lowercase();
-            return format!("/mnt/{drive}{}", &trimmed[6..]);
-        }
+/// Sticky per-process fallback guess for the Windows bind-mount style, used only when
+/// no deterministic CLI signal (env var / context name) resolves the backend. Sticky
+/// on purpose: repeated calls must not flip mid-render (a mixed-style `.env` breaks
+/// half the mounts) and must not re-spawn `docker info` per normalized value.
+#[cfg(windows)]
+static WINDOWS_DOCKER_HOST_STYLE_GUESS: std::sync::Mutex<Option<WindowsDockerHostStyle>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+fn windows_docker_host_style() -> WindowsDockerHostStyle {
+    // Deterministic CLI signals are re-read on every call (cheap: env vars plus one
+    // small file). This follows backend switches without an app restart — the in-app
+    // WSL2-engine installer runs `docker context use wsl-engine` mid-session and its
+    // setup flow promises the switch applies without restarting the Hub.
+    if let Some(style) = windows_docker_host_style_from_cli_signals() {
+        return style;
     }
 
-    // MSYS/Git-Bash `/c/...` — compose-safe but file binds can become directories;
-    // normalize to `/mnt/<drive>/...`.
-    if trimmed.len() >= 3 {
-        let bytes = trimmed.as_bytes();
-        if bytes[0] == b'/' && bytes[2] == b'/' && bytes[1].is_ascii_alphabetic() {
-            let drive = (bytes[1] as char).to_ascii_lowercase();
-            return format!("/mnt/{drive}{}", &trimmed[2..]);
+    let mut guess = WINDOWS_DOCKER_HOST_STYLE_GUESS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(style) = *guess {
+        return style;
+    }
+    let style = detect_windows_docker_host_style_via_daemon();
+    *guess = Some(style);
+    style
+}
+
+/// Style from deterministic CLI configuration, mirroring the docker CLI's own
+/// precedence: explicit `CI_HUB_DOCKER_PATH_STYLE` override (ops escape hatch,
+/// shared with the TS CLI in scripts/heal-hub-bind-mounts.ts) > `DOCKER_HOST` env >
+/// `DOCKER_CONTEXT` env > config.json currentContext. A set `DOCKER_HOST` bypasses
+/// contexts entirely (the CLI ignores them, and `docker_command` forwards it), so
+/// contexts must not be consulted then — fall through to the daemon self-report,
+/// which answers over that same endpoint.
+#[cfg(windows)]
+fn windows_docker_host_style_from_cli_signals() -> Option<WindowsDockerHostStyle> {
+    if let Ok(override_value) = std::env::var("CI_HUB_DOCKER_PATH_STYLE") {
+        match override_value.trim() {
+            "drive" => return Some(WindowsDockerHostStyle::Drive),
+            "wsl-mnt" => return Some(WindowsDockerHostStyle::WslMnt),
+            _ => {}
         }
     }
+    let docker_host_set = std::env::var("DOCKER_HOST")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if docker_host_set {
+        return None;
+    }
+    let context = std::env::var("DOCKER_CONTEXT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "default")
+        .or_else(|| current_docker_context_name(None))?;
+    match context.as_str() {
+        DOCKER_CONTEXT_WSL_ENGINE => Some(WindowsDockerHostStyle::WslMnt),
+        "desktop-linux" | "desktop-windows" => Some(WindowsDockerHostStyle::Drive),
+        _ => None,
+    }
+}
 
-    // `C:/...` or `C:\...` → `/mnt/<drive>/...`
-    if trimmed.len() >= 2 {
-        let bytes = trimmed.as_bytes();
-        if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-            let drive = (bytes[0] as char).to_ascii_lowercase();
-            let rest = trimmed[2..].trim_start_matches('/');
-            return if rest.is_empty() {
-                format!("/mnt/{drive}")
+/// One-shot expensive detection: ask the daemon to identify itself; fall back to a
+/// filesystem heuristic when unreachable. The caller caches the result for the
+/// process lifetime.
+///  - OperatingSystem "Docker Desktop" → Drive (Desktop translates `/c/...` itself).
+///  - A WSL kernel (`...-microsoft-standard-WSL2`) → WslMnt (native engine in WSL2).
+///    Checked *after* the Desktop match — Desktop's own WSL2 backend also reports a
+///    WSL kernel.
+///  - Any other reachable daemon (remote engine, Windows-containers mode) has no
+///    Windows-drive mapping in either style; keep the legacy Drive form.
+///  - Daemon unreachable → `likely_docker_desktop` heuristic. Heuristic, not signal:
+///    a stale `~/.docker/desktop` dir can survive a Desktop uninstall — but properly
+///    installed WSL engines were already caught by the context check above.
+#[cfg(windows)]
+fn detect_windows_docker_host_style_via_daemon() -> WindowsDockerHostStyle {
+    if let Some((os, kernel)) = docker_server_os_and_kernel() {
+        if os.contains("Docker Desktop") {
+            return WindowsDockerHostStyle::Drive;
+        }
+        let kernel = kernel.to_ascii_lowercase();
+        if kernel.contains("microsoft") || kernel.contains("wsl") {
+            return WindowsDockerHostStyle::WslMnt;
+        }
+        return WindowsDockerHostStyle::Drive;
+    }
+    if likely_docker_desktop() {
+        WindowsDockerHostStyle::Drive
+    } else {
+        WindowsDockerHostStyle::WslMnt
+    }
+}
+
+/// The daemon's self-reported host OS and kernel
+/// (`docker info -f '{{.OperatingSystem}}\t{{.KernelVersion}}'`), or `None` if no
+/// daemon is reachable.
+#[cfg(windows)]
+fn docker_server_os_and_kernel() -> Option<(String, String)> {
+    let output = docker_command()
+        .args(["info", "--format", "{{.OperatingSystem}}\t{{.KernelVersion}}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let line = raw.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let (os, kernel) = line.split_once('\t').unwrap_or((line, ""));
+    Some((os.trim().to_string(), kernel.trim().to_string()))
+}
+
+/// True when the active Docker daemon is a native Engine inside WSL2 (as opposed to
+/// Docker Desktop). Docker Desktop manages the container GPU runtime itself; a native
+/// engine needs nvidia-container-toolkit installed inside the distro. Mirrors the
+/// backend's `detectContainerHostKind` and the CLI's `detectWindowsDockerBackend`.
+#[cfg(windows)]
+fn is_wsl_engine_docker_backend() -> bool {
+    if let Some(context) = current_docker_context_name(None) {
+        if context == DOCKER_CONTEXT_WSL_ENGINE {
+            return true;
+        }
+        if context == "desktop-linux" || context == "desktop-windows" {
+            return false;
+        }
+    }
+    if let Some((os, kernel)) = docker_server_os_and_kernel() {
+        if os.contains("Docker Desktop") {
+            return false;
+        }
+        let kernel = kernel.to_ascii_lowercase();
+        return kernel.contains("microsoft") || kernel.contains("wsl");
+    }
+    false
+}
+
+/// Whether the active Docker daemon has the `nvidia` container runtime registered.
+#[cfg(windows)]
+fn docker_has_nvidia_runtime() -> bool {
+    docker_command()
+        .args(["info", "--format", "{{json .Runtimes}}"])
+        .output()
+        .map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia"))
+        .unwrap_or(false)
+}
+
+/// The WSL2 distro hosting the Docker engine. The installer provisions Ubuntu, so
+/// only an Ubuntu/Debian (apt-based) distro is a valid target for the apt install
+/// flow below. Docker Desktop's own `docker-desktop*` utility distros are excluded,
+/// and there is deliberately NO fallback to an arbitrary first distro — installing
+/// the toolkit into the wrong distro (or running apt on a non-Debian one) would
+/// silently fail to enable the GPU. Returns None → the caller skips setup cleanly.
+///
+/// Memoized for the process: the distro name is stable within a run, and both the GPU
+/// and Ollama startup steps call this, so caching avoids a duplicate `wsl -l -q` spawn.
+#[cfg(windows)]
+fn find_wsl_distro() -> Option<String> {
+    static WSL_DISTRO_CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    WSL_DISTRO_CACHE.get_or_init(compute_wsl_distro).clone()
+}
+
+#[cfg(windows)]
+fn compute_wsl_distro() -> Option<String> {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    let output = command.args(["-l", "-q"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .map(|line| line.trim().trim_matches('\u{0}').trim().to_string())
+        .filter(|line| !line.is_empty())
+        .find(|d| {
+            let lower = d.to_ascii_lowercase();
+            !lower.starts_with("docker-desktop")
+                && (lower == "ubuntu"
+                    || lower.starts_with("ubuntu-")
+                    || lower == "debian"
+                    || lower.starts_with("debian-"))
+        })
+}
+
+/// Run a shell script as root inside a WSL2 distro (`wsl -d <distro> -u root -- sh -lc`).
+/// Returns whether it exited 0. WSL_UTF8 keeps wsl.exe output UTF-8; CREATE_NO_WINDOW
+/// suppresses a console flash. Shared by the GPU and Ollama in-distro setup steps.
+#[cfg(windows)]
+fn run_wsl_root_script(distro: &str, script: &str) -> bool {
+    run_wsl_root_script_capture(distro, script).is_some()
+}
+
+/// Like `run_wsl_root_script` but returns the trimmed stdout on success (`None` on
+/// failure), so callers can branch on a marker the script echoes.
+#[cfg(windows)]
+fn run_wsl_root_script_capture(distro: &str, script: &str) -> Option<String> {
+    let mut command = Command::new("wsl.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.env("WSL_UTF8", "1");
+    command.args(["-d", distro, "-u", "root", "--", "sh", "-lc", script]);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Install + configure nvidia-container-toolkit inside the WSL2 distro so the native
+/// dockerd registers the `nvidia` runtime. Runs as root via `wsl -u root` (no sudo).
+/// The Debian apt flow applies because `find_wsl_distro` only returns Ubuntu/Debian.
+/// Idempotent: `gpg --yes` overwrites an existing keyring (so a retry after a failed
+/// `apt-get` isn't wedged by a leftover file), and curl/gnupg are ensured first since
+/// minimal WSL images may lack them.
+#[cfg(windows)]
+fn run_wsl_gpu_toolkit_setup(distro: &str) -> bool {
+    run_wsl_root_script(
+        distro,
+        r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y curl gnupg ca-certificates
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --yes --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+apt-get update
+apt-get install -y nvidia-container-toolkit
+nvidia-ctk runtime configure --runtime=docker
+systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#,
+    )
+}
+
+/// Whether the active Docker daemon is responding (`docker info` exits 0). Used to
+/// confirm the in-distro dockerd is back after the runtime-config restart before the
+/// caller proceeds to the (un-retried) database bootstrap.
+#[cfg(windows)]
+fn docker_daemon_responsive() -> bool {
+    docker_command()
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// When the desktop runs against a native WSL2 Docker engine with an NVIDIA GPU,
+/// ensure the container GPU runtime is configured inside the distro (Docker Desktop
+/// does this automatically; a native engine does not). Idempotent and cheap after the
+/// first success: it early-returns once `docker info` reports the `nvidia` runtime.
+/// Best-effort — failure only means CPU-only inference, never blocks startup.
+#[cfg(windows)]
+fn ensure_wsl_engine_gpu_runtime(data_dir: &Path) {
+    if !is_wsl_engine_docker_backend() {
+        return;
+    }
+    // NVIDIA GPU present iff the just-refreshed probe cache exists (the refresh
+    // removes it when no NVIDIA GPU is found).
+    if !data_dir.join("state/hardware/nvidia.json").exists() {
+        return;
+    }
+    if docker_has_nvidia_runtime() {
+        return;
+    }
+    let Some(distro) = find_wsl_distro() else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "WSL2 engine + NVIDIA GPU detected, but no WSL distro was found; skipping container GPU runtime setup.",
+        );
+        return;
+    };
+    let _ = append_desktop_log_for(
+        data_dir,
+        "gpu.runtime",
+        &format!("Configuring nvidia-container-toolkit inside WSL2 distro \"{distro}\" for the container GPU runtime…"),
+    );
+    if !run_wsl_gpu_toolkit_setup(&distro) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.runtime",
+            "Automatic nvidia-container-toolkit setup inside WSL2 failed; continuing without container GPU acceleration.",
+        );
+        return;
+    }
+    // The setup script restarts the in-distro dockerd so it loads the nvidia runtime.
+    // That briefly drops the daemon the host CLI — and the imminent, UN-RETRIED
+    // database bootstrap (start_database_first) — reach over tcp://127.0.0.1:2375.
+    // Wait for the daemon to be responsive again before returning so that bootstrap
+    // never hits a mid-restart daemon; report whether the runtime registered.
+    const READINESS_WAIT_SECS: u32 = 20;
+    for attempt in 0..READINESS_WAIT_SECS {
+        if docker_daemon_responsive() {
+            let message = if docker_has_nvidia_runtime() {
+                "NVIDIA container runtime configured for the WSL2 Docker engine."
             } else {
-                format!("/mnt/{drive}/{rest}")
+                "Toolkit installed inside WSL2 but the nvidia runtime is not visible yet; it should register on the next start."
             };
+            let _ = append_desktop_log_for(data_dir, "gpu.runtime", message);
+            return;
+        }
+        if attempt + 1 < READINESS_WAIT_SECS {
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "gpu.runtime",
+        "Toolkit installed inside WSL2 but the Docker daemon did not respond within the wait window after its restart; startup will continue.",
+    );
+}
 
-    trimmed
+/// systemd drop-in that binds the in-distro Ollama to all interfaces. Ollama defaults
+/// to 127.0.0.1:11434 (the distro's loopback), which the Hub container cannot reach —
+/// it only reaches the distro via the docker0 bridge gateway (172.17.0.1). Binding
+/// 0.0.0.0 makes it reachable. Docker Desktop bridges this via host.docker.internal;
+/// a native WSL2 engine does not, so we configure it ourselves.
+#[cfg(windows)]
+const OLLAMA_HOST_DROPIN_PATH: &str = "/etc/systemd/system/ollama.service.d/companionhub-host.conf";
+
+/// Ensure the in-distro Ollama listens on 0.0.0.0 so the Hub container can reach it.
+/// Only touches an existing `ollama` systemd service (installing Ollama is
+/// `install_ollama`); shared by startup and the installer.
+///
+/// Idempotency is keyed on the *runtime* listener (whether Ollama is actually bound to
+/// a wildcard address), NOT on our drop-in file — so a transient `systemctl restart`
+/// failure is retried on the next call instead of being wedged forever. It also
+/// respects a deliberate `OLLAMA_HOST` the user set outside our drop-in (we never
+/// clobber a bind the user chose). Returns the last-line marker on success
+/// (`configured` this call, `already`, `user-configured`, `no-service`) or `None` on
+/// failure. The marker is taken from the last non-empty stdout line so a shell login
+/// banner can't mask it.
+#[cfg(windows)]
+fn ensure_ollama_listens_on_all_interfaces(distro: &str) -> Option<String> {
+    let output = run_wsl_root_script_capture(
+        distro,
+        &format!(
+            r#"set -e
+# Only configure a real ollama systemd service; installing Ollama is a separate step.
+systemctl cat ollama >/dev/null 2>&1 || {{ echo no-service; exit 0; }}
+# Already reachable from containers (bound to a wildcard address)? — checks the live
+# listener, so a prior failed restart (still on loopback) is retried below.
+if ss -ltn 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then echo already; exit 0; fi
+# Respect a deliberate OLLAMA_HOST the user set outside our own drop-in.
+if [ ! -f {path} ] && systemctl show ollama -p Environment 2>/dev/null | grep -q 'OLLAMA_HOST='; then
+  echo user-configured; exit 0
+fi
+mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' > {path}
+systemctl daemon-reload
+systemctl restart ollama
+echo configured"#,
+            path = OLLAMA_HOST_DROPIN_PATH
+        ),
+    )?;
+    // Marker = last non-empty line (robust to any profile banner on stdout).
+    Some(
+        output
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+/// True when the marker means Ollama is now reachable on the network (wildcard bind).
+#[cfg(windows)]
+fn ollama_bind_marker_is_reachable(marker: Option<&str>) -> bool {
+    matches!(marker, Some("configured") | Some("already"))
+}
+
+/// When the desktop runs against a native WSL2 Docker engine, make an already-installed
+/// in-distro Ollama reachable from the Hub container by binding it to 0.0.0.0. Runs at
+/// startup, mirroring `ensure_wsl_engine_gpu_runtime`; idempotent and a silent no-op
+/// once configured or when no Ollama service exists (installing it is `install_ollama`).
+#[cfg(windows)]
+fn ensure_wsl_engine_ollama_reachable(data_dir: &Path) {
+    if !is_wsl_engine_docker_backend() {
+        return;
+    }
+    let Some(distro) = find_wsl_distro() else {
+        return;
+    };
+    // Only log the meaningful transition, so steady-state starts stay quiet.
+    if ensure_ollama_listens_on_all_interfaces(&distro).as_deref() == Some("configured") {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "ollama.bridge",
+            "Configured in-distro Ollama to listen on 0.0.0.0:11434 so the Hub container can reach it.",
+        );
+    }
 }
 
 fn compose_env_file_var(env_path: &Path) -> String {
@@ -5842,9 +6358,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     } else {
         // No bundled resource was located — fall back to the compile-time embedded
         // copy so the data-dir compose file always exists and startup can proceed.
-        log_lines.push("  -> WARNING: no compose file found in any candidate path; writing embedded fallback".to_string());
+        log_lines.push(
+            "  -> WARNING: no compose file found in any candidate path; writing embedded fallback"
+                .to_string(),
+        );
         std::fs::write(&compose_dst, HUB_COMPOSE_SEED).map_err(|e| {
-            let message = format!("Failed to write embedded compose fallback to {:?}: {}", compose_dst, e);
+            let message = format!(
+                "Failed to write embedded compose fallback to {:?}: {}",
+                compose_dst, e
+            );
             let _ = append_desktop_log_for(&data_dir, "initialize", &message);
             with_view_logs_hint(message)
         })?;
@@ -6187,11 +6709,26 @@ pub fn install_docker() -> Result<DockerInstallResult, String> {
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn powershell_authenticode_helper() -> &'static str {
+    r#"function Get-CompanionHubAuthenticodeSignature {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try {
+        Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+        return Microsoft.PowerShell.Security\Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+    } catch {
+        throw "Windows PowerShell could not load Microsoft.PowerShell.Security for Authenticode validation: $($_.Exception.Message)"
+    }
+}
+"#
+}
+
+#[cfg(any(test, target_os = "windows"))]
 fn docker_desktop_windows_install_script(download_url: &str) -> String {
     format!(
         r#"param([string]$AppUser)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+{authenticode_helper}
 & wsl --status | Out-Null
 if ($LASTEXITCODE -ne 0) {{
   & wsl --install --no-distribution
@@ -6201,7 +6738,7 @@ $installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName
 Remove-Item $installer -Force -ErrorAction SilentlyContinue
 try {{
   Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
-  $signature = Get-AuthenticodeSignature $installer
+    $signature = Get-CompanionHubAuthenticodeSignature $installer
   if ($signature.Status -ne 'Valid') {{
     throw "Downloaded Docker Desktop installer signature validation failed: $($signature.Status)"
   }}
@@ -6224,6 +6761,7 @@ try {{
 }}
 exit 0
 "#,
+        authenticode_helper = powershell_authenticode_helper(),
         download_url = download_url,
     )
 }
@@ -6757,9 +7295,12 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
 /// - macOS: Ollama-darwin.zip (universal binary) verified with codesign/spctl,
 ///   installed to /Applications with the CLI symlinked, launched hidden.
 /// - Windows: OllamaSetup.exe (Inno Setup, per-user — no elevation needed),
-///   Authenticode-verified, run with /VERYSILENT; the tray app auto-starts.
+///   Authenticode-verified, run with /VERYSILENT; the tray app auto-starts. EXCEPT on
+///   a native WSL2 Docker engine, where Ollama is installed inside the distro bound to
+///   0.0.0.0:11434 (see `install_ollama_in_wsl_distro`) so the Hub container can reach it.
 ///
-/// The Ollama API listens on 127.0.0.1:11434 on every platform.
+/// The Ollama API listens on 127.0.0.1:11434 on host installs; the WSL2-engine install
+/// binds 0.0.0.0:11434 inside the distro instead.
 pub fn install_ollama() -> Result<OllamaInstallResult, String> {
     #[cfg(target_os = "linux")]
     {
@@ -6785,11 +7326,12 @@ fn ollama_windows_install_script(download_url: &str) -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+{authenticode_helper}
 $installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.exe')
 Remove-Item $installer -Force -ErrorAction SilentlyContinue
 try {{
   Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
-  $signature = Get-AuthenticodeSignature $installer
+    $signature = Get-CompanionHubAuthenticodeSignature $installer
   if ($signature.Status -ne 'Valid') {{
     throw "Downloaded Ollama installer signature validation failed: $($signature.Status)"
   }}
@@ -6805,17 +7347,75 @@ try {{
 }}
 exit 0
 "#,
+        authenticode_helper = powershell_authenticode_helper(),
         download_url = download_url,
     )
+}
+
+/// Install Ollama inside the WSL2 distro that hosts the native Docker engine, bound to
+/// 0.0.0.0 so the Hub container can reach it over the docker0 bridge. Uses Ollama's
+/// official install script (sets up the systemd service + GPU detection; Ollama picks
+/// up the GPU via the WSL CUDA libraries), then applies the 0.0.0.0 drop-in. Runs as
+/// root in the distro (no elevation prompt).
+#[cfg(target_os = "windows")]
+fn install_ollama_in_wsl_distro() -> Result<OllamaInstallResult, String> {
+    let distro = find_wsl_distro()
+        .ok_or_else(|| "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string())?;
+
+    // Download the installer to a file first (checking curl's exit) rather than
+    // `curl | sh`: a POSIX `sh` pipeline reports only `sh`'s status, so a failed/partial
+    // download would otherwise be treated as a successful install under `set -e`.
+    let installed = run_wsl_root_script(
+        &distro,
+        r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y curl ca-certificates; }
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+curl -fsSL --connect-timeout 30 --max-time 120 https://ollama.com/install.sh -o "$tmp"
+sh "$tmp""#,
+    );
+    if !installed {
+        return Err(format!(
+            "Ollama installation inside the WSL2 distro \"{distro}\" failed."
+        ));
+    }
+
+    // Bind to 0.0.0.0 so the Hub container can reach it, and report the ACTUAL result
+    // (installing the binary doesn't guarantee a systemd service was set up + bound).
+    let marker = ensure_ollama_listens_on_all_interfaces(&distro);
+    let detail = if ollama_bind_marker_is_reachable(marker.as_deref()) {
+        format!(
+            "Ollama installed inside WSL2 distro \"{distro}\" and bound to 0.0.0.0:11434 so the Hub can reach it."
+        )
+    } else {
+        format!(
+            "Ollama installed inside WSL2 distro \"{distro}\", but it isn't bound to 0.0.0.0 yet (is systemd enabled in the distro?). Start Ollama and click Re-check."
+        )
+    };
+
+    Ok(OllamaInstallResult {
+        state: OllamaInstallState::Completed,
+        detail: Some(detail),
+    })
 }
 
 /// OllamaSetup.exe is an Inno Setup installer with PrivilegesRequired=lowest —
 /// it installs per-user to %LOCALAPPDATA%\Programs\Ollama, so unlike the Docker
 /// installer no elevation is required. The installer adds Ollama to the user
-/// PATH and launches the tray app itself.
+/// PATH and launches the tray app itself. On a native WSL2 Docker engine, Ollama is
+/// installed inside the distro instead (see the branch below).
 #[cfg(target_os = "windows")]
 fn install_ollama_windows() -> Result<OllamaInstallResult, String> {
     use std::io::Write as IoWrite;
+
+    // On a native WSL2 Docker engine, a Windows-host Ollama (127.0.0.1 on Windows) is
+    // unreachable from the Hub container. Install Ollama *inside* the distro instead,
+    // bound to 0.0.0.0 so the container can reach it over the docker0 bridge — and so
+    // it can use the GPU via the WSL CUDA libraries.
+    if is_wsl_engine_docker_backend() {
+        return install_ollama_in_wsl_distro();
+    }
 
     // PowerShell -File refuses scripts without a .ps1 extension.
     let mut script = tempfile::Builder::new()
@@ -7336,7 +7936,11 @@ fn install_rocm_linux() -> Result<RocmInstallResult, String> {
     })?;
 
     write_rocm_install_state(&data_dir, "downloading", "Downloading AMDGPU installer…");
-    let _ = append_desktop_log_for(&data_dir, "rocm.install", "Starting ROCm installation via pkexec");
+    let _ = append_desktop_log_for(
+        &data_dir,
+        "rocm.install",
+        "Starting ROCm installation via pkexec",
+    );
 
     let mut wrapper_script = NamedTempFile::new()
         .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
@@ -7654,7 +8258,10 @@ fn install_colima_macos() -> Result<DockerInstallResult, String> {
 /// docker CLI into Program Files where `find_docker_binary()` looks.
 #[cfg(any(test, target_os = "windows"))]
 fn wsl2_engine_elevated_script() -> String {
-    r#"$ErrorActionPreference = 'Stop'
+    format!(
+        "{}{}",
+        powershell_authenticode_helper(),
+        r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:WSL_UTF8 = '1'
 
@@ -7690,7 +8297,7 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
     Expand-Archive -Path $zipPath -DestinationPath $extract
     # Validate authenticity beyond TLS, matching the Docker Desktop installer.
     $extractedExe = Join-Path $extract 'docker\docker.exe'
-    $signature = Get-AuthenticodeSignature $extractedExe
+    $signature = Get-CompanionHubAuthenticodeSignature $extractedExe
     if ($signature.Status -ne 'Valid') {
       throw "Downloaded docker CLI signature validation failed: $($signature.Status)"
     }
@@ -7706,7 +8313,7 @@ if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {
 }
 exit 0
 "#
-    .to_string()
+    )
 }
 
 /// User phase: runs non-elevated as the logged-in user so all per-user state
@@ -7765,13 +8372,13 @@ $programFiles = if ($env:ProgramW6432) {{ $env:ProgramW6432 }} else {{ $env:Prog
 $dockerBin = Join-Path $programFiles 'Docker\Docker\resources\bin'
 $dockerExe = Join-Path $dockerBin 'docker.exe'
 if (-not (Test-Path $dockerExe)) {{ throw "Static docker CLI is missing at $dockerExe." }}
-& $dockerExe context inspect wsl-engine 2>$null | Out-Null
+& $dockerExe context inspect {wsl_context} 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {{
-  & $dockerExe context create wsl-engine --docker host=tcp://127.0.0.1:2375 | Out-Null
-  if ($LASTEXITCODE -ne 0) {{ throw "Failed to create the wsl-engine docker context." }}
+  & $dockerExe context create {wsl_context} --docker host=tcp://127.0.0.1:2375 | Out-Null
+  if ($LASTEXITCODE -ne 0) {{ throw "Failed to create the {wsl_context} docker context." }}
 }}
-& $dockerExe context use wsl-engine | Out-Null
-if ($LASTEXITCODE -ne 0) {{ throw "Failed to select the wsl-engine docker context." }}
+& $dockerExe context use {wsl_context} | Out-Null
+if ($LASTEXITCODE -ne 0) {{ throw "Failed to select the {wsl_context} docker context." }}
 
 # Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
 $startup = [Environment]::GetFolderPath('Startup')
@@ -7794,6 +8401,7 @@ for ($i = 0; $i -lt 60; $i++) {{
 throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
 "#,
         linux_setup = linux_setup,
+        wsl_context = DOCKER_CONTEXT_WSL_ENGINE,
     )
 }
 
@@ -7947,9 +8555,9 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
     match output.status.code() {
         Some(0) => Ok(DockerInstallResult {
             state: DockerInstallState::Completed,
-            detail: Some(
-                "Docker Engine is running inside WSL2 (context \"wsl-engine\").".to_string(),
-            ),
+            detail: Some(format!(
+                "Docker Engine is running inside WSL2 (context \"{DOCKER_CONTEXT_WSL_ENGINE}\")."
+            )),
         }),
         _ if combined.is_empty() => Err(format!(
             "WSL2 Docker Engine installation failed with exit code {:?}.",
@@ -8004,7 +8612,10 @@ mod tests {
         // Same version (normal relaunch) → keep cache, no cleanup.
         assert!(!super::webview_cache_clear_needed(Some("0.2.27"), "0.2.27"));
         // Tolerate trailing whitespace/newline from the marker file.
-        assert!(!super::webview_cache_clear_needed(Some("0.2.27\n"), "0.2.27"));
+        assert!(!super::webview_cache_clear_needed(
+            Some("0.2.27\n"),
+            "0.2.27"
+        ));
     }
 
     #[test]
@@ -8024,16 +8635,20 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_outer_launch_command;
+    #[cfg(unix)]
+    use super::host_container_uid_gid;
     #[cfg(any(test, target_os = "linux"))]
     use super::ollama_linux_install_script;
-    #[cfg(any(test, target_os = "linux"))]
-    use super::rocm_linux_install_script;
     #[cfg(any(test, target_os = "macos"))]
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
+    #[cfg(not(target_os = "windows"))]
+    use super::parse_docker_socket_uid_gid;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::preferred_unix_cli_install_dir;
+    #[cfg(any(test, target_os = "linux"))]
+    use super::rocm_linux_install_script;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::unix_profile_for_shell;
     #[cfg(any(test, target_os = "windows"))]
@@ -8044,15 +8659,15 @@ mod tests {
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, derive_optional_service_state, desktop_log_path_for,
         docker_context_host_from_inspect_output, files_match, format_command_output,
-        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
-        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
-        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
-        parse_docker_socket_uid_gid, paths_match_by_components, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, seeded_traefik_config_contents,
-        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState, ServiceState,
-        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        generate_container_docker_config, host_docker_socket_path, is_container_name_conflict,
+        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        merge_compose_profiles, parse_container_ids, paths_match_by_components,
+        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState,
+        ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
         TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(test, target_os = "macos"))]
@@ -8255,6 +8870,7 @@ mod tests {
         assert_eq!(selected, None);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn parses_docker_socket_stat_output() {
         assert_eq!(parse_docker_socket_uid_gid("0:0"), Some((0, 0)));
@@ -8322,19 +8938,12 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn host_container_uid_gid_matches_current_process_on_unix() {
         let (uid, gid) = host_container_uid_gid();
-        #[cfg(unix)]
-        {
-            assert_eq!(uid, unsafe { libc::getuid() });
-            assert_eq!(gid, unsafe { libc::getgid() });
-        }
-        #[cfg(windows)]
-        {
-            assert_eq!(uid, 1000);
-            assert_eq!(gid, 1000);
-        }
+        assert_eq!(uid, unsafe { libc::getuid() });
+        assert_eq!(gid, unsafe { libc::getgid() });
     }
 
     #[test]
@@ -8387,10 +8996,34 @@ mod tests {
     }
 
     #[test]
-    fn optional_starting_sidecar_still_reports_starting() {
+    fn optional_sidecar_never_reports_starting_or_failed() {
+        assert!(matches!(
+            derive_optional_service_state("", "none"),
+            ServiceState::Unavailable
+        ));
         assert!(matches!(
             derive_optional_service_state("created", "none"),
-            ServiceState::Starting
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("restarting", "starting"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "starting"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("exited", "none"),
+            ServiceState::Unavailable
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "healthy"),
+            ServiceState::Ready
+        ));
+        assert!(matches!(
+            derive_optional_service_state("running", "none"),
+            ServiceState::Ready
         ));
     }
 
@@ -8526,7 +9159,9 @@ mod tests {
         );
 
         assert!(script.contains("GetTempFileName()"));
-        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $installer"));
         assert!(script.contains("net.exe localgroup docker-users \"$AppUser\" /add"));
         assert!(!script.contains("CompanionHub-DockerDesktopInstaller.exe"));
         assert!(!script.contains("cmd /c"));
@@ -8550,7 +9185,9 @@ mod tests {
         let script = ollama_windows_install_script("https://ollama.com/download/OllamaSetup.exe");
 
         assert!(script.contains("GetTempFileName()"));
-        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $installer"));
         assert!(script.contains("-notmatch 'Ollama'"));
         assert!(script.contains("'/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES'"));
         // Per-user Inno Setup installer — must never request elevation.
@@ -8615,6 +9252,8 @@ mod tests {
         assert!(script.contains("PROCESSOR_ARCHITECTURE"));
         assert!(script.contains("aarch64"));
         assert!(script.contains("docker.exe"));
+        assert!(script.contains("Import-Module Microsoft.PowerShell.Security -ErrorAction Stop"));
+        assert!(script.contains("Get-CompanionHubAuthenticodeSignature $extractedExe"));
 
         // Per-user state must NOT be created in the elevated phase — that is the
         // core fix (it would otherwise land in the wrong profile under
@@ -9116,31 +9755,63 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     }
 
     #[test]
-    fn normalizes_windows_docker_bind_mount_paths() {
+    fn normalizes_windows_docker_bind_mount_paths_for_both_backends() {
+        use super::WindowsDockerHostStyle::{Drive, WslMnt};
+        // One input list, both backends: every accepted form collapses to the
+        // Docker Desktop `/c/...` form or the WSL2-engine `/mnt/c/...` form.
+        // A single list (not one per style) so a new input form cannot be added
+        // to one backend's coverage and forgotten in the other's.
+        let inputs = [
+            r"C:\Users\hegem\AppData\Roaming\companion-hub\media",
+            "C:/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            r"\\?\C:\Users\hegem\AppData\Roaming\companion-hub\media",
+        ];
+        let expectations = [
+            (Drive, "/c/Users/hegem/AppData/Roaming/companion-hub/media"),
+            (WslMnt, "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"),
+        ];
+        for (style, expected) in expectations {
+            for input in inputs {
+                assert_eq!(
+                    super::normalize_windows_docker_host_path(input, style),
+                    expected,
+                    "input {input:?} should normalize to the {style:?} form"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_is_idempotent_and_passes_through_non_drive_paths() {
+        use super::WindowsDockerHostStyle::{Drive, WslMnt};
+        // Idempotent: re-normalizing an already-correct value is a no-op.
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                r"C:\Users\hegem\AppData\Roaming\companion-hub\media"
-            ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            super::normalize_windows_docker_host_path("/c/Users/x", Drive),
+            "/c/Users/x"
         );
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "C:/Users/hegem/AppData/Roaming/companion-hub/media"
-            ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"
+            super::normalize_windows_docker_host_path("/mnt/c/Users/x", WslMnt),
+            "/mnt/c/Users/x"
         );
+        // Bare drive root.
+        assert_eq!(super::normalize_windows_docker_host_path(r"C:\", Drive), "/c");
         assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "/c/Users/hegem/AppData/Roaming/companion-hub"
-            ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
+            super::normalize_windows_docker_host_path(r"C:\", WslMnt),
+            "/mnt/c"
         );
-        assert_eq!(
-            super::normalize_windows_docker_host_path(
-                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
-            ),
-            "/mnt/c/Users/hegem/AppData/Roaming/companion-hub"
-        );
+        // Non-drive paths (unix socket, named pipe) are never rewritten.
+        for style in [Drive, WslMnt] {
+            assert_eq!(
+                super::normalize_windows_docker_host_path("/var/run/docker.sock", style),
+                "/var/run/docker.sock"
+            );
+            assert_eq!(
+                super::normalize_windows_docker_host_path(r"\\.\pipe\docker_engine", style),
+                "//./pipe/docker_engine"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -9157,13 +9828,54 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         let env = super::render_runtime_env_content(&data_dir, &existing);
 
+        // The drive prefix depends on the backend detected at runtime (`/c/...` for
+        // Docker Desktop, `/mnt/c/...` for a native WSL2 engine), but every path in
+        // one render must use the SAME style — a mixed-style .env breaks half the
+        // mounts. Derive the single expected prefix from the same detection the
+        // renderer uses and assert both keys exactly.
+        let prefix = match super::windows_docker_host_style() {
+            super::WindowsDockerHostStyle::Drive => "/c",
+            super::WindowsDockerHostStyle::WslMnt => "/mnt/c",
+        };
         assert!(
-            env.contains("ROOT_FOLDER_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub\n"),
-            "env should normalize ROOT_FOLDER_HOST for Docker: {env}"
+            env.contains(&format!(
+                "ROOT_FOLDER_HOST={prefix}/Users/hegem/AppData/Roaming/companion-hub\n"
+            )),
+            "env should normalize ROOT_FOLDER_HOST to the detected backend style ({prefix}): {env}"
         );
         assert!(
-            env.contains("COMPOSE_FILE_HOST=/mnt/c/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"),
-            "env should expose a Docker-safe compose file mount: {env}"
+            env.contains(&format!(
+                "COMPOSE_FILE_HOST={prefix}/Users/hegem/AppData/Roaming/companion-hub/docker-compose.prod.yml\n"
+            )),
+            "env should expose the compose file mount in the same backend style ({prefix}): {env}"
         );
+        assert!(
+            !env.contains(r"ROOT_FOLDER_HOST=C:\") && !env.contains(r"COMPOSE_FILE_HOST=C:\"),
+            "env must not leak a raw Windows path: {env}"
+        );
+    }
+
+    // Windows-only by design: the reverse mapping (host_path_from_docker_path) has a
+    // passthrough impl on other hosts, so the assertions only mean something where
+    // the real parser is compiled. Gating the #[test] itself (not an inner block)
+    // keeps non-Windows CI from reporting an empty always-green test.
+    #[cfg(windows)]
+    #[test]
+    fn detect_style_round_trips_through_host_path() {
+        use super::WindowsDockerHostStyle::{Drive, WslMnt};
+        // A value normalized for either backend must map back to the same native
+        // Windows path via host_path_from_docker_path (the reverse used for
+        // desktop-side filesystem access) — including bare drive roots, whose
+        // normalized forms have no trailing slash (`/c`, `/mnt/c`).
+        for native in [r"C:\Users\hegem\AppData\Roaming\companion-hub", r"C:\"] {
+            for style in [Drive, WslMnt] {
+                let mount = super::normalize_windows_docker_host_path(native, style);
+                assert_eq!(
+                    super::host_path_from_docker_path(&mount),
+                    std::path::PathBuf::from(native),
+                    "round-trip failed for {style:?} via {mount}"
+                );
+            }
+        }
     }
 }

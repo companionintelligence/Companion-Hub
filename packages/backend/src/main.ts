@@ -97,6 +97,27 @@ async function bootstrap() {
   });
   app.use(cookieParser());
 
+  // Express `trust proxy`. Behind Traefik / the Cloudflare tunnel, `req.ip` is
+  // the proxy's (private) address unless Express is told which hops to trust — so
+  // the InternalNetworkGuard IP allowlist is otherwise a no-op for tunnel
+  // traffic. Left UNSET by default (current behavior; the managed-app-key guard
+  // is the real authorization for the internal routes). An operator who has
+  // verified their X-Forwarded-For provenance can set HUB_TRUST_PROXY — a hop
+  // count (e.g. "1") or a trusted subnet/IP list (e.g. "172.16.0.0/12") — to make
+  // `req.ip` resolve to the real client, turning the IP allowlist into meaningful
+  // defense-in-depth. A too-broad value would let a spoofed X-Forwarded-For
+  // appear internal, hence opt-in.
+  //
+  // NOTE: `trust proxy` is a PROCESS-WIDE Express setting — enabling it also
+  // changes `req.ip`/`req.protocol` for audit logging, registration, and SSO
+  // (generally making them more accurate). An invalid value (e.g. "true") makes
+  // Express throw here at startup — fail-closed, but be deliberate about the value.
+  const trustProxy = process.env.HUB_TRUST_PROXY?.trim();
+  if (trustProxy) {
+    const value = /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy;
+    app.getHttpAdapter().getInstance().set('trust proxy', value);
+  }
+
   await setupSwagger(app);
 
   const port = process.env.API_PORT || 3000;

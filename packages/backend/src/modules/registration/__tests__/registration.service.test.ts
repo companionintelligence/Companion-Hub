@@ -720,6 +720,27 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
     });
 
+    it('authenticates the check-in with the device API key (x-device-key)', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      // The Portal check-in endpoint is device-authenticated; a registered device
+      // must present its key or it would be wrongly marked degraded.
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/devices/check-in'),
+        { device_id: 'test-device' },
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'x-device-key': 'test-api-key' }),
+        }),
+      );
+    });
+
     it('transitions to degraded when tunnel token is missing', async () => {
       // Manually set phase to locally_ready
       await service.setPhase('paired');

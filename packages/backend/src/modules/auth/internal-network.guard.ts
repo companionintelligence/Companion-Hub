@@ -2,7 +2,17 @@ import { type CanActivate, type ExecutionContext, ForbiddenException, Injectable
 import type { Request } from 'express';
 import { isPrivateOrLocalIp, normalizeIpLiteral } from '@/common/helpers/ip-address';
 
-/** Allow requests from loopback and RFC1918 Docker/LAN clients only. */
+/**
+ * Best-effort defense-in-depth: allow only loopback / RFC1918 clients by source
+ * IP.
+ *
+ * NOT a real trust boundary on its own. Behind Traefik / the Cloudflare tunnel,
+ * `request.ip` is the proxy's own (private) address unless Express `trust proxy`
+ * is configured (see `HUB_TRUST_PROXY` in main.ts), so by default this guard
+ * PASSES for public tunnel traffic. The authoritative check on the routes it
+ * guards is {@link ManagedAppKeyGuard} (which binds the presented managed key to
+ * the target app's URN). Keep both, but do not rely on this one alone.
+ */
 @Injectable()
 export class InternalNetworkGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {

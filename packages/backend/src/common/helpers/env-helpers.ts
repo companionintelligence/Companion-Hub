@@ -17,6 +17,7 @@ import {
   DEFAULT_RABBITMQ_PASSWORD,
   DEFAULT_FORWARD_AUTH_URL,
   DEFAULT_DNS_IP,
+  DEFAULT_TZ,
   DEFAULT_CI_CLOUD_URL,
   DEFAULT_PUBLIC_DOMAIN,
   DEFAULT_DEMO_MODE,
@@ -35,6 +36,7 @@ import {
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
 import { quarantineStalePath } from './bind-mount-helpers';
+import { canonicalTimeZone, getHostTimeZone } from './timezone-helpers';
 
 /**
  * Generates a random seed if it does not exist yet
@@ -331,6 +333,13 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
 /** Apply resolved env to process.env without clobbering runtime / .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
+    // The Map is typed `string`, but a resolver returning an undefined default can still land
+    // one here — that is the type lie this module exists to survive. Assigning it would store
+    // the literal string "undefined" (process.env stringifies), which is TRUTHY: it would win
+    // priority 1 in every later resolve() and, for TZ, make ICU report undefined for the rest
+    // of the process. Skip instead — an absent key still falls back, a poisoned one never does.
+    if (typeof value !== 'string') continue;
+
     if (!processEnvHasValue(key)) {
       process.env[key] = value;
     }
@@ -377,7 +386,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // --- Resolve all values using the standard priority chain ---
 
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
-  const mcpApiKey = resolve('MCP_API_KEY', { envMap, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
+  const mcpApiKey = resolve('MCP_API_KEY', { envMap, settingsVal: settingsData.mcpApiKey, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
+  // Dedicated Hub<->consumer forward-auth secret (Traefik identity header + the
+  // memory-connect server-to-server calls). Derived from its OWN entropy label —
+  // NEVER JWT_SECRET — so injecting it into a consumer container (e.g. ci-memory)
+  // can never leak the Hub's master JWT/encryption key.
+  const forwardAuthSecret = resolve('CI_HUB_FORWARD_AUTH_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('forward_auth_secret');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -433,11 +447,43 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('MCP_API_KEY', mcpApiKey);
+  envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
+  // ISSUE-MCP-2: gate for destructive MCP tools. Resolved from settings.json (admin toggle) so it
+  // persists across restarts; the admin endpoint also sets process.env live for immediate effect.
+  envMap.set(
+    'MCP_ALLOW_DESTRUCTIVE',
+    resolve('MCP_ALLOW_DESTRUCTIVE', { envMap, settingsVal: boolStr(settingsData.mcpAllowDestructive), fallback: 'false' }),
+  );
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
-  envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+  // Canonicalize the *resolved* zone, not just the default. getHostTimeZone() only fills resolve()'s
+  // priority-4 slot, so a bad TZ from process.env, settings.json or a stale data .env outranks it
+  // and would otherwise be written through unchecked.
+  const hostTimeZone = getHostTimeZone();
+  const requestedTz = resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: hostTimeZone ?? DEFAULT_TZ });
+  const canonicalTz = canonicalTimeZone(requestedTz);
+  // Degrade to the host zone before the last-resort constant: a typo in Settings should not move a
+  // correctly-configured appliance to UTC when we know perfectly well what zone the host is in.
+  const timeZone = canonicalTz ?? hostTimeZone ?? DEFAULT_TZ;
+
+  if (!canonicalTz) {
+    // JSON.stringify, not raw interpolation: this is the one branch where the value is guaranteed to
+    // be garbage, settingsSchema does not strip interior newlines, and a CR/LF would forge log lines.
+    logger.warn(`TZ ${JSON.stringify(requestedTz)} is not a valid IANA time zone. Falling back to ${timeZone}.`);
+  } else if (!hostTimeZone && !process.env.TZ && !settingsData.timeZone && !envMap.get('TZ')) {
+    // Only when nothing configured a zone at all — otherwise this fires at someone who deliberately
+    // chose UTC and sends them hunting a tzdata bug they do not have.
+    logger.warn(`Could not determine the host time zone — is tzdata missing from the image? Using ${timeZone}.`);
+  }
+
+  envMap.set('TZ', timeZone);
+  // applyEnvMapToProcess deliberately never clobbers an existing process.env value, so an invalid or
+  // non-canonical inherited TZ would survive in-process: ICU would keep reporting the host zone as
+  // undefined, and ConfigurationService — which merges `{ ...envMap, ...process.env }`, letting
+  // process.env win — would serve the garbage zone to every browser. Normalize it at the source.
+  process.env.TZ = timeZone;
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
   envMap.set(

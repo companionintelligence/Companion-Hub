@@ -7,10 +7,23 @@ import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
+import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreRepository } from './app-store.repository';
 import { ReposHelpers } from './repos.helpers';
 
+// Internal store slugs that must always be PRESENT — marketplace.service
+// fabricates a local placeholder for any of these it doesn't already have, so
+// this list must stay limited to stores that legitimately should exist as a
+// local entry (`_user`, the built-in per-user namespace).
 export const RESERVED_APP_STORE_SLUGS = ['_user'];
+
+// Slugs a USER-ADDED store may never claim: the internal ones PLUS the official
+// `ci-marketplace` slug. Memory-provider trust (isMemoryProviderApp) is pinned to
+// the `ci-memory:ci-marketplace` urn, so a user store slugifying to
+// `ci-marketplace` could id-squat the provider and be handed the forward-auth
+// secret. Kept SEPARATE from RESERVED_APP_STORE_SLUGS so the official
+// ci_cloud_api store is never fabricated as a placeholder git store.
+const RESERVED_USER_STORE_SLUGS = [...RESERVED_APP_STORE_SLUGS, CI_MARKETPLACE_STORE_SLUG];
 
 @Injectable()
 export class AppStoreService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -199,7 +212,12 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    if (RESERVED_APP_STORE_SLUGS.includes(body.name.trim().toLowerCase())) {
+    const slug = slugify(body.name, { lower: true, trim: true });
+
+    // Check the DERIVED slug (not just the raw name) against the reserved list:
+    // slugify('CI Marketplace') === 'ci-marketplace', which a user-added store must
+    // never be able to claim (see RESERVED_APP_STORE_SLUGS).
+    if (RESERVED_USER_STORE_SLUGS.includes(slug) || RESERVED_USER_STORE_SLUGS.includes(body.name.trim().toLowerCase())) {
       throw new TranslatableError('SERVER_ERROR_APP_STORE_NAME_RESERVED', { name: body.name }, HttpStatus.BAD_REQUEST);
     }
 
@@ -208,8 +226,6 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     if (existing) {
       throw new TranslatableError('SERVER_ERROR_APP_STORE_ALREADY_EXISTS', {}, HttpStatus.CONFLICT);
     }
-
-    const slug = slugify(body.name, { lower: true, trim: true });
 
     const existingSlug = await this.appStoreRepository.getAppStoreBySlug(slug);
     if (existingSlug) {

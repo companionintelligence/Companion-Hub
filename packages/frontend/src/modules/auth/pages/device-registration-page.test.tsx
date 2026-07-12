@@ -109,12 +109,12 @@ describe('DeviceRegistrationPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
     expect(
-      screen.getByText('In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
+      screen.getByText('In your CI Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
     ).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
+    expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
       'href',
       'https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123',
@@ -132,7 +132,7 @@ describe('DeviceRegistrationPage', () => {
 
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute(
+    expect(await screen.findByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute(
       'href',
       'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration',
     );
@@ -228,6 +228,25 @@ describe('DeviceRegistrationPage', () => {
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
   });
 
+  it('renders the re-pair form instead of bouncing to login when the public tunnel is degraded', async () => {
+    fetchRegistrationStatusResult.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { phase: 'degraded', registered: true, degradedReasons: ['tunnel_token_missing'] },
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    // The pairing form renders so the user can re-pair...
+    expect(await screen.findByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    // ...with an explanation of why remote access needs attention...
+    expect(screen.getByText(/public URL is offline/i)).toBeInTheDocument();
+    // ...device info is loaded so the device ID is shown (not stuck "Loading device ID...")...
+    expect(await screen.findByText('device-123')).toBeInTheDocument();
+    // ...and the page does NOT auto-bounce to the local app.
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('points the login button at Portal home (not the Add Device intent URL) after choosing restore', async () => {
     fetchDeviceRegistrationInfoResult.mockResolvedValue(
       deviceInfo({
@@ -254,7 +273,7 @@ describe('DeviceRegistrationPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com/home');
+      expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com/home');
     });
   });
 });

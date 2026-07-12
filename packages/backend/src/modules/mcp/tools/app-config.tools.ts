@@ -4,7 +4,7 @@ import { AppsService } from '@/modules/apps/apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
-const urnProp = { type: 'string', description: 'App identifier in storeSlug:appName format' } as const;
+const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 @Injectable()
 export class AppConfigTools implements OnModuleInit {
@@ -16,13 +16,16 @@ export class AppConfigTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_get_user_config',
       description: 'Get user-level docker-compose and env overrides for an app.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.getUserConfig(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_update_user_config',
+      destructive: true, // ISSUE-MCP-2: rewrites the app's raw compose/env override (can change/remove volume mounts).
       description: 'Update user-level docker-compose and env overrides for an app.',
       inputSchema: {
         type: 'object',
@@ -36,24 +39,28 @@ export class AppConfigTools implements OnModuleInit {
       handler: (p) => this.updateUserConfig(p as { appUrn: string; dockerCompose: string; appEnv: string }),
     });
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_enable_user_config',
       description: 'Enable user config overrides for an app.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.enableUserConfig(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_disable_user_config',
       description: 'Disable user config overrides for an app.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.disableUserConfig(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_ignore_app_version',
       description: 'Ignore the current available update for an app.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.ignoreAppVersion(p as { appUrn: string }),
     });
     this.registry.register({
+      category: 'App Configuration',
       name: 'hub_unignore_app_version',
       description: 'Stop ignoring available updates for an app.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },

@@ -139,7 +139,7 @@ describe('HardwareInspectorService', () => {
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
       });
       process.env.CI_HUB_HOST_PLATFORM = 'win32';
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       execAsyncMock.mockImplementation(async (command: string) => {
         if (command.includes('--query-gpu=name,memory.total,driver_version')) {
           return { stdout: 'NVIDIA GeForce RTX 3080 Laptop GPU, 8192, 581.80\n' };
@@ -164,7 +164,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3060', vram: 4095, driverVersion: '581.80' }],
       });
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       execAsyncMock.mockImplementation(async (command: string) => {
         if (command.includes('--query-gpu=name,memory.total,driver_version')) {
           return { stdout: 'NVIDIA GeForce RTX 3060, 8192, 581.80\nNVIDIA GeForce RTX 4090, 24564, 581.80\n' };
@@ -206,7 +206,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3070', vram: 8192, driverVersion: '535.129.03' }],
       });
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
@@ -225,7 +225,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 3080 Laptop GPU', vram: 4095, driverVersion: '581.80' }],
       });
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       execAsyncMock.mockImplementation(async (command: string) => {
         if (command.includes('--query-gpu=name,memory.total,driver_version')) {
           throw new Error('nvidia-smi missing');
@@ -250,7 +250,7 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'NVIDIA GeForce GTX 1650', vram: 4096, driverVersion: '581.80' }],
       });
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       const smiSpy = vi.spyOn(service as any, 'detectLargestNvidiaGpuViaSmi');
       (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i9' });
       filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
@@ -646,7 +646,7 @@ describe('HardwareInspectorService', () => {
 
     it('re-detects cached discrete GPU profiles when runtime is ready but VRAM was previously unknown', async () => {
       process.env.CI_HUB_HOST_PLATFORM = 'linux';
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       (si.graphics as any)
         .mockResolvedValueOnce({
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 0, driverVersion: '535' }],
@@ -676,7 +676,7 @@ describe('HardwareInspectorService', () => {
 
     it('re-detects cached discrete GPU profiles when SI reports PCIe framebuffer (32 MB) instead of real GDDR VRAM', async () => {
       process.env.CI_HUB_HOST_PLATFORM = 'linux';
-      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: true, containerHostKind: 'native-linux' });
       (si.graphics as any)
         .mockResolvedValueOnce({
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 32, driverVersion: '535' }],
@@ -1250,6 +1250,57 @@ describe('HardwareInspectorService', () => {
       expect(profile.cpu.model).toBe('Intel Core i7-12700K');
       expect(profile.os).toEqual({ platform: 'win32', name: 'Windows', version: '' });
       expect(si.osInfo).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Container host kind (Docker Desktop vs native WSL2 engine vs Linux) ─────
+
+  describe('container host kind detection', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+    });
+
+    // detectDockerInfo runs one call: `{{json .Runtimes}}\t{{.OperatingSystem}}\t{{.KernelVersion}}`
+    function mockDockerInfo(runtimes: string, osName: string, kernel: string) {
+      execAsyncMock.mockImplementation((cmd: string) => {
+        if (cmd.includes('.OperatingSystem')) return Promise.resolve({ stdout: `${runtimes}\t${osName}\t${kernel}` });
+        return Promise.resolve({ stdout: '{}' });
+      });
+    }
+
+    it('classifies Docker Desktop from OperatingSystem', async () => {
+      mockDockerInfo('{"runc":{}}', 'Docker Desktop', '5.15.0-microsoft-standard-WSL2');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('docker-desktop');
+    });
+
+    it('classifies a native WSL2 engine from a WSL kernel', async () => {
+      mockDockerInfo('{"nvidia":{},"runc":{}}', 'Ubuntu 24.04.1 LTS', '5.15.167.4-microsoft-standard-WSL2');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('wsl-engine');
+    });
+
+    it('classifies a native Linux engine', async () => {
+      mockDockerInfo('{"runc":{}}', 'Ubuntu 22.04.3 LTS', '5.15.0-124-generic');
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('native-linux');
+    });
+
+    it('parses the nvidia runtime flag from the same call', async () => {
+      mockDockerInfo('{"nvidia":{"path":"nvidia-container-runtime"},"runc":{}}', 'Ubuntu 24.04.1 LTS', '5.15.167.4-microsoft-standard-WSL2');
+      const profile = await service.detect();
+      expect(profile.gpu.runtimeAvailable).toBe(true);
+    });
+
+    it('is unknown when the daemon is unreachable', async () => {
+      execAsyncMock.mockRejectedValue(new Error('docker daemon unreachable'));
+      const profile = await service.detect();
+      expect(profile.gpu.containerHostKind).toBe('unknown');
     });
   });
 });

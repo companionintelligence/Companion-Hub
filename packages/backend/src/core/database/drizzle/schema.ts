@@ -152,6 +152,33 @@ export const portAllocation = pgTable(
   (table) => [uniqueIndex('port_protocol_idx').on(table.hostPort, table.protocol)],
 );
 
+// SEC-MCP-8: locally-minted, hashed API keys. One table for ALL inbound key surfaces, discriminated
+// by `audience` ('mcp' today; 'rest' etc. later) so a new surface doesn't need a new table. Only the
+// SHA-256 hash is stored (never the raw key); the raw is shown once at creation. `managed` keys are
+// auto-provisioned by the Hub for companion apps (Hermes, OpenClaw, any hub_integration.mcp_client
+// app) and carry the owning app's URN — operators see them but never create/edit them by hand.
+// NOTE: this is distinct from `ciHubApiKey` (the Portal-issued device credential in settings.json,
+// stored plaintext because the Hub replays it outbound to CI-Portal) — that stays where it is.
+export const apiKey = pgTable(
+  'api_key',
+  {
+    id: serial().primaryKey().notNull(),
+    audience: varchar({ length: 16 }).default('mcp').notNull(), // which surface accepts this key
+    name: varchar().notNull(),
+    prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
+    hashedKey: varchar('hashed_key').notNull(),
+    managed: boolean().default(false).notNull(),
+    ownerAppUrn: varchar('owner_app_urn'), // set for managed keys: the companion app that owns it
+    expiresAt: timestamp('expires_at', { mode: 'string' }), // null = never expires
+    lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  },
+  // Unique per (audience, hash), not globally: the same secret may legitimately exist under two
+  // surfaces (every lookup is audience-scoped), and a cross-surface collision must never abort an
+  // insert/seed for an unrelated surface.
+  (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
+);
+
 export const deviceRegistration = pgTable('device_registration', {
   id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
   slug: varchar().notNull(), // organization slug for subdomain
@@ -173,6 +200,27 @@ export const deviceRegistration = pgTable('device_registration', {
   provisioningPhase: varchar('provisioning_phase').default('locally_ready').notNull(),
   /** JSON array of DegradedReason strings. Non-empty only when provisioningPhase = 'degraded'. */
   degradedReasons: text('degraded_reasons').default('[]').notNull(),
+  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+});
+
+/**
+ * Per-app Companion Memory connection state + the (encrypted) minted api key.
+ *
+ * One row per memory-consumer app (keyed by app URN). `state` drives the
+ * interstitial ('unconfigured' | 'connected' | 'skipped' | 'manual'); the
+ * transient 'deferred' choice lives in a wrapper cookie, not here. `encryptedKey`
+ * holds the CI-Server-issued key (AES-256-GCM via EncryptionService, salt = URN)
+ * — the Hub must retain the raw value because it re-emits it into the app's env
+ * on every restart, and CI-Server only ever reveals it once.
+ */
+export const memoryConnection = pgTable('memory_connection', {
+  id: serial().primaryKey().notNull(),
+  appUrn: varchar('app_urn').notNull().unique(),
+  state: varchar().default('unconfigured').notNull(), // 'unconfigured' | 'connected' | 'skipped' | 'manual'
+  encryptedKey: text('encrypted_key'), // encrypted CI-Server api key; null unless connected
+  serverUrl: varchar('server_url'), // resolved Companion Memory URL captured at connect time
+  keyExpiresAt: timestamp('key_expires_at', { withTimezone: true, mode: 'string' }), // instant the CI-Server key expires (timestamptz preserves the UTC offset); null unless connected. Rotation refreshes it well before this.
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });

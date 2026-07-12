@@ -316,6 +316,27 @@
       "when": 1780400000000,
       "tag": "0044_add_federated_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1780500000000,
+      "tag": "0045_add_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1780510000000,
+      "tag": "0046_api_key_audience_scoped_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1780520000000,
+      "tag": "0047_add_memory_connection",
+      "breakpoints": true
     }
   ]
 }

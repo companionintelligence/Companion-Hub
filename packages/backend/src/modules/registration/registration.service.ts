@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
@@ -37,6 +38,36 @@ const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
+
+function describeRegistrationError(error: unknown): string {
+  if (error instanceof Error) {
+    return scrubString(error.stack || error.message);
+  }
+
+  return scrubString(String(error));
+}
+
+function describePortalPairingResponse(data: unknown): string {
+  if (!data || typeof data !== 'object') {
+    return scrubString(String(data));
+  }
+
+  const body = data as Record<string, unknown>;
+  const safeBody = {
+    error: typeof body.error === 'string' ? body.error : undefined,
+    message: typeof body.message === 'string' ? body.message : undefined,
+    hasDeviceId: typeof body.device_id === 'string' && body.device_id.length > 0,
+    hasOrganizationId: typeof body.organization_id === 'string' && body.organization_id.length > 0,
+    hasSlug: typeof body.slug === 'string' && body.slug.length > 0,
+    hasSubdomain: typeof body.subdomain === 'string' && body.subdomain.length > 0,
+    hasTunnelId: typeof body.tunnel_id === 'string' && body.tunnel_id.length > 0,
+    hasTunnelToken: typeof body.tunnel_token === 'string' && body.tunnel_token.length > 0,
+    hasApiKey: typeof body.api_key === 'string' && body.api_key.length > 0,
+    keys: Object.keys(body).sort(),
+  };
+
+  return scrubString(JSON.stringify(safeBody));
+}
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -470,22 +501,26 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Re-sync CloudflareClientService from disk so getTunnelToken() stays correct
     await this.ensureCloudflareClientHasTunnelToken();
 
-    const { ciCloudUrl } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
     if (!ciCloudUrl) return;
 
     try {
       const deviceId = await this.getDeviceId();
 
-      // Use the existing unauthenticated check-in endpoint to confirm the
-      // device is still active in CI Portal. A 400 means the device is no
-      // longer active; network errors are counted toward the failure threshold.
+      // Confirm the device is still active in CI Portal via the check-in endpoint.
+      // The endpoint is device-authenticated, so present this device's API key
+      // (x-device-key) — a registered device always holds one. A 400 means the
+      // device is no longer active; network errors count toward the failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 5_000,
           validateStatus: () => true,
-          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
+            'Content-Type': 'application/json',
+            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+          }),
         },
       );
 
@@ -618,6 +653,102 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Restore public/remote access for a *registered* Hub degraded with
+   * `tunnel_token_missing`. Pairing is refused once registered (see pairDevice),
+   * so this instead recovers the already-provisioned tunnel credentials from the
+   * database and rewrites the token file. Returns a structured outcome so the UI
+   * can route correctly instead of dead-ending on the pairing screen:
+   *  - { recovered: true }                       token rewritten, tunnel restarted
+   *  - { recovered: false, action: 'restart' }   creds exist but the token file
+   *      could not be written (tunnel dir not writable by the Hub uid) — a restart
+   *      lets the container entrypoint heal ownership, then boot recovery rewrites it
+   *  - { recovered: false, action: 're_pair' }   no recoverable credentials — the
+   *      tunnel must be re-provisioned, which requires resetting and re-pairing
+   */
+  public async reconnectTunnel(): Promise<{ recovered: boolean; action?: 're_pair' | 'restart'; reason: string }> {
+    // The banner only surfaces this action for a degraded + tunnel_token_missing
+    // device, so trust the in-memory phase instead of re-deriving it — a
+    // refreshPhaseFromSources() here would re-persist a degraded→degraded
+    // transition (firing a redundant high-urgency agent notification) and could
+    // even flip an out-of-band-cleared registration to 'unregistered'.
+
+    // If the token is already on disk, the missing-token condition is resolved.
+    // Clear any stuck degraded phase so the UI reflects success — this state is
+    // reachable when boot recovery rewrote the token but Portal was unreachable,
+    // so the phase never transitioned out of degraded.
+    if (this.hasTunnelToken()) {
+      await this.clearTunnelTokenMissingDegraded();
+      return { recovered: true, reason: 'tunnel_token_present' };
+    }
+    if (!this._degradedReasons.includes('tunnel_token_missing')) {
+      return { recovered: false, reason: 'not_tunnel_token_missing' };
+    }
+
+    // Honor an explicit reconnect over a user-cleared token: drop the marker so
+    // credential recovery from the database is no longer skipped.
+    try {
+      await fs.promises.unlink(tunnelUserClearedMarkerPath());
+    } catch {
+      // marker not present — nothing to clear
+    }
+
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    if (!org) {
+      return { recovered: false, action: 're_pair', reason: 'not_registered' };
+    }
+    if (!org.tunnelToken || !org.tunnelId) {
+      // Portal never returned (or we lost) tunnel credentials — nothing to recover
+      // locally; the tunnel must be re-provisioned by resetting and re-pairing.
+      return { recovered: false, action: 're_pair', reason: 'no_credentials' };
+    }
+
+    // Credentials exist — rewrite the token file.
+    await this.cloudflareClientService.initializeTunnel(org.id, {
+      tunnelId: org.tunnelId,
+      token: org.tunnelToken,
+    });
+
+    // Success is determined by the token now being on disk, NOT by initializeTunnel's
+    // return value: it swallows transient cloudflared/Portal errors and returns null
+    // even after the token file was written. If the token still isn't there, the
+    // write itself failed (root-owned tunnel dir) — a restart lets the container
+    // entrypoint fix ownership before the next boot-time recovery.
+    if (!this.hasTunnelToken()) {
+      return { recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' };
+    }
+
+    // The missing-token condition is resolved, so clear the degraded phase directly —
+    // success must not hinge on a Portal round-trip. Bringing cloudflared up and the
+    // Portal reconcile both run in the background so the response returns promptly.
+    await this.clearTunnelTokenMissingDegraded();
+    void (async () => {
+      try {
+        await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: true });
+      } catch (e) {
+        this.logger.warn('Post-reconnect cloudflared restart failed (non-fatal)', e);
+      }
+      // Deduped/throttled Portal check-in — shares cloudValidationInFlight with the
+      // status-poll path, so it won't double-run or double-reset on a Portal 400.
+      await this.maybeValidateWithCloud();
+    })();
+
+    this.logger.info('Tunnel reconnected from stored credentials');
+    return { recovered: true, reason: 'recovered_from_db' };
+  }
+
+  /**
+   * Clear a stuck `degraded` / `tunnel_token_missing` phase once the token is
+   * present again, resetting the transient-failure counter so a single stale
+   * strike cannot immediately re-degrade the just-restored phase.
+   */
+  private async clearTunnelTokenMissingDegraded(): Promise<void> {
+    if (this._currentPhase === 'degraded' && this._degradedReasons.includes('tunnel_token_missing')) {
+      this.consecutiveValidationFailures = 0;
+      await this.setPhase('locally_ready');
+    }
+  }
+
+  /**
    * Detect when local Hub registration artifacts disagree with CI Portal or
    * persisted app-data. Only meaningful while the Hub is unregistered locally.
    */
@@ -699,21 +830,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     return {
       success: true,
-      message: 'Local registration artifacts cleared. Pair this device as new in your Companion Account.',
+      message: 'Local registration artifacts cleared. Pair this device as new in your CI Account.',
       clearedAppEnvFiles,
     };
   }
 
-  /** Unauthenticated Portal probe — true when hardware device_id is active in CI Portal. */
+  /**
+   * Portal probe — true when hardware device_id is active in CI Portal. Runs only while the
+   * Hub is locally unregistered (drift detection), so a device API key is usually absent; the
+   * check-in endpoint is device-authenticated, so without a valid key this returns null
+   * (unknown) rather than a definitive active/inactive answer. A stale-but-valid key, when
+   * present, still yields a definitive result.
+   */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
     try {
+      const { ciHubApiKey } = this.config.getConfig();
       const response = await axios.post(
         `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
         { device_id: deviceId },
         {
           timeout: 10_000,
           validateStatus: () => true,
-          ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
+          ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
+            'Content-Type': 'application/json',
+            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+          }),
         },
       );
 
@@ -1215,10 +1356,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       );
 
       if (response.status < 200 || response.status >= 300) {
-        const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string };
+        const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string; message?: string };
+        this.logger.warn(`Portal pairing request failed: status=${response.status} body=${describePortalPairingResponse(response.data)}`);
         return {
           success: false,
-          message: errorData.error || `Pairing failed: HTTP ${response.status}`,
+          message: errorData.error || errorData.message || `Pairing failed: HTTP ${response.status}`,
         };
       }
 
@@ -1234,8 +1376,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         domain: string;
       };
 
+      if ((response.data as { success?: boolean }).success === false) {
+        const errorData = response.data as { error?: string; message?: string };
+        this.logger.warn(`Portal pairing request was rejected: status=${response.status} body=${describePortalPairingResponse(response.data)}`);
+        return {
+          success: false,
+          message: errorData.error || errorData.message || 'Pairing failed.',
+        };
+      }
+
       // Validate required fields from Portal response
       if (!data.organization_id || !data.tunnel_id || !data.tunnel_token || !data.subdomain || !data.slug) {
+        this.logger.warn(`Portal pairing response was incomplete: status=${response.status} body=${describePortalPairingResponse(response.data)}`);
         return {
           success: false,
           message: 'Portal returned incomplete registration data.',
@@ -1255,6 +1407,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         domain: data.domain,
       });
     } catch (error) {
+      this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
       if (error instanceof TypeError && error.message.includes('fetch')) {
         return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
       }

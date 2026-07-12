@@ -99,4 +99,26 @@ describe('PortalCatalogService', () => {
     });
     expect(portalClient.fetchStoreMetadataText).toHaveBeenCalledWith('ghost', 'description.md');
   });
+
+  it('preserves form_fields from portal catalog metadata for install dialogs', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'n8n',
+        name: 'n8n',
+        short_desc: 'Workflow automation',
+        categories: ['automation'],
+        form_fields: [
+          { type: 'password', label: 'DB password', env_variable: 'N8N_DB_PASSWORD', required: false },
+          { type: 'text', label: 'Username', env_variable: 'APP_USER', required: true },
+        ],
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('n8n:ci-marketplace' as any)).resolves.toMatchObject({
+      form_fields: [
+        { type: 'password', label: 'DB password', env_variable: 'N8N_DB_PASSWORD', required: false },
+        { type: 'text', label: 'Username', env_variable: 'APP_USER', required: true },
+      ],
+    });
+  });
 });

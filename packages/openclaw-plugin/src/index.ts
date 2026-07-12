@@ -1,7 +1,29 @@
 import type { OpenClawPluginApi, PluginConfig, HubInferenceStatus } from './types';
-import { McpClient } from './mcp-client';
+import { fetchWithTimeout, McpClient } from './mcp-client';
 import { createWakeEndpointHandler } from './wake-endpoint';
 import { SseListenerService } from './sse-listener';
+
+/**
+ * Unwrap a Hub MCP tools/call result into its raw payload. The Hub wraps every tool result via
+ * formatToolSuccess as `{ content: [{ type: 'text', text: JSON.stringify(payload) }], isError? }`,
+ * so a caller that needs the domain object must parse content[0].text. Returns null on an error
+ * result or an unparseable body (callers then fall back, e.g. to the REST inference endpoint).
+ */
+function unwrapToolResult<T>(result: unknown): T | null {
+  const wrapped = result as { content?: Array<{ text?: string }>; isError?: boolean } | null | undefined;
+  if (!wrapped || wrapped.isError) {
+    return null;
+  }
+  const text = wrapped.content?.[0]?.text;
+  if (typeof text !== 'string') {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * OpenClaw plugin entry point.
@@ -23,9 +45,10 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
 
   api.log.info(`CI-Hub plugin initializing (hub: ${hubUrl})`);
 
-  // Validate Hub is reachable
+  // Validate Hub is reachable — with a timeout, so a half-open Hub can't wedge plugin startup here
+  // before McpClient (which guards its own requests) is even constructed.
   try {
-    const healthResponse = await fetch(`${hubUrl.replace(/\/$/, '')}/api/health`);
+    const healthResponse = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/health`, {});
     if (!healthResponse.ok) {
       api.log.warn(`Hub health check failed: ${healthResponse.status}`);
     }
@@ -33,11 +56,21 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
     api.log.warn(`Hub unreachable at ${hubUrl}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Connect to Hub MCP server and register tools
+  // Connect the in-plugin MCP client. Tool *exposure to the agent* is handled by
+  // OpenClaw's built-in MCP client via the `mcp.servers.ci-hub` entry CI-OpenClaw
+  // writes into openclaw.json (bootstrap-ci-hub-mcp.sh / server.cjs), so this
+  // client does NOT register tools by default — doing so would double-register
+  // them. It stays connected for the plugin's OWN authenticated Hub calls:
+  // inference auto-config below needs `hub_get_inference_status`, and the REST
+  // `/api/inference/status` endpoint requires a Hub session the plugin does not
+  // have (so the MCP call is the only working path). Under
+  // HUB_MCP_LEGACY_CLIENT=true it ALSO registers tools in-plugin, as a rollback
+  // if the native mcp.servers path is unavailable.
   const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
   await mcpClient.connect();
 
-  if (mcpClient.isConnected()) {
+  if (mcpClient.isConnected() && process.env.HUB_MCP_LEGACY_CLIENT === 'true') {
+    api.log.warn('HUB_MCP_LEGACY_CLIENT=true — also registering Hub tools via the in-plugin client (native mcp.servers.ci-hub is the default path)');
     try {
       const tools = await mcpClient.listTools();
       for (const tool of tools) {
@@ -48,20 +81,29 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
           handler: async (args) => mcpClient.callTool(tool.name, args),
         });
       }
-      api.log.info(`Registered ${tools.length} Hub MCP tools`);
+      api.log.info(`Registered ${tools.length} Hub MCP tools (legacy client)`);
     } catch (error) {
       api.log.error(`Failed to register Hub tools: ${error instanceof Error ? error.message : String(error)}`);
     }
+  } else {
+    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config; in-plugin client used only for inference discovery');
   }
 
-  // Register wake webhook endpoint
-  const wakeHandler = createWakeEndpointHandler(api, wakeSecret, config.wakeFilter);
-  api.registerHttpRoute({
-    method: 'POST',
-    path: '/hooks/hub-wake',
-    handler: wakeHandler,
-  });
-  api.log.info('Registered wake endpoint: POST /hooks/hub-wake');
+  // Register wake webhook endpoint — only when a wake secret is set. The handler
+  // enforces the Bearer check ONLY when a secret is present, so mounting the route
+  // without a secret would expose an unauthenticated agent-wake trigger. Gate the
+  // route on the secret (matches the credential the Hub injects alongside MCP).
+  if (wakeSecret) {
+    const wakeHandler = createWakeEndpointHandler(api, wakeSecret, config.wakeFilter);
+    api.registerHttpRoute({
+      method: 'POST',
+      path: '/hooks/hub-wake',
+      handler: wakeHandler,
+    });
+    api.log.info('Registered wake endpoint: POST /hooks/hub-wake');
+  } else {
+    api.log.warn('HUB_WAKE_SECRET not set — wake endpoint disabled (would be unauthenticated otherwise)');
+  }
 
   // Start SSE listener if enabled
   if (config.sseEnabled) {
@@ -82,22 +124,26 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
  */
 async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, apiKey: string, mcpClient: McpClient): Promise<void> {
   try {
-    // S-OC-1.1: Discover inference capabilities via MCP
+    // S-OC-1.1: Discover inference capabilities via the authenticated MCP call
+    // (hub_get_inference_status). The REST fallback below only fires if that
+    // fails — and /api/inference/status requires a Hub session the plugin lacks,
+    // so it typically 401s; the MCP call is the plugin's working channel.
     let inferenceStatus: HubInferenceStatus | null = null;
 
     if (mcpClient.isConnected()) {
       try {
-        const result = await mcpClient.callTool('hub_get_inference_status', {});
-        inferenceStatus = result as HubInferenceStatus;
+        // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
+        // A null result (error/unparseable) falls through to the REST fallback below.
+        inferenceStatus = unwrapToolResult<HubInferenceStatus>(await mcpClient.callTool('hub_get_inference_status', {}));
       } catch {
         api.log.debug('hub_get_inference_status not yet available — trying REST fallback');
       }
     }
 
-    // REST fallback
+    // REST fallback (timeout-guarded like every other Hub metadata call)
     if (!inferenceStatus) {
       try {
-        const response = await fetch(`${hubUrl.replace(/\/$/, '')}/api/inference/status`);
+        const response = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/inference/status`, {});
         if (response.ok) {
           inferenceStatus = (await response.json()) as HubInferenceStatus;
         }
@@ -129,7 +175,7 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     const isEmbeddingModel = (id: string) => /embed/i.test(id);
     let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
     try {
-      const response = await fetch(`${ollamaNativeUrl}/api/tags`);
+      const response = await fetchWithTimeout(`${ollamaNativeUrl}/api/tags`, {});
       if (response.ok) {
         const payload = (await response.json()) as { models?: Array<{ name?: string }> };
         localModels = (payload.models ?? [])

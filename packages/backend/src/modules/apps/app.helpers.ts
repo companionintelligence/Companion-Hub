@@ -15,6 +15,9 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
+import { McpApiKeyService } from '../mcp/mcp-api-key.service';
+import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
@@ -37,6 +40,8 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
+    private readonly mcpApiKeys: McpApiKeyService,
+    private readonly memoryConnection: MemoryConnectionService,
   ) {}
 
   /**
@@ -386,13 +391,22 @@ export class AppHelpers {
       const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
 
       envMap.set('HUB_URL', hubInternalUrl);
-      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp/sse`);
-      envMap.set('HUB_MCP_MESSAGES_URL', `${hubInternalUrl}/api/mcp/messages`);
+      // BUG-MCP-1: the Hub now speaks the MCP Streamable HTTP transport on a single endpoint
+      // (POST/GET/DELETE at /api/mcp), replacing the old /sse + /messages pair. Agents connect an
+      // MCP Streamable HTTP client here with the injected HUB_MCP_API_KEY as the Bearer token.
+      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp`);
 
-      // Inject MCP API key so the agent can authenticate with the Hub MCP endpoint
-      if (process.env.MCP_API_KEY) {
-        envMap.set('HUB_MCP_API_KEY', process.env.MCP_API_KEY);
-      }
+      // SEC-MCP-8: provision a DEDICATED managed key for this companion app rather than sharing the
+      // single Hub key. The app's existing key is preserved if it still validates (no churn, like
+      // HUB_WAKE_SECRET below); otherwise a fresh one is minted. The key is auto-revoked on uninstall,
+      // and the Hub stores only its hash — the raw is injected here into the app's env.
+      const existingMcpKey = existingAppEnvMap.get('HUB_MCP_API_KEY');
+      const mcpKey = await this.mcpApiKeys.provisionManagedKey({
+        appUrn,
+        appName: config.name ?? appUrn,
+        existingRawKey: existingMcpKey,
+      });
+      envMap.set('HUB_MCP_API_KEY', mcpKey);
 
       // Generate or preserve wake secret
       const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');
@@ -435,20 +449,115 @@ export class AppHelpers {
       }
     }
 
-    // --- Portal OIDC issuer (first-party CI apps only) ---
-    // CI-Server's "Sign in with CI-Portal" flow needs the Portal OIDC IdP origin.
-    // That is CI_CLOUD_URL (ciCloudUrl) — already normalized to the Portal origin
-    // per environment (https://hub.ci.computer in prod, https://hub.companionintelligence.com
-    // in dev). NOTE: this is NOT hub.<DOMAIN>: DOMAIN is the public *app* zone
-    // (apps deploy at ci-memory-<org>.companionintelligence.com), which in prod is
-    // a different zone from the Portal IdP. We only inject for first-party CI apps;
-    // a third-party app (e.g. AnythingLLM) may read OIDC_ISSUER_URL for its own IdP,
-    // so we must never clobber it.
+    // --- Portal OIDC issuer injection ---
+    // Apps that "Sign in with CI-Portal" must authenticate against the *paired*
+    // Portal IdP — that is CI_CLOUD_URL (ciCloudUrl), already normalized to the
+    // Portal origin per environment (https://hub.ci.computer in prod,
+    // https://hub.companionintelligence.com in dev). NOTE: this is NOT hub.<DOMAIN>:
+    // DOMAIN is the public *app* zone (apps deploy at
+    // ci-import-tools-<device>-<org>.companionintelligence.com), which in prod is a
+    // different zone from the Portal IdP. If the issuer is not injected, an exposed
+    // app falls back to its hardcoded default IdP and the Portal rejects the
+    // sign-in with INVALID_REDIRECT_URI (see CI-Hub#870).
     const { ciCloudUrl } = this.config.getConfig();
-    const isFirstPartyPortalOidcApp =
-      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-    if (isFirstPartyPortalOidcApp && ciCloudUrl) {
-      envMap.set('OIDC_ISSUER_URL', ciCloudUrl.replace(/\/+$/, ''));
+    const normalizedCloudUrl = ciCloudUrl?.trim().replace(/\/+$/, '');
+
+    // Preferred path: manifest-driven, opt-in injection (mirrors hub_integration.inference).
+    // Apps declare the env var they read the issuer from and, optionally, a path
+    // suffix (e.g. "/api/auth" for discovery-based clients like CI-Import-Tools).
+    // Only opted-in apps are touched, so a third-party app reading a same-named var
+    // for its own IdP is never clobbered.
+    const oidcIntegration = config.hub_integration?.oidc;
+    if (oidcIntegration) {
+      if (normalizedCloudUrl) {
+        const suffix = oidcIntegration.issuer_path?.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+        const issuer = suffix ? `${normalizedCloudUrl}/${suffix}` : normalizedCloudUrl;
+        envMap.set(oidcIntegration.issuer_env, issuer);
+        this.logger.debug(`[AppHelpers] Injected paired Portal OIDC issuer for ${appUrn}: ${oidcIntegration.issuer_env}=${issuer}`);
+      } else {
+        this.logger.warn(`[AppHelpers] ${appUrn} declares hub_integration.oidc but CI_CLOUD_URL is empty; skipping OIDC issuer injection.`);
+      }
+    }
+
+    // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
+    // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
+    // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
+    // The first-party check is computed lazily so opted-in apps (the common path going
+    // forward) don't pay for the id/source scan on every env generation.
+    if (!oidcIntegration && normalizedCloudUrl) {
+      const isFirstPartyPortalOidcApp =
+        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+      if (isFirstPartyPortalOidcApp) {
+        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+      }
+    }
+
+    // --- Companion Memory credential injection (consumer apps) ---
+    // Apps opt in via hub_integration.memory (declaring the env vars they read
+    // their memory URL + api key from). Once the user has connected the app
+    // through the memory-connect flow, the Hub-brokered, user-consented creds
+    // are re-emitted here on every env generation (mirrors the inference/oidc
+    // opt-in mappings). Recomputing on each generation is what makes the creds
+    // survive restarts — a bare app.env write would be clobbered. A brokered
+    // connection takes precedence and is re-emitted first; an operator-entered
+    // value is used only when no brokered connection exists (to point at an
+    // external CI-Server, the operator must Disconnect the brokered one first).
+    const memoryIntegration = config.hub_integration?.memory;
+    if (memoryIntegration?.url_env && memoryIntegration?.token_env) {
+      // The app's own URN, so its wrapper can query the per-app memory-connect
+      // state endpoint (`/api/memory-connect/apps/:urn/state`) to decide whether
+      // to show the connect interstitial.
+      envMap.set('CI_APP_URN', appUrn);
+
+      const operatorSetToken = (envMap.get(memoryIntegration.token_env) ?? '').trim().length > 0;
+      // Best-effort (never fail env generation over it) so the Hub UI reflects
+      // reality: a brokered connection re-emits its creds, and a manually
+      // configured app shows as "manual" (not "Not connected" with a Connect
+      // button that would mint a dead key).
+      try {
+        // A brokered connection the user completed takes precedence and MUST be
+        // re-emitted on every regeneration. Checking it first also prevents a
+        // manifest that ships a non-empty DEFAULT for token_env from pinning a
+        // genuinely connected app to `manual` (which would then stop injecting
+        // the real creds). getInjectableCreds is non-null only when connected.
+        const creds = await this.memoryConnection.getInjectableCreds(appUrn);
+        if (creds) {
+          envMap.set(memoryIntegration.url_env, creds.url);
+          envMap.set(memoryIntegration.token_env, creds.token);
+          this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
+        } else if (operatorSetToken) {
+          // Operator supplied creds at install and there is no brokered
+          // connection → record `manual` so the UI never prompts. markManual is
+          // itself idempotent (it skips the write when already manual), so this
+          // stays cheap across repeated env regenerations.
+          await this.memoryConnection.markManual(appUrn);
+        }
+      } catch (err) {
+        this.logger.warn(`[AppHelpers] memory-connect env resolution failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // --- Companion Memory provider (ci-memory) forward-auth provisioning ---
+    // ci-memory verifies the Hub's server-to-server connect calls (code
+    // exchange, revoke) via signed forward-auth headers keyed on the Hub-global
+    // forwardAuthSecret, and only redirects the browser back to allowlisted Hub
+    // origins. Inject the shared secret + enable flag + the Hub's public origin
+    // so the connect flow works out of the box on this appliance. Trust is keyed
+    // on install provenance (isMemoryProviderApp: official-store install URN) —
+    // NOT a manifest field like id/source/provider, so no third-party-store app
+    // can spoof its way into being handed the forward-auth master secret.
+    if (isMemoryProviderApp(config)) {
+      const forwardAuthSecret = this.config.get('forwardAuthSecret');
+      if (forwardAuthSecret) {
+        envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
+        envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
+      }
+      // The Hub's browser-reachable origin (its Traefik/tunnel route,
+      // `<hubSubdomain>.<domain>` — see traefik-config.service.writeHubRoute).
+      // This is the origin ci-memory allowlists as a valid connect return target.
+      if (org?.hubSubdomain && domain && domain !== 'example.com') {
+        envMap.set('CI_HUB_ORIGINS', `https://${org.hubSubdomain}.${domain}`);
+      }
     }
 
     envMap.delete('APP_PUBLIC_DOMAIN');

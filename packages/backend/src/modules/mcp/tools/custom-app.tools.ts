@@ -4,7 +4,7 @@ import { castAppUrn } from '@/common/helpers/app-helpers';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from '@/modules/custom-apps/dto/custom-apps.dto';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
-const urnProp = { type: 'string', description: 'App identifier in storeSlug:appName format' } as const;
+const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
 @Injectable()
 export class CustomAppTools implements OnModuleInit {
@@ -15,12 +15,13 @@ export class CustomAppTools implements OnModuleInit {
 
   onModuleInit() {
     this.registry.register({
+      category: 'Custom Apps',
       name: 'hub_create_custom_app',
       description: 'Create a custom app from a dynamic docker-compose config. Returns the new app URN.',
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'App name (a-z, 0-9, hyphens, 1-50 chars)' },
+          name: { type: 'string', description: 'Display name (1-50 chars). A URL-safe identifier is derived from it.' },
           config: { type: 'object', description: 'Docker compose service config' },
         },
         required: ['name', 'config'],
@@ -28,7 +29,9 @@ export class CustomAppTools implements OnModuleInit {
       handler: (p) => this.createCustomApp(p as { name: string; config: Record<string, unknown> }),
     });
     this.registry.register({
+      category: 'Custom Apps',
       name: 'hub_update_custom_app',
+      destructive: true, // ISSUE-MCP-2: rewrites the app's raw docker-compose (can change/remove volume mounts).
       description: 'Update a custom app docker-compose configuration.',
       inputSchema: {
         type: 'object',
@@ -38,6 +41,7 @@ export class CustomAppTools implements OnModuleInit {
       handler: (p) => this.updateCustomApp(p as { appUrn: string; config: Record<string, unknown> }),
     });
     this.registry.register({
+      category: 'Custom Apps',
       name: 'hub_update_app_metadata',
       description: 'Update an app frontmatter metadata string.',
       inputSchema: {

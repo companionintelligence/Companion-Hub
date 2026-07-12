@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
@@ -17,6 +18,42 @@ fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
         crate::hub_manager::HubStatus::Running => "running".to_string(),
         crate::hub_manager::HubStatus::Error { message } => format!("error: {}", message),
     }
+}
+
+fn stack_dev_mode_enabled() -> bool {
+    std::env::var("CI_HUB_STACK_DEV")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn non_empty_path_env(var_name: &str) -> Option<PathBuf> {
+    std::env::var(var_name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+async fn hub_health_ok(client: &reqwest::Client, base_url: &str) -> bool {
+    for endpoint in ["/api/health/live", "/api/health"] {
+        if client
+            .get(format!("{base_url}{endpoint}"))
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
@@ -326,9 +363,20 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let status_ref = Arc::clone(&status_item);
     let start_ref = Arc::clone(&start_item);
     let stop_ref = Arc::clone(&stop_item);
-    let env_path_for_health = crate::hub_manager::hub_env_path();
+    let stack_dev_mode = stack_dev_mode_enabled();
+    let env_path_for_health = if stack_dev_mode {
+        non_empty_path_env("CI_HUB_STACK_DEV_ENV_PATH")
+            .unwrap_or_else(crate::hub_manager::hub_env_path)
+    } else {
+        crate::hub_manager::hub_env_path()
+    };
     let data_dir_for_watchdog = crate::hub_manager::get_hub_data_dir();
-    let compose_path_for_watchdog = data_dir_for_watchdog.join(crate::hub_manager::HUB_COMPOSE_FILENAME);
+    let compose_path_for_watchdog = if stack_dev_mode {
+        non_empty_path_env("CI_HUB_STACK_DEV_COMPOSE_PATH")
+            .unwrap_or_else(|| data_dir_for_watchdog.join(crate::hub_manager::HUB_COMPOSE_FILENAME))
+    } else {
+        data_dir_for_watchdog.join(crate::hub_manager::HUB_COMPOSE_FILENAME)
+    };
     tauri::async_runtime::spawn(async move {
         let mut last_ok: Option<bool> = None;
         let mut consecutive_failures: u32 = 0;
@@ -336,18 +384,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let api_port = crate::port_manager::read_api_port(&env_path_for_health);
             // Try resolved port first, then local source-dev port
-            let ok = client
-                .get(format!("http://localhost:{}/api/health/live", api_port))
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false)
-                || client
-                    .get("http://localhost:5004/api/health/live")
-                    .send()
-                    .await
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false);
+            let ok = hub_health_ok(&client, &format!("http://localhost:{}", api_port)).await
+                || hub_health_ok(&client, "http://localhost:5004").await;
 
             if last_ok != Some(ok) {
                 let transition = match last_ok {
@@ -392,7 +430,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 if crate::hub_manager::should_trigger_hub_watchdog(
                     consecutive_failures,
                     cooldown_secs,
-                    crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
+                    stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
                 ) {
                     let _ = crate::hub_manager::append_desktop_log(
                         "tray.watchdog",

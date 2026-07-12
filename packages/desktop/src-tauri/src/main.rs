@@ -27,6 +27,7 @@ const HUB_STATUS_CHECK_TIMEOUT: Duration = Duration::from_millis(2500);
 
 struct PendingPairingCode(Mutex<Option<String>>);
 struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
+struct PendingInstallIntent(Mutex<Option<DesktopInstallIntentPayload>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +36,20 @@ struct DesktopPortalAuthPayload {
     token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInstallIntentPayload {
+    app_slug: String,
+    #[serde(default = "default_install_store_id")]
+    store_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+}
+
+fn default_install_store_id() -> String {
+    "ci-marketplace".to_string()
 }
 
 fn stack_dev_mode_enabled() -> bool {
@@ -148,7 +163,11 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
 /// Install Ollama using the platform-native bootstrap flow.
 #[tauri::command]
 async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
-    hub_manager::install_ollama()
+    // Run on the blocking pool: on a WSL2 engine this shells out to an unbounded
+    // in-distro `apt`/Ollama install, which must not pin an async-runtime worker.
+    tokio::task::spawn_blocking(hub_manager::install_ollama)
+        .await
+        .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
@@ -237,7 +256,11 @@ fn validate_open_path(path: &Path) -> Result<(), String> {
 /// `create_if_missing` is `true` for the logs folder (preserving its prior
 /// behavior) and `false` for data folders, so a wrong or remote path surfaces as
 /// an error instead of silently creating a stray directory.
-fn open_directory(app: &tauri::AppHandle, path: &Path, create_if_missing: bool) -> Result<(), String> {
+fn open_directory(
+    app: &tauri::AppHandle,
+    path: &Path,
+    create_if_missing: bool,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
 
     if create_if_missing {
@@ -254,7 +277,11 @@ fn open_directory(app: &tauri::AppHandle, path: &Path, create_if_missing: bool) 
         return Err(err);
     }
 
-    let _ = hub_manager::append_desktop_log_for(&data_dir, "open_folder", &format!("opening {}", path.display()));
+    let _ = hub_manager::append_desktop_log_for(
+        &data_dir,
+        "open_folder",
+        &format!("opening {}", path.display()),
+    );
 
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
@@ -283,7 +310,7 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
     // The backend resolves host paths from ROOT_FOLDER_HOST, which on Windows is
-    // stored in Docker bind-mount format (e.g. `/mnt/c/Users/...`). Convert it back
+    // stored in Docker bind-mount format (e.g. `/c/Users/...`). Convert it back
     // to a native host path (`C:\Users\...`) so the OS file explorer can open it;
     // otherwise `validate_open_path` rejects it as non-absolute. No-op on POSIX hosts.
     let native = hub_manager::host_path_from_docker_path(&path);
@@ -318,6 +345,14 @@ fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> 
 fn consume_pending_portal_auth(
     state: tauri::State<'_, PendingPortalAuth>,
 ) -> Option<DesktopPortalAuthPayload> {
+    state.0.lock().ok()?.take()
+}
+
+/// Returns a store install intent from a deep link that arrived before the UI was ready.
+#[tauri::command]
+fn consume_pending_install_intent(
+    state: tauri::State<'_, PendingInstallIntent>,
+) -> Option<DesktopInstallIntentPayload> {
     state.0.lock().ok()?.take()
 }
 
@@ -393,6 +428,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
+        .manage(PendingInstallIntent(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A freshly-updated instance signals us (the old binary, still running)
             // to restart so the new binary on disk takes over.
@@ -433,6 +469,7 @@ pub fn run() {
             install_docker_engine_alternative_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
+            consume_pending_install_intent,
             check_desktop_update_command,
             get_desktop_release_version_command,
             perform_desktop_update_command,
@@ -552,7 +589,20 @@ pub fn run() {
             if stack_dev_mode_enabled() {
                 // Stack was started externally (e.g. `cihub up dev`); still refresh host
                 // metrics so the dashboard shows physical disk/RAM, not the Docker VM.
-                hub_manager::refresh_host_metrics_probe_cache(&data_dir);
+                hub_manager::refresh_host_hardware_probe_cache(&data_dir);
+                if let Some(stack_data_dir) = hub_manager::host_data_dir_from_env_path(&env_path) {
+                    if stack_data_dir != data_dir {
+                        hub_manager::refresh_host_hardware_probe_cache(&stack_data_dir);
+                        let _ = hub_manager::append_desktop_log_for(
+                            &data_dir,
+                            "hw.probe",
+                            &format!(
+                                "stack-dev host hardware probes refreshed for mounted data root {}",
+                                stack_data_dir.display()
+                            ),
+                        );
+                    }
+                }
                 let _ = hub_manager::append_desktop_log_for(
                     &data_dir,
                     "setup",
@@ -746,10 +796,12 @@ pub fn run() {
                 handle_deep_link_url(&app_handle, &arg);
             }
 
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                if let Err(err) = app.deep_link().register("cihub") {
-                    log::warn!("Failed to register cihub:// deep-link handler: {err}");
+                for scheme in ["cihub", "cihub-dev"] {
+                    if let Err(err) = app.deep_link().register(scheme) {
+                        log::warn!("Failed to register {scheme}:// deep-link handler: {err}");
+                    }
                 }
             }
 
@@ -936,6 +988,15 @@ fn queue_portal_auth(app: &tauri::AppHandle, payload: DesktopPortalAuthPayload) 
     let _ = app.emit("deep-link-auth", payload);
 }
 
+fn queue_install_intent(app: &tauri::AppHandle, payload: DesktopInstallIntentPayload) {
+    if let Some(state) = app.try_state::<PendingInstallIntent>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app.emit("deep-link-install", payload);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         focus_main_window(app);
@@ -946,6 +1007,12 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(payload) = extract_portal_auth(url) {
         focus_main_window(app);
         queue_portal_auth(app, payload);
+        return;
+    }
+
+    if let Some(payload) = extract_install_intent(url) {
+        focus_main_window(app);
+        queue_install_intent(app, payload);
     }
 }
 
@@ -1000,7 +1067,7 @@ fn extract_pairing_code(url: &str) -> Option<String> {
 
 fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     let trimmed = url.trim();
-    if !trimmed.starts_with("cihub://auth") {
+    if !trimmed.starts_with("cihub://auth") && !trimmed.starts_with("cihub-dev://auth") {
         return None;
     }
 
@@ -1029,10 +1096,60 @@ fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
     }
 }
 
+fn is_install_deep_link_prefix(url: &str) -> bool {
+    url.starts_with("cihub://install") || url.starts_with("cihub-dev://install")
+}
+
+fn parse_install_query_param(query: &str, key: &str) -> Option<String> {
+    for param in query.split('&') {
+        if let Some(value) = param.strip_prefix(&format!("{key}=")) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_install_intent(url: &str) -> Option<DesktopInstallIntentPayload> {
+    let trimmed = url.trim();
+    if !is_install_deep_link_prefix(trimmed) {
+        return None;
+    }
+
+    let without_scheme = trimmed
+        .strip_prefix("cihub-dev://install/")
+        .or_else(|| trimmed.strip_prefix("cihub://install/"))
+        .or_else(|| trimmed.strip_prefix("cihub-dev://install?"))
+        .or_else(|| trimmed.strip_prefix("cihub://install?"))?;
+
+    let (path_part, query_part) = match without_scheme.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (without_scheme, trimmed.split('?').nth(1)),
+    };
+
+    let app_slug = path_part.split('/').next()?.trim().to_string();
+    if app_slug.is_empty() {
+        return None;
+    }
+
+    let store_id = query_part
+        .and_then(|query| parse_install_query_param(query, "storeId"))
+        .unwrap_or_else(default_install_store_id);
+    let device_id = query_part.and_then(|query| parse_install_query_param(query, "deviceId"));
+
+    Some(DesktopInstallIntentPayload {
+        app_slug,
+        store_id,
+        device_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
+        deep_link_urls_from_payload, extract_install_intent, extract_pairing_code, extract_portal_auth,
         launch_mode_from_args, sanitize_download_filename, stack_dev_mode_enabled,
         stack_dev_override_paths, validate_open_path, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
         STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
@@ -1095,6 +1212,13 @@ mod tests {
                 error: None,
             })
         );
+        assert_eq!(
+            extract_portal_auth("cihub-dev://auth?token=desktop-token"),
+            Some(super::DesktopPortalAuthPayload {
+                token: Some("desktop-token".to_string()),
+                error: None,
+            })
+        );
     }
 
     #[test]
@@ -1111,6 +1235,47 @@ mod tests {
     #[test]
     fn ignore_non_auth_deep_links_for_portal_auth() {
         assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn extract_install_intent_from_path() {
+        assert_eq!(
+            extract_install_intent("cihub://install/immich"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "immich".to_string(),
+                store_id: "ci-marketplace".to_string(),
+                device_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_install_intent_from_path_with_query() {
+        assert_eq!(
+            extract_install_intent("cihub://install/immich?storeId=ci-apps&deviceId=dev-1"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "immich".to_string(),
+                store_id: "ci-apps".to_string(),
+                device_id: Some("dev-1".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn extract_install_intent_dev_scheme() {
+        assert_eq!(
+            extract_install_intent("cihub-dev://install/plane"),
+            Some(super::DesktopInstallIntentPayload {
+                app_slug: "plane".to_string(),
+                store_id: "ci-marketplace".to_string(),
+                device_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn ignore_pairing_for_install_intent() {
+        assert_eq!(extract_install_intent("cihub://pair?code=abc123"), None);
     }
 
     #[test]

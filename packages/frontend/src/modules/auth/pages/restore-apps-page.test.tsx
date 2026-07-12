@@ -36,12 +36,16 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('@/modules/app/helpers/use-install-queue', () => ({
-  useInstallQueue: () => ({
-    data: { active: null, queued: [] },
-    isLoading: false,
-  }),
-}));
+vi.mock('@/modules/app/helpers/use-install-queue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/modules/app/helpers/use-install-queue')>();
+  return {
+    ...actual,
+    useInstallQueue: () => ({
+      data: { active: null, queued: [] },
+      isLoading: false,
+    }),
+  };
+});
 
 vi.mock('react-hot-toast', () => ({
   default: {

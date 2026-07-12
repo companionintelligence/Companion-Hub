@@ -14,7 +14,7 @@ echo "[pre-test-cleanup] Cleaning up before $SUITE E2E suite..."
 # Only runs in CI or when explicitly opted-in to avoid killing unrelated local processes.
 if [ "${CI:-}" = "true" ] || [ "${E2E_CLEANUP_PORTS:-}" = "true" ]; then
   if command -v lsof >/dev/null 2>&1; then
-    for port in 3000 5173 8012 9091 6543 5672 8880 8881 8843; do
+    for port in 3000 4444 5173 8012 9091 6543 5672 8880 8881 8843; do
       pids=$(lsof -ti :$port 2>/dev/null || true)
       for pid in $pids; do
         [ -z "$pid" ] && continue

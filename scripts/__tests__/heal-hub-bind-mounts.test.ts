@@ -242,13 +242,31 @@ describe('repairHostRootOwnedBindMounts policy', () => {
 
 describe('dockerBindMountPath', () => {
   const originalPlatform = process.platform;
+  const originalStyle = process.env.CI_HUB_DOCKER_PATH_STYLE;
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
+    if (originalStyle === undefined) {
+      delete process.env.CI_HUB_DOCKER_PATH_STYLE;
+    } else {
+      process.env.CI_HUB_DOCKER_PATH_STYLE = originalStyle;
+    }
   });
 
-  it('normalizes Windows paths to /mnt/<drive>/... for Docker bind mounts', () => {
+  it('normalizes Windows paths to /<drive>/... for Docker Desktop', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.CI_HUB_DOCKER_PATH_STYLE = 'drive';
+    expect(dockerBindMountPath(String.raw`C:\Users\hegem\AppData\Roaming\companion-hub\state`)).toBe(
+      '/c/Users/hegem/AppData/Roaming/companion-hub/state',
+    );
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('C:/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/mnt/C/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+  });
+
+  it('normalizes Windows paths to /mnt/<drive>/... for a native WSL2 engine', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.CI_HUB_DOCKER_PATH_STYLE = 'wsl-mnt';
     expect(dockerBindMountPath(String.raw`C:\Users\hegem\AppData\Roaming\companion-hub\state`)).toBe(
       '/mnt/c/Users/hegem/AppData/Roaming/companion-hub/state',
     );
@@ -259,13 +277,15 @@ describe('dockerBindMountPath', () => {
 
   it('normalizes MSYS /c/... inputs before Windows path resolution', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.CI_HUB_DOCKER_PATH_STYLE = 'drive';
     const mangled = path.win32.resolve('/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(mangled).not.toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
-    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/mnt/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(mangled).not.toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
+    expect(dockerBindMountPath('/c/Users/hegem/AppData/Roaming/companion-hub')).toBe('/c/Users/hegem/AppData/Roaming/companion-hub');
   });
 
   it('resolves relative paths on Windows without backslashes', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.CI_HUB_DOCKER_PATH_STYLE = 'drive';
     const resolved = dockerBindMountPath('state');
     expect(resolved).toMatch(/\/state$/);
     expect(resolved).not.toContain('\\');

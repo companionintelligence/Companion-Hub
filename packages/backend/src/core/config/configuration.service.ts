@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
-import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
@@ -29,9 +30,11 @@ const envSchema = z
     JWT_SECRET: z.string(),
     // Shared HMAC secret for signing the forward-auth X-CI-Hub-User identity header.
     // Provisioned as a Hub<->consumer (CI-Server) shared secret. When unset, the
-    // forward-auth endpoint falls back to signing with JWT_SECRET so a lone Hub still
-    // produces valid signatures; a co-provisioned consumer should set this explicitly.
-    CI_HUB_FORWARD_AUTH_SECRET: z.string().optional(),
+    // Dedicated Hub<->consumer forward-auth secret, provisioned by
+    // generateSystemEnvFile (its own entropy — never JWT_SECRET). Defaults to ''
+    // (not JWT_SECRET): an empty value makes the signer throw / guard fail closed
+    // rather than silently leaking the master key into a consumer container.
+    CI_HUB_FORWARD_AUTH_SECRET: z.string().optional().default(''),
     APPS_REPO_URL: z.string().optional(),
     CI_CLOUD_URL: z.string(),
     DOMAIN: z.string(),
@@ -67,6 +70,14 @@ const envSchema = z
     // hardcoded LAN domain (ci.lan). DEFAULT_LOCAL_DOMAIN remains a last-resort fallback.
     LOCAL_DOMAIN: data.LOCAL_DOMAIN?.trim() || data.DOMAIN?.trim() || DEFAULT_LOCAL_DOMAIN,
   }));
+
+function describeSettingsError(error: unknown): string {
+  if (error instanceof Error) {
+    return scrubString(error.stack || error.message);
+  }
+
+  return scrubString(String(error));
+}
 
 @Injectable()
 export class ConfigurationService {
@@ -223,8 +234,11 @@ export class ConfigurationService {
       envFilePath: this.envPath,
       internalIp: env.data.INTERNAL_IP,
       jwtSecret: env.data.JWT_SECRET,
-      // Fall back to JWT_SECRET when a dedicated forward-auth secret is not provisioned.
-      forwardAuthSecret: env.data.CI_HUB_FORWARD_AUTH_SECRET || env.data.JWT_SECRET,
+      // Dedicated secret provisioned by generateSystemEnvFile. Intentionally NOT
+      // falling back to JWT_SECRET: this value is injected into consumer app
+      // containers (e.g. ci-memory), so it must never be the Hub's master key.
+      // Empty (misprovisioned) → the signer throws / the guard fails closed.
+      forwardAuthSecret: env.data.CI_HUB_FORWARD_AUTH_SECRET,
       __prod__: NODE_ENV === 'production',
     };
   }
@@ -248,32 +262,67 @@ export class ConfigurationService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
+    // SECURITY (ISSUE-MCP-2 / ENH-MCP-4): mcpApiKey and mcpAllowDestructive are MCP admin-managed
+    // secrets with a dedicated, admin-only path ({@link persistMcpSettings} + McpAdminService). They
+    // live in settingsSchema ONLY so that general settings writes preserve them on disk (the merge
+    // below spreads the existing on-disk values). They must never be settable or readable through
+    // this general endpoint: accepting them here would let any authenticated caller overwrite the
+    // agent-facing API key on disk, or leak it into the in-memory userSettings that GET /app-context
+    // returns to every browser session. Strip them before both the disk write and the in-memory merge.
+    const { mcpApiKey, mcpAllowDestructive, ...safeSettings } = settings;
+    if (mcpApiKey !== undefined || mcpAllowDestructive !== undefined) {
+      this.logger.warn('Ignoring mcpApiKey/mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
+    }
+
     try {
-      const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+      await this.mergeSettingsToDisk(safeSettings);
 
-      const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
-      const parsedContent = JSON.parse(fileContent);
-      const currentSettingsResult = settingsSchema.partial().safeParse(parsedContent);
-      if (!currentSettingsResult.success) {
-        throw currentSettingsResult.error.message;
+      this.config.userSettings = { ...this.config.userSettings, ...safeSettings };
+
+      // Update in-memory config for runtime changes. Use safeSettings (not the raw settings) so this
+      // stays correct if the stripped-key set ever grows; ciHub* are not stripped today.
+      if (safeSettings.ciHubApiKey) {
+        (this.config as Record<string, unknown>).ciHubApiKey = safeSettings.ciHubApiKey;
       }
-      const currentSettings = currentSettingsResult.data;
-
-      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`);
-
-      this.config.userSettings = { ...this.config.userSettings, ...settings };
-
-      // Update in-memory config for runtime changes
-      if (settings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
-      }
-      if (settings.ciHubOrganizationId) {
-        (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
+      if (safeSettings.ciHubOrganizationId) {
+        (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
       }
     } catch (error) {
-      this.logger.error('Failed to set user settings', error);
+      this.logger.error(
+        `Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(safeSettings).join(',') || '(none)'}`,
+      );
       throw new InternalServerErrorException('Failed to set user settings');
     }
+  }
+
+  /**
+   * ISSUE-MCP-2 / ENH-MCP-4: persist MCP admin-managed settings (a rotated agent API key, the
+   * destructive-tool gate) to settings.json ONLY — without merging them into the in-memory
+   * `userSettings` object that GET /app-context returns. This is what prevents the plaintext MCP
+   * API key from being disclosed to every authenticated browser session after a rotation. The
+   * caller (McpAdminService) applies the live value to `process.env` for immediate effect; this
+   * write is purely for persistence across restarts (env-helpers re-reads settings.json at boot).
+   */
+  public async persistMcpSettings(settings: { mcpApiKey?: string; mcpAllowDestructive?: boolean }): Promise<void> {
+    try {
+      await this.mergeSettingsToDisk(settings as UserSettingsBody);
+    } catch (error) {
+      this.logger.error('Failed to persist MCP settings', error);
+      throw new InternalServerErrorException('Failed to persist MCP settings');
+    }
+  }
+
+  /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
+   *  the in-memory config (callers that want the runtime change apply it separately). */
+  private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
+    const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+    await ensureSettingsJsonReady(settingsPath);
+    const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
+    const currentSettingsResult = settingsSchema.partial().safeParse(JSON.parse(fileContent));
+    if (!currentSettingsResult.success) {
+      throw currentSettingsResult.error.message;
+    }
+    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettingsResult.data, ...settings }, null, 2)}`);
   }
 
   public getInferencePreferences() {

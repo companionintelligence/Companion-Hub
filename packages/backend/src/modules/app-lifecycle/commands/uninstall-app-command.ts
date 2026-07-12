@@ -4,7 +4,9 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { DockerService } from '@/modules/docker/docker.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
@@ -24,6 +26,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     try {
       logger.info(`Uninstalling app ${appUrn}`);
 
+      const config = await appFilesManager.getInstalledAppInfo(appUrn);
+      const isPortExpose = config && isPortExposeApp(config);
+
       // Release allocated ports
       try {
         const portManager = this.moduleRef.get(PortManagerService, { strict: false });
@@ -39,19 +44,23 @@ export class UninstallAppCommand extends AppLifecycleCommand {
 
       // Capture image IDs before compose down so we can remove pulled images by
       // immutable ID even when tags/compose refs are no longer resolvable.
-      const snapshotImageIds = await dockerService.snapshotAppImageIds(appUrn);
+      const snapshotImageIds = isPortExpose ? [] : await dockerService.snapshotAppImageIds(appUrn);
 
       try {
-        const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
-        await dockerService.composeApp(appUrn, downCommand);
-        logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
+        if (!isPortExpose) {
+          const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
+          await dockerService.composeApp(appUrn, downCommand);
+          logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
+        }
       } catch (err) {
         logger.warn('Error taking down app', appUrn, err);
       }
 
-      // Explicit post-down cleanup is a safety net for partial teardown states.
-      await dockerService.removeAppImages(appUrn, snapshotImageIds);
-      await dockerService.removeAppNetworks(appUrn);
+      if (!isPortExpose) {
+        // Explicit post-down cleanup is a safety net for partial teardown states.
+        await dockerService.removeAppImages(appUrn, snapshotImageIds);
+        await dockerService.removeAppNetworks(appUrn);
+      }
 
       // Sync Cloudflare state (app removal will be reflected)
       try {
@@ -74,6 +83,14 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         }
       } catch {
         // AgentNotifyService may not be available
+      }
+
+      // SEC-MCP-8: revoke the app's managed MCP key so its Hub access dies with the app.
+      try {
+        const mcpApiKeyService = this.moduleRef.get(McpApiKeyService, { strict: false });
+        await mcpApiKeyService?.revokeManagedByApp(appUrn);
+      } catch (error) {
+        logger.warn(`Failed to revoke managed MCP key for ${appUrn}: ${error}`);
       }
 
       await appFilesManager.deleteAppFolder(appUrn);
