@@ -1,5 +1,15 @@
 # Architecture
 
+> **Purpose:** Deep dive into every major CI-Hub subsystem and how they connect.
+> **Scope:** Full platform — backend, frontend, desktop, Docker runtime, Portal integration.
+> **Key paths:** `packages/backend/`, `packages/frontend/`, `packages/desktop/`, `docs/system/`
+> **Commands:** `pnpm run local`, `pnpm run local:desktop`, see docs/system/*.md per area
+> **Owner persona:** maintainability (see docs/agent/REVIEW_PERSONAS.md)
+> **Last updated:** 2026-07-12
+> **Related:** docs/system/README.md, PLATFORM_ARCHITECTURE.md, AUTO_HEALING.md
+
+> **Agents:** Prefer [docs/system/](system/) for greppable per-subsystem docs. Update those when you change code; update this file only for cross-cutting architecture changes.
+
 Companion Hub is a self-hosted Docker app platform that lets users install, manage, and expose containerized applications through a web dashboard or native desktop app. This document describes every major subsystem, how they connect, and the design decisions behind them.
 
 ---
