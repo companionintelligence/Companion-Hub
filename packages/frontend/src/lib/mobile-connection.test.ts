@@ -38,6 +38,19 @@ async function freshModule() {
   return import('./mobile-connection');
 }
 
+/**
+ * Import mobile-connection *and* runtime-fetch from the same fresh module graph
+ * so `setActiveFetch` (called inside mobile-connection) is observable through the
+ * `runtimeFetch` we assert on. Importing runtime-fetch at the top level would pin
+ * a stale instance that `vi.resetModules()` no longer shares with the module.
+ */
+async function freshModulePair() {
+  vi.resetModules();
+  const mc = await import('./mobile-connection');
+  const rf = await import('./runtime-fetch');
+  return { mc, rf };
+}
+
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 Chrome/134 Mobile';
 
 beforeEach(() => {
@@ -127,5 +140,59 @@ describe('setHubConnection / clearHubConnection', () => {
     expect(m.getHubBaseUrlSync()).toBeNull();
     expect(storeDelete).toHaveBeenCalledWith('hubBaseUrl');
     expect(setConfig).toHaveBeenLastCalledWith(expect.objectContaining({ baseUrl: undefined }));
+  });
+});
+
+describe('native fetch routing (regression: native fetch must survive setHubConnection)', () => {
+  beforeEach(() => {
+    httpFetch.mockClear();
+  });
+
+  it('routes runtimeFetch through the native Tauri fetch once a Hub is chosen', async () => {
+    setTauri(true);
+    setUserAgent(ANDROID_UA);
+    const { mc, rf } = await freshModulePair();
+    const windowFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('window'));
+
+    await mc.initMobileConnection();
+    await mc.setHubConnection('https://hub-x.ci.computer');
+
+    await rf.runtimeFetch('https://hub-x.ci.computer/api/user-context');
+    expect(httpFetch).toHaveBeenCalledTimes(1);
+    expect(windowFetch).not.toHaveBeenCalled(); // never the webview fetch — it can't reach the cross-origin Hub
+    windowFetch.mockRestore();
+  });
+
+  it('setHubConnection establishes native fetch even when initMobileConnection never ran (dev-build boot path)', async () => {
+    setTauri(true);
+    setUserAgent(ANDROID_UA);
+    const { mc, rf } = await freshModulePair();
+    const windowFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('window'));
+
+    // No initMobileConnection() — root.tsx skips it on non-release builds.
+    await mc.setHubConnection('https://hub-x.ci.computer');
+
+    await rf.runtimeFetch('https://hub-x.ci.computer/api/user-context');
+    expect(httpFetch).toHaveBeenCalledTimes(1);
+    expect(windowFetch).not.toHaveBeenCalled();
+    windowFetch.mockRestore();
+  });
+
+  it('keeps native fetch active across clearHubConnection → reconnect without a full reload', async () => {
+    setTauri(true);
+    setUserAgent(ANDROID_UA);
+    const { mc, rf } = await freshModulePair();
+    const windowFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('window'));
+
+    await mc.initMobileConnection();
+    await mc.setHubConnection('https://hub-a.ci.computer');
+    await mc.clearHubConnection(); // "switch Hub" via SPA nav
+    await mc.setHubConnection('https://hub-b.ci.computer'); // pick a different Hub
+
+    httpFetch.mockClear();
+    await rf.runtimeFetch('https://hub-b.ci.computer/api/user-context');
+    expect(httpFetch).toHaveBeenCalledTimes(1); // still native — the previous bug stranded this on window.fetch
+    expect(windowFetch).not.toHaveBeenCalled();
+    windowFetch.mockRestore();
   });
 });

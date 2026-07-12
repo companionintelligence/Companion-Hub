@@ -3,17 +3,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { OidcCancelledError } from '../oidc';
 import type { HubDevice } from '../portal-client';
-import ConnectPage from './connect-page';
+import ConnectPage, { clientLoader } from './connect-page';
 
 const navigate = vi.fn();
 vi.mock('react-router', async (orig) => ({ ...(await orig<typeof import('react-router')>()), useNavigate: () => navigate }));
 
+const { setHubConnection, toastError, initMobileConnection } = vi.hoisted(() => ({
+  setHubConnection: vi.fn(async () => {}),
+  toastError: vi.fn(),
+  initMobileConnection: vi.fn(async () => ({ isMobile: true, hubBaseUrl: null as string | null })),
+}));
+
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => true,
   getHubBaseUrlSync: () => null,
-  initMobileConnection: vi.fn(),
-  setHubConnection: vi.fn(async () => {}),
+  initMobileConnection,
+  setHubConnection,
 }));
+
+vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));
 
 const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
@@ -47,6 +55,31 @@ beforeEach(() => {
   signInToPortal.mockReset();
   listHubDevices.mockReset();
   loginWithPortalOidc.mockReset();
+  setHubConnection.mockClear();
+  toastError.mockClear();
+  initMobileConnection.mockReset();
+  initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: null });
+});
+
+describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
+  it('renders the connect screen on mobile when no Hub is chosen yet', async () => {
+    initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: null });
+    expect(await clientLoader()).toBeNull();
+  });
+
+  it('bounces off /connect once a Hub is already chosen (avoids stranding the picker)', async () => {
+    initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: 'https://hub-x.ci.computer' });
+    const res = (await clientLoader()) as Response;
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/');
+  });
+
+  it('redirects web/desktop away from the mobile-only connect screen', async () => {
+    initMobileConnection.mockResolvedValue({ isMobile: false, hubBaseUrl: null });
+    const res = (await clientLoader()) as Response;
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/');
+  });
 });
 
 describe('ConnectPage', () => {
@@ -80,7 +113,22 @@ describe('ConnectPage', () => {
     expect(screen.getByText('unreachable')).toBeInTheDocument();
   });
 
-  it('connecting to a reachable Hub navigates to /login', async () => {
+  it('email sign-in failure surfaces an error toast and stays on the form', async () => {
+    signInToPortal.mockRejectedValue(new Error('Invalid credentials'));
+    renderPage();
+
+    await user.type(screen.getByPlaceholderText('you@example.com'), 'a@b.c');
+    await user.type(screen.getByPlaceholderText('Password'), 'wrong');
+    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
+
+    await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith('Invalid credentials'));
+    expect(listHubDevices).not.toHaveBeenCalled();
+    // Still on the sign-in step (no picker rendered).
+    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-row-reg-1')).not.toBeInTheDocument();
+  });
+
+  it('connecting to a reachable Hub applies the connection then hands off to /login', async () => {
     signInToPortal.mockResolvedValue({ token: 'tok', cookie: null });
     listHubDevices.mockResolvedValue(devices);
     renderPage();
@@ -88,7 +136,34 @@ describe('ConnectPage', () => {
     await user.type(screen.getByPlaceholderText('Password'), 'pw');
     await user.click(screen.getByRole('button', { name: /sign in with email/i }));
     await user.click(await screen.findByTestId('hub-row-reg-1'));
+
+    // The chosen Hub is applied (baseUrl + native fetch + session wiring) *before*
+    // the login handoff, so /login's POST reaches the remote Hub.
+    expect(setHubConnection).toHaveBeenCalledWith('https://hub-apple.ci.computer');
     expect(navigate).toHaveBeenCalledWith('/login');
+  });
+
+  it('OIDC sign-in success loads the Hub picker', async () => {
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+
+    await user.click(screen.getByTestId('oidc-login-btn'));
+
+    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
+    // The OIDC access token is forwarded to the Portal device listing.
+    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null }, expect.any(String));
+  });
+
+  it('OIDC failure (not a cancel) surfaces an error toast', async () => {
+    loginWithPortalOidc.mockRejectedValue(new Error('Token exchange failed (400)'));
+    renderPage();
+
+    await user.click(screen.getByTestId('oidc-login-btn'));
+
+    await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith('Token exchange failed (400)'));
+    // Back on the form (no picker).
+    expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
   });
 
   it('OIDC flow shows a cancel affordance and aborts cleanly', async () => {
@@ -110,5 +185,7 @@ describe('ConnectPage', () => {
     // After cancel the form returns (no error toast, no crash).
     expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
     expect(screen.queryByTestId('cancel-oidc-btn')).not.toBeInTheDocument();
+    // A user-initiated cancel must stay quiet — no error toast.
+    expect(toastError).not.toHaveBeenCalled();
   });
 });

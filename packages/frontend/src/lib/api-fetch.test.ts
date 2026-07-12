@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TAURI_SESSION_STORAGE_KEY, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
+import { client } from '@/api-client/client.gen';
+import { apiFetch, TAURI_SESSION_STORAGE_KEY, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
+import { resetActiveFetch, setActiveFetch } from './runtime-fetch';
 
 const { isTauriReleaseBuild } = vi.hoisted(() => ({
   isTauriReleaseBuild: vi.fn(() => false),
@@ -8,6 +10,9 @@ const { isTauriReleaseBuild } = vi.hoisted(() => ({
 vi.mock('@/lib/tauri-hub-probe', () => ({
   isTauriReleaseBuild,
 }));
+
+const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn(async () => {}) }));
+vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
 
 describe('api-fetch session storage', () => {
   beforeEach(() => {
@@ -66,5 +71,57 @@ describe('api-fetch session storage', () => {
     expect(getTauriSessionId()).toBeNull();
     expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('apiFetch (raw helper — session header + native routing)', () => {
+  let active: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    isTauriReleaseBuild.mockReturnValue(true); // mobile/desktop release: session via header
+    setTauriSessionId(null);
+    handleSessionExpired.mockClear();
+    // Point the client at a remote Hub and route through a fake native fetch.
+    client.setConfig({ baseUrl: 'https://hub-x.ci.computer', credentials: 'omit' });
+    active = vi.fn(async () => new Response('{}', { status: 200 }));
+    setActiveFetch(active as unknown as typeof fetch);
+  });
+
+  afterEach(() => {
+    resetActiveFetch();
+    client.setConfig({ baseUrl: undefined });
+    setTauriSessionId(null);
+  });
+
+  it('prepends the Hub baseUrl and attaches the X-CI-Hub-Session header', async () => {
+    setTauriSessionId('sess-xyz');
+
+    await apiFetch('/api/mcp-admin/status');
+
+    expect(active).toHaveBeenCalledTimes(1);
+    const [url, init] = active.mock.calls[0] ?? [];
+    expect(url).toBe('https://hub-x.ci.computer/api/mcp-admin/status');
+    expect((init.headers as Headers).get('X-CI-Hub-Session')).toBe('sess-xyz');
+    expect(init.credentials).toBe('omit'); // honors the configured cross-origin mode
+  });
+
+  it('triggers session-expired handling on a 401 for a protected path', async () => {
+    active.mockResolvedValue(new Response('{}', { status: 401 }));
+
+    await apiFetch('/api/mcp-admin/status');
+
+    await vi.waitFor(() => expect(handleSessionExpired).toHaveBeenCalledTimes(1));
+  });
+
+  it('does NOT trigger session-expired on a 401 from the login endpoint', async () => {
+    active.mockResolvedValue(new Response('{}', { status: 401 }));
+
+    await apiFetch('/api/auth/login', { method: 'POST' });
+
+    // give the (never-scheduled) dynamic import a tick — it must stay uncalled
+    await Promise.resolve();
+    expect(handleSessionExpired).not.toHaveBeenCalled();
   });
 });

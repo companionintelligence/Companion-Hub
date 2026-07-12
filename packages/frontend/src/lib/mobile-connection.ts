@@ -22,6 +22,7 @@ const HUB_BASE_URL_KEY = 'hubBaseUrl';
 let cachedIsMobile: boolean | null = null;
 let currentHubBaseUrl: string | null = null;
 let initialized = false;
+let cachedNativeFetch: typeof runtimeFetch | null = null;
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -75,6 +76,25 @@ async function loadNativeFetch(): Promise<typeof runtimeFetch | null> {
   }
 }
 
+/**
+ * Ensure the app-wide {@link runtimeFetch} routes through the native Tauri HTTP
+ * client on mobile. Loaded once and cached. Idempotent and safe to call whenever
+ * a Hub connection is (re)established — a `tauri://localhost` webview can never
+ * reach a cross-origin `https://*.ci.computer` Hub through `window.fetch`, so the
+ * native fetch must be the active one *before* the first authenticated request
+ * (the Hub `/login` POST) fires. Best-effort: a null result just leaves the
+ * previous fetch in place. No-op off mobile.
+ */
+async function ensureNativeFetchActive(): Promise<void> {
+  if (!isTauriMobileSync()) return;
+  if (!cachedNativeFetch) {
+    cachedNativeFetch = await withTimeout(loadNativeFetch(), 3000, null);
+  }
+  if (cachedNativeFetch) {
+    setActiveFetch(cachedNativeFetch);
+  }
+}
+
 function applyHubBaseUrl(baseUrl: string): void {
   currentHubBaseUrl = baseUrl;
   // Cross-origin to a remote Hub: cookies won't ride along, so we rely on the
@@ -96,10 +116,7 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
 
   if (cachedIsMobile) {
     // Route remote-Hub API calls through native HTTP (best-effort; non-blocking).
-    const nativeFetch = await withTimeout(loadNativeFetch(), 3000, null);
-    if (nativeFetch) {
-      setActiveFetch(nativeFetch);
-    }
+    await ensureNativeFetchActive();
     // Read the stored Hub URL, but never let a slow/hung store wedge startup:
     // if it doesn't answer quickly we just fall through to the connect screen.
     try {
@@ -123,6 +140,13 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
 /** Persist and activate the chosen remote Hub. Called by the Hub picker. */
 export async function setHubConnection(baseUrl: string): Promise<void> {
   const normalized = baseUrl.trim().replace(/\/+$/, '');
+  // Guarantee the native fetch is active *before* pointing the client at the Hub.
+  // The picker calls this and immediately hands off to `/login`, whose POST goes
+  // through the generated client → runtimeFetch. If native fetch isn't active
+  // (initMobileConnection never ran — e.g. dev builds skip it — or a prior
+  // clearHubConnection reset it), that POST would fall back to the webview
+  // `window.fetch` and fail cross-origin, so the Hub login silently never works.
+  await ensureNativeFetchActive();
   applyHubBaseUrl(normalized);
   try {
     const store = await openStore();
@@ -136,7 +160,15 @@ export async function setHubConnection(baseUrl: string): Promise<void> {
 /** Forget the current Hub (the "switch Hub" action). */
 export async function clearHubConnection(): Promise<void> {
   currentHubBaseUrl = null;
-  resetActiveFetch();
+  // Only drop the Hub baseUrl. Do NOT reset the active fetch on mobile: the
+  // native Tauri HTTP client must stay active so re-picking a Hub (SPA nav, no
+  // full reload) still routes through native HTTP. `resetActiveFetch()` here
+  // stranded the app on the webview `window.fetch`, which can't reach the next
+  // cross-origin Hub — the reconnect then failed. Off mobile the active fetch was
+  // never swapped, so leaving it alone is a no-op.
+  if (!isTauriMobileSync()) {
+    resetActiveFetch();
+  }
   client.setConfig({ baseUrl: undefined });
   try {
     const store = await openStore();
