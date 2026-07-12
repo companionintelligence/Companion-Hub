@@ -38,7 +38,8 @@
     "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts",
     "agent:test-inventory": "pnpm exec tsx scripts/agent/generate-test-inventory.ts",
     "agent:precommit-fix": "pnpm exec tsx scripts/agent/precommit-fix.ts",
-    "agent:review": "bin/agent-review"
+    "agent:review": "bin/agent-review",
+    "agent:sweep": "bin/agent-sweep"
   },
   "lint-staged": {
     "*": [
