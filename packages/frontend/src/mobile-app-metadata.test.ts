@@ -60,7 +60,9 @@ const iosInfoPlist = read('gen/apple/ci-os-hub-mobile_iOS/Info.plist');
 const androidManifest = read('gen/android/app/src/main/AndroidManifest.xml');
 const androidStrings = read('gen/android/app/src/main/res/values/strings.xml');
 const androidGradle = read('gen/android/app/build.gradle.kts');
-const androidTauriProps = read('gen/android/app/tauri.properties');
+// NB: the Android versionName/Code live in `gen/android/app/tauri.properties`,
+// which is generated from tauri.conf at build time and NOT committed — so we
+// can't read it in CI. The version consistency is covered via tauri.conf + iOS.
 
 // Extracted native values
 const iosProductName = grab(iosProjectYml, /PRODUCT_NAME:\s*(.+)/, 'iOS PRODUCT_NAME');
@@ -73,7 +75,6 @@ const androidAppName = grab(androidStrings, /<string name="app_name">([^<]*)<\/s
 const androidActivityTitle = grab(androidStrings, /<string name="main_activity_title">([^<]*)<\/string>/, 'android main_activity_title');
 const androidApplicationId = grab(androidGradle, /applicationId\s*=\s*"([^"]+)"/, 'android applicationId');
 const androidNamespace = grab(androidGradle, /namespace\s*=\s*"([^"]+)"/, 'android namespace');
-const androidVersionName = grab(androidTauriProps, /tauri\.android\.versionName\s*=\s*(.+)/, 'android versionName');
 
 // --- Tests -----------------------------------------------------------------
 
@@ -120,8 +121,6 @@ describe('mobile app metadata: version', () => {
     // iOS Info.plist
     expect(plistString(iosInfoPlist, 'CFBundleShortVersionString')).toBe(version);
     expect(plistString(iosInfoPlist, 'CFBundleVersion')).toBe(version);
-    // Android
-    expect(androidVersionName).toBe(version);
   });
 });
 
