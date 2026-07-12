@@ -80,41 +80,45 @@ Then, on an iOS 16+ device/simulator:
 Verify the round-trip: running an intent should open the app and land on the
 right screen; "Open _<Hub>_" should connect to that Hub.
 
-### Build status on Xcode 27.0 (verified 2026-06-29)
+### Build status — verified running on the iOS 27 simulator (2026-07-11)
 
-The App Intents implementation is **confirmed to compile** under Xcode 27.0
-(release, build 27A5209h) targeting the iOS 26/27 simulator SDK:
+The App Intents implementation **builds, installs, launches, and registers on
+the iPhone 17 (iOS 27) simulator** under Xcode 27.0 (release, 27A5209h):
 
-- `CompanionHubAppIntents.swift` (all five intents + the `AppShortcutsProvider`)
-  compiles cleanly.
-- Xcode recognizes the App Shortcuts — the build sets
-  `APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING=YES`.
-- The Rust shell, frontend, and intent capture compile for `aarch64-apple-ios-sim`.
+- The app runs (no crash; UIScene lifecycle OK) and WebKit renders the SPA.
+- All five intents + the `AppShortcutsProvider` are exported into the app's
+  `Metadata.appintents/` bundle (with the NLU/phrase models) — confirmed by the
+  `appintentsmetadataprocessor` and by inspecting `extract.actionsdata`. Each
+  intent is `isDiscoverable`, `openAppWhenRun`, iOS 16.0+, with its Siri phrases.
 
-**One toolchain blocker remains, unrelated to this feature.** Tauri's mobile
-Swift glue is built by [`swift-rs`](https://crates.io/crates/swift-rs) `1.0.7`,
-which predates Xcode 27. Two problems surface, both in `swift-rs`, not in our code:
+**App-code fix found by the build:** a parameterized `AppShortcut` phrase
+(`"Open \(\.$hubName) …"`) is rejected — a phrase parameter must be an
+`AppEntity`/`AppEnum`, not a free-form `String`. The fix keeps the intent + its
+`requestValueDialog` ("Which Hub?") and its `parameterSummary`, but drops the
+parameter from the *phrase* (Siri asks for the Hub after triggering). This is
+committed.
 
-1. **SDK selection (fixable).** `swift-rs`'s build script runs
-   `swift build --arch <arch>`, which makes SwiftPM emit *macOS* `-sdk`/`-target`
-   flags → the Swift package compiles against the macOS SDK → `OpenGLES/EAGL.h`,
-   `UIKit/NSAttributedString.h` not found. Replacing `--arch` with
-   `--triple <ios-triple>` (plus resolving the `swift build` output dir, which
-   changed to `out/Products/<Config>-iphonesimulator/`) fixes this and the Swift
-   packages compile.
-2. **Static-lib link propagation (open).** Even with (1), `swift-rs`'s
-   `cargo:rustc-link-search` reaches the final `aarch64-apple-ios-sim` link but
-   its `cargo:rustc-link-lib=static=<pkg>` does **not** — so `-lTauri`,
-   `-ltauri_plugin_*` are never passed and the link fails with undefined Swift
-   symbols (`_log_stdout`, `_register_plugin`, `_retain_object`, …). This needs an
-   upstream `swift-rs` release with Xcode-27 support (or a heavier in-repo
-   workaround) and is tracked separately from App Intents.
+**Toolchain workarounds (local-only — not committed).** Tauri's mobile Swift glue
+is built by [`swift-rs`](https://crates.io/crates/swift-rs) `1.0.7`, which
+predates Xcode 27. Building on Xcode 27.0 needs three local fixes; none are app
+code, so they live outside the repo (vendored `swift-rs` + a build-script tweak):
 
-The `--triple` fix is a local toolchain patch (not committed — it's a vendored
-`swift-rs` change, not app code). Once `swift-rs` ships Xcode-27 support, this app
-— App Intents included — builds and installs on the simulator with no code
-changes. The App Intents Swift/Rust/JS layers are complete and the JS/Rust
-layers are unit-tested.
+1. **SDK selection.** `swift-rs` runs `swift build --arch <arch>`, which makes
+   SwiftPM pick the *macOS* SDK (`UIKit`/`OpenGLES/EAGL.h` not found). Replace
+   `--arch` with `--triple <ios-triple>`, and resolve the output dir (Xcode 27
+   writes to `out/Products/<Config>-iphonesimulator/`).
+2. **`@_cdecl` symbol internalization.** Swift 6.4's *release*-mode whole-module
+   optimization internalizes `swift-rs`'s C entry points to **local** linkage
+   (`t _log_stdout`, not `T`), so nothing can link them. Build the Swift packages
+   `-c debug` — they keep external linkage.
+3. **Static-lib link propagation.** `swift-rs`'s `cargo:rustc-link-lib=static`
+   (emitted from tauri's transitive build script) doesn't reach the final
+   `aarch64-apple-ios-sim` link under Xcode 27, so `-lTauri`/`-ltauri_plugin_*`
+   are dropped. Re-emit them from the **final crate's** `build.rs` (whose link
+   directives do reach the link).
+
+Once `swift-rs` ships Xcode-27 support these workarounds fall away and the app —
+App Intents included — builds with no code changes.
 
 ## Possible follow-ups
 

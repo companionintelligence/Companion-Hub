@@ -47,37 +47,42 @@ pnpm --filter mobile ios:dev       # run in the Simulator
 
 ## Building iOS on Xcode 27
 
-`swift-rs 1.0.7` (pinned by Tauri 2.11.3) predates Xcode 27 and cannot
-cross-compile Tauri's Swift mobile lib under it. Two separate problems:
+The app **builds, installs, and runs on the iOS 27 simulator** (verified
+2026-07-11, Xcode 27.0 / 27A5209h) — but `swift-rs 1.0.7` (pinned by Tauri
+2.11.3) predates Xcode 27, so three **local-only** toolchain workarounds are
+needed. None are app code; keep them out of commits.
 
-**1. SDK selection (fixable with a local patch).** `swift-rs`'s build script runs
-`swift build --arch <arch>`, which makes Xcode 27's SwiftPM emit *macOS*
-`-sdk`/`-target` flags that win over swift-rs's `-Xswiftc` iOS overrides → the
-Swift package compiles against the macOS SDK (`unable to resolve module 'UIKit'`,
-`OpenGLES/EAGL.h` not found). Local workaround:
+Vendor `swift-rs` (copy from
+`~/.cargo/registry/src/*/swift-rs-1.0.7`), point at it with
+`[patch.crates-io] swift-rs = { path = "…/vendored/swift-rs" }` in
+`src-tauri/Cargo.toml`, and build with `IPHONEOS_DEPLOYMENT_TARGET=16.0`
+(App Intents' minimum). In the vendored `src-rs/build.rs`:
 
-1. Vendor `swift-rs` (copy from `~/.cargo/registry/src/*/swift-rs-1.0.7`) and in
-   its `src-rs/build.rs`, in the `swift build` command, replace
-   `.args(["--arch", arch])` with `.args(["--triple", &swift_target_triple])`,
-   and replace the hardcoded `{arch}-apple-macosx/{config}` link-search path with
-   a recursive lookup of `lib<package>.a` under the build dir (Xcode 27 writes to
-   `out/Products/<Config>-iphonesimulator/`).
-2. `[patch.crates-io] swift-rs = { path = "…/vendored/swift-rs" }` in
-   `src-tauri/Cargo.toml`.
-3. Build with `IPHONEOS_DEPLOYMENT_TARGET=16.0` (App Intents' minimum; Tauri reads
-   it, and the default is below Xcode 27's minimum).
+1. **SDK selection.** Replace `.args(["--arch", arch])` with
+   `.args(["--triple", &swift_target_triple])` (else SwiftPM picks the macOS SDK →
+   `unable to resolve module 'UIKit'`), and resolve the link-search path by a
+   recursive lookup of `lib<pkg>.a` (Xcode 27 writes to
+   `out/Products/<Config>-iphonesimulator/`, canonicalize the `release` symlink).
+2. **`@_cdecl` internalization.** Swift 6.4's *release*-mode whole-module
+   optimization marks `swift-rs`'s C entry points as **local** (`t _log_stdout`,
+   not `T`), so they can't be linked. Build the Swift packages `-c debug` instead
+   (`.args(["-c", "debug"])`) — they keep external linkage. (The app ran on Xcode
+   27 *beta* without this; the 27.0/Swift-6.4 release regressed it.)
 
-With patch (1) the Swift packages compile and Xcode recognizes the App Intents.
+And in the **app crate's** `src-tauri/build.rs` (final crate):
 
-**2. Static-lib link propagation (open, verified 2026-06-29 on Xcode 27.0).** Even
-after (1), `swift-rs`'s `cargo:rustc-link-search` reaches the final
-`aarch64-apple-ios-sim` link but its `cargo:rustc-link-lib=static=<pkg>` does
-**not** — `-lTauri`/`-ltauri_plugin_*` are never passed, so the `.dylib` link
-fails with undefined Swift symbols (`_log_stdout`, `_register_plugin`,
-`_retain_object`, …). This is a `swift-rs`/toolchain issue independent of the app
-code and needs an upstream `swift-rs` release with Xcode-27 support (or a heavier
-in-repo workaround). The app built and ran on Xcode 27 *beta* with just patch (1);
-the 27.0 release regressed this link step.
+3. **Link propagation.** `swift-rs`'s `cargo:rustc-link-lib=static` (emitted from
+   tauri's transitive build script) doesn't reach the final
+   `aarch64-apple-ios-sim` link under Xcode 27. Re-emit
+   `cargo:rustc-link-search=native=…` + `cargo:rustc-link-lib=static=<pkg>` for
+   each `swift-rs/*/…-iphonesimulator/lib*.a` from the final crate's `build.rs`
+   (its directives *do* reach the link).
+
+With all three, `pnpm tauri ios build --target aarch64-sim` succeeds; install the
+`.app` from `~/Library/Developer/Xcode/DerivedData/ci-os-hub-mobile-*/Build/
+Products/release-iphonesimulator/` with `xcrun simctl install`. (`tauri`'s own
+archive-rename step then errors harmlessly — the built `.app` is already there.)
 
 Note: `simctl io screenshot` returns black for the WKWebView layer on the
-simulator — inspect via Safari ▸ Develop instead.
+simulator — the app *is* rendering (check the unified log for a WebKit
+`Created rendering backend`), or inspect via Safari ▸ Develop.

@@ -179,10 +179,16 @@ struct CompanionHubShortcuts: AppShortcutsProvider {
             shortTitle: "Hub Settings",
             systemImageName: "gearshape"
         )
+        // NOTE: a parameterized phrase (`\(\.$hubName)`) requires the parameter
+        // to be an AppEntity/AppEnum, not a free-form String. So this phrase
+        // omits the parameter — Siri triggers the intent and then asks
+        // "Which Hub?" (the parameter's requestValueDialog). The parameter still
+        // appears in the Shortcuts editor via `parameterSummary`.
         AppShortcut(
             intent: OpenNamedHubIntent(),
             phrases: [
-                "Open \(\.$hubName) in \(.applicationName)",
+                "Open a Hub in \(.applicationName)",
+                "Open a Companion Hub in \(.applicationName)",
             ],
             shortTitle: "Open a Hub",
             systemImageName: "rectangle.stack"
