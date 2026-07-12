@@ -19,6 +19,10 @@ If you are a coding agent working in this repo, read **[AGENTS.md](AGENTS.md)** 
 
 Commit a filled **[SESSION_WORKSHEET.template.md](docs/agent/SESSION_WORKSHEET.template.md)** to `docs/agent/sessions/` with your changes. After merge, tag: `agent-session/<worksheet-slug>`.
 
+### Validation
+
+Run **`bin/agent-validate-shift`** (or `pnpm run agent:validate`) before marking agent work done. See [docs/agent/END_OF_SHIFT.md](docs/agent/END_OF_SHIFT.md).
+
 ---
 
 ## Screenshot Requirements

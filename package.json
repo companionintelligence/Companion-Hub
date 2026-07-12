@@ -42,7 +42,8 @@
     "agent:sweep": "bin/agent-sweep",
     "test:visual": "pnpm exec playwright test e2e/visual/",
     "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual",
-    "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts"
+    "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
+    "agent:validate": "bin/agent-validate-shift"
   },
   "lint-staged": {
     "*": [

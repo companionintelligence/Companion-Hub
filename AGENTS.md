@@ -50,6 +50,7 @@ Deep architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (links to `docs/
 |----------|---------|
 | [docs/agent/TESTING.md](docs/agent/TESTING.md) | How to write tests; anti-patterns |
 | [docs/agent/TEST_INVENTORY.md](docs/agent/TEST_INVENTORY.md) | Every spec file and what it asserts |
+| [docs/agent/PERFORMANCE.md](docs/agent/PERFORMANCE.md) | Benchmark and profiling commands |
 | [e2e/README.md](e2e/README.md) | Playwright lanes and local commands |
 
 Regenerate inventory: `pnpm run agent:test-inventory`

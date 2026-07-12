@@ -5,16 +5,22 @@ alwaysApply: true
 
 # CI-Hub verification
 
-Before marking work complete, run the same checks as `.github/workflows/ci.yml` and fix any failures.
+Before marking work complete, run the **end-of-shift gate** (same checks as CI plus optional agent gates):
+
+```bash
+bin/agent-validate-shift
+# or: pnpm run agent:validate
+```
 
 ## Required checks (full change)
 
-From the `ci-hub` repo root:
+The validate script runs:
 
 ```bash
 pnpm run lint:ci
 pnpm run tsc
 pnpm run test
+pnpm run check:openapi   # skip with --skip-openapi for docs-only
 ```
 
 Do not skip these after editing TypeScript, React, backend, or shared packages.
@@ -48,3 +54,11 @@ pnpm --filter backend run test
 
 - Test mocks for callbacks must match real component signatures (e.g. `InstallStep.onComplete` receives an `InstallSummary`, not zero args)
 - Vitest can report 256 passed tests but still exit 1 due to unhandled promise rejections — treat `Errors: 1 error` as a failure
+- Use `vi.hoisted` + `vi.mock` for module mocks — not `vi.spyOn` on already-imported modules
+- No non-null assertions (`!`) — Biome `noNonNullAssertion` fails CI
+- See [docs/agent/CODING_CONVENTIONS.md](../../docs/agent/CODING_CONVENTIONS.md)
+
+## Agent workflow
+
+- Start: [AGENTS.md](../../AGENTS.md) → [docs/agent/AGENT_WORKFLOW.md](../../docs/agent/AGENT_WORKFLOW.md)
+- Review before PR: `bin/agent-review --phase wrap --persona security`
