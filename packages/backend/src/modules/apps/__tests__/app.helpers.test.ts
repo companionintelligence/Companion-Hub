@@ -117,12 +117,59 @@ describe('AppHelpers', () => {
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow(`App ${testAppUrn} not found`);
     });
 
+    it("never passes the Hub's own master secrets through to an app container", async () => {
+      // The app env is seeded from the Hub's .env and handed to the container via
+      // env_file. An operator who pins CI_HUB_FORWARD_AUTH_SECRET there (as
+      // .env.example invites) would otherwise hand every installed app — third-party
+      // store apps included — the secret that signs the connect exchange/rotate/revoke
+      // calls, letting a hostile app mint or steal another app's memory key.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_HUB_FORWARD_AUTH_SECRET', 'hub-forward-auth-secret'],
+          ['JWT_SECRET', 'hub-jwt-secret'],
+          ['MCP_API_KEY', 'hub-mcp-api-key'],
+          ['DOMAIN', 'example.com'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      expect(written.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+      expect(written.has('JWT_SECRET')).toBe(false);
+      expect(written.has('MCP_API_KEY')).toBe(false);
+      // Non-secret base config still reaches the app.
+      expect(written.get('DOMAIN')).toBe('example.com');
+    });
+
     describe('Companion Memory credential injection', () => {
       // A consumer app declaring the env vars it reads its memory URL + key from.
       const memoryConsumerApp: AppInfo = {
         ...mockAppInfo,
         hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
       };
+
+      it('hands an app the URL shape its manifest declares (url_style: api_base)', async () => {
+        // CI-Import-Tools treats CI_SERVER_URL as the API BASE and appends
+        // server-local paths (`<base>/graphql`, `<base>/v1/...`). The provider's
+        // gateway proxies the API only under `/api/`, so a bare origin would send
+        // every push to the SPA — silently, with a 200 and HTML.
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          hub_integration: {
+            memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN', url_style: 'api_base' },
+          },
+        } as AppInfo);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_SERVER_URL')).toBe('http://gateway:8642/api');
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+      });
 
       it('injects brokered creds for a connected app and does not mark it manual', async () => {
         const envMap = new Map<string, string>();

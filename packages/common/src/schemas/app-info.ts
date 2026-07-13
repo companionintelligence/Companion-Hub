@@ -133,6 +133,24 @@ export const hubIntegrationSchema = z
           .min(1)
           .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
           .optional(),
+        /**
+         * The SHAPE of the URL this app wants in `url_env`. The provider is reachable
+         * at `http://<service>:<port>`, but its gateway only proxies the API under
+         * `/api/`, so consumers disagree about what to be handed:
+         *
+         * - `origin` (default) — the bare origin `http://gateway:8642`. For apps that
+         *   append the full path themselves (CI-OpenClaw / CI-Hermes hardcode
+         *   `/api/memory/...`). Giving them an `/api` base would double the prefix.
+         * - `api_base` — `http://gateway:8642/api`. For apps that treat the value as
+         *   the API base and append server-local paths to it (CI-Import-Tools derives
+         *   `<base>/graphql`, `<base>/v1/...`). A bare origin sends those to the SPA.
+         *
+         * Declared here, rather than sniffed by the consumer, because only the Hub
+         * knows whether a value it is injecting is the brokered provider address at
+         * all — an operator-supplied "external, self-managed CI-Server" URL must be
+         * passed through untouched.
+         */
+        url_style: z.enum(['origin', 'api_base']).optional(),
         /** Provider role (ci-memory only): where the Hub reaches it on the shared docker network. */
         provider: z
           .object({
@@ -146,6 +164,13 @@ export const hubIntegrationSchema = z
   .optional();
 
 export type HubIntegration = z.output<typeof hubIntegrationSchema>;
+
+/**
+ * How a consumer wants the brokered Companion Memory address shaped. Derived from the
+ * schema rather than restated, so a new style cannot be added in one place and silently
+ * unhandled in the other.
+ */
+export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>['memory']>['url_style']>;
 
 export const APP_CATEGORIES = [
   'network',

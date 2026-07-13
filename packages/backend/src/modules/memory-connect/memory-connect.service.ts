@@ -2,8 +2,10 @@ import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnMo
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
@@ -22,6 +24,44 @@ const ROTATE_KEY_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
 const ROTATE_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Delay before the first sweep so rotation never slows Hub startup. */
 const ROTATE_INITIAL_DELAY_MS = 60 * 1000;
+
+/**
+ * Statuses in which an app is down, or not there at all — the only ones for which
+ * applying new creds must NOT restart the container.
+ *
+ * Includes the stop-first maintenance states (`backing_up`, `restoring`, `updating`,
+ * `resetting`): each one runs `compose stop` before it works, and each one's own
+ * completion handler restores the previous run-state through the env-regenerating
+ * `startApp`. Restarting an app mid-backup would therefore not just churn its status —
+ * it would leave an app the user had STOPPED running once the backup finished.
+ *
+ * `starting` / `restarting` are deliberately absent: those really are on their way up,
+ * and a restart queued behind the in-flight command is how a live app avoids being
+ * stranded on a key CI-Server has already retired.
+ *
+ * Typed against `AppStatus` so a status added to the enum has to be classified here,
+ * rather than silently defaulting to "live, restart it".
+ */
+const DOWN_APP_STATUSES: readonly AppStatus[] = [
+  'stopped',
+  'stopping',
+  'missing',
+  'installing',
+  'install_failed',
+  'uninstalling',
+  'backing_up',
+  'restoring',
+  'updating',
+  'resetting',
+];
+
+/**
+ * `restarted` — the restart completed and the container is running the new env.
+ * `deferred` — the app is down, so its env was rewritten in place and applies on its
+ * next start (nothing more to do). `failed` — the creds could not be applied, and the
+ * app may be stranded on a key CI-Server has already retired.
+ */
+type ApplyOutcome = 'restarted' | 'deferred' | 'failed';
 
 /**
  * Parse a Postgres timestamp as UTC milliseconds. `updated_at` is a zoneless
@@ -83,6 +123,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     private readonly deviceRegistration: DeviceRegistrationRepository,
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly apps: AppsRepository,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -153,24 +194,50 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         const appUrn = row.appUrn as AppUrn;
 
         try {
+          // Check liveness BEFORE rotating. Rotation retires the old key on CI-Server,
+          // so a rotation we then cannot apply leaves the app 401ing — and because
+          // storeConnected bumps `updatedAt`, the age gate above would skip this app for
+          // another ROTATE_KEY_AFTER_MS, turning a transient miss into a 60-day outage.
+          // Skipping a down app instead leaves its key (and `updatedAt`) untouched, so it
+          // is simply picked up by the first sweep after it comes back up.
+          if (await this.isAppDown(appUrn)) {
+            this.logger.debug(`[MemoryConnect] skipping key rotation for ${appUrn}: app is not running`);
+
+            continue;
+          }
+
           const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
           await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
 
           // The new key is stored + valid, but CI-Server has already retired the
-          // old one, so the running container 401s until its env is regenerated.
-          // Retry the restart once for a transient failure; if it still fails, log
-          // LOUDLY — the age gate now skips this app for ROTATE_KEY_AFTER_MS (its
-          // updatedAt is fresh), so a silent failure would strand it on the retired
-          // key until an unrelated restart (env generation re-reads the new key).
-          let applied = await this.applyAndRestart(appUrn);
-          if (!applied) {
-            applied = await this.applyAndRestart(appUrn);
+          // old one, so a running container 401s until its env is regenerated.
+          // Retry once for a transient failure; if it still fails, log LOUDLY — the
+          // age gate now skips this app for ROTATE_KEY_AFTER_MS (its updatedAt is
+          // fresh), so a silent failure would strand it on the retired key until an
+          // unrelated restart (env generation re-reads the new key).
+          let outcome = await this.applyAndRestart(appUrn);
+
+          if (outcome === 'failed') {
+            const retry = await this.applyAndRestart(appUrn);
+
+            // A retry that comes back 'deferred' does NOT mean the app was down on
+            // purpose: a failed restart marks the app `stopped`, so the retry sees a
+            // down app and defers. This app was running when we rotated — the sweep
+            // itself knocked it over. Keep it a failure so it gets the loud warning
+            // rather than the benign "applies on next start" note.
+            outcome = retry === 'deferred' ? 'failed' : retry;
           }
 
-          if (applied) {
+          if (outcome === 'restarted') {
             this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+          } else if (outcome === 'deferred') {
+            // It went down between the liveness check and the apply; its env now holds
+            // the new key, so the next start picks it up.
+            this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn} (app went down; applies on next start)`);
           } else {
-            this.logger.error(`[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it will recover on its next restart`);
+            this.logger.error(
+              `[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it is DOWN or running on the retired key until it is started again`,
+            );
           }
         } catch (err) {
           this.logger.warn(`[MemoryConnect] key rotation failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
@@ -534,20 +601,61 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Regenerate the app's env (picks up the stored creds) and restart it.
-   * Best-effort: returns true on success, false when the restart failed (logged),
-   * so callers that need the new env actually applied (rotation) can react.
+   * Apply the app's current connection state to its env, restarting it if it is live.
+   *
+   * A DOWN app is NOT restarted — `restartApp` runs `compose down` + `compose up`, so
+   * restarting one would start a container the user chose to stop, whether from a
+   * background rotation sweep or merely from opening the app's detail page (the status
+   * poll self-heals a stale key through here). But its env IS rewritten, in place:
+   * deferring that too would leave a REVOKED credential sitting in `app.env` after a
+   * disconnect, and would lose a connect completed mid-install (the installer generates
+   * the env early, then composes up from it — with no creds in it — long before the
+   * install finishes). Rewriting now is what makes "applies on its next start" true.
+   *
+   * Anything NOT in {@link DOWN_APP_STATUSES} is live or coming up, and its restart is
+   * queued behind any in-flight command. Skipping those would strand a LIVE app on a key
+   * rotation has already retired on CI-Server, which the age gate then ignores for 60 days.
    */
-  private async applyAndRestart(appUrn: AppUrn): Promise<boolean> {
+  private async applyAndRestart(appUrn: AppUrn): Promise<ApplyOutcome> {
     try {
       const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
-      await lifecycle.restartApp({ appUrn });
 
-      return true;
+      if (await this.isAppDown(appUrn)) {
+        const applied = await lifecycle.regenerateAppEnv(appUrn);
+
+        if (!applied) {
+          this.logger.error(`[MemoryConnect] could not rewrite ${appUrn}'s env while it is down; its creds are stale on disk`);
+
+          return 'failed';
+        }
+
+        this.logger.debug(`[MemoryConnect] ${appUrn} is not running — env rewritten in place; it applies on next start`);
+
+        return 'deferred';
+      }
+
+      // Awaited, not fire-and-forget: `restartApp` returns as soon as the restart is
+      // PUBLISHED, so trusting it would report success for a compose failure and let the
+      // caller's retry (and its loud strand-warning) never fire.
+      const restarted = await lifecycle.restartAppAndWait({ appUrn });
+
+      return restarted ? 'restarted' : 'failed';
     } catch (err) {
-      this.logger.error(`[MemoryConnect] failed to restart ${appUrn} after connection change`, err);
+      this.logger.error(`[MemoryConnect] failed to apply the connection change to ${appUrn}`, err);
 
-      return false;
+      return 'failed';
     }
+  }
+
+  /** Whether the app is down (deliberately or mid-maintenance) or simply not there. */
+  private async isAppDown(appUrn: AppUrn): Promise<boolean> {
+    const app = await this.apps.getAppByUrn(appUrn);
+
+    // No row at all — nothing to restart.
+    if (!app) {
+      return true;
+    }
+
+    return DOWN_APP_STATUSES.includes(app.status);
   }
 }

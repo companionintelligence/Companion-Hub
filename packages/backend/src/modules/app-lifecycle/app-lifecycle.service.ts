@@ -865,6 +865,83 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
+   * Restart an app and WAIT for the compose restart to actually finish.
+   *
+   * {@link restartApp} resolves as soon as the command is published — its result is
+   * handled in a detached `.then` — which is right for a UI action driven by SSE, but
+   * useless to a caller that must know whether the container really came back up (the
+   * memory-connect key rotation strands an app on a retired key if it does not).
+   * Returns whether the restart succeeded; the status/SSE bookkeeping is identical.
+   */
+  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull } = params;
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
+    }
+
+    await this.appRepository.updateAppById(app.id, { status: 'restarting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
+
+    const requestId = crypto.randomUUID();
+    const { success, message } = await this.appEventsQueue.publish({
+      command: 'restart',
+      appUrn,
+      requestId,
+      form: { ...app.config, skipPull },
+    });
+
+    if (success) {
+      this.logger.info(`App ${appUrn} restarted successfully`);
+      await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
+      this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+
+      return true;
+    }
+
+    this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
+    await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+    this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+    this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
+    this.reportAppFailure(appUrn, 'restart', message);
+
+    return false;
+  }
+
+  /**
+   * Rewrite an app's env file from its current stored config, without touching its
+   * containers.
+   *
+   * For applying a config change to an app that is DOWN: a stopped app must not be
+   * composed up just to pick up an env change, but leaving the file stale is not
+   * harmless either — it is how a revoked credential survives on disk, and how an app
+   * that is mid-install comes up with the env the installer wrote before the change
+   * landed. Returns whether the env was rewritten.
+   */
+  public async regenerateAppEnv(appUrn: AppUrn): Promise<boolean> {
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      return false;
+    }
+
+    const requestId = crypto.randomUUID();
+    const { success, message } = await this.appEventsQueue.publish({
+      command: 'generate_env',
+      appUrn,
+      requestId,
+      form: app.config,
+    });
+
+    if (!success) {
+      this.logger.error(`Failed to regenerate env for app ${appUrn}: ${message}`);
+    }
+
+    return success;
+  }
+
+  /**
    * Uninstall an app by its ID
    */
   public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean }) {

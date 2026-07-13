@@ -35,7 +35,14 @@ function makeService() {
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
   const config = { getConfig: vi.fn().mockReturnValue({ domain: 'example.org' }) };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const lifecycle = { restartApp: vi.fn().mockResolvedValue(undefined) };
+  const lifecycle = {
+    restartAppAndWait: vi.fn().mockResolvedValue(true),
+    regenerateAppEnv: vi.fn().mockResolvedValue(true),
+  };
+  // applyAndRestart only restarts an app that is actually up — a stopped app must
+  // not be started by a rotation sweep or a status poll. Default to running so the
+  // existing expectations exercise the restart path.
+  const appsRepository = { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) };
   const moduleRef = { get: vi.fn().mockReturnValue(lifecycle) };
 
   const service = new MemoryConnectService(
@@ -46,10 +53,11 @@ function makeService() {
     deviceRegistration as never,
     config as never,
     logger as never,
+    appsRepository as never,
     moduleRef as never,
   );
 
-  return { service, resolver, exchange, connections, pending, lifecycle };
+  return { service, resolver, exchange, connections, pending, lifecycle, appsRepository, logger };
 }
 
 const PROVIDER = {
@@ -115,7 +123,7 @@ describe('MemoryConnectService.handleCallback', () => {
 
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
     expect(result).toEqual({ next: 'https://app.example.org/' });
   });
 
@@ -201,7 +209,41 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+  });
+
+  it('disconnect does not START an app the user had stopped, but DOES scrub its env', async () => {
+    // A restart is compose down + up, so restarting a stopped app would silently bring
+    // it back. Its env must still be rewritten though — deferring that too would leave
+    // the revoked token sitting in app.env until the app happened to be started again.
+    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
+  });
+
+  it.each([
+    'backing_up',
+    'restoring',
+    'updating',
+    'resetting',
+  ] as const)('does not restart an app mid-%s (those stop it first, and restore its run-state after)', async (status) => {
+    // Restarting here would race the maintenance op AND leave an app the user had
+    // stopped running once it finished.
+    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    appsRepository.getAppByUrn.mockResolvedValue({ status });
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
 
   it('disconnect throws and keeps the connection (no clear/restart) when the revoke fails', async () => {
@@ -213,7 +255,7 @@ describe('MemoryConnectService side effects', () => {
 
     // Must NOT falsely report disconnected while the key is still live server-side.
     expect(connections.clear).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
 
   it('disconnect clears locally when the provider is unresolvable (nothing to revoke)', async () => {
@@ -234,7 +276,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:local');
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
 
   it('getUiStatus clears a stale connection AND restarts the app when ci-memory rejects the stored key', async () => {
@@ -247,7 +289,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
     // Must restart so the container drops the dead credential and re-prompts.
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
     expect(status.state).toBe('unconfigured');
     // The stale key's expiry is cleared alongside the connection.
     expect(status.keyExpiresAt).toBeNull();
@@ -301,7 +343,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
   });
 
   it('rotateDueKeys leaves a still-fresh key untouched', async () => {
@@ -325,6 +367,60 @@ describe('MemoryConnectService side effects', () => {
     expect(exchange.rotate).not.toHaveBeenCalled();
   });
 
+  it('rotateDueKeys does NOT rotate a down app — retiring its key would strand it for 60 days', async () => {
+    // Rotation retires the old key on CI-Server, and storeConnected bumps `updatedAt`,
+    // which re-arms the age gate. Rotating an app we cannot restart would therefore
+    // leave it 401ing and skipped by the next ~60 days of sweeps. Leave it entirely
+    // alone: the first sweep after it comes back up picks it up.
+    const { service, resolver, exchange, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+  });
+
+  it('rotateDueKeys retries once and reports failure when the restart does not take', async () => {
+    // `restartApp` resolves as soon as the command is PUBLISHED, so the sweep awaits the
+    // real outcome instead — otherwise a failed compose would be logged as a success and
+    // the app would sit on the key CI-Server just retired.
+    const { service, resolver, exchange, connections, lifecycle, logger } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    lifecycle.restartAppAndWait.mockResolvedValue(false);
+
+    await service.rotateDueKeys();
+
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not restart it'));
+  });
+
+  it('rotateDueKeys does not let a restart-induced stop masquerade as a benign deferral', async () => {
+    // A failed restart marks the app `stopped`. The retry then sees a down app and would
+    // report 'deferred' — logging the reassuring "applies on next start" line for an app
+    // that was RUNNING and that the sweep itself just knocked over onto a retired key.
+    const { service, resolver, exchange, connections, lifecycle, appsRepository, logger } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    // Running at rotation time; the failed restart then leaves it stopped.
+    appsRepository.getAppByUrn
+      .mockResolvedValueOnce({ status: 'running' }) // pre-rotation liveness check
+      .mockResolvedValueOnce({ status: 'running' }) // first apply
+      .mockResolvedValue({ status: 'stopped' }); // retry sees the wreckage
+    lifecycle.restartAppAndWait.mockResolvedValue(false);
+
+    await service.rotateDueKeys();
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not restart it'));
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('applies on next start'));
+  });
+
   it('rotateDueKeys keeps going when one app fails to rotate', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
@@ -340,8 +436,8 @@ describe('MemoryConnectService side effects', () => {
 
     // The second app still rotates despite the first throwing.
     expect(exchange.rotate).toHaveBeenCalledTimes(2);
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local' });
-    expect(lifecycle.restartApp).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local' });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
@@ -394,8 +490,8 @@ describe('MemoryConnectService side effects', () => {
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
     expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
     expect(connections.clear).not.toHaveBeenCalledWith('ci-memory:ci-marketplace');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace' });
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace' });
   });
 
   it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {
