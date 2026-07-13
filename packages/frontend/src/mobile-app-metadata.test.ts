@@ -52,7 +52,7 @@ const tauriConf = JSON.parse(read('tauri.conf.json')) as {
   identifier: string;
   app: { windows: Array<{ title: string }> };
   bundle: { iOS: { minimumSystemVersion: string } };
-  plugins: { 'deep-link': { desktop: { schemes: string[] } } };
+  plugins: { 'deep-link': { mobile: Array<{ scheme?: string[]; host?: string }>; desktop: { schemes: string[] } } };
 };
 
 const iosProjectYml = read('gen/apple/project.yml');
@@ -135,6 +135,17 @@ describe('mobile app metadata: cihub deep-link scheme', () => {
 
     // Android: <data android:scheme="cihub" />
     expect(androidManifest).toMatch(new RegExp(`android:scheme="${EXPECTED_SCHEME}"`));
+  });
+
+  it('registers the scheme in plugins.deep-link.mobile (else the plugin drops ALL deep links at runtime)', () => {
+    // The Tauri deep-link plugin's Android isDeepLink() returns false when
+    // `mobile` is empty, silently dropping every cihub:// link (OIDC callback,
+    // pairing, App Intents) — cold-start AND while-running. So `mobile` must
+    // register the cihub scheme, not just the desktop `schemes` list.
+    const mobile = tauriConf.plugins['deep-link'].mobile;
+    expect(Array.isArray(mobile)).toBe(true);
+    expect(mobile.length).toBeGreaterThan(0);
+    expect(mobile.some((d: { scheme?: string[] }) => d.scheme?.includes(EXPECTED_SCHEME))).toBe(true);
   });
 });
 

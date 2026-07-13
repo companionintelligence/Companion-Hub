@@ -89,8 +89,22 @@ pub fn run() {
                 handle_deep_link_payload(&app_handle_for_listener, event.payload());
             });
 
+            // The canonical cross-platform handler. On **mobile** this is what
+            // fires when a deep link arrives while the app is already running
+            // (Android `onNewIntent` / iOS scene `openURL`) — the
+            // `deep-link://new-url` event above only fires on desktop. Without
+            // this, the Portal OIDC callback (`cihub://auth…`, which returns from
+            // the system browser while the app is backgrounded) and App Intents
+            // (`cihub://intent/*`) never reach the frontend once the app is open.
+            let app_handle_for_open = app_handle.clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    handle_deep_link_url(&app_handle_for_open, url.as_str());
+                }
+            });
+
             // The deep-link plugin may have already captured the launch URL before
-            // our listener was registered (cold start) — drain it here too.
+            // our handlers were registered (cold start) — drain it here too.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
                     handle_deep_link_url(&app_handle, url.as_ref());
