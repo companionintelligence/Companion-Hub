@@ -19,6 +19,52 @@ import { McpApiKeyService } from '../mcp/mcp-api-key.service';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
+/**
+ * Hub master secrets that must never reach an app container.
+ *
+ * `generateEnvFile` seeds each app's env from the Hub's own .env, so any of these
+ * would otherwise be written into every app.env and passed to the container via
+ * env_file — third-party store apps included.
+ *
+ * - `CI_HUB_FORWARD_AUTH_SECRET` signs the connect exchange/rotate/revoke calls and
+ *   the forward-auth identity header. Re-injected below for the memory provider
+ *   ONLY, which is the whole point of the provider gate.
+ * - `JWT_SECRET` / `MCP_API_KEY` — the Hub's own signing key and admin API key.
+ * - `POSTGRES_PASSWORD` — the Hub's database password. Note the stock `postgres`
+ *   image reads this from its environment, so leaking it does not merely disclose
+ *   the secret, it seeds other databases with it.
+ *
+ * Stripping is safe for apps that legitimately use these NAMES: an app declares its
+ * own via `form_fields`, and the form-field loop below runs AFTER this and re-sets
+ * them (reusing the app's existing value, else generating a fresh one). What is
+ * removed here is only the Hub's value bleeding through.
+ *
+ * NOTE (follow-up): a denylist means the next Hub secret added to .env leaks by
+ * default. The right shape is an allowlist of what an app may receive — CI-Marketplace
+ * already enumerates one (`HUB_PROVIDED_VARS` in its app tests) that this could be
+ * driven from.
+ */
+const HUB_ONLY_SECRET_ENV_VARS = ['CI_HUB_FORWARD_AUTH_SECRET', 'JWT_SECRET', 'MCP_API_KEY', 'POSTGRES_PASSWORD'] as const;
+
+/**
+ * Shape the brokered Companion Memory address the way the consuming app declared.
+ *
+ * The provider is reachable at `http://<service>:<port>`, but its gateway proxies
+ * the API only under `/api/` (stripping the prefix before the API). Apps that build
+ * `/api/...` paths themselves need the bare origin; apps that treat the value as an
+ * API base and append server-local paths need `<origin>/api`. Getting this wrong is
+ * silent — the gateway serves its SPA rather than 404ing — so the app declares which
+ * it wants and the Hub, the only party that knows the value is the brokered provider
+ * address at all, obliges.
+ */
+function memoryUrlForStyle(brokeredUrl: string, style: 'origin' | 'api_base' | undefined): string {
+  if (style !== 'api_base') {
+    return brokeredUrl;
+  }
+
+  return `${brokeredUrl.replace(/\/+$/, '')}/api`;
+}
+
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
   return new URL(withScheme);
@@ -67,6 +113,21 @@ export class AppHelpers {
 
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
+
+    // The app env is seeded from the Hub's OWN .env, and every key in it is handed
+    // to the container via env_file — including apps from third-party stores. Drop
+    // the Hub's master secrets before anything else can leak them.
+    //
+    // These are normally provisioned into `.env.resolved` (never written back to the
+    // source .env), so the default install is clean. But .env.example documents
+    // pinning CI_HUB_FORWARD_AUTH_SECRET in .env to keep it stable across a rebuild,
+    // and an operator who does that would otherwise hand every installed app the
+    // secret that signs the connect exchange/rotate/revoke calls and the forward-auth
+    // identity header — defeating the provider-only gate below, which is precisely
+    // what stops a hostile app from minting or stealing another app's memory key.
+    for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
+      envMap.delete(secret);
+    }
 
     // App containers must always run in production mode regardless of Hub's NODE_ENV.
     // Hub's .env may have NODE_ENV=development which propagates via env_file and breaks
@@ -522,7 +583,10 @@ export class AppHelpers {
         // the real creds). getInjectableCreds is non-null only when connected.
         const creds = await this.memoryConnection.getInjectableCreds(appUrn);
         if (creds) {
-          envMap.set(memoryIntegration.url_env, creds.url);
+          // Hand the app the URL SHAPE its manifest asks for. Only the brokered
+          // address is reshaped — an operator-supplied external CI-Server URL falls
+          // through to the `else` below and is passed through exactly as entered.
+          envMap.set(memoryIntegration.url_env, memoryUrlForStyle(creds.url, memoryIntegration.url_style));
           envMap.set(memoryIntegration.token_env, creds.token);
           this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
         } else if (operatorSetToken) {

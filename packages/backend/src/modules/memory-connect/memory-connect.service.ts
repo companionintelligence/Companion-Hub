@@ -4,6 +4,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
@@ -22,6 +23,21 @@ const ROTATE_KEY_AFTER_MS = 60 * 24 * 60 * 60 * 1000;
 const ROTATE_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Delay before the first sweep so rotation never slows Hub startup. */
 const ROTATE_INITIAL_DELAY_MS = 60 * 1000;
+
+/**
+ * Statuses in which an app is down on purpose, or not there at all — the only ones
+ * for which applying new creds must NOT restart the container. Every other status
+ * (including the transitional `starting` / `restarting` / `updating` / `backing_up`
+ * …) means the app is up or coming up, and must receive the new key.
+ */
+const DOWN_APP_STATUSES = ['stopped', 'stopping', 'missing', 'installing', 'install_failed', 'uninstalling'] as const;
+
+/**
+ * `restarted` — the restart was issued. `deferred` — the app is down, so the new
+ * env applies on its next start (nothing to do). `failed` — the restart could not
+ * be issued and the app may be stranded on a key CI-Server has already retired.
+ */
+type ApplyOutcome = 'restarted' | 'deferred' | 'failed';
 
 /**
  * Parse a Postgres timestamp as UTC milliseconds. `updated_at` is a zoneless
@@ -83,6 +99,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     private readonly deviceRegistration: DeviceRegistrationRepository,
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly apps: AppsRepository,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -157,18 +174,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
           await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
 
           // The new key is stored + valid, but CI-Server has already retired the
-          // old one, so the running container 401s until its env is regenerated.
+          // old one, so a running container 401s until its env is regenerated.
           // Retry the restart once for a transient failure; if it still fails, log
           // LOUDLY — the age gate now skips this app for ROTATE_KEY_AFTER_MS (its
           // updatedAt is fresh), so a silent failure would strand it on the retired
           // key until an unrelated restart (env generation re-reads the new key).
-          let applied = await this.applyAndRestart(appUrn);
-          if (!applied) {
-            applied = await this.applyAndRestart(appUrn);
+          let outcome = await this.applyAndRestart(appUrn);
+          if (outcome === 'failed') {
+            outcome = await this.applyAndRestart(appUrn);
           }
 
-          if (applied) {
+          if (outcome === 'restarted') {
             this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+          } else if (outcome === 'deferred') {
+            // Down on purpose — its next start regenerates the env with the new key.
+            this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn} (app is stopped; applies on next start)`);
           } else {
             this.logger.error(`[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it will recover on its next restart`);
           }
@@ -535,19 +555,49 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Regenerate the app's env (picks up the stored creds) and restart it.
-   * Best-effort: returns true on success, false when the restart failed (logged),
-   * so callers that need the new env actually applied (rotation) can react.
+   *
+   * A DELIBERATELY-DOWN app is left down. `restartApp` runs `compose down` +
+   * `compose up --detach`, so restarting one would silently start a container the
+   * user chose to stop — from a background rotation sweep, or merely from opening
+   * the app's detail page (the status poll self-heals a stale key through here).
+   * Nothing is lost by deferring: every lifecycle command that brings an app up
+   * regenerates its env first (`StartAppCommand` → `generateEnvFile`), so it picks
+   * up the new — or cleared — creds whenever it is next started.
+   *
+   * Anything NOT in {@link DOWN_APP_STATUSES} is treated as live, including the
+   * transitional states (`starting`, `restarting`, `updating`, …). Those really are
+   * up, or on their way up, and a restart is queued behind the in-flight command —
+   * whereas skipping them would strand a LIVE app on a key rotation has already
+   * retired on CI-Server, which the age gate would then ignore for another 60 days.
    */
-  private async applyAndRestart(appUrn: AppUrn): Promise<boolean> {
+  private async applyAndRestart(appUrn: AppUrn): Promise<ApplyOutcome> {
     try {
+      if (await this.isAppDown(appUrn)) {
+        this.logger.debug(`[MemoryConnect] ${appUrn} is not running — deferring restart; its env is regenerated on next start`);
+
+        return 'deferred';
+      }
+
       const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
       await lifecycle.restartApp({ appUrn });
 
-      return true;
+      return 'restarted';
     } catch (err) {
       this.logger.error(`[MemoryConnect] failed to restart ${appUrn} after connection change`, err);
 
-      return false;
+      return 'failed';
     }
+  }
+
+  /** Whether the app is down on purpose (stopped/stopping) or simply not there. */
+  private async isAppDown(appUrn: AppUrn): Promise<boolean> {
+    const app = await this.apps.getAppByUrn(appUrn);
+
+    // No row at all — nothing to restart.
+    if (!app) {
+      return true;
+    }
+
+    return (DOWN_APP_STATUSES as readonly string[]).includes(app.status);
   }
 }

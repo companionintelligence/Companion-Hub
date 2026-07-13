@@ -36,6 +36,10 @@ function makeService() {
   const config = { getConfig: vi.fn().mockReturnValue({ domain: 'example.org' }) };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const lifecycle = { restartApp: vi.fn().mockResolvedValue(undefined) };
+  // applyAndRestart only restarts an app that is actually up — a stopped app must
+  // not be started by a rotation sweep or a status poll. Default to running so the
+  // existing expectations exercise the restart path.
+  const appsRepository = { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) };
   const moduleRef = { get: vi.fn().mockReturnValue(lifecycle) };
 
   const service = new MemoryConnectService(
@@ -46,10 +50,11 @@ function makeService() {
     deviceRegistration as never,
     config as never,
     logger as never,
+    appsRepository as never,
     moduleRef as never,
   );
 
-  return { service, resolver, exchange, connections, pending, lifecycle };
+  return { service, resolver, exchange, connections, pending, lifecycle, appsRepository };
 }
 
 const PROVIDER = {
@@ -202,6 +207,19 @@ describe('MemoryConnectService side effects', () => {
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+  });
+
+  it('disconnect does not START an app the user had stopped — it only clears state', async () => {
+    // `restartApp` is compose down + up, so restarting a stopped app would silently
+    // bring it back. The env is regenerated on the next start anyway.
+    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
   });
 
   it('disconnect throws and keeps the connection (no clear/restart) when the revoke fails', async () => {
