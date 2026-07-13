@@ -9,9 +9,10 @@ import { useMemoryConnection } from '../../helpers/use-memory-connection';
  * emerald when connected, neutral otherwise. Renders nothing unless the app is a
  * memory consumer (`applicable`). When Companion Memory isn't installed there's
  * nothing to connect to (and the Connect button is hidden), so instead of a
- * "not connected" status the user couldn't act on, it shows a muted "install
- * first" hint. The Connect/Disconnect action lives in the header action row
- * (see AppActions); this is status only.
+ * "not connected" status the user couldn't act on, it reports the install state.
+ * Memory is an optional enhancement, never a prerequisite for running the app,
+ * so the copy stays factual rather than instructing. The Connect/Disconnect
+ * action lives in the header action row (see AppActions); this is status only.
  */
 export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const { t } = useTranslation();
