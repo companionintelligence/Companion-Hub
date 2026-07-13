@@ -165,6 +165,13 @@ export const hubIntegrationSchema = z
 
 export type HubIntegration = z.output<typeof hubIntegrationSchema>;
 
+/**
+ * How a consumer wants the brokered Companion Memory address shaped. Derived from the
+ * schema rather than restated, so a new style cannot be added in one place and silently
+ * unhandled in the other.
+ */
+export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>['memory']>['url_style']>;
+
 export const APP_CATEGORIES = [
   'network',
   'media',

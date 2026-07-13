@@ -6,6 +6,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
+import type { MemoryUrlStyle } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -17,6 +18,7 @@ import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 import { McpApiKeyService } from '../mcp/mcp-api-key.service';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
+import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 /**
@@ -57,12 +59,12 @@ const HUB_ONLY_SECRET_ENV_VARS = ['CI_HUB_FORWARD_AUTH_SECRET', 'JWT_SECRET', 'M
  * it wants and the Hub, the only party that knows the value is the brokered provider
  * address at all, obliges.
  */
-function memoryUrlForStyle(brokeredUrl: string, style: 'origin' | 'api_base' | undefined): string {
+function memoryUrlForStyle(brokeredUrl: string, style: MemoryUrlStyle | undefined): string {
   if (style !== 'api_base') {
     return brokeredUrl;
   }
 
-  return `${brokeredUrl.replace(/\/+$/, '')}/api`;
+  return `${brokeredUrl.replace(/\/+$/, '')}${GATEWAY_API_PREFIX}`;
 }
 
 function parseAppBaseUrl(url: string): URL {

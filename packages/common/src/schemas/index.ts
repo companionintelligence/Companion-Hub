@@ -20,7 +20,7 @@ import {
   frontmatterSchema,
   hubIntegrationSchema,
 } from './app-info.js';
-import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, RandomEncoding } from './app-info.js';
+import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, MemoryUrlStyle, RandomEncoding } from './app-info.js';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from './port-expose.js';
 
 import {
@@ -82,6 +82,7 @@ export {
   type AgentOpenApiConfig,
   type AgentSkillConfig,
   type HubIntegration,
+  type MemoryUrlStyle,
   type ServiceInput,
   type DependsOn,
   type Service,
