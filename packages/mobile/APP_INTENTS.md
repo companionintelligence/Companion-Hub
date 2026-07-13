@@ -59,6 +59,14 @@ to the connect screen.
   `@available(iOS 16.0, *)`-guarded.
 - App Intents and the `AppShortcutsProvider` are **auto-discovered** from the
   compiled binary — no `Info.plist` registration needed.
+- **`plugins.deep-link.mobile` must register the `cihub` scheme** in
+  `tauri.conf.json` (`"mobile": [{ "scheme": ["cihub"] }]`). The Tauri deep-link
+  plugin's `isDeepLink()` returns `false` when `mobile` is empty and drops every
+  `cihub://` link on mobile — so with `mobile: []` the intents never reach the
+  app. The Rust shell also registers `deep_link().on_open_url()` for
+  while-running delivery (the `deep-link://new-url` event is desktop-only).
+  Verified on the Android emulator: `cihub://intent/settings` →
+  `consume_pending_intent` returns `"settings"`.
 
 ## Building / testing
 
