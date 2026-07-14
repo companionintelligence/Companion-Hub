@@ -377,16 +377,20 @@ export class ExposureSyncService {
       // apps, so index once and look up in O(1).
       const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
 
-      // The DB row is all that is needed to name an app's public record — shared so
-      // the two branches cannot drift on how the hostname is rebuilt.
-      const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
-        appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-        hostname: buildPublicHostname({
+      // The DB row is all that is needed to name an app's public record. Both failure
+      // branches and the failure log derive the hostname from here, so none of them
+      // can drift on how a public record is named.
+      const toPublicHostname = (dbApp: AppFromDb): string =>
+        buildPublicHostname({
           appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
           hubSubdomain: orgInfo.hubSubdomain,
           orgSlug: orgInfo.slug,
           publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-        }),
+        });
+
+      const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
+        appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+        hostname: toPublicHostname(dbApp),
       });
 
       if (!result.ok) {
@@ -431,9 +435,22 @@ export class ExposureSyncService {
             };
           })
           .filter((target): target is PublicDnsToastTarget => target !== null);
-        const failedHostnames = toastTargets.map((target) => target.hostname);
+
+        // Name EVERY failed app: its hostname where we could rebuild one, else the
+        // raw name CI-Cloud sent. Listing only the mapped hostnames dropped any app
+        // that has no toast target — one with no DB row, or the privileged Hub entry,
+        // which is deliberately absent from appEntries — so the log claimed N apps and
+        // then named fewer, and the missing ones were exactly the ones an operator had
+        // no other way to find. A message that hides which app broke is the failure
+        // this PR exists to fix.
+        const failedLabels = result.failed.map((name) => {
+          const dbApp = dbAppByName.get(name);
+
+          return dbApp ? toPublicHostname(dbApp) : name;
+        });
+
         this.surfacePublicDnsFailure(
-          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${(failedHostnames.length > 0 ? failedHostnames : result.failed).join(', ')}. ` +
+          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedLabels.join(', ')}. ` +
             `These apps will not resolve at their public domain — ${describePublicDnsFailures(result.failures)}`,
           result.failed,
           toastTargets,

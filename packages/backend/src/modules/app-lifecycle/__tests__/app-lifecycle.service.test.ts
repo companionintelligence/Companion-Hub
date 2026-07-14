@@ -369,6 +369,53 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('names every failed app in the log, including ones it cannot map to a hostname', async () => {
+      // The log used to list only the apps it could rebuild a hostname for, while the
+      // count came from result.failed — so a failed app with no DB row (or the
+      // privileged Hub entry) vanished from the message entirely. That is the same
+      // class of misleading operator error this PR exists to fix.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        // 'OS Hub' is the privileged entry: it has no DB row, so it maps to no toast
+        // target and used to be dropped from the log.
+        failed: ['anything-llm', 'OS Hub'],
+        failures: [
+          { app: 'anything-llm', reason: 'conflict', message: 'already in use by another tunnel' },
+          { app: 'OS Hub', reason: 'api_error', message: 'rate limited' },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Both apps are named: the one we could resolve, by hostname; the one we could
+      // not, by the name CI-Cloud sent.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintelligence.com'));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OS Hub'));
+      // The count and the list agree.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('NOT created for 2 app(s)'));
+    });
+
     it('excludes only the targeted app URN when releasing DNS for a routing change', async () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
