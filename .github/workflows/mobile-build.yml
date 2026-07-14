@@ -1,0 +1,158 @@
+name: Mobile Build
+
+# Builds the Tauri mobile app (packages/mobile) for iOS + Android, the same way
+# `desktop-build.yml` builds the desktop app. Trigger manually from the Actions
+# tab (workflow_dispatch) or it runs automatically on `dev` when mobile/frontend
+# code changes.
+#
+# Artifacts (download from the run's Summary page):
+#   - companion-hub-android-debug-apk  → installable APK (debug-signed; `adb install`)
+#   - companion-hub-ios-sim-app        → iOS Simulator .app (drag onto a booted simulator)
+#
+# A distributable, store-ready Android AAB / iOS .ipa needs release signing
+# secrets (Google Play upload key / Apple Developer cert + provisioning profile);
+# see the "Release signing" section in packages/mobile/README.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'packages/mobile/**'
+      - 'packages/frontend/**'
+      - 'packages/common/**'
+      - '.github/workflows/mobile-build.yml'
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Android ──────────────────────────────────────────────────────────────
+  android:
+    name: Build — Android (APK)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust (stable) + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/mobile/src-tauri -> target
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        env:
+          NODE_ENV: production
+        run: |
+          pnpm run --filter=@ci-hub/common build
+          pnpm run --filter=frontend build
+
+      # `--debug` produces a debug-signed universal APK that installs on any
+      # device/emulator without release keystore secrets. The mobile package's
+      # gen/android project is committed, so no `tauri android init` is needed.
+      - name: Build Android APK
+        working-directory: packages/mobile
+        run: |
+          export NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
+          echo "Using NDK_HOME=$NDK_HOME"
+          pnpm exec tauri android build --apk --debug
+
+      - name: List artifacts
+        run: find packages/mobile/src-tauri/gen/android/app/build/outputs -name '*.apk' -exec ls -lh {} \; || true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: companion-hub-android-debug-apk
+          path: packages/mobile/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+  # ── iOS ──────────────────────────────────────────────────────────────────
+  # Builds for the iOS Simulator (no code-signing required). The GitHub macOS
+  # runners ship a stable Xcode, so the local swift-rs × Xcode-27 workaround
+  # (see packages/mobile/README.md) is NOT needed here.
+  ios:
+    name: Build — iOS (Simulator)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust (stable) + iOS targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/mobile/src-tauri -> target
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        env:
+          NODE_ENV: production
+        run: |
+          pnpm run --filter=@ci-hub/common build
+          pnpm run --filter=frontend build
+
+      # Simulator target → unsigned build, no Apple Developer account needed.
+      # Tauri's post-build archive step is skipped for the simulator target; the
+      # built .app lands in Xcode's DerivedData.
+      - name: Build iOS app (simulator, unsigned)
+        working-directory: packages/mobile
+        run: pnpm exec tauri ios build --target aarch64-sim
+
+      - name: Locate built .app
+        id: findapp
+        run: |
+          APP="$(find ~/Library/Developer/Xcode/DerivedData -type d -path '*Build/Products/*-iphonesimulator/*.app' -maxdepth 6 2>/dev/null | head -1)"
+          echo "Found: $APP"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Upload iOS Simulator app
+        if: steps.findapp.outputs.app != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: companion-hub-ios-sim-app
+          path: ${{ steps.findapp.outputs.app }}
+          if-no-files-found: warn
