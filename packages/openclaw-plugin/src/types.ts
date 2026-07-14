@@ -90,8 +90,12 @@ export interface OpenClawModelEntry {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
-  /** Native backend options forwarded to the provider (e.g. Ollama `num_ctx`). */
-  options?: { num_ctx?: number };
+  /**
+   * Native backend params forwarded to the provider (e.g. Ollama `num_ctx`).
+   * Must be `params` — OpenClaw's model-entry schema is strict, and an
+   * unrecognized key invalidates the whole openclaw.json.
+   */
+  params?: { num_ctx?: number };
 }
 
 /** Speech provider registration */
