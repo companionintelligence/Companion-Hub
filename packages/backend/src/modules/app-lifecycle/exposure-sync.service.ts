@@ -47,6 +47,8 @@ function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
           return `${failure.app}: the address is already claimed by another device or tunnel and CI-Cloud will not overwrite it (${failure.message ?? 'no detail'})`;
         case 'zone_unreachable':
           return `${failure.app}: the selected domain is not provisioned for this device in CI-Cloud (${failure.message ?? 'no detail'})`;
+        case 'invalid_subdomain':
+          return `${failure.app}: the requested subdomain is not a valid DNS label (${failure.message ?? 'no detail'})`;
         default:
           return `${failure.app}: Cloudflare rejected the DNS write, usually transient (${failure.message ?? 'no detail'})`;
       }

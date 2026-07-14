@@ -56,8 +56,10 @@ export interface AppInfo {
  * - `zone_unreachable` — the selected domain's zone is not provisioned for this
  *   device in CI-Cloud's environment.
  * - `api_error` — Cloudflare rejected the write; usually transient.
+ * - `invalid_subdomain` — the requested subdomain has no valid DNS label, so
+ *   CI-Cloud rejected it before Cloudflare was ever involved.
  */
-export type PublicDnsFailureReason = 'conflict' | 'zone_unreachable' | 'api_error';
+export type PublicDnsFailureReason = 'conflict' | 'zone_unreachable' | 'api_error' | 'invalid_subdomain';
 
 export interface PublicDnsFailure {
   app: string;
