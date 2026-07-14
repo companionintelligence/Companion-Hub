@@ -209,6 +209,33 @@ describe('CloudflareClientService', () => {
       expect(result.failures).toEqual([{ app: 'anything-llm', reason: 'conflict', message: 'taken' }]);
     });
 
+    it('should name every failed app in the log, even those with no structured failure', async () => {
+      // `failures` need not cover every failed app. Building the log line from it named
+      // fewer apps than the count in the same sentence, and the ones it dropped were the
+      // ones with no other detail to find them by.
+      // The logger is private; reach it through a structural cast rather than a computed
+      // key, which `lint:fix` would rewrite into an illegal dot access on a private field.
+      const loggerRef = (service as unknown as { logger: { warn: (message: string) => void } }).logger;
+      const warn = vi.spyOn(loggerRef, 'warn');
+
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['anything-llm', 'docmost'],
+        failures: [{ app: 'anything-llm', reason: 'conflict', message: 'taken' }],
+        synced: 0,
+      } as any);
+
+      await service.syncState('org-id', [], 'tun-id');
+
+      const message = warn.mock.calls.map(([line]) => String(line)).join('\n');
+
+      expect(message).toContain('2 app(s)');
+      expect(message).toContain('anything-llm (conflict: taken)');
+      // Present despite having no entry in `failures` — and not rendered as `undefined`.
+      expect(message).toContain('docmost');
+      expect(message).not.toContain('undefined');
+    });
+
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
       expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });

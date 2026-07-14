@@ -247,9 +247,14 @@ export class CloudflareClientService {
         const failed: string[] = Array.isArray(response.data.failed)
           ? response.data.failed.filter((name): name is string => typeof name === 'string')
           : [];
+        // `reason` is required too: it is the whole point of the entry, and an entry
+        // without one would render as `(undefined: …)`. Any string is accepted rather
+        // than only the known classes — a NEWER CI-Cloud may add one, and every consumer
+        // already degrades gracefully on a reason it does not recognise.
         const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
           ? response.data.failures.filter(
-              (failure): failure is PublicDnsFailure => typeof failure === 'object' && failure !== null && typeof failure.app === 'string',
+              (failure): failure is PublicDnsFailure =>
+                typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
             )
           : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
@@ -258,10 +263,21 @@ export class CloudflareClientService {
           // Report what actually went wrong per app. Blaming zone provisioning for
           // every failure sent debugging down the wrong path when the real cause
           // was a DNS record CI-Cloud refused to overwrite (CI-Portal#403).
-          const detail =
-            failures.length > 0
-              ? failures.map((failure) => `${failure.app} (${failure.reason}: ${failure.message ?? 'no detail'})`).join(', ')
-              : failed.join(', ');
+          //
+          // Drive the list from `failed`, not from `failures`, and enrich it where CI-Cloud
+          // gave us detail. `failures` need not cover every failed app — an older CI-Cloud
+          // sends none, a newer one may omit some, and the validation above deliberately
+          // drops malformed entries — so building the list from it named fewer apps than
+          // the `failed.length` count in the very same sentence, and the apps it dropped
+          // were the ones with no other detail to find them by.
+          const failureByApp = new Map(failures.map((failure) => [failure.app, failure]));
+          const detail = failed
+            .map((name) => {
+              const failure = failureByApp.get(name);
+
+              return failure ? `${name} (${failure.reason}: ${failure.message ?? 'no detail'})` : name;
+            })
+            .join(', ');
 
           this.logger.warn(
             `[Cloudflare] State sync only partially applied: ${failed.length} app(s) did NOT get a public DNS record and will not load at their public domain: ${detail}.` +
