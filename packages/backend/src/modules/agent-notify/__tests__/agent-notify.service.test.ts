@@ -13,6 +13,7 @@ describe('AgentNotifyService', () => {
     process.env.AGENT_WEBHOOK_URL = 'http://localhost:18789/hooks/hub-wake';
     process.env.AGENT_WEBHOOK_TOKEN = 'test-token';
     process.env.AGENT_WEBHOOK_ENABLED = 'true';
+    delete process.env.AGENT_WEBHOOK_MIN_URGENCY;
 
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('OK', { status: 200 }));
 
@@ -28,6 +29,7 @@ describe('AgentNotifyService', () => {
     process.env.AGENT_WEBHOOK_URL = originalEnv.AGENT_WEBHOOK_URL;
     process.env.AGENT_WEBHOOK_TOKEN = originalEnv.AGENT_WEBHOOK_TOKEN;
     process.env.AGENT_WEBHOOK_ENABLED = originalEnv.AGENT_WEBHOOK_ENABLED;
+    delete process.env.AGENT_WEBHOOK_MIN_URGENCY;
     vi.restoreAllMocks();
     service.onModuleDestroy();
   });
@@ -155,6 +157,34 @@ describe('AgentNotifyService', () => {
     ])('does not wake the agent for the info-tier event %s', async (event, data) => {
       await service.notify(event, data, 'info');
       expect(fetch).not.toHaveBeenCalled();
+    });
+
+    // The floor is a real, settable knob — not decorative config. It sits alongside the
+    // module's existing AGENT_WEBHOOK_* env vars.
+    it('honours AGENT_WEBHOOK_MIN_URGENCY', async () => {
+      process.env.AGENT_WEBHOOK_MIN_URGENCY = 'high';
+
+      await service.notify('system.high_memory', { usagePercent: 92 }, 'medium');
+      expect(fetch).not.toHaveBeenCalled();
+
+      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets an operator opt back into the info tier', async () => {
+      process.env.AGENT_WEBHOOK_MIN_URGENCY = 'info';
+      await service.notify('update_success', { appUrn: 'ci-store:test' }, 'info');
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    // A typo must not silently mute every wake — the failure mode would be invisible.
+    it('falls back to the default on an unrecognized value, and says so', async () => {
+      process.env.AGENT_WEBHOOK_MIN_URGENCY = 'urgent';
+
+      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('AGENT_WEBHOOK_MIN_URGENCY'));
     });
   });
 

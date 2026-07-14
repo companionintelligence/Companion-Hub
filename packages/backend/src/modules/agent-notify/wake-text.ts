@@ -22,7 +22,13 @@
 /** The urgency tiers the Hub emits. Ordered: info < low < medium < high. */
 export type Urgency = 'high' | 'medium' | 'low' | 'info';
 
-const URGENCY_ORDER: Record<Urgency, number> = { info: 0, low: 1, medium: 2, high: 3 };
+/**
+ * The tiers, ranked. Exported so callers can validate an operator-supplied value against
+ * the real vocabulary instead of re-listing it and drifting.
+ */
+export const URGENCY_TIERS: Record<Urgency, number> = { info: 0, low: 1, medium: 2, high: 3 };
+
+const URGENCY_ORDER = URGENCY_TIERS;
 
 /**
  * Default floor for what is worth waking the agent over.

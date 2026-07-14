@@ -7,7 +7,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { buildWakeText, DEFAULT_MIN_URGENCY, passesUrgency, type Urgency } from './wake-text';
+import { buildWakeText, DEFAULT_MIN_URGENCY, passesUrgency, type Urgency, URGENCY_TIERS } from './wake-text';
 
 export type { Urgency };
 
@@ -61,7 +61,6 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   private debounceWindowMs = 30_000;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private webhooks = new Map<string, WebhookTarget>();
-  private minUrgency: Urgency = DEFAULT_MIN_URGENCY;
 
   constructor(
     private readonly logger: LoggerService,
@@ -209,8 +208,9 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
       return;
     }
 
-    if (!passesUrgency(urgency, this.minUrgency)) {
-      this.logger.debug(`Agent wake skipped: ${event} (${urgency}) is below the ${this.minUrgency} floor`);
+    const minUrgency = this.resolveMinUrgency();
+    if (!passesUrgency(urgency, minUrgency)) {
+      this.logger.debug(`Agent wake skipped: ${event} (${urgency}) is below the ${minUrgency} floor`);
       return;
     }
 
@@ -264,6 +264,27 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
         }
       }),
     );
+  }
+
+  /**
+   * How urgent an event must be to be worth an agent turn.
+   *
+   * Read per call rather than cached, so it can be changed without a Hub restart — and,
+   * more to the point, so it is *actually settable*. Alongside AGENT_WEBHOOK_ENABLED /
+   * _URL / _TOKEN, which is where this module's other knobs already live.
+   *
+   * An unrecognized value falls back to the default rather than silently disabling every
+   * wake, which is what a typo would otherwise do.
+   */
+  private resolveMinUrgency(): Urgency {
+    const configured = process.env.AGENT_WEBHOOK_MIN_URGENCY as Urgency | undefined;
+    if (configured && configured in URGENCY_TIERS) {
+      return configured;
+    }
+    if (configured) {
+      this.logger.warn(`Ignoring unrecognized AGENT_WEBHOOK_MIN_URGENCY="${configured}"; using "${DEFAULT_MIN_URGENCY}"`);
+    }
+    return DEFAULT_MIN_URGENCY;
   }
 
   private buildDebounceKey(event: string, data: Record<string, unknown>): string {
