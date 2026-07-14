@@ -45,6 +45,52 @@ pnpm --filter mobile ios:dev       # run in the Simulator
 > (`gen/apple/.../Info.plist` `CFBundleURLTypes`, and the Android manifest
 > `intent-filter`) for the Portal SSO callback to return to the app.
 
+## Building in CI (GitHub Actions)
+
+The mobile app builds in CI the same way the desktop app does — via
+[`.github/workflows/mobile-build.yml`](../../.github/workflows/mobile-build.yml)
+(the mobile counterpart to `desktop-build.yml`). It has two jobs:
+
+| Job | Runner | Produces | Artifact |
+|-----|--------|----------|----------|
+| **android** | `ubuntu-22.04` | `tauri android build --apk --debug` → installable universal **debug APK** | `companion-hub-android-debug-apk` |
+| **ios** | `macos-latest` | `tauri ios build --target aarch64-sim` → unsigned **iOS Simulator `.app`** | `companion-hub-ios-sim-app` |
+
+**Triggers**
+- **Manually:** GitHub → **Actions → Mobile Build → Run workflow** (`workflow_dispatch`).
+- **Automatically:** on push to `dev` that touches `packages/mobile/**`,
+  `packages/frontend/**`, `packages/common/**`, or the workflow file.
+
+**Get the builds:** open the workflow run → **Summary** → download the artifact
+zips. Then:
+```bash
+# Android — install on any device/emulator (the debug APK is debug-signed)
+adb install -r app-universal-debug.apk
+
+# iOS — drag "Companion Hub.app" onto a booted Simulator, or:
+xcrun simctl install booted "Companion Hub.app"
+```
+
+No secrets are required for these artifacts. CI's macOS runner ships a **stable
+Xcode**, so the local swift-rs × Xcode-27 workaround below is **not** needed there.
+
+### Release signing (store-ready AAB / IPA)
+
+The default artifacts are for testing. A distributable build needs release
+signing, which is intentionally left out of the default workflow (no secrets to
+leak):
+
+- **Android AAB** — add a Play upload keystore as repo secrets
+  (`ANDROID_KEY_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`,
+  `ANDROID_KEY_STORE_PASSWORD`), decode it in a step, point
+  `gen/android/keystore.properties` at it, and run `tauri android build`
+  (`--aab`) without `--debug`.
+- **iOS IPA** — add an Apple Developer signing cert + provisioning profile as
+  secrets (e.g. via `apple-actions/import-codesign-certs`), set
+  `bundle.iOS.developmentTeam` / `APPLE_DEVELOPMENT_TEAM`, and run
+  `tauri ios build --export-method app-store-connect` (or `ad-hoc`) on a device
+  target instead of `--target aarch64-sim`.
+
 ## Building iOS on Xcode 27
 
 The app **builds, installs, and runs on the iOS 27 simulator** (verified

@@ -18,7 +18,6 @@ on:
   push:
     branches:
       - dev
-      - feat/ci-hub-mobile-app # TEMP: validate the workflow on the PR branch; revert to dev-only before merge
     paths:
       - 'packages/mobile/**'
       - 'packages/frontend/**'
