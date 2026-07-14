@@ -2,12 +2,12 @@ import { Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@
 import { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { createAppUrn } from '@/common/helpers/app-helpers';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { buildWakeText, DEFAULT_MIN_URGENCY, passesUrgency, type Urgency, URGENCY_TIERS } from './wake-text';
+import { buildWakeText, DEFAULT_MIN_URGENCY, isUrgency, passesUrgency, type Urgency } from './wake-text';
 
 export type { Urgency };
 
@@ -86,17 +86,26 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
       const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
       const apps = await appsRepository.getApps();
 
+      // Resolved concurrently: each app costs three independent disk reads, and this sits on
+      // the Hub's startup path. Errors stay isolated per app — one unreadable app must not cost
+      // the others their webhook.
+      const resolved = await Promise.all(
+        apps.map(async (app) => {
+          const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          try {
+            return { appUrn, target: await this.resolveWebhookTarget(appUrn) };
+          } catch (error) {
+            this.logger.warn(`Could not restore the agent webhook for ${appUrn}: ${error}`);
+            return { appUrn, target: null };
+          }
+        }),
+      );
+
       let registered = 0;
-      for (const app of apps) {
-        const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-        try {
-          const target = await this.resolveWebhookTarget(appUrn);
-          if (!target) continue; // not an MCP-client app; nothing to wake
-          this.registerWebhook(appUrn, target.url, target.token);
-          registered += 1;
-        } catch (error) {
-          this.logger.warn(`Could not restore the agent webhook for ${appUrn}: ${error}`);
-        }
+      for (const { appUrn, target } of resolved) {
+        if (!target) continue; // cannot be woken; nothing to register
+        this.registerWebhook(appUrn, target.url, target.token);
+        registered += 1;
       }
 
       this.logger.info(`Restored ${registered} agent webhook(s) from ${apps.length} installed app(s)`);
@@ -118,15 +127,28 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
 
     const appInfo = await appFilesManager.getInstalledAppInfo(appUrn as AppUrn);
-    if (!appInfo?.hub_integration?.mcp_client) {
+    const hubIntegration = appInfo?.hub_integration;
+    if (!hubIntegration?.mcp_client) {
       return null;
     }
 
-    const configured = appInfo.hub_integration.wake_endpoint;
-    const wakeEndpoint = !configured || configured === LEGACY_PLUGIN_WAKE_ENDPOINT ? DEFAULT_WAKE_ENDPOINT : configured;
-    const wakePort = appInfo.hub_integration.wake_port || appInfo.port || 3000;
+    // `mcp_client` says the app CONSUMES Hub MCP tools. It does not say the app can be woken,
+    // and the two are not the same set: CI-Hermes sets `mcp_client: true` and serves no hook at
+    // all. An app declares wake capability by naming an endpoint or a port — with neither, there
+    // is nothing to POST to, and registering it anyway would fan every Hub event out into a 404
+    // (once at install before, and now on every boot, since the registry is rehydrated).
+    if (!hubIntegration.wake_endpoint && !hubIntegration.wake_port) {
+      this.logger.debug(`No wake endpoint declared for ${appUrn}; it uses Hub tools but cannot be woken`);
+      return null;
+    }
 
-    let serviceName = appUrn.split(':')[0];
+    const configured = hubIntegration.wake_endpoint;
+    const wakeEndpoint = !configured || configured === LEGACY_PLUGIN_WAKE_ENDPOINT ? DEFAULT_WAKE_ENDPOINT : configured;
+    const wakePort = hubIntegration.wake_port || appInfo?.port || 3000;
+
+    // An AppUrn is `${appName}:${appStoreSlug}` — parse it with the shared helper rather than
+    // re-deriving it, which is how wake-text came to read the store slug as the app name.
+    let serviceName: string = extractAppUrn(appUrn as AppUrn).appName;
     try {
       const composeJson = await appFilesManager.getDockerComposeJson(appUrn as AppUrn);
       if (composeJson.content) {
@@ -277,13 +299,14 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
    * wake, which is what a typo would otherwise do.
    */
   private resolveMinUrgency(): Urgency {
-    const configured = process.env.AGENT_WEBHOOK_MIN_URGENCY as Urgency | undefined;
-    if (configured && configured in URGENCY_TIERS) {
+    const configured = process.env.AGENT_WEBHOOK_MIN_URGENCY;
+    if (!configured) {
+      return DEFAULT_MIN_URGENCY;
+    }
+    if (isUrgency(configured)) {
       return configured;
     }
-    if (configured) {
-      this.logger.warn(`Ignoring unrecognized AGENT_WEBHOOK_MIN_URGENCY="${configured}"; using "${DEFAULT_MIN_URGENCY}"`);
-    }
+    this.logger.warn(`Ignoring unrecognized AGENT_WEBHOOK_MIN_URGENCY="${configured}"; using "${DEFAULT_MIN_URGENCY}"`);
     return DEFAULT_MIN_URGENCY;
   }
 

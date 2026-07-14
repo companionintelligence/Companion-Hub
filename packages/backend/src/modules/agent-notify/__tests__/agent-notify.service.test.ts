@@ -42,13 +42,13 @@ describe('AgentNotifyService', () => {
     // The target is OpenClaw's NATIVE wake hook, which takes { text, mode } — not the
     // { event, data, urgency, timestamp } envelope the old (404ing) plugin route expected.
     it('POSTs the native wake payload: { text, mode: "now" }', async () => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       expect(fetch).toHaveBeenCalledWith('http://localhost:18789/hooks/hub-wake', expect.objectContaining({ method: 'POST' }));
       const body = JSON.parse(vi.mocked(fetch).mock.calls[0]?.[1]?.body as string);
       expect(Object.keys(body).sort()).toEqual(['mode', 'text']);
       expect(body.text).toContain('app.crashed');
-      expect(body.text).toContain('ci-store:test');
+      expect(body.text).toContain('test:ci-store');
       // "next-heartbeat" would defer the turn to the next scheduled slot — up to 30 minutes.
       expect(body.mode).toBe('now');
     });
@@ -58,7 +58,7 @@ describe('AgentNotifyService', () => {
     // gateway token before forwarding, so a wake authenticated on Authorization alone can
     // never arrive. The secret has to travel in a header the proxy does not touch.
     it('sends the secret in X-OpenClaw-Token, which survives the CI-OpenClaw proxy', async () => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
       expect(headers['X-OpenClaw-Token']).toBe('test-token');
@@ -66,7 +66,7 @@ describe('AgentNotifyService', () => {
 
     // Still sent, for a caller that reaches an OpenClaw gateway directly (no proxy in front).
     it('also sends Authorization: Bearer for direct-to-gateway callers', async () => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
       expect(headers.Authorization).toBe('Bearer test-token');
@@ -77,7 +77,7 @@ describe('AgentNotifyService', () => {
     it('treats a 429 as throttling, not failure', async () => {
       vi.mocked(fetch).mockResolvedValue(new Response('Too Many Requests', { status: 429, headers: { 'Retry-After': '7' } }));
 
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('throttled'));
       expect(logger.error).not.toHaveBeenCalled();
@@ -118,8 +118,8 @@ describe('AgentNotifyService', () => {
     });
 
     it('should debounce identical events within 30-second window', async () => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
@@ -130,15 +130,15 @@ describe('AgentNotifyService', () => {
     });
 
     it('should not debounce events with different event names', async () => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
-      await service.notify('app.update_failed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
+      await service.notify('app.update_failed', { appUrn: 'test:ci-store' }, 'high');
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
     it('should send event again after debounce window expires', async () => {
       service._setDebounceWindowMs(0);
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
       expect(fetch).toHaveBeenCalledTimes(2);
     });
   });
@@ -147,12 +147,12 @@ describe('AgentNotifyService', () => {
   // system.mcp_ready) is dropped: it tells the user nothing they did not already expect.
   describe('urgency floor', () => {
     it.each(['high', 'medium', 'low'] as const)('wakes the agent for %s', async (urgency) => {
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, urgency);
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, urgency);
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it.each([
-      ['update_success', { appUrn: 'ci-store:test' }],
+      ['update_success', { appUrn: 'test:ci-store' }],
       ['system.mcp_ready', { toolCount: 12 }],
     ])('does not wake the agent for the info-tier event %s', async (event, data) => {
       await service.notify(event, data, 'info');
@@ -167,13 +167,13 @@ describe('AgentNotifyService', () => {
       await service.notify('system.high_memory', { usagePercent: 92 }, 'medium');
       expect(fetch).not.toHaveBeenCalled();
 
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it('lets an operator opt back into the info tier', async () => {
       process.env.AGENT_WEBHOOK_MIN_URGENCY = 'info';
-      await service.notify('update_success', { appUrn: 'ci-store:test' }, 'info');
+      await service.notify('update_success', { appUrn: 'test:ci-store' }, 'info');
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
@@ -181,7 +181,19 @@ describe('AgentNotifyService', () => {
     it('falls back to the default on an unrecognized value, and says so', async () => {
       process.env.AGENT_WEBHOOK_MIN_URGENCY = 'urgent';
 
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('AGENT_WEBHOOK_MIN_URGENCY'));
+    });
+
+    // ...and a value that an `in` check would have waved through. "constructor" is a key on
+    // Object.prototype, so `'constructor' in URGENCY_TIERS` is true; the floor then compares as
+    // NaN and drops EVERY wake, silently. Validation is Object.hasOwn for exactly this reason.
+    it('rejects an inherited Object.prototype key as a floor', async () => {
+      process.env.AGENT_WEBHOOK_MIN_URGENCY = 'constructor';
+
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       expect(fetch).toHaveBeenCalledTimes(1);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('AGENT_WEBHOOK_MIN_URGENCY'));
@@ -278,6 +290,16 @@ describe('AgentNotifyService', () => {
       expect(target?.url).toBe('http://openclaw:9000/custom/wake');
     });
 
+    // The real CI-Hermes manifest: `mcp_client: true`, and no wake endpoint or port anywhere.
+    // It consumes Hub MCP tools; it is not an agent and serves no hook. Gating on mcp_client
+    // alone would register it and fan every Hub event into a 404 — on every boot, now that the
+    // registry is rehydrated. The two capabilities are not the same set.
+    it('does not register an MCP-tool consumer that declares no wake endpoint (CI-Hermes)', async () => {
+      withAppInfo({ mcp_client: true, sse_events: false, memory: { url_env: 'CI_SERVER_URL' } });
+
+      expect(await service.resolveWebhookTarget('hermes:ci-store')).toBeNull();
+    });
+
     it('returns null for an app that runs no agent', async () => {
       withAppInfo({ mcp_client: false });
 
@@ -314,7 +336,7 @@ describe('AgentNotifyService', () => {
     it('R-MW-3: should fan-out to env webhook AND registered webhook', async () => {
       service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'oc-secret');
 
-      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+      await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
       // Should call both env webhook and registered webhook
       expect(fetch).toHaveBeenCalledTimes(2);

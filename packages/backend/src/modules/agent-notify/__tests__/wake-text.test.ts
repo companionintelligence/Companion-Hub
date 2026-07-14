@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWakeText, DEFAULT_MIN_URGENCY, passesUrgency, type Urgency } from '../wake-text';
+import { buildWakeText, DEFAULT_MIN_URGENCY, isUrgency, passesUrgency, type Urgency } from '../wake-text';
 
 /**
  * Every event the Hub actually emits, with the urgency and data its producer sends.
@@ -9,17 +9,17 @@ import { buildWakeText, DEFAULT_MIN_URGENCY, passesUrgency, type Urgency } from 
  * the appliance.
  */
 const HUB_EVENTS: Array<[string, Record<string, unknown>, Urgency]> = [
-  ['app.crashed', { appUrn: 'ci-store:immich', previousStatus: 'running', newStatus: 'stopped' }, 'high'],
-  ['install_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['start_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['stop_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['restart_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['uninstall_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['reset_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['update_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['backup_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['restore_error', { appUrn: 'ci-store:immich' }, 'high'],
-  ['update_success', { appUrn: 'ci-store:immich' }, 'info'],
+  ['app.crashed', { appUrn: 'immich:ci-store', previousStatus: 'running', newStatus: 'stopped' }, 'high'],
+  ['install_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['start_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['stop_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['restart_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['uninstall_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['reset_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['update_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['backup_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['restore_error', { appUrn: 'immich:ci-store' }, 'high'],
+  ['update_success', { appUrn: 'immich:ci-store' }, 'info'],
   ['system.update_available', { current: '1.2.0', latest: '1.3.0' }, 'low'],
   ['system.mcp_ready', { toolCount: 12 }, 'info'],
   ['registration.state_changed', { from: 'active', to: 'degraded', reasons: ['tunnel down'] }, 'high'],
@@ -64,28 +64,38 @@ describe('buildWakeText', () => {
   // "reply HEARTBEAT_OK if nothing needs attention". Without an explicit ask, the agent
   // will shrug at a crashed app.
   it('tells the agent to investigate and speak on a crash', () => {
-    const text = buildWakeText('app.crashed', { appUrn: 'ci-store:immich' }, 'high');
+    const text = buildWakeText('app.crashed', { appUrn: 'immich:ci-store' }, 'high');
     expect(text).toMatch(/investigate/i);
     expect(text).toMatch(/tell the user/i);
-    expect(text).toContain('ci-store:immich');
+    expect(text).toContain('immich:ci-store');
+  });
+
+  // REGRESSION: an AppUrn is `${appName}:${appStoreSlug}` (createAppUrn), so the app's NAME is
+  // the head of the pair. Reading the tail instead yields the store slug — and since nearly
+  // every app ships from the same store, the agent would be told that immich, gitlab and mailu
+  // are all an app called "ci-store". Assert on an app whose name and store are unmistakable.
+  it('names the app, not the store it came from', () => {
+    const text = buildWakeText('app.crashed', { appUrn: 'immich:ci-store' }, 'high');
+    expect(text).toContain('app "immich"');
+    expect(text).not.toContain('app "ci-store"');
   });
 
   // ...and the converse: a routine success must not produce an unprompted message.
   it('tells the agent to stay quiet on an informational event', () => {
-    expect(buildWakeText('update_success', { appUrn: 'ci-store:immich' }, 'info')).toMatch(/only mention it if the user asks/i);
+    expect(buildWakeText('update_success', { appUrn: 'immich:ci-store' }, 'info')).toMatch(/only mention it if the user asks/i);
     expect(buildWakeText('system.mcp_ready', { toolCount: 3 }, 'info')).toMatch(/no reply needed/i);
   });
 
   // The Hub's event names drifted into two styles — dotted and snake. The suffix fallback
   // means a new `*_error` the Hub adds tomorrow still reads sensibly instead of dumping JSON.
   it('handles an unknown *_error event through the suffix fallback', () => {
-    const text = buildWakeText('migrate_error', { appUrn: 'ci-store:x', error: 'disk full' }, 'high');
+    const text = buildWakeText('migrate_error', { appUrn: 'x:ci-store', error: 'disk full' }, 'high');
     expect(text).toContain('"migrate" failed');
     expect(text).toContain('disk full');
   });
 
   it('caps a pathologically large data payload', () => {
-    const text = buildWakeText('some_error', { appUrn: 'ci-store:x', error: 'x'.repeat(5000) }, 'high');
+    const text = buildWakeText('some_error', { appUrn: 'x:ci-store', error: 'x'.repeat(5000) }, 'high');
     expect(text.length).toBeLessThanOrEqual(800);
   });
 
@@ -112,5 +122,24 @@ describe('passesUrgency', () => {
 
   it('lets an explicit info floor through', () => {
     expect(passesUrgency('info', 'info')).toBe(true);
+  });
+});
+
+describe('isUrgency', () => {
+  it.each(['high', 'medium', 'low', 'info'])('accepts the real tier %s', (tier) => {
+    expect(isUrgency(tier)).toBe(true);
+  });
+
+  // `value in URGENCY_TIERS` would say yes to all of these, because `in` walks the prototype
+  // chain. A floor of "constructor" then compares as NaN against every tier — dropping every
+  // wake, with no warning, which is indistinguishable from a healthy but quiet system. This is
+  // the whole reason the check is Object.hasOwn.
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])('rejects the inherited key %s', (key) => {
+    expect(isUrgency(key)).toBe(false);
+  });
+
+  it('rejects a plain typo', () => {
+    expect(isUrgency('urgent')).toBe(false);
+    expect(isUrgency('')).toBe(false);
   });
 });

@@ -28,8 +28,6 @@ export type Urgency = 'high' | 'medium' | 'low' | 'info';
  */
 export const URGENCY_TIERS: Record<Urgency, number> = { info: 0, low: 1, medium: 2, high: 3 };
 
-const URGENCY_ORDER = URGENCY_TIERS;
-
 /**
  * Default floor for what is worth waking the agent over.
  *
@@ -41,7 +39,14 @@ export const DEFAULT_MIN_URGENCY: Urgency = 'low';
 
 /** Whether an event clears the urgency floor. Unknown urgencies are treated as the lowest. */
 export function passesUrgency(urgency: Urgency, minUrgency: Urgency = DEFAULT_MIN_URGENCY): boolean {
-  return (URGENCY_ORDER[urgency] ?? 0) >= (URGENCY_ORDER[minUrgency] ?? 0);
+  return (URGENCY_TIERS[urgency] ?? 0) >= (URGENCY_TIERS[minUrgency] ?? 0);
+}
+
+/** Whether a string is one of the four tiers. `Object.hasOwn`, not `in`: `in` would accept
+ * "constructor" and every other Object.prototype key, and a floor of "constructor" compares
+ * as NaN — silently dropping every wake. */
+export function isUrgency(value: string): value is Urgency {
+  return Object.hasOwn(URGENCY_TIERS, value);
 }
 
 /** Total budget for the text. A system event competes with the real conversation for context. */
@@ -53,11 +58,17 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
-/** The trailing app segment of `urn:ci:immich`, for a name a human (and the agent) can use. */
+/**
+ * The app's own name, for a label a human (and the agent) can use.
+ *
+ * An AppUrn is `${appName}:${appStoreSlug}` — see `createAppUrn`. The name is the HEAD of the
+ * pair, not the tail: taking the tail yields the store slug, so every app in the default store
+ * would be introduced to the agent as "ci-store".
+ */
 function appNameOf(appUrn: string | undefined): string {
   if (!appUrn) return 'unknown';
-  const tail = appUrn.split(':').pop();
-  return tail && tail.trim() ? tail.trim() : appUrn;
+  const name = appUrn.split(':')[0]?.trim();
+  return name || appUrn;
 }
 
 function appUrnOf(data: Record<string, unknown>): string | undefined {
@@ -91,32 +102,23 @@ export function buildWakeText(event: string, data: Record<string, unknown>, urge
     switch (event) {
       case 'app.crashed': {
         const previous = data.previousStatus ? ` It was previously ${String(data.previousStatus)}.` : '';
-        return (
-          `${prefix} — ${target} stopped unexpectedly.${previous}` +
-          ' Investigate with the ci-hub tools (check its status and logs), then tell the user what broke' +
-          ' and what you did about it.'
-        );
+        return `${prefix} — ${target} stopped unexpectedly.${previous} Investigate with the ci-hub tools (check its status and logs), then tell the user what broke and what you did about it.`;
       }
 
       case 'system.update_available':
-        return (
-          `${prefix} — a Hub update is available (${String(data.current ?? '?')} → ${String(data.latest ?? '?')}).` +
-          ' Mention it to the user. Do not update anything unless they ask.'
-        );
+        return `${prefix} — a Hub update is available (${String(data.current ?? '?')} → ${String(data.latest ?? '?')}). Mention it to the user. Do not update anything unless they ask.`;
 
       case 'system.high_disk':
       case 'system.high_memory':
-        return `${prefix} — the Hub is under resource pressure (${summarizeData(data)}).` + ' Check what is consuming it and advise the user.';
+        return `${prefix} — the Hub is under resource pressure (${summarizeData(data)}). Check what is consuming it and advise the user.`;
 
       case 'system.health_check_failed':
         return `${prefix} — the Hub health check failed (${summarizeData(data)}). Note it; no user action yet.`;
 
-      case 'registration.state_changed':
-        return (
-          `${prefix} — Hub registration moved ${String(data.from ?? '?')} → ${String(data.to ?? '?')}` +
-          `${Array.isArray(data.reasons) && data.reasons.length ? ` (${truncate(data.reasons.join('; '), MAX_VALUE_CHARS)})` : ''}.` +
-          ' If it is degraded, explain the impact to the user.'
-        );
+      case 'registration.state_changed': {
+        const reasons = Array.isArray(data.reasons) && data.reasons.length ? ` (${truncate(data.reasons.join('; '), MAX_VALUE_CHARS)})` : '';
+        return `${prefix} — Hub registration moved ${String(data.from ?? '?')} → ${String(data.to ?? '?')}${reasons}. If it is degraded, explain the impact to the user.`;
+      }
 
       case 'system.mcp_ready':
         return `${prefix} — Hub tools are ready (${String(data.toolCount ?? '?')} available). Informational; no reply needed.`;
@@ -128,7 +130,7 @@ export function buildWakeText(event: string, data: Record<string, unknown>, urge
         if (event.endsWith('_error')) {
           const action = event.replace(/_error$/, '').replace(/_/g, ' ');
           const cause = data.error ? `: ${truncate(String(data.error), MAX_VALUE_CHARS)}` : '';
-          return `${prefix} — "${action}" failed for ${target}${cause}.` + ' Diagnose with the ci-hub tools and report back to the user.';
+          return `${prefix} — "${action}" failed for ${target}${cause}. Diagnose with the ci-hub tools and report back to the user.`;
         }
         if (event.endsWith('_success')) {
           const action = event.replace(/_success$/, '').replace(/_/g, ' ');
