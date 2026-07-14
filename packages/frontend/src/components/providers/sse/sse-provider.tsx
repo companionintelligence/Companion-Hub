@@ -21,6 +21,9 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   // fallback copy tells the user to check their domain, which is the very
   // misattribution this mapping exists to end.
   api_error: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
+  // The subdomain is the problem, not the domain — pointing the user at the
+  // domain would be the same wrong turn in a class we ourselves introduced.
+  invalid_subdomain: 'APP_ERROR_PUBLIC_DNS_INVALID_SUBDOMAIN',
 };
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {
