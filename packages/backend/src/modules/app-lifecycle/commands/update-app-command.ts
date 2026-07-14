@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { BackupManager } from '@/modules/backups/backup.manager';
@@ -59,6 +60,20 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await this.ensureAppDir(appUrn, form);
 
       await dockerService.composeApp(appUrn, 'pull');
+
+      // The update just replaced the app's config.json, which is where the wake endpoint
+      // and port come from. Without re-registering, the Hub would keep POSTing to the URL
+      // captured at install time — so a manifest that moves the endpoint would never take
+      // effect on an app that is already installed.
+      try {
+        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
+        if (target) {
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
+        }
+      } catch (hookErr) {
+        logger.warn(`Failed to refresh the agent webhook for ${appUrn}: ${hookErr}`);
+      }
 
       return { success: true, message: `App ${appUrn} updated successfully` };
     } catch (err) {
