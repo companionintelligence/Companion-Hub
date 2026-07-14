@@ -78,10 +78,51 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_MCP_LEGACY_CLIENT;
     delete process.env.CI_LLM_NUM_CTX;
     delete process.env.OLLAMA_HOST;
+    delete process.env.CI_HUB_PLUGIN_INFERENCE;
   });
 
   it('should export a register function', () => {
     expect(typeof register).toBe('function');
+  });
+
+  // The bug this guards: OpenClaw does not reliably supply api.log (its own plugins call
+  // it as api.log?.info?.()), so `api.log.info(...)` throws. While register() was async
+  // the loader swallowed that rejection, so the plugin silently did nothing.
+  it('survives an api with no log (OpenClaw does not always provide one)', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
+    const apiWithoutLog = { ...createMockApi(), log: undefined } as unknown as OpenClawPluginApi;
+
+    expect(() => register(apiWithoutLog, { ...baseConfig, wakeSecret: 's' })).not.toThrow();
+    // and it still registered, rather than bailing out early
+    expect(apiWithoutLog.registerHttpRoute).toHaveBeenCalled();
+    expect(apiWithoutLog.registerProvider).toHaveBeenCalled();
+  });
+
+  // The bug this guards: OpenClaw's loader throws "plugin register must be synchronous"
+  // if register() returns a promise, so an async register never loads the plugin AT ALL
+  // — no provider, no wake route, and the CLI refuses to start. It is a one-word
+  // regression (`async`) with no other symptom, so pin the contract directly.
+  it('register() MUST return synchronously — OpenClaw rejects a promise-returning register', () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init, {});
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    const result = register(api, { ...baseConfig, wakeSecret: 'test-wake-secret' }) as unknown;
+
+    expect(result).toBeUndefined();
+    expect(result).not.toBeInstanceOf(Promise);
+    // Everything that registers must have done so before register() returned, because
+    // the plugin API is closed at that point and later register* calls are no-ops.
+    expect(api.registerHttpRoute).toHaveBeenCalled();
+    expect(api.registerProvider).toHaveBeenCalled();
   });
 
   it('should register wake HTTP route on /hooks/hub-wake when a wake secret is set', async () => {
@@ -118,12 +159,15 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('should log warning when Hub is unreachable', async () => {
-    vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
 
-    await register(api, baseConfig);
+    register(api, baseConfig);
 
-    expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('Hub unreachable'));
+    // register() is synchronous by contract, so the health probe resolves after it
+    // returns — the warning is emitted on a later tick rather than inline.
+    await vi.waitFor(() => {
+      expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('Hub unreachable'));
+    });
   });
 
   it('does NOT register tools by default (tools come from native mcp.servers.ci-hub config)', async () => {
@@ -144,7 +188,7 @@ describe('CI-Hub Plugin', () => {
     expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('native OpenClaw mcp.servers.ci-hub'));
   });
 
-  it('registers tools via the legacy in-plugin client when HUB_MCP_LEGACY_CLIENT=true', async () => {
+  it('refuses the legacy in-plugin tool client (HUB_MCP_LEGACY_CLIENT=true) instead of silently dropping tools', async () => {
     process.env.HUB_MCP_LEGACY_CLIENT = 'true';
     const mockTools = [
       { name: 'hub_list_apps', description: 'List apps', inputSchema: { type: 'object' } },
@@ -161,11 +205,13 @@ describe('CI-Hub Plugin', () => {
       }),
     );
 
-    await register(api, baseConfig);
+    register(api, baseConfig);
 
-    expect(api.registerTool).toHaveBeenCalledTimes(2);
-    expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'hub_list_apps' }));
-    expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'hub_start_app' }));
+    // Registering tools requires awaiting tools/list, and OpenClaw closes the plugin
+    // API when register() returns — a late registerTool() is silently discarded. So the
+    // path cannot be honoured, and we must say so rather than appear to work.
+    expect(api.registerTool).not.toHaveBeenCalled();
+    expect(api.log.error).toHaveBeenCalledWith(expect.stringContaining('HUB_MCP_LEGACY_CLIENT=true is no longer supported'));
   });
 
   it('should handle MCP connection failure gracefully', async () => {
@@ -178,7 +224,30 @@ describe('CI-Hub Plugin', () => {
     expect(api.log.warn).toHaveBeenCalled();
   });
 
+  // Guards the regression that broke chat on the appliance: a plugin-registered
+  // provider with api "ollama" has no api-provider implementation to resolve against,
+  // so the first LLM call dies with "No API provider registered for api: ollama". The
+  // working provider comes from openclaw.json, so by default we must not compete.
+  it('does NOT register a competing ci-hub provider by default (it would break LLM calls)', async () => {
+    delete process.env.CI_HUB_PLUGIN_INFERENCE;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/api/health')) return { ok: true };
+        const mcp = mcpRoute(url, init, {});
+        if (mcp) return mcp;
+        return { ok: true, json: async () => ({}) };
+      }),
+    );
+
+    register(api, baseConfig);
+
+    expect(api.registerProvider).not.toHaveBeenCalled();
+    expect(api.registerSpeechProvider).not.toHaveBeenCalled();
+  });
+
   it('registers the ci-hub provider with real Ollama model ids', async () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
     const status = {
       hardwareTier: 'high',
       backends: [],
@@ -213,6 +282,7 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('applies the Hub hardware-aware context window (CI_LLM_NUM_CTX) to registered models', async () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
       const mcp = mcpRoute(url, init, { onCall: (name) => (name === 'hub_get_inference_status' ? EMPTY_STATUS : {}) });
@@ -232,6 +302,7 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('caps CI_LLM_NUM_CTX by each model context_window when the model window is smaller', async () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
     const status = {
       hardwareTier: 'high',
       backends: [],
