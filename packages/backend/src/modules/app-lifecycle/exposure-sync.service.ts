@@ -29,14 +29,6 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
 type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
 
 /**
- * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
- *
- * Without it every failure read as a domain/zone problem, which is what sent the
- * investigation in CI-Portal#403 down the wrong path: the real cause was a DNS
- * record CI-Cloud refused to overwrite. Falls back to the old wording when the
- * Portal is older and sends no detail.
- */
-/**
  * Index entries by a string key, first occurrence winning — the same entry a
  * linear `find` would have returned, but O(1) per lookup instead of O(n).
  */
@@ -51,6 +43,14 @@ function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<
   return index;
 }
 
+/**
+ * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
+ *
+ * Without it every failure read as a domain/zone problem, which is what sent the
+ * investigation in CI-Portal#403 down the wrong path: the real cause was a DNS
+ * record CI-Cloud refused to overwrite. Falls back to the old wording when the
+ * Portal is older and sends no detail.
+ */
 function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
   if (failures.length === 0) {
     return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";
