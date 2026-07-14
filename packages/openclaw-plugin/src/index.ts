@@ -150,10 +150,16 @@ function asInferenceStatus(payload: unknown): HubInferenceStatus | null {
   return status as HubInferenceStatus;
 }
 
-/** A logger that always works, deferring to the host's when it has one. */
+/**
+ * A logger that always works.
+ *
+ * OpenClaw names this member `logger`, not `log` — verified against openclaw@2026.6.11,
+ * whose plugin api is `{ ..., logger: PluginLogger, ... }` with no `log` at all. This
+ * package's own interface has always said `log`, so every line the plugin ever wrote went
+ * to the console fallback instead of the gateway's plugin logger. Prefer the real member,
+ * accept `log` for hosts (and tests) that supply it, and only then fall back to console.
+ */
 function createSafeLogger(api: OpenClawPluginApi): PluginLogger {
-  // Where a level goes when the host supplies no logger. OpenClaw pipes the plugin's
-  // stdout/stderr into the gateway log, so this stays visible rather than vanishing.
   const fallbacks: Record<keyof PluginLogger, (message: string) => void> = {
     info: (message) => console.info(`[ci-hub] ${message}`),
     warn: (message) => console.warn(`[ci-hub] ${message}`),
@@ -165,13 +171,14 @@ function createSafeLogger(api: OpenClawPluginApi): PluginLogger {
     (level: keyof PluginLogger) =>
     (message: string): void => {
       // Resolved per call, not snapshotted: a logger the host attaches after register()
-      // would otherwise be ignored for the life of the plugin, and every line would
-      // silently go to the console fallback instead.
-      const host = (api as { log?: Partial<PluginLogger> }).log;
-      const hostFn = host?.[level];
-      if (typeof hostFn === 'function') {
-        hostFn.call(host, message);
-        return;
+      // would otherwise be ignored for the life of the plugin.
+      const host = api as { logger?: Partial<PluginLogger>; log?: Partial<PluginLogger> };
+      for (const candidate of [host.logger, host.log]) {
+        const hostFn = candidate?.[level];
+        if (typeof hostFn === 'function') {
+          hostFn.call(candidate, message);
+          return;
+        }
       }
       fallbacks[level](message);
     };
@@ -180,36 +187,29 @@ function createSafeLogger(api: OpenClawPluginApi): PluginLogger {
 }
 
 /**
- * Wrap the api so `log` is always callable, whatever the host provides.
+ * Give downstream code an api whose `log` always works, without hiding the rest of it.
  *
- * A plain forwarding object rather than a Proxy, deliberately. A Proxy's [[Get]] trap may
- * not report a different value for a non-writable, non-configurable own data property —
- * so on a *frozen* api (a normal way to hand out a guarded plugin API) merely overriding
- * `log` throws TypeError on every access, and the plugin fails to load. A plain object
- * has no such invariant.
+ * `Object.create(api)` rather than a copy or a Proxy:
+ *   - Not a hand-listed copy. OpenClaw's real api carries far more than this package's
+ *     interface declares (config, pluginConfig, runtime, session, agent, runContext,
+ *     lifecycle, registerHook, registerChannel, registerGatewayMethod, …). Rebuilding it
+ *     from a subset silently drops every member we did not think to name, which is how a
+ *     wrapper turns into an outage the first time some consumer reaches for one.
+ *   - Not a Proxy. A Proxy's [[Get]] trap may not report a substitute for a non-writable,
+ *     non-configurable own data property, so overriding `log` on a frozen host throws on
+ *     first access.
  *
- * Each method forwards through a closure that calls the real api, so `this` stays the
- * host object — correct even if OpenClaw implements the api as a class touching private
- * (`#`) fields.
+ * A prototype delegate has neither problem: every member resolves through to the host, and
+ * an own `log` shadows it. OpenClaw builds its api as a plain object literal (buildPluginApi),
+ * so `this` binding through the delegate is safe.
  */
-function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
-  const wrapped: OpenClawPluginApi = {
-    registerTool: (tool) => api.registerTool(tool),
-    registerHttpRoute: (route) => api.registerHttpRoute(route),
-    wake: (message) => api.wake(message),
-    log: createSafeLogger(api),
-  };
-
-  // These two are optional on the interface, and callers below branch on their presence.
-  // Forward them only when the host really implements them, so the wrapper advertises the
-  // host's actual surface rather than always claiming both.
-  if (typeof api.registerProvider === 'function') {
-    wrapped.registerProvider = (provider) => api.registerProvider?.(provider);
-  }
-  if (typeof api.registerSpeechProvider === 'function') {
-    wrapped.registerSpeechProvider = (provider) => api.registerSpeechProvider?.(provider);
-  }
-
+export function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
+  const wrapped = Object.create(api) as OpenClawPluginApi;
+  Object.defineProperty(wrapped, 'log', {
+    value: createSafeLogger(api),
+    enumerable: true,
+    configurable: true,
+  });
   return wrapped;
 }
 

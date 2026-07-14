@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { register } from '../src/index';
+import { register, withSafeLogger } from '../src/index';
 import type { OpenClawPluginApi, PluginConfig } from '../src/types';
 
 function createMockApi(): OpenClawPluginApi {
@@ -102,40 +102,50 @@ describe('CI-Hub Plugin', () => {
     expect(apiWithoutLog.registerProvider).toHaveBeenCalled();
   });
 
-  // withSafeLogger wraps the host api in a Proxy, and the two ways a host can hand out a
-  // guarded API each break a naive get trap:
-  //   - frozen object: the proxy [[Get]] invariant requires a non-writable,
-  //     non-configurable own data property to be reported verbatim, so returning a *bound*
-  //     copy throws TypeError on every method access.
-  //   - class instance with #private fields: forwarding `this` as the proxy throws the
-  //     moment a method touches one.
-  // A fix for either alone reintroduces the other, so pin both.
-  it.each([
-    [
-      'a frozen api (proxy get-invariant forbids substituting a bound function)',
-      () => Object.freeze({ ...createMockApi(), log: undefined }) as unknown as OpenClawPluginApi,
-    ],
-    [
-      'an api whose methods touch private class fields (this must not be the proxy)',
-      () => {
-        class HostApi {
-          #routes: unknown[] = [];
-          registerTool = vi.fn();
-          registerProvider = vi.fn();
-          registerSpeechProvider = vi.fn();
-          wake = vi.fn();
-          registerHttpRoute(route: unknown) {
-            this.#routes.push(route);
-          }
-        }
-        return new HostApi() as unknown as OpenClawPluginApi;
-      },
-    ],
-  ])('registers against %s', (_label, makeApi) => {
+  // Pinned against the api OpenClaw ACTUALLY passes (verified against openclaw@2026.6.11's
+  // buildPluginApi): a plain object literal exposing `logger`, and carrying members this
+  // package's interface never declared (config, runtime, session, registerHook, …).
+  // It has NO `log`. The plugin wrote to `api.log` for its whole life, so every line went
+  // to the console fallback and never reached the gateway's plugin logger.
+  it('logs through the host logger — OpenClaw calls it `logger`, not `log`', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
-    const hostApi = makeApi();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const hostApi = {
+      id: 'ci-hub',
+      logger, // <- the real member name; there is no `log`
+      config: { some: 'openclaw config' },
+      registerHook: vi.fn(),
+      registerTool: vi.fn(),
+      registerHttpRoute: vi.fn(),
+    } as unknown as OpenClawPluginApi;
 
-    expect(() => register(hostApi, { ...baseConfig, wakeSecret: 's' })).not.toThrow();
+    register(hostApi, { ...baseConfig, wakeSecret: 's' });
+
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('CI-Hub plugin initializing'));
+  });
+
+  // The wrapper must not rebuild the api from the subset of members this package happens to
+  // declare — the host's real surface is much larger, and anything dropped becomes
+  // `undefined` for every downstream consumer.
+  it('does not hide host api members that our interface never declared', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    const registerHook = vi.fn();
+    const hostApi = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      config: { model: 'gemma4:e2b' },
+      registerHook,
+      registerTool: vi.fn(),
+      registerHttpRoute: vi.fn(),
+    } as unknown as OpenClawPluginApi;
+
+    // This is the api register() hands to the wake handler and the SSE listener; anything
+    // the host exposed must still be reachable through it.
+    const wrapped = withSafeLogger(hostApi) as unknown as Record<string, unknown>;
+
+    expect(wrapped.config).toEqual({ model: 'gemma4:e2b' });
+    expect(wrapped.registerHook).toBeTypeOf('function');
+    (wrapped.registerHook as () => void)();
+    expect(registerHook).toHaveBeenCalled();
   });
 
   // The bug this guards: OpenClaw's loader throws "plugin register must be synchronous"
