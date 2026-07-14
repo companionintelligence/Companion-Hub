@@ -150,12 +150,8 @@ function asInferenceStatus(payload: unknown): HubInferenceStatus | null {
   return status as HubInferenceStatus;
 }
 
-/**
- * Wrap the api so `log` is always callable, falling back to the console when the host
- * omits it (or omits individual levels). Proxied rather than copied so the loader's own
- * guarded-api semantics — every other method still routes to OpenClaw — are preserved.
- */
-function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
+/** A logger that always works, deferring to the host's when it has one. */
+function createSafeLogger(api: OpenClawPluginApi): PluginLogger {
   // Where a level goes when the host supplies no logger. OpenClaw pipes the plugin's
   // stdout/stderr into the gateway log, so this stays visible rather than vanishing.
   const fallbacks: Record<keyof PluginLogger, (message: string) => void> = {
@@ -168,9 +164,9 @@ function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
   const emit =
     (level: keyof PluginLogger) =>
     (message: string): void => {
-      // Resolved per call, not snapshotted at wrap time: a logger the host attaches after
-      // register() would otherwise be ignored for the life of the plugin, and every line
-      // would silently go to the console fallback instead.
+      // Resolved per call, not snapshotted: a logger the host attaches after register()
+      // would otherwise be ignored for the life of the plugin, and every line would
+      // silently go to the console fallback instead.
       const host = (api as { log?: Partial<PluginLogger> }).log;
       const hostFn = host?.[level];
       if (typeof hostFn === 'function') {
@@ -180,24 +176,41 @@ function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
       fallbacks[level](message);
     };
 
-  const log: PluginLogger = {
-    info: emit('info'),
-    warn: emit('warn'),
-    error: emit('error'),
-    debug: emit('debug'),
+  return { info: emit('info'), warn: emit('warn'), error: emit('error'), debug: emit('debug') };
+}
+
+/**
+ * Wrap the api so `log` is always callable, whatever the host provides.
+ *
+ * A plain forwarding object rather than a Proxy, deliberately. A Proxy's [[Get]] trap may
+ * not report a different value for a non-writable, non-configurable own data property —
+ * so on a *frozen* api (a normal way to hand out a guarded plugin API) merely overriding
+ * `log` throws TypeError on every access, and the plugin fails to load. A plain object
+ * has no such invariant.
+ *
+ * Each method forwards through a closure that calls the real api, so `this` stays the
+ * host object — correct even if OpenClaw implements the api as a class touching private
+ * (`#`) fields.
+ */
+function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
+  const wrapped: OpenClawPluginApi = {
+    registerTool: (tool) => api.registerTool(tool),
+    registerHttpRoute: (route) => api.registerHttpRoute(route),
+    wake: (message) => api.wake(message),
+    log: createSafeLogger(api),
   };
 
-  return new Proxy(api, {
-    get: (target, prop) => {
-      if (prop === 'log') return log;
-      const value = Reflect.get(target, prop, target);
-      // Bind to the real api, not the proxy. `proxy.method()` would otherwise call
-      // method with `this === proxy`, which throws the moment OpenClaw's api object
-      // touches a private class field. Forwarding `this` to the target keeps the
-      // wrapper transparent no matter how the host implements the api.
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
+  // These two are optional on the interface, and callers below branch on their presence.
+  // Forward them only when the host really implements them, so the wrapper advertises the
+  // host's actual surface rather than always claiming both.
+  if (typeof api.registerProvider === 'function') {
+    wrapped.registerProvider = (provider) => api.registerProvider?.(provider);
+  }
+  if (typeof api.registerSpeechProvider === 'function') {
+    wrapped.registerSpeechProvider = (provider) => api.registerSpeechProvider?.(provider);
+  }
+
+  return wrapped;
 }
 
 /** Hub reachability is advisory only — it gates nothing, so it can resolve late. */

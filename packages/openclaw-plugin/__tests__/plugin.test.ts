@@ -102,6 +102,42 @@ describe('CI-Hub Plugin', () => {
     expect(apiWithoutLog.registerProvider).toHaveBeenCalled();
   });
 
+  // withSafeLogger wraps the host api in a Proxy, and the two ways a host can hand out a
+  // guarded API each break a naive get trap:
+  //   - frozen object: the proxy [[Get]] invariant requires a non-writable,
+  //     non-configurable own data property to be reported verbatim, so returning a *bound*
+  //     copy throws TypeError on every method access.
+  //   - class instance with #private fields: forwarding `this` as the proxy throws the
+  //     moment a method touches one.
+  // A fix for either alone reintroduces the other, so pin both.
+  it.each([
+    [
+      'a frozen api (proxy get-invariant forbids substituting a bound function)',
+      () => Object.freeze({ ...createMockApi(), log: undefined }) as unknown as OpenClawPluginApi,
+    ],
+    [
+      'an api whose methods touch private class fields (this must not be the proxy)',
+      () => {
+        class HostApi {
+          #routes: unknown[] = [];
+          registerTool = vi.fn();
+          registerProvider = vi.fn();
+          registerSpeechProvider = vi.fn();
+          wake = vi.fn();
+          registerHttpRoute(route: unknown) {
+            this.#routes.push(route);
+          }
+        }
+        return new HostApi() as unknown as OpenClawPluginApi;
+      },
+    ],
+  ])('registers against %s', (_label, makeApi) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    const hostApi = makeApi();
+
+    expect(() => register(hostApi, { ...baseConfig, wakeSecret: 's' })).not.toThrow();
+  });
+
   // The bug this guards: OpenClaw's loader throws "plugin register must be synchronous"
   // if register() returns a promise, so an async register never loads the plugin AT ALL
   // — no provider, no wake route, and the CLI refuses to start. It is a one-word
