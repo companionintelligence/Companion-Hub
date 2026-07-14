@@ -132,13 +132,30 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * Narrow an untrusted payload to a HubInferenceStatus, or null.
+ *
+ * Both sources are untrusted: the REST endpoint answers 401/error bodies with a 200 in
+ * some Hub versions, and an older Hub can return a status of a different shape. The
+ * consumers below index straight into `.models` / `.cloudProviders` / `.backends`, so a
+ * body that merely *exists* is not enough — a `{}` here previously threw
+ * "Cannot read properties of undefined (reading 'length')" out of catalog.run(), which
+ * fails OpenClaw's whole model-catalog resolution.
+ */
+function asInferenceStatus(payload: unknown): HubInferenceStatus | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const status = payload as Partial<HubInferenceStatus>;
+  if (!Array.isArray(status.models) || !Array.isArray(status.backends) || !Array.isArray(status.cloudProviders)) {
+    return null;
+  }
+  return status as HubInferenceStatus;
+}
+
+/**
  * Wrap the api so `log` is always callable, falling back to the console when the host
  * omits it (or omits individual levels). Proxied rather than copied so the loader's own
  * guarded-api semantics — every other method still routes to OpenClaw — are preserved.
  */
 function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
-  const host = (api as { log?: Partial<PluginLogger> }).log;
-
   // Where a level goes when the host supplies no logger. OpenClaw pipes the plugin's
   // stdout/stderr into the gateway log, so this stays visible rather than vanishing.
   const fallbacks: Record<keyof PluginLogger, (message: string) => void> = {
@@ -151,6 +168,10 @@ function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
   const emit =
     (level: keyof PluginLogger) =>
     (message: string): void => {
+      // Resolved per call, not snapshotted at wrap time: a logger the host attaches after
+      // register() would otherwise be ignored for the life of the plugin, and every line
+      // would silently go to the console fallback instead.
+      const host = (api as { log?: Partial<PluginLogger> }).log;
       const hostFn = host?.[level];
       if (typeof hostFn === 'function') {
         hostFn.call(host, message);
@@ -226,10 +247,18 @@ function registerInference(deps: InferenceDeps): void {
   // catalog permanently empty long after the Hub came back.
   let statusPromise: Promise<HubInferenceStatus | null> | null = null;
   const getInferenceStatus = (): Promise<HubInferenceStatus | null> => {
-    statusPromise ??= fetchInferenceStatus(api, hubUrl, mcpClient, mcpReady).then((status) => {
-      if (!status) statusPromise = null;
-      return status;
-    });
+    statusPromise ??= fetchInferenceStatus(api, hubUrl, mcpClient, mcpReady)
+      // catalog.run() awaits this, and a rejected catalog fails OpenClaw's model
+      // resolution outright. No lookup failure is worth taking the catalog down: degrade
+      // to "no status" instead, which the callers already handle.
+      .catch((error) => {
+        api.log.warn(`Hub inference status lookup failed: ${describeError(error)}`);
+        return null;
+      })
+      .then((status) => {
+        if (!status) statusPromise = null;
+        return status;
+      });
     return statusPromise;
   };
 
@@ -298,9 +327,10 @@ function registerInference(deps: InferenceDeps): void {
         };
       },
     });
-  }
 
-  void probeTtsAvailability(api, getInferenceStatus, tts);
+    // Only worth probing when there is a speech provider whose isConfigured() reads it.
+    void probeTtsAvailability(api, getInferenceStatus, tts);
+  }
 }
 
 /**
@@ -322,8 +352,8 @@ async function fetchInferenceStatus(
   if (mcpClient.isConnected()) {
     try {
       // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
-      // A null result (error/unparseable) falls through to the REST fallback below.
-      inferenceStatus = unwrapToolResult<HubInferenceStatus>(await mcpClient.callTool('hub_get_inference_status', {}));
+      // A null result (error/unparseable/wrong shape) falls through to the REST fallback.
+      inferenceStatus = asInferenceStatus(unwrapToolResult(await mcpClient.callTool('hub_get_inference_status', {})));
     } catch {
       api.log.debug('hub_get_inference_status not yet available — trying REST fallback');
     }
@@ -333,7 +363,7 @@ async function fetchInferenceStatus(
     try {
       const response = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/inference/status`, {});
       if (response.ok) {
-        inferenceStatus = (await response.json()) as HubInferenceStatus;
+        inferenceStatus = asInferenceStatus(await response.json());
       }
     } catch {
       api.log.debug('Inference REST endpoint not available');

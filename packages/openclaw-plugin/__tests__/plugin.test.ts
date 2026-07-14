@@ -67,6 +67,9 @@ describe('CI-Hub Plugin', () => {
     delete process.env.HUB_MCP_API_KEY;
     delete process.env.HUB_WAKE_SECRET;
     delete process.env.HUB_MCP_LEGACY_CLIENT;
+    delete process.env.CI_LLM_NUM_CTX;
+    delete process.env.OLLAMA_HOST;
+    delete process.env.CI_HUB_PLUGIN_INFERENCE;
   });
 
   afterEach(() => {
@@ -284,6 +287,28 @@ describe('CI-Hub Plugin', () => {
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/mcp'), expect.anything());
     });
+  });
+
+  // Guards a crash the helper split introduced: the old autoConfigureInference wrapped
+  // everything in one try/catch, so a Hub that answered /api/inference/status with 200 and
+  // a non-status body (an error envelope, or an older Hub's shape) was absorbed. Split into
+  // lazy helpers, that TypeError escaped through catalog.run() and failed OpenClaw's entire
+  // model-catalog resolution — the catalog must degrade to empty, never reject.
+  it('survives a Hub that 200s /api/inference/status with a body that is not a status', async () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/mcp')) throw new Error('MCP down');
+        if (url.includes('/api/tags')) throw new Error('Ollama down'); // force the status fallback
+        return { ok: true, json: async () => ({}) }; // health + a shapeless inference status
+      }),
+    );
+
+    register(api, baseConfig);
+    const provider = vi.mocked(api.registerProvider as NonNullable<typeof api.registerProvider>).mock.calls[0][0];
+
+    await expect(provider.catalog.run({})).resolves.toEqual(expect.objectContaining({ provider: expect.objectContaining({ models: [] }) }));
   });
 
   it('registers the ci-hub provider with real Ollama model ids', async () => {
