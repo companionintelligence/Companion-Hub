@@ -159,7 +159,7 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toEqual({ ok: true, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: true, failed: [], failures: [], synced: 0 });
       expect(portalClient.postTunnelState).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }));
     });
 
@@ -168,18 +168,36 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toEqual({ ok: true, failed: ['anything-llm'], synced: 1 });
+      // No `failures` from an older CI-Cloud: `failed` still tells us which apps
+      // broke, and callers fall back to generic messaging.
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures: [], synced: 1 });
+    });
+
+    it('should pass through the per-app failure class when CI-Cloud reports one', async () => {
+      const failures = [
+        {
+          app: 'anything-llm',
+          hostname: 'anything-llm-laptop-cid.companionintelligence.com',
+          reason: 'conflict' as const,
+          message: 'already in use by another tunnel',
+        },
+      ];
+      portalClient.postTunnelState.mockResolvedValue({ success: true, failed: ['anything-llm'], failures, synced: 1 });
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures, synced: 1 });
     });
 
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
-      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
     });
 
     it('should handle axios error', async () => {
       portalClient.postTunnelState.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
-      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
     });
   });
 

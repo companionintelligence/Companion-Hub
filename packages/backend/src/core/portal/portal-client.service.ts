@@ -156,11 +156,13 @@ export class PortalClientService {
     return response.data;
   }
 
-  async postTunnelState(payload: {
-    organizationId: string;
-    tunnelId: string;
-    apps: unknown[];
-  }): Promise<{ success?: boolean; failed?: string[]; synced?: number }> {
+  async postTunnelState(payload: { organizationId: string; tunnelId: string; apps: unknown[] }): Promise<{
+    success?: boolean;
+    failed?: string[];
+    /** Per-app failure detail; absent on CI-Cloud versions that predate it. */
+    failures?: Array<{ app: string; hostname?: string; reason: 'conflict' | 'zone_unreachable' | 'api_error'; message?: string }>;
+    synced?: number;
+  }> {
     return this.postJson('tunnels/state', payload, { authenticated: true });
   }
 

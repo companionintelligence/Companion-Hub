@@ -10,7 +10,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
-import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerService } from '../docker/docker.service';
 import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
@@ -23,6 +23,35 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
     orgSlug: params.orgSlug,
     publicDomainRoot: params.publicDomainRoot,
   }).hostname;
+}
+
+/**
+ * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
+ *
+ * Without it every failure read as a domain/zone problem, which is what sent the
+ * investigation in CI-Portal#403 down the wrong path: the real cause was a DNS
+ * record CI-Cloud refused to overwrite. Falls back to the old wording when the
+ * Portal is older and sends no detail.
+ */
+type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
+
+function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
+  if (failures.length === 0) {
+    return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";
+  }
+
+  return failures
+    .map((failure) => {
+      switch (failure.reason) {
+        case 'conflict':
+          return `${failure.app}: the address is already claimed by another device or tunnel and CI-Cloud will not overwrite it (${failure.message ?? 'no detail'})`;
+        case 'zone_unreachable':
+          return `${failure.app}: the selected domain is not provisioned for this device in CI-Cloud (${failure.message ?? 'no detail'})`;
+        default:
+          return `${failure.app}: Cloudflare rejected the DNS write, usually transient (${failure.message ?? 'no detail'})`;
+      }
+    })
+    .join('; ');
 }
 
 @Injectable()
@@ -183,7 +212,7 @@ export class ExposureSyncService {
    * into a toast. Sentry and toasts are cooldown-guarded to avoid flooding when
    * availability remediation re-triggers the sync for a still-broken app.
    */
-  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: Array<{ appUrn: AppUrn; hostname: string }> = []): void {
+  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: PublicDnsToastTarget[] = []): void {
     this.logger.error(message);
 
     const now = Date.now();
@@ -198,7 +227,13 @@ export class ExposureSyncService {
         continue;
       }
       this.lastPublicDnsToastAt.set(target.appUrn, now);
-      this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
+      // `errorCode` carries the failure class so the frontend can say what is
+      // actually wrong rather than always blaming the domain (CI-Portal#403).
+      this.sseService.emit(
+        'app',
+        { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname, errorCode: target.reason },
+        target.appUrn,
+      );
     }
   }
 
@@ -351,7 +386,7 @@ export class ExposureSyncService {
         // Map CI-Cloud's failed app names back to their URN + hostname so the
         // frontend can raise a per-app toast (privileged Hub entry excluded).
         const toastTargets = result.failed
-          .map((name) => {
+          .map((name): PublicDnsToastTarget | null => {
             const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === name);
             const entry = exposedApps.find((candidate) => candidate.name === name && candidate.privilegedKind !== 'hub');
             if (!dbApp || !entry) {
@@ -365,13 +400,16 @@ export class ExposureSyncService {
                 orgSlug: orgInfo.slug,
                 publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
               }),
+              // Absent when CI-Cloud predates structured failures; the frontend
+              // then falls back to the generic message.
+              reason: result.failures.find((failure) => failure.app === name)?.reason,
             };
           })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
+          .filter((target): target is PublicDnsToastTarget => target !== null);
         const failedHostnames = toastTargets.map((target) => target.hostname);
         this.surfacePublicDnsFailure(
           `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${(failedHostnames.length > 0 ? failedHostnames : result.failed).join(', ')}. ` +
-            `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
+            `These apps will not resolve at their public domain — ${describePublicDnsFailures(result.failures)}`,
           result.failed,
           toastTargets,
         );
