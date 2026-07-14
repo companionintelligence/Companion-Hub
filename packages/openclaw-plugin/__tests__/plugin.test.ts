@@ -228,7 +228,7 @@ describe('CI-Hub Plugin', () => {
 
     const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
     const catalog = await provider.catalog.run({});
-    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'qwen3:8b', contextWindow: 16384, options: { num_ctx: 16384 } })]);
+    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'qwen3:8b', contextWindow: 16384, params: { num_ctx: 16384 } })]);
   });
 
   it('caps CI_LLM_NUM_CTX by each model context_window when the model window is smaller', async () => {
@@ -255,7 +255,7 @@ describe('CI-Hub Plugin', () => {
 
     const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
     const catalog = await provider.catalog.run({});
-    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'tiny:4k', contextWindow: 4096, options: { num_ctx: 4096 } })]);
+    expect(catalog.provider.models).toEqual([expect.objectContaining({ id: 'tiny:4k', contextWindow: 4096, params: { num_ctx: 4096 } })]);
   });
 
   describe('R-PLG: Env var fallback', () => {
