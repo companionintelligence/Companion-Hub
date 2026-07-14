@@ -246,6 +246,46 @@ describe('CI-Hub Plugin', () => {
     expect(api.registerSpeechProvider).not.toHaveBeenCalled();
   });
 
+  // Inference discovery is the MCP client's only consumer — the wake endpoint and SSE
+  // listener never touch it, and agent-facing tools come from the native
+  // mcp.servers.ci-hub entry. With inference off (the default on every appliance) the
+  // plugin must not open an authenticated MCP session it will never read from.
+  it('opens no MCP session when inference auto-config is off (nothing would consume it)', async () => {
+    delete process.env.CI_HUB_PLUGIN_INFERENCE;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/health')) return { ok: true };
+      const mcp = mcpRoute(url, init, {});
+      if (mcp) return mcp;
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    register(api, { ...baseConfig, wakeSecret: 'test-wake-secret' });
+
+    // Let the background health probe settle, so any MCP connect would have fired too.
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/health'), expect.anything());
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/api/mcp'), expect.anything());
+  });
+
+  it('opens the MCP session when inference auto-config is on (discovery needs it)', async () => {
+    process.env.CI_HUB_PLUGIN_INFERENCE = '1';
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/health')) return { ok: true };
+      const mcp = mcpRoute(url, init, {});
+      if (mcp) return mcp;
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    register(api, baseConfig);
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/mcp'), expect.anything());
+    });
+  });
+
   it('registers the ci-hub provider with real Ollama model ids', async () => {
     process.env.CI_HUB_PLUGIN_INFERENCE = '1';
     const status = {

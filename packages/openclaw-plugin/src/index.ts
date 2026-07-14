@@ -75,15 +75,6 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
     api.log.warn('HUB_WAKE_SECRET not set — wake endpoint disabled (would be unauthenticated otherwise)');
   }
 
-  // The in-plugin MCP client exists only for the plugin's OWN authenticated Hub calls
-  // (hub_get_inference_status); agent-facing tools come from OpenClaw's native
-  // mcp.servers.ci-hub entry. register() cannot await, so connect in the background
-  // and hand the pending handle to whoever needs the client.
-  const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
-  const mcpReady = mcpClient.connect().catch((error) => {
-    api.log.warn(`Hub MCP client failed to connect: ${describeError(error)}`);
-  });
-
   if (process.env.HUB_MCP_LEGACY_CLIENT === 'true') {
     // This rollback path registered tools after awaiting tools/list. Under the
     // synchronous-register contract a late registerTool() is silently dropped, so the
@@ -92,7 +83,7 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
       'HUB_MCP_LEGACY_CLIENT=true is no longer supported: OpenClaw requires plugin register() to be synchronous, so tools cannot be registered after awaiting tools/list. Hub tools are served by the native mcp.servers.ci-hub entry in openclaw.json.',
     );
   } else {
-    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config; in-plugin client used only for inference discovery');
+    api.log.info('Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config');
   }
 
   // Background work that registers nothing, and so is safe after register() returns.
@@ -119,6 +110,17 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
   // openclaw.json, which is the definition that actually works. Keep the code, keep it
   // opt-in, and do not let a broken registration break the agent by default.
   if (process.env.CI_HUB_PLUGIN_INFERENCE === '1') {
+    // The in-plugin MCP client is the plugin's only authenticated channel to the Hub
+    // (hub_get_inference_status), and inference discovery is its sole consumer — the
+    // wake endpoint and SSE listener do not use it, and agent-facing tools come from
+    // the native mcp.servers.ci-hub entry. So construct it only when inference is on,
+    // rather than opening an authenticated MCP session on every appliance boot that
+    // nothing ever reads. register() cannot await, so connect in the background and
+    // hand the pending handle to the discovery code.
+    const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
+    const mcpReady = mcpClient.connect().catch((error) => {
+      api.log.warn(`Hub MCP client failed to connect: ${describeError(error)}`);
+    });
     registerInference({ api, hubUrl, apiKey: mcpApiKey, mcpClient, mcpReady });
   } else {
     api.log.info('Inference auto-config disabled (set CI_HUB_PLUGIN_INFERENCE=1 to enable); the ci-hub provider comes from openclaw.json');
@@ -165,7 +167,15 @@ function withSafeLogger(api: OpenClawPluginApi): OpenClawPluginApi {
   };
 
   return new Proxy(api, {
-    get: (target, prop, receiver) => (prop === 'log' ? log : Reflect.get(target, prop, receiver)),
+    get: (target, prop) => {
+      if (prop === 'log') return log;
+      const value = Reflect.get(target, prop, target);
+      // Bind to the real api, not the proxy. `proxy.method()` would otherwise call
+      // method with `this === proxy`, which throws the moment OpenClaw's api object
+      // touches a private class field. Forwarding `this` to the target keeps the
+      // wrapper transparent no matter how the host implements the api.
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
   });
 }
 
@@ -210,10 +220,16 @@ function registerInference(deps: InferenceDeps): void {
   const { api, hubUrl, apiKey, mcpClient, mcpReady } = deps;
   const ollamaNativeUrl = (process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '');
 
-  // Fetched at most once; the model catalog and the TTS probe share the result.
+  // The model catalog and the TTS probe share one lookup. Cache the answer, but only a
+  // successful one: catalog.run() is invoked repeatedly over the process lifetime, and a
+  // failure usually just means the Hub was not up yet — pinning that null would leave the
+  // catalog permanently empty long after the Hub came back.
   let statusPromise: Promise<HubInferenceStatus | null> | null = null;
   const getInferenceStatus = (): Promise<HubInferenceStatus | null> => {
-    statusPromise ??= fetchInferenceStatus(api, hubUrl, mcpClient, mcpReady);
+    statusPromise ??= fetchInferenceStatus(api, hubUrl, mcpClient, mcpReady).then((status) => {
+      if (!status) statusPromise = null;
+      return status;
+    });
     return statusPromise;
   };
 
