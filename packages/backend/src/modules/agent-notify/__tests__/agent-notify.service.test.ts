@@ -1,3 +1,4 @@
+import { hubIntegrationSchema } from '@ci-hub/common/schemas';
 import { Test, TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -256,14 +257,21 @@ describe('AgentNotifyService', () => {
   // AND ran an app update. Rewriting it means wake works on the next Hub restart instead,
   // and the manifest/image rollout order stops being load-bearing.
   describe('resolveWebhookTarget: legacy endpoint migration', () => {
-    const withAppInfo = (hubIntegration: Record<string, unknown>) => {
+    // The mock feeds hub_integration through the REAL hubIntegrationSchema, because that is what
+    // getInstalledAppInfo does in production — and the schema back-fills wake_endpoint with its
+    // Zod .default('/hooks/hub-wake'). A raw hand-built object skips that default and makes the
+    // Hermes case look absent when production sees the legacy path; that divergence is exactly how
+    // the dead-gate bug (CI-Hub#897) hid behind a green test. `composeContent` defaults to null
+    // (service name falls back to the URN's appName); pass real compose JSON to exercise the
+    // service-name branch that is otherwise never executed.
+    const withAppInfo = (hubIntegration: Record<string, unknown>, composeContent: unknown = null) => {
       vi.spyOn(service as unknown as { moduleRef: { get: (t: unknown, o: unknown) => unknown } }, 'moduleRef', 'get').mockReturnValue({
         get: (token: { name?: string }) =>
           token?.name === 'EnvUtils'
             ? { envStringToMap: () => new Map([['HUB_WAKE_SECRET', 'app-secret']]) }
             : {
-                getInstalledAppInfo: async () => ({ port: 18789, hub_integration: hubIntegration }),
-                getDockerComposeJson: async () => ({ content: null }),
+                getInstalledAppInfo: async () => ({ port: 18789, hub_integration: hubIntegrationSchema.parse(hubIntegration) }),
+                getDockerComposeJson: async () => ({ content: composeContent }),
                 getAppEnv: async () => ({ content: '' }),
               },
       });
@@ -298,10 +306,39 @@ describe('AgentNotifyService', () => {
     // It consumes Hub MCP tools; it is not an agent and serves no hook. Gating on mcp_client
     // alone would register it and fan every Hub event into a 404 — on every boot, now that the
     // registry is rehydrated. The two capabilities are not the same set.
+    //
+    // This only bites in production because the schema defaults wake_endpoint to the legacy path,
+    // so the gate cannot test for its absence — it must treat the legacy default as "not declared".
+    // The mock now applies that same default (via hubIntegrationSchema.parse), so reverting the
+    // gate to a plain `!wake_endpoint` check makes THIS test fail, where before it stayed green.
     it('does not register an MCP-tool consumer that declares no wake endpoint (CI-Hermes)', async () => {
       withAppInfo({ mcp_client: true, sse_events: false, memory: { url_env: 'CI_SERVER_URL' } });
 
       expect(await service.resolveWebhookTarget('hermes:ci-store')).toBeNull();
+    });
+
+    // The host is the compose SERVICE name, not the URN's appName — that is the entire reason
+    // resolveWebhookTarget parses docker-compose. Every other fixture stubs compose to null, so
+    // this branch is otherwise never executed and a regression to the wrong host (every wake 404s)
+    // would not be caught. Here the main service is named `openclaw-app`, deliberately unequal to
+    // the appName `openclaw`, so the assertion can only pass if the service name is actually used.
+    it('resolves the Docker host from the main compose service, not the appName', async () => {
+      // getDockerComposeJson returns already-parsed JSON (readJsonFile), so `content` is an
+      // object, not a string — pass it as one, the way parseComposeJson receives it in production.
+      withAppInfo(
+        { mcp_client: true, wake_endpoint: '/hooks/wake', wake_port: 18789 },
+        {
+          schemaVersion: 2,
+          services: [
+            { name: 'openclaw-db', image: 'postgres:16', isMain: false },
+            { name: 'openclaw-app', image: 'nginx:latest', isMain: true },
+          ],
+        },
+      );
+
+      const target = await service.resolveWebhookTarget('openclaw:ci-store');
+
+      expect(target?.url).toBe('http://openclaw-app:18789/hooks/wake');
     });
 
     it('returns null for an app that runs no agent', async () => {

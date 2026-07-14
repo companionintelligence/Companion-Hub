@@ -145,7 +145,17 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     // all. An app declares wake capability by naming an endpoint or a port — with neither, there
     // is nothing to POST to, and registering it anyway would fan every Hub event out into a 404
     // (once at install before, and now on every boot, since the registry is rehydrated).
-    if (!hubIntegration.wake_endpoint && !hubIntegration.wake_port) {
+    //
+    // `wake_endpoint` cannot be tested for absence directly: appInfoSchema back-fills it with
+    // LEGACY_PLUGIN_WAKE_ENDPOINT (its Zod .default), so by the time getInstalledAppInfo returns,
+    // an app that declared NOTHING is indistinguishable from one that declared the dead legacy
+    // path — and both mean the same thing, because that path never served a wake anywhere. So the
+    // real signal for "can be woken" is: a wake_port, or a wake_endpoint that is something OTHER
+    // than the legacy default. (A plain absence check here is dead code — the exact bug CI-Hub#897
+    // is about: it read as working while Hermes got 404-flooded, and the unit mock hid it by
+    // bypassing the schema default.)
+    const declaresEndpoint = Boolean(hubIntegration.wake_endpoint) && hubIntegration.wake_endpoint !== LEGACY_PLUGIN_WAKE_ENDPOINT;
+    if (!declaresEndpoint && !hubIntegration.wake_port) {
       this.logger.debug(`No wake endpoint declared for ${appUrn}; it uses Hub tools but cannot be woken`);
       return null;
     }
@@ -201,20 +211,24 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   private getAllTargets(): Array<{ url: string; token?: string }> {
-    const targets: Array<{ url: string; token?: string }> = [];
+    // Deduped by URL. The env AGENT_WEBHOOK_URL (back-compat) can name the very app that
+    // onApplicationBootstrap now auto-registers; without this, one event would POST to the same
+    // /hooks/wake twice — a wasted round-trip and a duplicate queued system event. The env target
+    // is inserted first so an explicit operator override wins over the auto-registered token.
+    const byUrl = new Map<string, { url: string; token?: string }>();
 
-    // Backward compat: env-based webhook
     const envUrl = process.env.AGENT_WEBHOOK_URL;
     if (envUrl) {
-      targets.push({ url: envUrl, token: process.env.AGENT_WEBHOOK_TOKEN });
+      byUrl.set(envUrl, { url: envUrl, token: process.env.AGENT_WEBHOOK_TOKEN });
     }
 
-    // Registered webhooks
     for (const wh of this.webhooks.values()) {
-      targets.push({ url: wh.url, token: wh.token });
+      if (!byUrl.has(wh.url)) {
+        byUrl.set(wh.url, { url: wh.url, token: wh.token });
+      }
     }
 
-    return targets;
+    return [...byUrl.values()];
   }
 
   /**

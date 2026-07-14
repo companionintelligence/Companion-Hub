@@ -99,6 +99,15 @@ describe('buildWakeText', () => {
     expect(text.length).toBeLessThanOrEqual(800);
   });
 
+  // A nested object in `data` must not render as the useless token "[object Object]"; the agent
+  // should see the actual detail. Not emitted by today's scalar-only producers, but summarizeData
+  // accepts Record<string, unknown>, so a future producer can pass one.
+  it('renders a nested object as JSON, not [object Object]', () => {
+    const text = buildWakeText('system.high_disk', { byMount: { '/': 90, '/data': 71 } }, 'high');
+    expect(text).not.toContain('[object Object]');
+    expect(text).toContain('"/":90');
+  });
+
   it('survives an event with no appUrn', () => {
     const text = buildWakeText('system.high_disk', { usagePercent: 99 }, 'high');
     expect(text).toContain('system.high_disk');

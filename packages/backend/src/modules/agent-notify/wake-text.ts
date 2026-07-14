@@ -75,11 +75,24 @@ function appUrnOf(data: Record<string, unknown>): string | undefined {
   return typeof data.appUrn === 'string' && data.appUrn.trim() ? data.appUrn.trim() : undefined;
 }
 
+/** Render one value for the summary. A nested object stringified with `String()` becomes the
+ * useless token `[object Object]`; JSON keeps the detail the agent might act on. */
+function renderValue(value: unknown): string {
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value); // circular or otherwise non-serialisable — fall back rather than throw
+    }
+  }
+  return String(value);
+}
+
 /** `key=value, key=value` — bounded, and stable enough to read in a transcript. */
 function summarizeData(data: Record<string, unknown>): string {
   const parts = Object.entries(data)
     .filter(([, value]) => value !== undefined && value !== null)
-    .map(([key, value]) => `${key}=${truncate(String(value), MAX_VALUE_CHARS)}`);
+    .map(([key, value]) => `${key}=${truncate(renderValue(value), MAX_VALUE_CHARS)}`);
   return parts.length ? parts.join(', ') : 'no further detail';
 }
 
