@@ -36,6 +36,21 @@ type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicD
  * record CI-Cloud refused to overwrite. Falls back to the old wording when the
  * Portal is older and sends no detail.
  */
+/**
+ * Index entries by a string key, first occurrence winning — the same entry a
+ * linear `find` would have returned, but O(1) per lookup instead of O(n).
+ */
+function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<string, T> {
+  const index = new Map<string, T>();
+  for (const entry of entries) {
+    const entryKey = key(entry);
+    if (!index.has(entryKey)) {
+      index.set(entryKey, entry);
+    }
+  }
+  return index;
+}
+
 function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
   if (failures.length === 0) {
     return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";
@@ -356,6 +371,24 @@ export class ExposureSyncService {
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
+      // Both failure branches below map app names back to their DB row (and, in the
+      // partial-failure branch, to their exposed entry and failure reason). Doing
+      // that with `find` is a full scan per failed app; a Hub can run dozens of
+      // apps, so index once and look up in O(1).
+      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+
+      // The DB row is all that is needed to name an app's public record — shared so
+      // the two branches cannot drift on how the hostname is rebuilt.
+      const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
+        appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+        hostname: buildPublicHostname({
+          appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
+          hubSubdomain: orgInfo.hubSubdomain,
+          orgSlug: orgInfo.slug,
+          publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
+        }),
+      });
+
       if (!result.ok) {
         // A full sync failure means none of the exposed apps were updated, so
         // raise a per-app toast for every exposed app — not only the partial
@@ -365,21 +398,13 @@ export class ExposureSyncService {
         // syncs.
         const toastTargets = appEntries
           .map((entry) => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === entry.name);
+            const dbApp = dbAppByName.get(entry.name);
             if (!dbApp) {
               return null;
             }
-            return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
-            };
+            return toToastTarget(dbApp);
           })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
+          .filter((target): target is PublicDnsToastTarget => target !== null);
         this.surfacePublicDnsFailure(
           `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
           appEntries.map((entry) => entry.name),
@@ -387,25 +412,22 @@ export class ExposureSyncService {
         );
       } else if (result.failed.length > 0) {
         // Map CI-Cloud's failed app names back to their URN + hostname so the
-        // frontend can raise a per-app toast (privileged Hub entry excluded).
+        // frontend can raise a per-app toast (privileged Hub entry excluded — it is
+        // absent from appEntries, so an unmatched name is skipped).
+        const exposedByName = indexByFirst(appEntries, (entry) => entry.name);
+        const failureByApp = indexByFirst(result.failures, (failure) => failure.app);
+
         const toastTargets = result.failed
           .map((name): PublicDnsToastTarget | null => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === name);
-            const entry = exposedApps.find((candidate) => candidate.name === name && candidate.privilegedKind !== 'hub');
-            if (!dbApp || !entry) {
+            const dbApp = dbAppByName.get(name);
+            if (!dbApp || !exposedByName.has(name)) {
               return null;
             }
             return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
+              ...toToastTarget(dbApp),
               // Absent when CI-Cloud predates structured failures; the frontend
               // then falls back to the generic message.
-              reason: result.failures.find((failure) => failure.app === name)?.reason,
+              reason: failureByApp.get(name)?.reason,
             };
           })
           .filter((target): target is PublicDnsToastTarget => target !== null);
