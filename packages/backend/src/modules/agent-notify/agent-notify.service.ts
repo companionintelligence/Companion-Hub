@@ -42,16 +42,24 @@ export interface WebhookTarget {
 }
 
 /**
- * The header the wake secret travels in.
+ * The wake secret is sent in BOTH `Authorization: Bearer` and this header. They carry the same
+ * value, so whichever OpenClaw reads, it matches.
  *
- * NOT `Authorization`. The Hub POSTs to the app's published port, which for CI-OpenClaw is
- * its setup server — and that proxy OVERWRITES `Authorization` with the OpenClaw gateway
- * token before forwarding to the gateway (CI-OpenClaw `server.cjs:312`). A wake
- * authenticated on `Authorization` alone can therefore never arrive. OpenClaw's hook
- * endpoint accepts either `Authorization: Bearer` or this header, and custom headers pass
- * through the proxy untouched.
+ * That redundancy is deliberate, and the reasoning is not obvious. OpenClaw's hook auth
+ * (`extractHookToken`) reads `Authorization: Bearer` FIRST and returns as soon as it finds a
+ * non-empty token — it never falls back to `X-OpenClaw-Token`. So `Authorization` is not a
+ * harmless extra: whatever ends up in it DECIDES the request.
  *
- * We still send `Authorization` as well, for a caller that reaches a gateway directly.
+ * The Hub POSTs to the app's published port, which for CI-OpenClaw is its setup server, and
+ * that proxy used to overwrite `Authorization` with the OpenClaw *gateway* token before
+ * forwarding. The hook then compared the gateway token against `hooks.token`, and every wake
+ * 401'd — including ones sent in `X-OpenClaw-Token`, because the injected Bearer shadowed it.
+ * Measured on core-2: through the proxy → 401; the identical request straight to the gateway →
+ * 200 `{"ok":true,"mode":"now"}`. CI-OpenClaw now leaves `Authorization` alone on `/hooks/*`
+ * (proxy-headers.cjs), which is what makes either header work.
+ *
+ * Sending both means a wake survives whichever way it is routed: through the setup-server
+ * proxy, or straight to a gateway.
  */
 const WAKE_TOKEN_HEADER = 'X-OpenClaw-Token';
 
