@@ -17,7 +17,10 @@ const logsPageHref = '/settings?tab=logs';
 const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   conflict: 'APP_ERROR_PUBLIC_DNS_CONFLICT',
   zone_unreachable: 'APP_ERROR_PUBLIC_DNS_ZONE_UNAVAILABLE',
-  api_error: 'APP_ERROR_PUBLIC_DNS_FAILED',
+  // A transient Cloudflare rejection is not a domain problem — the generic
+  // fallback copy tells the user to check their domain, which is the very
+  // misattribution this mapping exists to end.
+  api_error: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
 };
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {

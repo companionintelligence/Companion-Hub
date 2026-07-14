@@ -92,6 +92,7 @@
   "APP_ERROR_PUBLIC_DNS_FAILED": "Couldn't create a public address for {{id}}. Verify the selected domain is available for this device.",
   "APP_ERROR_PUBLIC_DNS_CONFLICT": "The public address for {{id}} is already in use by another device. It can't be published until that address is released.",
   "APP_ERROR_PUBLIC_DNS_ZONE_UNAVAILABLE": "Couldn't create a public address for {{id}}. The selected domain isn't set up for this device.",
+  "APP_ERROR_PUBLIC_DNS_TEMPORARY": "Couldn't create a public address for {{id}} just now. This usually clears on its own — it will be retried automatically.",
   "APP_ERROR_TAILSCALE_SERVE_NOT_ENABLED_TOAST": "Couldn't publish {{id}} over Private VPN: HTTPS is not enabled on your tailnet. <enableLink>Enable HTTPS Certificates</enableLink> in the Tailscale admin console, then try again.",
   "APP_ERROR_APP_FAILED_TO_RESET": "Failed to reset app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_RESET_TOAST": "Failed to reset app {{id}}, <logsLink>see logs</logsLink> for more details",

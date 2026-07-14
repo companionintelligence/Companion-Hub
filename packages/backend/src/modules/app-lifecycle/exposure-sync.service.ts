@@ -25,6 +25,9 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
   }).hostname;
 }
 
+/** An app that failed public-DNS sync, plus why, so the toast can say which. */
+type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
+
 /**
  * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
  *
@@ -33,8 +36,6 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
  * record CI-Cloud refused to overwrite. Falls back to the old wording when the
  * Portal is older and sends no detail.
  */
-type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
-
 function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
   if (failures.length === 0) {
     return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";

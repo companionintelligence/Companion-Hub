@@ -43,12 +43,6 @@ export interface AppInfo {
 }
 
 /**
- * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
- * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
- * record for (a partially-applied sync). Callers must treat a non-empty
- * `failed` list as a user-visible failure — those apps will not resolve.
- */
-/**
  * Why CI-Cloud could not write an app's public DNS record.
  *
  * - `conflict` — the hostname is held by a DNS record CI-Cloud will not clobber
@@ -68,6 +62,12 @@ export interface PublicDnsFailure {
   message?: string;
 }
 
+/**
+ * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
+ * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
+ * record for (a partially-applied sync). Callers must treat a non-empty
+ * `failed` list as a user-visible failure — those apps will not resolve.
+ */
 export interface CloudflareSyncResult {
   ok: boolean;
   failed: string[];
