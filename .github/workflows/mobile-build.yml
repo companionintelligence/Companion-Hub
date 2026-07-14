@@ -58,6 +58,16 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # The Android Rust build (multi-ABI) + gradle + the Rust cache save can
+      # exceed the ~14 GB free on the ubuntu runner. Reclaim ~15-20 GB of
+      # preinstalled toolchains we don't use so the cache save doesn't ENOSPC.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL /usr/local/lib/android/sdk/ndk/2[0-8].* || true
+          sudo docker image prune -af || true
+          df -h /
+
       - name: Install pnpm
         uses: pnpm/action-setup@v6
 
@@ -79,12 +89,15 @@ jobs:
       # `--debug` produces a debug-signed universal APK that installs on any
       # device/emulator without release keystore secrets. The mobile package's
       # gen/android project is committed, so no `tauri android init` is needed.
+      # Build a universal APK for arm64 (phones + Apple-Silicon emulators) and
+      # x86_64 (Intel emulators). Skipping the 32-bit ABIs (armv7/i686) halves
+      # the Rust target size + build time — plenty for a test/QA artifact.
       - name: Build Android APK
         working-directory: packages/mobile
         run: |
           export NDK_HOME="${ANDROID_NDK_LATEST_HOME}"
           echo "Using NDK_HOME=$NDK_HOME"
-          pnpm exec tauri android build --apk --debug
+          pnpm exec tauri android build --apk --debug --target aarch64 x86_64
 
       - name: List artifacts
         run: find packages/mobile/src-tauri/gen/android/app/build/outputs -name '*.apk' -exec ls -lh {} \; || true
