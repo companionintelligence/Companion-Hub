@@ -236,8 +236,22 @@ export class CloudflareClientService {
         // be created) and `synced` (count of DNS records created). Surface a
         // clear warning instead of silently reporting success — a partially
         // applied sync means those apps will not load at their public domain.
-        const failed: string[] = Array.isArray(response.data.failed) ? response.data.failed : [];
-        const failures: PublicDnsFailure[] = Array.isArray(response.data.failures) ? response.data.failures : [];
+        // Validate the ELEMENTS, not just the container. This is a wire boundary between
+        // two independently deployed services — the same reason `failures` is optional at
+        // all — so a malformed entry is as plausible as a missing one. A `null` or a bare
+        // string in `failures` would throw on `failure.app` in the map below; that throw
+        // lands in this method's own catch, which reports `ok: false` — turning a PARTIAL
+        // sync into a hard failure and making the UI toast every exposed app instead of
+        // the few that really failed. Misreporting the blast radius is the bug this PR
+        // exists to fix, so drop junk entries rather than letting them rewrite the verdict.
+        const failed: string[] = Array.isArray(response.data.failed)
+          ? response.data.failed.filter((name): name is string => typeof name === 'string')
+          : [];
+        const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
+          ? response.data.failures.filter(
+              (failure): failure is PublicDnsFailure => typeof failure === 'object' && failure !== null && typeof failure.app === 'string',
+            )
+          : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
 
         if (failed.length > 0) {

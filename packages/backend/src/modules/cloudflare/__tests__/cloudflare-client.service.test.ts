@@ -189,6 +189,26 @@ describe('CloudflareClientService', () => {
       expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures, synced: 1 });
     });
 
+    it('should drop malformed failure entries instead of failing the whole sync', async () => {
+      // A junk entry used to throw on `failure.app` while building the log line. That
+      // throw is caught by syncState's own catch, which reports ok: false — so one bad
+      // element turned a PARTIAL sync into a hard failure and made the UI toast every
+      // exposed app rather than the one that actually broke.
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['anything-llm', null, 42],
+        failures: [null, 'not-an-object', { reason: 'conflict' }, { app: 'anything-llm', reason: 'conflict', message: 'taken' }],
+        synced: 1,
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      // Still a partial success, and only the well-formed entries survive.
+      expect(result.ok).toBe(true);
+      expect(result.failed).toEqual(['anything-llm']);
+      expect(result.failures).toEqual([{ app: 'anything-llm', reason: 'conflict', message: 'taken' }]);
+    });
+
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
       expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
