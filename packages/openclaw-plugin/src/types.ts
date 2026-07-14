@@ -1,16 +1,26 @@
-/** OpenClaw Plugin API interface (provided by OpenClaw runtime) */
+export interface PluginLogger {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+  debug(message: string): void;
+}
+
+/**
+ * OpenClaw Plugin API interface (provided by OpenClaw runtime).
+ *
+ * NOTE: `log` is typed as present because consumers here always receive it — but the
+ * OpenClaw runtime does NOT reliably supply it (its own bundled plugins all call it
+ * defensively, as `api.log?.info?.()`). register() normalizes the api through
+ * withSafeLogger() before handing it to anything, so downstream code can rely on it.
+ * Calling `api.log.info()` on the RAW api OpenClaw passes will throw.
+ */
 export interface OpenClawPluginApi {
   registerTool(tool: OpenClawTool): void;
   registerHttpRoute(route: OpenClawHttpRoute): void;
   registerProvider?(provider: OpenClawProvider): void;
   registerSpeechProvider?(provider: OpenClawSpeechProvider): void;
   wake(message: string): void;
-  log: {
-    info(message: string): void;
-    warn(message: string): void;
-    error(message: string): void;
-    debug(message: string): void;
-  };
+  log: PluginLogger;
 }
 
 export interface OpenClawTool {
@@ -90,8 +100,12 @@ export interface OpenClawModelEntry {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
-  /** Native backend options forwarded to the provider (e.g. Ollama `num_ctx`). */
-  options?: { num_ctx?: number };
+  /**
+   * Native backend params forwarded to the provider (e.g. Ollama `num_ctx`).
+   * Must be `params` — OpenClaw's model-entry schema is strict, and an
+   * unrecognized key invalidates the whole openclaw.json.
+   */
+  params?: { num_ctx?: number };
 }
 
 /** Speech provider registration */
