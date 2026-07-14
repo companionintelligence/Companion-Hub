@@ -162,15 +162,20 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       if (subdomainChanged || domainChanged) {
         try {
           const response = await checkDnsAvailability(subdomain, values.publicDomain || domain);
-          if (response.ok) {
-            const data = await response.json();
-            if (!data.available) {
-              const message =
-                typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomain });
-              setError('localSubdomain', { message });
-              toast.error(message);
-              return;
-            }
+          if (!response.ok) {
+            const message = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomain });
+            setError('localSubdomain', { message });
+            toast.error(message);
+            return;
+          }
+
+          const data = await response.json();
+          if (!data.available) {
+            const message =
+              typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomain });
+            setError('localSubdomain', { message });
+            toast.error(message);
+            return;
           }
         } catch {
           // Allow submission if DNS check is unreachable.

@@ -54,7 +54,7 @@ Create a Microsoft Entra app registration + service principal for GitHub Actions
 
 Grant that service principal the **Artifact Signing Certificate Profile Signer** role on the Artifact Signing account (or a parent scope such as the resource group/subscription if that is how you manage access).
 
-## Behaviour when secrets are missing
+## Behavior when secrets are missing
 
 A **green Windows release means Authenticode-signed installers**, matching the macOS guarantee. The workflow enforces this:
 

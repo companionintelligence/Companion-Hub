@@ -15,7 +15,7 @@ type DashboardLocationState = {
   showBackgroundInstallToast?: boolean;
 };
 
-export default () => {
+export default function DashboardPage() {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
@@ -33,7 +33,6 @@ export default () => {
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
-    refetchInterval: 3000,
     staleTime: 30_000,
   });
 
@@ -45,7 +44,7 @@ export default () => {
   const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue();
 
   const isLoading = !systemData;
-  const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
+  const memoryUsed = systemData?.memoryUsed ?? Math.round(((systemData?.memoryTotal ?? 0) * (systemData?.percentUsedMemory ?? 0)) / 100);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -94,4 +93,4 @@ export default () => {
       </div>
     </div>
   );
-};
+}

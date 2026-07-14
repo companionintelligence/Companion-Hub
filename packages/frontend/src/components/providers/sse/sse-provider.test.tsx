@@ -73,6 +73,82 @@ describe('SSEProvider', () => {
     expect(mockToastDismiss).toHaveBeenCalledWith('install-error-toast');
   });
 
+  it('renders install_error rocm_kfd_missing branch', () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event: 'install_error', errorCode: 'rocm_kfd_missing', appUrn: 'excalidraw:community' });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders install_error network_overlap branch', () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event: 'install_error', errorCode: 'network_overlap', appUrn: 'excalidraw:community' });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders tailscale_serve_error with custom toast duration', () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+
+    const queryClient = new QueryClient();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      onEvent?.({ event: 'tailscale_serve_error', appUrn: 'excalidraw:community' });
+    });
+
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+    expect(mockToastError.mock.calls[0]?.[1]).toMatchObject({ duration: 10000 });
+  });
+
   it('links app operation failures to the logs tab via "see logs"', async () => {
     let onEvent: ((data: unknown) => void) | undefined;
     mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {

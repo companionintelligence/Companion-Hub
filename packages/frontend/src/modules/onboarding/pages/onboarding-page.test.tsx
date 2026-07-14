@@ -312,7 +312,7 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
   });
 
-  it('flows: AI config → Install & Finish → install → navigate to /store', async () => {
+  it('flows: AI config → Install & Finish → install completion without complete-step', async () => {
     const user = userEvent.setup();
     renderPage();
 
