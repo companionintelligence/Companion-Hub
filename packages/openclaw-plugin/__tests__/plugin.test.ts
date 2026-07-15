@@ -62,7 +62,6 @@ describe('CI-Hub Plugin', () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     clearEnv();
   });
 
