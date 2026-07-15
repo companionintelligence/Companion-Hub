@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
+// Backend listen port + vite /api proxy target. Defaults to BACKEND_PORT so the two
+// never diverge; an explicit API_PORT override still wins if set.
+const API_PORT = process.env.API_PORT || BACKEND_PORT;
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const USE_REAL_PORTAL = process.env.E2E_USE_REAL_PORTAL === 'true';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
@@ -11,6 +14,7 @@ const SERVER_IP = process.env.SERVER_IP || 'localhost';
 const backendEnv: Record<string, string> = {
   NODE_ENV: 'development',
   E2E_TEST: 'true',
+  API_PORT,
   POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
   POSTGRES_PORT: process.env.POSTGRES_PORT || '6543',
   POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'companion',
@@ -131,7 +135,7 @@ export default defineConfig({
       // (CI, extended, fleet, local) so callers don't each have to re-export these.
       env: {
         FRONTEND_PORT,
-        API_PORT: process.env.API_PORT || '3000',
+        API_PORT,
       },
     },
   ],

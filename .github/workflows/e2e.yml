@@ -14,9 +14,11 @@ on:
         type: string
 
 concurrency:
-  # Scope by workflow so a run started here does not cancel the e2e.yml run that
-  # nightly-release.yml starts via workflow_call on the same ref.
-  group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Cancel only superseded runs of the same pull request. Every scheduled, dispatched,
+  # or workflow_call run gets its own bucket (run_id is unique), so independent runs —
+  # e.g. the nightly schedule and the run nightly-release.yml starts via workflow_call —
+  # never share a group and never cancel each other.
+  group: e2e-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
