@@ -10,6 +10,22 @@ import { Link, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
 
+/**
+ * Map CI-Cloud's public-DNS failure class onto the message the user sees. An
+ * unknown or absent code (older CI-Cloud) falls back to the generic copy.
+ */
+const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
+  conflict: 'APP_ERROR_PUBLIC_DNS_CONFLICT',
+  zone_unreachable: 'APP_ERROR_PUBLIC_DNS_ZONE_UNAVAILABLE',
+  // A transient Cloudflare rejection is not a domain problem — the generic
+  // fallback copy tells the user to check their domain, which is the very
+  // misattribution this mapping exists to end.
+  api_error: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
+  // The subdomain is the problem, not the domain — pointing the user at the
+  // domain would be the same wrong turn in a class we ourselves introduced.
+  invalid_subdomain: 'APP_ERROR_PUBLIC_DNS_INVALID_SUBDOMAIN',
+};
+
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -146,7 +162,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_RESTORE_ERROR_TOAST', appName));
           break;
         case 'public_dns_error':
-          toast.error(t('APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
+          // errorCode carries CI-Cloud's failure class. A conflict and an
+          // unprovisioned domain need different actions from the user, so they
+          // must not share the same message.
+          toast.error(t(PUBLIC_DNS_ERROR_KEYS[errorCode ?? ''] ?? 'APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
           break;
         case 'tailscale_serve_error':
           toast.error(

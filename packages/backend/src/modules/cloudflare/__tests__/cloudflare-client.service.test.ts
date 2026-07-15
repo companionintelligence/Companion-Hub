@@ -159,7 +159,7 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toEqual({ ok: true, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: true, failed: [], failures: [], synced: 0 });
       expect(portalClient.postTunnelState).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }));
     });
 
@@ -168,18 +168,83 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toEqual({ ok: true, failed: ['anything-llm'], synced: 1 });
+      // No `failures` from an older CI-Cloud: `failed` still tells us which apps
+      // broke, and callers fall back to generic messaging.
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures: [], synced: 1 });
+    });
+
+    it('should pass through the per-app failure class when CI-Cloud reports one', async () => {
+      const failures = [
+        {
+          app: 'anything-llm',
+          hostname: 'anything-llm-laptop-cid.companionintelligence.com',
+          reason: 'conflict' as const,
+          message: 'already in use by another tunnel',
+        },
+      ];
+      portalClient.postTunnelState.mockResolvedValue({ success: true, failed: ['anything-llm'], failures, synced: 1 });
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures, synced: 1 });
+    });
+
+    it('should drop malformed failure entries instead of failing the whole sync', async () => {
+      // A junk entry used to throw on `failure.app` while building the log line. That
+      // throw is caught by syncState's own catch, which reports ok: false — so one bad
+      // element turned a PARTIAL sync into a hard failure and made the UI toast every
+      // exposed app rather than the one that actually broke.
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['anything-llm', null, 42],
+        failures: [null, 'not-an-object', { reason: 'conflict' }, { app: 'anything-llm', reason: 'conflict', message: 'taken' }],
+        synced: 1,
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      // Still a partial success, and only the well-formed entries survive.
+      expect(result.ok).toBe(true);
+      expect(result.failed).toEqual(['anything-llm']);
+      expect(result.failures).toEqual([{ app: 'anything-llm', reason: 'conflict', message: 'taken' }]);
+    });
+
+    it('should name every failed app in the log, even those with no structured failure', async () => {
+      // `failures` need not cover every failed app. Building the log line from it named
+      // fewer apps than the count in the same sentence, and the ones it dropped were the
+      // ones with no other detail to find them by.
+      // The logger is private; reach it through a structural cast rather than a computed
+      // key, which `lint:fix` would rewrite into an illegal dot access on a private field.
+      const loggerRef = (service as unknown as { logger: { warn: (message: string) => void } }).logger;
+      const warn = vi.spyOn(loggerRef, 'warn');
+
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['anything-llm', 'docmost'],
+        failures: [{ app: 'anything-llm', reason: 'conflict', message: 'taken' }],
+        synced: 0,
+      } as any);
+
+      await service.syncState('org-id', [], 'tun-id');
+
+      const message = warn.mock.calls.map(([line]) => String(line)).join('\n');
+
+      expect(message).toContain('2 app(s)');
+      expect(message).toContain('anything-llm (conflict: taken)');
+      // Present despite having no entry in `failures` — and not rendered as `undefined`.
+      expect(message).toContain('docmost');
+      expect(message).not.toContain('undefined');
     });
 
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
-      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
     });
 
     it('should handle axios error', async () => {
       portalClient.postTunnelState.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
-      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
+      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
     });
   });
 

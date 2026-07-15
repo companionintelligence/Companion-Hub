@@ -299,7 +299,7 @@ describe('AppLifecycleService', () => {
         userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
-      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
@@ -317,6 +317,103 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
         'anything-llm:ci-marketplace',
       );
+    });
+
+    it('surfaces the DNS failure class instead of always blaming zone provisioning', async () => {
+      // A stale record CI-Cloud refuses to overwrite is not a domain problem, and
+      // saying so sent the CI-Portal#403 investigation down the wrong path.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: ['anything-llm'],
+        failures: [
+          {
+            app: 'anything-llm',
+            hostname: 'anything-llm-laptop-cid.companionintelligence.com',
+            reason: 'conflict',
+            message: 'already in use by another tunnel',
+          },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('already claimed by another device or tunnel'));
+      expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining("verify the selected domain's zone is provisioned"));
+
+      // The class rides along on the SSE event so the toast can say what is wrong.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace', errorCode: 'conflict' }),
+        'anything-llm:ci-marketplace',
+      );
+    });
+
+    it('names every failed app in the log, including ones it cannot map to a hostname', async () => {
+      // The log used to list only the apps it could rebuild a hostname for, while the
+      // count came from result.failed — so a failed app with no DB row (or the
+      // privileged Hub entry) vanished from the message entirely. That is the same
+      // class of misleading operator error this PR exists to fix.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        // 'OS Hub' is the privileged entry: it has no DB row, so it maps to no toast
+        // target and used to be dropped from the log.
+        failed: ['anything-llm', 'OS Hub'],
+        failures: [
+          { app: 'anything-llm', reason: 'conflict', message: 'already in use by another tunnel' },
+          { app: 'OS Hub', reason: 'api_error', message: 'rate limited' },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Both apps are named: the one we could resolve, by hostname; the one we could
+      // not, by the name CI-Cloud sent.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintelligence.com'));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OS Hub'));
+      // The count and the list agree.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('NOT created for 2 app(s)'));
     });
 
     it('excludes only the targeted app URN when releasing DNS for a routing change', async () => {
@@ -380,7 +477,7 @@ describe('AppLifecycleService', () => {
       } as any);
       // A full sync failure (e.g. CI-Cloud unreachable / non-success response),
       // distinct from a partial per-app failure.
-      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
