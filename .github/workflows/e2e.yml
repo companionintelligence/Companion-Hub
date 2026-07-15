@@ -2,16 +2,10 @@ name: E2E Tests
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "packages/backend/**"
-      - "packages/frontend/**"
-      - "packages/common/**"
-      - "e2e/**"
-      - "playwright.config.ts"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/e2e.yml"
+  schedule:
+    # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
+    # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
+    - cron: "0 1 * * *"
   workflow_call:
     inputs:
       version:
