@@ -126,6 +126,13 @@ export default defineConfig({
       timeout: process.env.CI ? 120000 : 60000,
       stdout: 'pipe',
       stderr: 'pipe',
+      // Pin the port contract so vite serves on FRONTEND_PORT (not its default 5005) and
+      // proxies /api to the backend on API_PORT. Single source of truth for every entrypoint
+      // (CI, extended, fleet, local) so callers don't each have to re-export these.
+      env: {
+        FRONTEND_PORT,
+        API_PORT: process.env.API_PORT || '3000',
+      },
     },
   ],
 });

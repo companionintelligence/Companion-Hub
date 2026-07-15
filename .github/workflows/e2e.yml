@@ -14,7 +14,9 @@ on:
         type: string
 
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  # Scope by workflow so a run started here does not cancel the e2e.yml run that
+  # nightly-release.yml starts via workflow_call on the same ref.
+  group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -94,12 +96,6 @@ jobs:
         run: pnpm run test:e2e:ci
         env:
           SERVER_IP: localhost
-          # Pin the e2e port contract. vite's dev/preview defaults moved to 5005 (frontend)
-          # and 5004 (api proxy) in #753; Playwright and the backend still use the appliance
-          # ports, so export them here or the frontend webServer never comes up on :9091.
-          FRONTEND_PORT: "9091"
-          BACKEND_PORT: "3000"
-          API_PORT: "3000"
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 6543
           POSTGRES_USERNAME: companion
