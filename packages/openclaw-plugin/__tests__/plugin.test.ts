@@ -209,7 +209,7 @@ describe('CI-Hub Plugin', () => {
 
     expect(api.registerProvider).not.toHaveBeenCalled();
     expect(api.registerSpeechProvider).not.toHaveBeenCalled();
-    expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('does not register an LLM provider'));
+    expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('registers no LLM or speech provider'));
   });
 
   // The plugin's only authenticated MCP session ever existed to feed inference discovery.

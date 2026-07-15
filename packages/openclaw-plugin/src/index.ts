@@ -90,7 +90,7 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
   // redundant AND an override hazard: two writers of the same `ci-hub` id, the exact
   // condition that broke chat. Do not reintroduce api.registerProvider/registerSpeechProvider.
   api.log.info(
-    'ci-hub chat/TTS providers come from openclaw.json (models.providers.ci-hub, written by config-reconcile); this plugin does not register an LLM provider — see CI-Hub#895',
+    'ci-hub chat models come from openclaw.json (models.providers.ci-hub, written by config-reconcile); this plugin registers no LLM or speech provider — see CI-Hub#895',
   );
 }
 
