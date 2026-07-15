@@ -413,6 +413,23 @@ describe('AgentNotifyService', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
+    // When AGENT_WEBHOOK_URL names the same URL a registered app already owns, the app's own
+    // secret must win — it is authoritative for that URL, whereas the env token is a single
+    // global fallback that may be stale. Sending the stale env token would 401 an otherwise-good
+    // wake, and sending both would POST the same URL twice.
+    it('R-MW-4: on a URL collision the registered per-app token wins, and fires once', async () => {
+      process.env.AGENT_WEBHOOK_URL = 'http://openclaw:18789/hooks/wake';
+      process.env.AGENT_WEBHOOK_TOKEN = 'stale-global-token';
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw:18789/hooks/wake', 'correct-app-secret');
+
+      await service.notify('test', {}, 'low');
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
+      expect(headers['X-OpenClaw-Token']).toBe('correct-app-secret');
+      expect(headers.Authorization).toBe('Bearer correct-app-secret');
+    });
+
     it('R-MW-3: should notify via registered webhooks when no env webhook', async () => {
       delete process.env.AGENT_WEBHOOK_URL;
       service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'secret');

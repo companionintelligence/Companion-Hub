@@ -212,9 +212,14 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
 
   private getAllTargets(): Array<{ url: string; token?: string }> {
     // Deduped by URL. The env AGENT_WEBHOOK_URL (back-compat) can name the very app that
-    // onApplicationBootstrap now auto-registers; without this, one event would POST to the same
-    // /hooks/wake twice — a wasted round-trip and a duplicate queued system event. The env target
-    // is inserted first so an explicit operator override wins over the auto-registered token.
+    // onApplicationBootstrap auto-registers; without this, one event would POST to the same
+    // /hooks/wake twice — a wasted round-trip and a duplicate queued system event.
+    //
+    // On a URL collision the REGISTERED entry wins: its token is that app's own HUB_WAKE_SECRET
+    // read from disk, which is authoritative for that URL. The env token is a single global
+    // fallback that may be stale; letting it shadow the per-app secret would 401 a wake that
+    // would otherwise succeed. So the env target seeds the map and any registered webhook for the
+    // same URL overwrites it.
     const byUrl = new Map<string, { url: string; token?: string }>();
 
     const envUrl = process.env.AGENT_WEBHOOK_URL;
@@ -223,9 +228,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
 
     for (const wh of this.webhooks.values()) {
-      if (!byUrl.has(wh.url)) {
-        byUrl.set(wh.url, { url: wh.url, token: wh.token });
-      }
+      byUrl.set(wh.url, { url: wh.url, token: wh.token });
     }
 
     return [...byUrl.values()];
