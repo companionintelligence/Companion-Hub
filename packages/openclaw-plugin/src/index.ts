@@ -28,12 +28,18 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
   // Fall back to env vars for zero-config when running inside CI-Hub (R-PLG-1)
   const hubUrl = config.hubUrl || process.env.HUB_URL;
   const hubApiKey = config.hubApiKey || process.env.HUB_API_KEY;
-  // MCP endpoint uses a separate key from the REST API (R-PLG-1)
+  // The SSE/MCP key (separate from the REST API key, R-PLG-1). Consumed ONLY by the SSE
+  // listener below — the wake webhook authenticates with wakeSecret, so this key does not
+  // gate plugin startup.
   const mcpApiKey = config.mcpApiKey || process.env.HUB_MCP_API_KEY || hubApiKey;
   const wakeSecret = config.wakeSecret || process.env.HUB_WAKE_SECRET;
 
-  if (!hubUrl || !mcpApiKey) {
-    api.log.error('CI-Hub plugin requires hubUrl and mcpApiKey (via config or HUB_URL/HUB_MCP_API_KEY env vars)');
+  // hubUrl is the only hard requirement: it backs the health probe and is the base URL for
+  // every Hub call. Do NOT also require mcpApiKey here — the wake webhook (wakeSecret) and
+  // health probe (hubUrl) need no key, and requiring one would refuse to mount the wake
+  // endpoint on a wake-only / MCP-disabled Hub. mcpApiKey is checked where it is used (SSE).
+  if (!hubUrl) {
+    api.log.error('CI-Hub plugin requires hubUrl (via config.hubUrl or the HUB_URL env var)');
     return;
   }
 
@@ -68,10 +74,17 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
   void probeHubHealth(api, hubUrl);
 
   if (config.sseEnabled) {
-    const sseListener = new SseListenerService(hubUrl, mcpApiKey, api, config.wakeFilter);
-    void sseListener.start().catch((error) => {
-      api.log.warn(`SSE listener failed to start: ${describeError(error)}`);
-    });
+    // SSE is the only surface that needs the key — it authenticates the /sse/app stream with
+    // a Bearer token. With a key, start it; without one it would send `Bearer undefined`, so
+    // skip the listener (rather than start a doomed one) and say why.
+    if (mcpApiKey) {
+      const sseListener = new SseListenerService(hubUrl, mcpApiKey, api, config.wakeFilter);
+      void sseListener.start().catch((error) => {
+        api.log.warn(`SSE listener failed to start: ${describeError(error)}`);
+      });
+    } else {
+      api.log.warn('SSE listener enabled but no API key is set (config.mcpApiKey / HUB_MCP_API_KEY / HUB_API_KEY) — SSE disabled');
+    }
   }
 
   // This plugin intentionally does NOT register an inference/model provider (CI-Hub#895).

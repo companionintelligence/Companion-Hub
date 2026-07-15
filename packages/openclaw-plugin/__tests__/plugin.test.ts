@@ -253,8 +253,36 @@ describe('CI-Hub Plugin', () => {
     it('R-PLG-1: should log error and return when neither config nor env provides hubUrl', () => {
       register(api, {});
 
-      expect(api.log.error).toHaveBeenCalledWith(expect.stringContaining('requires hubUrl and mcpApiKey'));
+      expect(api.log.error).toHaveBeenCalledWith(expect.stringContaining('requires hubUrl'));
       expect(api.registerHttpRoute).not.toHaveBeenCalled();
+    });
+
+    // hubUrl is the ONLY hard requirement — the wake webhook authenticates with wakeSecret,
+    // so a wake-only / MCP-disabled Hub (no HUB_MCP_API_KEY/HUB_API_KEY) must still mount it.
+    it('R-PLG-1: mounts the wake endpoint without any API key (wake uses wakeSecret, not mcpApiKey)', () => {
+      vi.stubGlobal('fetch', healthOnlyFetch());
+
+      // hubUrl + wakeSecret, but NO mcpApiKey/hubApiKey in config or env (clearEnv ran in beforeEach)
+      register(api, { hubUrl: 'http://ci-os-hub:3000', wakeSecret: 'ws' });
+
+      expect(api.log.error).not.toHaveBeenCalledWith(expect.stringContaining('requires hubUrl'));
+      expect(api.registerHttpRoute).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/hooks/hub-wake' }));
+    });
+
+    // SSE is the only surface that needs the key. With SSE on but no key available, it must
+    // skip (with a warning) rather than open a stream that would send `Bearer undefined`.
+    it('R-PLG-1: skips SSE with a warning when enabled but no API key is available', async () => {
+      const fetchMock = healthOnlyFetch();
+      vi.stubGlobal('fetch', fetchMock);
+
+      register(api, { hubUrl: 'http://ci-os-hub:3000', wakeSecret: 'ws', sseEnabled: true });
+
+      expect(api.log.warn).toHaveBeenCalledWith(expect.stringContaining('SSE listener enabled but no API key'));
+      // Let the background health probe settle, so an SSE connect would have fired too.
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/health'), expect.anything());
+      });
+      expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/sse/app'), expect.anything());
     });
 
     it('R-PLG-1: should accept HUB_MCP_API_KEY as the required key (no HUB_API_KEY needed)', () => {
@@ -276,7 +304,7 @@ describe('CI-Hub Plugin', () => {
 
       register(api, {});
 
-      // Should not log the "requires hubUrl and mcpApiKey" error — HUB_API_KEY is accepted as fallback
+      // HUB_API_KEY is accepted as the mcpApiKey fallback; with hubUrl present the plugin initializes.
       expect(api.log.error).not.toHaveBeenCalledWith(expect.stringContaining('requires hubUrl'));
     });
   });
