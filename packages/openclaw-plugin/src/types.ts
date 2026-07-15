@@ -13,12 +13,17 @@ export interface PluginLogger {
  * defensively, as `api.log?.info?.()`). register() normalizes the api through
  * withSafeLogger() before handing it to anything, so downstream code can rely on it.
  * Calling `api.log.info()` on the RAW api OpenClaw passes will throw.
+ *
+ * This plugin deliberately covers only the non-inference surface (wake webhook, app-event
+ * SSE, health probe): it does NOT register an LLM/model or speech provider. A provider
+ * registered through the plugin API resolves against OpenClaw's api-provider registry, which
+ * has no `ollama` implementation, so it cannot serve the appliance's local models — those
+ * come from openclaw.json's `models.providers.ci-hub` (written by config-reconcile). See
+ * CI-Hub#895.
  */
 export interface OpenClawPluginApi {
   registerTool(tool: OpenClawTool): void;
   registerHttpRoute(route: OpenClawHttpRoute): void;
-  registerProvider?(provider: OpenClawProvider): void;
-  registerSpeechProvider?(provider: OpenClawSpeechProvider): void;
   wake(message: string): void;
   log: PluginLogger;
 }
@@ -63,91 +68,4 @@ export interface WakePayload {
   data: Record<string, unknown>;
   urgency: string;
   timestamp: string;
-}
-
-export interface McpToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
-
-/** Provider API modes supported by OpenClaw's model catalog. */
-export type OpenClawProviderApi = 'openai-completions' | 'ollama';
-
-/** Provider registration for OpenClaw model catalog */
-export interface OpenClawProvider {
-  id: string;
-  label: string;
-  resolveSyntheticAuth?: () => { available: boolean; apiKey: string };
-  catalog: {
-    order: 'simple';
-    run: (ctx: unknown) => Promise<{
-      provider: {
-        baseUrl: string;
-        apiKey: string;
-        api: OpenClawProviderApi;
-        models: OpenClawModelEntry[];
-      };
-    }>;
-  };
-}
-
-export interface OpenClawModelEntry {
-  id: string;
-  name: string;
-  reasoning: boolean;
-  input: string[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  contextWindow: number;
-  maxTokens: number;
-  /**
-   * Native backend params forwarded to the provider (e.g. Ollama `num_ctx`).
-   * Must be `params` — OpenClaw's model-entry schema is strict, and an
-   * unrecognized key invalidates the whole openclaw.json.
-   */
-  params?: { num_ctx?: number };
-}
-
-/** Speech provider registration */
-export interface OpenClawSpeechProvider {
-  id: string;
-  label: string;
-  isConfigured: () => boolean;
-  synthesize: (req: { text: string; voice?: string }) => Promise<{
-    audioBuffer: Buffer;
-    outputFormat: string;
-    fileExtension: string;
-    voiceCompatible: boolean;
-  }>;
-}
-
-/** Inference status from Hub */
-export interface HubInferenceStatus {
-  hardwareTier: string;
-  backends: Array<{
-    type: string;
-    running: boolean;
-    healthy: boolean;
-    url: string;
-    modelsLoaded: number;
-  }>;
-  models: HubInferenceModel[];
-  memoryBudget: Record<string, number>;
-  cloudProviders: Array<{
-    provider: string;
-    enabled: boolean;
-    configured: boolean;
-  }>;
-}
-
-export interface HubInferenceModel {
-  id: string;
-  object: string;
-  owned_by: string;
-  state: string;
-  backend: string;
-  modality: string[];
-  local: boolean;
-  context_window?: number;
-  max_tokens?: number;
 }

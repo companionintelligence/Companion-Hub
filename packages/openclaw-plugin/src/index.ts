@@ -1,29 +1,7 @@
-import type { OpenClawPluginApi, PluginConfig, HubInferenceStatus, OpenClawModelEntry, PluginLogger } from './types';
-import { fetchWithTimeout, McpClient } from './mcp-client';
+import type { OpenClawPluginApi, PluginConfig, PluginLogger } from './types';
+import { fetchWithTimeout } from './http';
 import { createWakeEndpointHandler } from './wake-endpoint';
 import { SseListenerService } from './sse-listener';
-
-/**
- * Unwrap a Hub MCP tools/call result into its raw payload. The Hub wraps every tool result via
- * formatToolSuccess as `{ content: [{ type: 'text', text: JSON.stringify(payload) }], isError? }`,
- * so a caller that needs the domain object must parse content[0].text. Returns null on an error
- * result or an unparseable body (callers then fall back, e.g. to the REST inference endpoint).
- */
-function unwrapToolResult<T>(result: unknown): T | null {
-  const wrapped = result as { content?: Array<{ text?: string }>; isError?: boolean } | null | undefined;
-  if (!wrapped || wrapped.isError) {
-    return null;
-  }
-  const text = wrapped.content?.[0]?.text;
-  if (typeof text !== 'string') {
-    return null;
-  }
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * OpenClaw plugin entry point — MUST be synchronous.
@@ -36,8 +14,8 @@ function unwrapToolResult<T>(result: unknown): T | null {
  * `.then()` does not work either — it would appear to succeed and quietly do nothing.
  *
  * Everything that registers therefore happens here, synchronously. Every call that
- * needs the network is deferred into the lazily-invoked catalog.run(), or into a
- * background probe that only mutates state a sync callback reads.
+ * needs the network is deferred into a background probe that only mutates state a sync
+ * callback reads.
  */
 export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void {
   // OpenClaw does not reliably provide api.log — its own bundled plugins all call it
@@ -96,58 +74,28 @@ export function register(rawApi: OpenClawPluginApi, config: PluginConfig): void 
     });
   }
 
-  // Inference auto-config (OC-1) is OFF unless explicitly asked for.
+  // This plugin intentionally does NOT register an inference/model provider (CI-Hub#895).
   //
-  // It registers a "ci-hub" provider whose transport is `api: "ollama"`. OpenClaw
-  // resolves that fine for a provider declared in openclaw.json, but a provider
-  // registered through the plugin API resolves against the api-provider registry,
-  // where "ollama" has no implementation — the first LLM call then dies with
-  // "No API provider registered for api: ollama", taking chat down with it.
+  // A provider registered through the plugin API (api.registerProvider) resolves its
+  // transport against OpenClaw's api-provider registry, whose built-ins are
+  // anthropic-messages / openai-completions / … — there is no `ollama` implementation. So a
+  // plugin-registered `ci-hub` provider with `api: "ollama"` makes the first LLM call die
+  // with "No API provider registered for api: ollama", taking chat down. (A config-declared
+  // provider in openclaw.json resolves `ollama` fine, via a separate provider-runtime-plugin
+  // path the plugin API never reaches — hence the asymmetry.)
   //
-  // This never surfaced because the plugin could not load at all (its register() was
-  // async), so the path is unproven. On a CI appliance it is also redundant:
-  // CI-OpenClaw's server.cjs already writes models.providers.ci-hub into
-  // openclaw.json, which is the definition that actually works. Keep the code, keep it
-  // opt-in, and do not let a broken registration break the agent by default.
-  if (process.env.CI_HUB_PLUGIN_INFERENCE === '1') {
-    // The in-plugin MCP client is the plugin's only authenticated channel to the Hub
-    // (hub_get_inference_status), and inference discovery is its sole consumer — the
-    // wake endpoint and SSE listener do not use it, and agent-facing tools come from
-    // the native mcp.servers.ci-hub entry. So construct it only when inference is on,
-    // rather than opening an authenticated MCP session on every appliance boot that
-    // nothing ever reads. register() cannot await, so connect in the background and
-    // hand the pending handle to the discovery code.
-    const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
-    const mcpReady = mcpClient.connect().catch((error) => {
-      api.log.warn(`Hub MCP client failed to connect: ${describeError(error)}`);
-    });
-    registerInference({ api, hubUrl, apiKey: mcpApiKey, mcpClient, mcpReady });
-  } else {
-    api.log.info('Inference auto-config disabled (set CI_HUB_PLUGIN_INFERENCE=1 to enable); the ci-hub provider comes from openclaw.json');
-  }
+  // On a CI appliance the working `models.providers.ci-hub` (native Ollama transport, live
+  // model discovery, default-model selection) is written to openclaw.json by CI-OpenClaw's
+  // config-reconcile — the single source of truth. A plugin registration here would be both
+  // redundant AND an override hazard: two writers of the same `ci-hub` id, the exact
+  // condition that broke chat. Do not reintroduce api.registerProvider/registerSpeechProvider.
+  api.log.info(
+    'ci-hub chat/TTS providers come from openclaw.json (models.providers.ci-hub, written by config-reconcile); this plugin does not register an LLM provider — see CI-Hub#895',
+  );
 }
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Narrow an untrusted payload to a HubInferenceStatus, or null.
- *
- * Both sources are untrusted: the REST endpoint answers 401/error bodies with a 200 in
- * some Hub versions, and an older Hub can return a status of a different shape. The
- * consumers below index straight into `.models` / `.cloudProviders` / `.backends`, so a
- * body that merely *exists* is not enough — a `{}` here previously threw
- * "Cannot read properties of undefined (reading 'length')" out of catalog.run(), which
- * fails OpenClaw's whole model-catalog resolution.
- */
-function asInferenceStatus(payload: unknown): HubInferenceStatus | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const status = payload as Partial<HubInferenceStatus>;
-  if (!Array.isArray(status.models) || !Array.isArray(status.backends) || !Array.isArray(status.cloudProviders)) {
-    return null;
-  }
-  return status as HubInferenceStatus;
 }
 
 /**
@@ -222,283 +170,5 @@ async function probeHubHealth(api: OpenClawPluginApi, hubUrl: string): Promise<v
     }
   } catch (error) {
     api.log.warn(`Hub unreachable at ${hubUrl}: ${describeError(error)}`);
-  }
-}
-
-interface InferenceDeps {
-  api: OpenClawPluginApi;
-  hubUrl: string;
-  apiKey: string;
-  mcpClient: McpClient;
-  mcpReady: Promise<unknown>;
-}
-
-/** TTS availability is only knowable after an async probe, but isConfigured() is a
- *  sync callback invoked later — so the probe fills this in after registration. */
-interface TtsState {
-  ready: boolean;
-  modelId: string;
-}
-
-/**
- * Register the inference surfaces synchronously (OC-1).
- * S-OC-1.2: local models are exposed as the "ci-hub" provider.
- * S-OC-1.3: local models cost { input: 0, output: 0 }.
- * S-OC-3.1: TTS is exposed when Lemonade reports loaded TTS models.
- *
- * Discovery itself is lazy: catalog.run() is invoked by OpenClaw well after
- * registration, which is what lets register() stay synchronous without losing the
- * model catalog.
- */
-function registerInference(deps: InferenceDeps): void {
-  const { api, hubUrl, apiKey, mcpClient, mcpReady } = deps;
-  const ollamaNativeUrl = (process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '');
-
-  // The model catalog and the TTS probe share one lookup. Cache the answer, but only a
-  // successful one: catalog.run() is invoked repeatedly over the process lifetime, and a
-  // failure usually just means the Hub was not up yet — pinning that null would leave the
-  // catalog permanently empty long after the Hub came back.
-  let statusPromise: Promise<HubInferenceStatus | null> | null = null;
-  const getInferenceStatus = (): Promise<HubInferenceStatus | null> => {
-    statusPromise ??= fetchInferenceStatus(api, hubUrl, mcpClient, mcpReady)
-      // catalog.run() awaits this, and a rejected catalog fails OpenClaw's model
-      // resolution outright. No lookup failure is worth taking the catalog down: degrade
-      // to "no status" instead, which the callers already handle.
-      .catch((error) => {
-        api.log.warn(`Hub inference status lookup failed: ${describeError(error)}`);
-        return null;
-      })
-      .then((status) => {
-        if (!status) statusPromise = null;
-        return status;
-      });
-    return statusPromise;
-  };
-
-  const tts: TtsState = { ready: false, modelId: 'kokoro-v1' };
-
-  if (api.registerProvider) {
-    api.registerProvider({
-      id: 'ci-hub',
-      label: 'CI Hub (Local)',
-      resolveSyntheticAuth: () => ({
-        available: true,
-        apiKey,
-      }),
-      catalog: {
-        order: 'simple',
-        run: async () => ({
-          provider: {
-            baseUrl: ollamaNativeUrl,
-            apiKey: 'ollama',
-            api: 'ollama',
-            models: await discoverLocalModels(api, ollamaNativeUrl, getInferenceStatus),
-          },
-        }),
-      },
-    });
-  }
-
-  if (api.registerSpeechProvider) {
-    // The Hub no longer proxies inference — point OpenClaw at the Ollama container's
-    // own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected into every
-    // Hub-installed app).
-    const inferenceBaseUrl = `${ollamaNativeUrl}/v1`;
-
-    api.registerSpeechProvider({
-      id: 'ci-hub',
-      label: 'CI Hub TTS (Local)',
-      // Reports false until the probe below confirms Lemonade has a loaded TTS model,
-      // so OpenClaw will not select this provider before it can actually serve.
-      isConfigured: () => tts.ready,
-      synthesize: async (req) => {
-        const response = await fetch(`${inferenceBaseUrl}/audio/speech`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: tts.modelId,
-            input: req.text,
-            voice: req.voice ?? 'default',
-          }),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => 'Unknown error');
-          api.log.error(`CI Hub TTS request failed (${response.status}): ${errorText.slice(0, 500)}`);
-          throw new Error(`CI Hub TTS request failed: ${response.status} ${response.statusText}`);
-        }
-
-        const audioBuffer = Buffer.from(await response.arrayBuffer());
-        return {
-          audioBuffer,
-          outputFormat: 'mp3',
-          fileExtension: '.mp3',
-          voiceCompatible: true,
-        };
-      },
-    });
-
-    // Only worth probing when there is a speech provider whose isConfigured() reads it.
-    void probeTtsAvailability(api, getInferenceStatus, tts);
-  }
-}
-
-/**
- * S-OC-1.1: discover inference capabilities via the authenticated MCP call
- * (hub_get_inference_status). The REST fallback only fires if that fails — and
- * /api/inference/status requires a Hub session the plugin lacks, so it typically
- * 401s; the MCP call is the plugin's working channel.
- */
-async function fetchInferenceStatus(
-  api: OpenClawPluginApi,
-  hubUrl: string,
-  mcpClient: McpClient,
-  mcpReady: Promise<unknown>,
-): Promise<HubInferenceStatus | null> {
-  await mcpReady;
-
-  let inferenceStatus: HubInferenceStatus | null = null;
-
-  if (mcpClient.isConnected()) {
-    try {
-      // callTool returns the MCP content envelope; unwrap it to the raw HubInferenceStatus.
-      // A null result (error/unparseable/wrong shape) falls through to the REST fallback.
-      inferenceStatus = asInferenceStatus(unwrapToolResult(await mcpClient.callTool('hub_get_inference_status', {})));
-    } catch {
-      api.log.debug('hub_get_inference_status not yet available — trying REST fallback');
-    }
-  }
-
-  if (!inferenceStatus) {
-    try {
-      const response = await fetchWithTimeout(`${hubUrl.replace(/\/$/, '')}/api/inference/status`, {});
-      if (response.ok) {
-        inferenceStatus = asInferenceStatus(await response.json());
-      }
-    } catch {
-      api.log.debug('Inference REST endpoint not available');
-    }
-  }
-
-  if (!inferenceStatus) {
-    api.log.info('Hub inference not available — skipping auto-configuration');
-    return null;
-  }
-
-  api.log.info(`Hub inference detected: tier=${inferenceStatus.hardwareTier}, models=${inferenceStatus.models.length}`);
-
-  // S-OC-2.1: If insufficient hardware, recommend cloud providers
-  if (inferenceStatus.hardwareTier === 'insufficient') {
-    api.log.warn(
-      'Hub hardware does not support local inference. ' +
-        'Configure a cloud provider in Hub Settings → AI → Cloud Providers. ' +
-        'GitHub Copilot is recommended (includes Claude, GPT, and Gemini under one subscription).',
-    );
-  }
-
-  // S-OC-2.2: If cloud credentials exist in Hub, log availability
-  const configuredCloud = inferenceStatus.cloudProviders.filter((p) => p.configured);
-  if (configuredCloud.length > 0) {
-    api.log.info(`Hub has ${configuredCloud.length} cloud provider(s) configured as fallback`);
-  }
-
-  return inferenceStatus;
-}
-
-/**
- * Prefer direct Ollama discovery so OpenClaw always receives the native model IDs it
- * must pass to the native Ollama API surface; fall back to the Hub's inference status.
- */
-async function discoverLocalModels(
-  api: OpenClawPluginApi,
-  ollamaNativeUrl: string,
-  getInferenceStatus: () => Promise<HubInferenceStatus | null>,
-): Promise<OpenClawModelEntry[]> {
-  const isEmbeddingModel = (id: string) => /embed/i.test(id);
-  let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
-
-  try {
-    const response = await fetchWithTimeout(`${ollamaNativeUrl}/api/tags`, {});
-    if (response.ok) {
-      const payload = (await response.json()) as { models?: Array<{ name?: string }> };
-      localModels = (payload.models ?? [])
-        .filter((model): model is { name: string } => typeof model.name === 'string' && model.name.length > 0 && !isEmbeddingModel(model.name))
-        .map((model) => ({
-          id: model.name,
-        }));
-    }
-  } catch {
-    api.log.debug('Direct Ollama model discovery unavailable — falling back to Hub inference status');
-  }
-
-  if (localModels.length === 0) {
-    const inferenceStatus = await getInferenceStatus();
-    localModels = (inferenceStatus?.models ?? [])
-      .filter((m) => m.local && m.modality.includes('text') && (m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned'))
-      .map((m) => ({
-        id: m.id,
-        context_window: m.context_window,
-        max_tokens: m.max_tokens,
-      }))
-      .filter((m) => m.id.includes(':'));
-  }
-
-  // Hardware-aware context window injected by the Hub (CI_LLM_NUM_CTX). Caps both the
-  // agent's token budget and the native Ollama `num_ctx`, so OpenClaw doesn't pack to
-  // Ollama's oversized memory-based default (e.g. 262144 on unified-memory APUs).
-  const hubNumCtx = Number.parseInt(process.env.CI_LLM_NUM_CTX ?? '', 10);
-  const numCtx = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : undefined;
-
-  const models = localModels.map((m) => {
-    // Never advertise / request more context than the model supports. CI_LLM_NUM_CTX is
-    // computed for the Hub's default chat model and may exceed a smaller model's window
-    // (which Ollama would reject). When the window is unknown (e.g. /api/tags discovery
-    // only gives the id), stay conservative at the prior 32768 default rather than the
-    // possibly-larger numCtx.
-    const DEFAULT_CTX = 32768;
-    const effCtx = numCtx ? Math.min(numCtx, m.context_window ?? DEFAULT_CTX) : undefined;
-    // Without an explicit num_ctx, advertise the historical default but never more than
-    // what Ollama will actually allocate for the model.
-    const contextWindow = effCtx ?? Math.min(DEFAULT_CTX, m.context_window ?? DEFAULT_CTX);
-    return {
-      id: m.id,
-      name: m.id,
-      reasoning: false,
-      input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow,
-      // Output budget can't exceed the total context window.
-      maxTokens: Math.min(m.max_tokens ?? 8192, contextWindow),
-      ...(effCtx ? { params: { num_ctx: effCtx } } : {}),
-    };
-  });
-
-  api.log.info(`CI Hub provider catalog resolved ${models.length} local model(s)`);
-  return models;
-}
-
-/** S-OC-3.1: mark TTS usable once Lemonade reports a loaded/pinned TTS model. */
-async function probeTtsAvailability(
-  api: OpenClawPluginApi,
-  getInferenceStatus: () => Promise<HubInferenceStatus | null>,
-  tts: TtsState,
-): Promise<void> {
-  try {
-    const inferenceStatus = await getInferenceStatus();
-    if (!inferenceStatus) return;
-
-    const ttsModels = inferenceStatus.models.filter((m) => m.local && m.modality.includes('tts') && (m.state === 'loaded' || m.state === 'pinned'));
-    const lemonadeBackend = inferenceStatus.backends.find((b) => b.type === 'lemonade');
-
-    if (ttsModels.length > 0 && lemonadeBackend?.running) {
-      tts.modelId = ttsModels[0]?.id ?? tts.modelId;
-      tts.ready = true;
-      api.log.info('CI Hub TTS available via OpenClaw speech provider');
-    }
-  } catch (error) {
-    api.log.warn(`TTS availability probe failed: ${describeError(error)}`);
   }
 }
