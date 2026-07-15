@@ -100,6 +100,12 @@ jobs:
         run: pnpm run test:e2e:ci
         env:
           SERVER_IP: localhost
+          # Pin the e2e port contract. vite's dev/preview defaults moved to 5005 (frontend)
+          # and 5004 (api proxy) in #753; Playwright and the backend still use the appliance
+          # ports, so export them here or the frontend webServer never comes up on :9091.
+          FRONTEND_PORT: "9091"
+          BACKEND_PORT: "3000"
+          API_PORT: "3000"
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 6543
           POSTGRES_USERNAME: companion
