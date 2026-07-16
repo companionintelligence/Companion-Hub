@@ -76,15 +76,21 @@ Xcode**, so the local swift-rs × Xcode-27 workaround below is **not** needed th
 
 ### Release signing (store-ready AAB / IPA)
 
+> Shipping to the stores? Start with **[`STORE-READINESS.md`](./STORE-READINESS.md)** —
+> the full submission checklist (what's done vs. what needs an account). Post-v1
+> plans live in **[`ROADMAP.md`](./ROADMAP.md)**.
+
 The default artifacts are for testing. A distributable build needs release
 signing, which is intentionally left out of the default workflow (no secrets to
 leak):
 
 - **Android AAB** — add a Play upload keystore as repo secrets
   (`ANDROID_KEY_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`,
-  `ANDROID_KEY_STORE_PASSWORD`), decode it in a step, point
-  `gen/android/keystore.properties` at it, and run `tauri android build`
-  (`--aab`) without `--debug`.
+  `ANDROID_KEY_STORE_PASSWORD`). The `android-release` job in
+  `mobile-build.yml` then decodes it, writes `gen/android/keystore.properties`
+  (which `app/build.gradle.kts` picks up to wire `signingConfigs.release`), and
+  runs `tauri android build --aab`. Without the secrets the job skips cleanly.
+  Trigger it from **Actions → Mobile Build → Run workflow**.
 - **iOS IPA** — add an Apple Developer signing cert + provisioning profile as
   secrets (e.g. via `apple-actions/import-codesign-certs`), set
   `bundle.iOS.developmentTeam` / `APPLE_DEVELOPMENT_TEAM`, and run
