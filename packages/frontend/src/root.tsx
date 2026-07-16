@@ -17,7 +17,7 @@ import { TranslatableError } from './types/error.types';
 import { clearStaleServerSession, getTauriSessionId } from './lib/api-fetch';
 import { refreshHubSessionIfDue } from './lib/hub-session-refresh';
 import { handleSessionExpired } from './lib/session-expired';
-import { getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from './lib/mobile-connection';
+import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from './lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -27,20 +27,51 @@ import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
 
+/** How long the mobile bootstrap spinner runs before offering a way out. */
+const MOBILE_SWITCH_HUB_ESCAPE_MS = 8000;
+
 export function DesktopStartupFallback() {
   // Mobile is a thin client connecting to a *remote* Hub — there's no local API,
   // so the desktop copy would be misleading.
-  const message = isTauriMobileSync()
+  const isMobile = isTauriMobileSync();
+  const message = isMobile
     ? safeI18nText('ROOT_CONNECTING', 'Connecting…')
     : safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...');
+
+  // Escape hatch: a returning mobile user whose stored Hub is unreachable would
+  // otherwise spin here forever (the '/' loader returns null while the Hub's
+  // registration status is unavailable, and the only Switch Hub UI lives behind
+  // a working Hub session). After a few seconds, offer the Hub picker.
+  const [showSwitchHub, setShowSwitchHub] = useState(false);
+  useEffect(() => {
+    if (!isMobile || !getHubBaseUrlSync()) return;
+    const id = window.setTimeout(() => setShowSwitchHub(true), MOBILE_SWITCH_HUB_ESCAPE_MS);
+    return () => window.clearTimeout(id);
+  }, [isMobile]);
+
   return (
     <main
       id="root"
-      className="safe-area-inset flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground"
+      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background text-sm text-muted-foreground"
       role="status"
       aria-busy="true"
     >
       {message}
+      {showSwitchHub && (
+        <div className="flex flex-col items-center gap-3">
+          <span>{safeI18nText('MOBILE_CONNECT_HUB_UNREACHABLE_HINT', "Can't reach your Hub.")}</span>
+          <button
+            type="button"
+            data-testid="startup-switch-hub-btn"
+            className="min-h-[44px] rounded-md border border-input px-4 text-foreground transition-colors hover:bg-accent"
+            onClick={() => {
+              void clearHubConnection().finally(() => window.location.assign('/connect'));
+            }}
+          >
+            {safeI18nText('MOBILE_CONNECT_SWITCH_HUB', 'Switch Hub')}
+          </button>
+        </div>
+      )}
     </main>
   );
 }

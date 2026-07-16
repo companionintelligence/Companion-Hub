@@ -162,9 +162,13 @@ export default function ConnectPage() {
                     <span className="h-px flex-1 bg-border" />
                   </div>
                   <form onSubmit={handleSignIn} className="flex flex-col gap-4">
+                    {/* NB: Input applies className to its wrapper, so the 44px
+                        touch minimum goes on the <input> itself via style. */}
                     <Input
                       type="email"
                       className={TOUCH}
+                      style={{ minHeight: 44 }}
+                      aria-label={t('MOBILE_CONNECT_EMAIL')}
                       placeholder="you@example.com"
                       autoComplete="username"
                       inputMode="email"
@@ -174,6 +178,7 @@ export default function ConnectPage() {
                     />
                     <PasswordInput
                       className={TOUCH}
+                      aria-label={t('MOBILE_CONNECT_PASSWORD')}
                       placeholder={t('MOBILE_CONNECT_PASSWORD')}
                       autoComplete="current-password"
                       value={password}
@@ -184,13 +189,19 @@ export default function ConnectPage() {
                       <Input
                         type="url"
                         className={TOUCH}
+                        style={{ minHeight: 44 }}
+                        aria-label={t('MOBILE_CONNECT_PORTAL_URL')}
                         placeholder={t('MOBILE_CONNECT_PORTAL_URL')}
                         inputMode="url"
                         value={portalUrl}
                         onChange={(e) => setPortalUrl(e.target.value)}
                       />
                     ) : (
-                      <button type="button" className="self-start py-2 text-xs text-muted-foreground underline" onClick={() => setShowAdvanced(true)}>
+                      <button
+                        type="button"
+                        className={`self-start py-2 text-xs text-muted-foreground underline ${TOUCH}`}
+                        onClick={() => setShowAdvanced(true)}
+                      >
                         {t('MOBILE_CONNECT_ADVANCED')}
                       </button>
                     )}
@@ -226,7 +237,7 @@ export default function ConnectPage() {
                         <LoadingSpinner className="size-4 shrink-0" />
                       ) : (
                         <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${active ? 'bg-green-500/15 text-green-600 dark:text-green-400' : 'bg-muted text-muted-foreground'}`}
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-sm ${active ? 'bg-green-500/15 text-green-600 dark:text-green-400' : 'bg-muted text-foreground/80'}`}
                         >
                           {reachable ? device.status : t('MOBILE_CONNECT_UNREACHABLE')}
                         </span>

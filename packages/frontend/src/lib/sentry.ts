@@ -15,8 +15,14 @@ function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function getComponentTag(): 'browser-web' | 'desktop-web' {
-  return isTauri() ? 'desktop-web' : 'browser-web';
+function getComponentTag(): 'browser-web' | 'desktop-web' | 'ios-web' | 'android-web' {
+  if (!isTauri()) return 'browser-web';
+  // Same UA detection as mobile-connection.ts detectMobileSync() — without it,
+  // every mobile Tauri event would be mislabeled 'desktop-web'.
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
+  if (/iphone|ipad|ipod/i.test(ua)) return 'ios-web';
+  if (/android/i.test(ua)) return 'android-web';
+  return 'desktop-web';
 }
 
 function normalizeDeviceId(deviceId: string | null | undefined): string | null {

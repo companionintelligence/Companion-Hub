@@ -5,7 +5,11 @@
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!-- allowBackup=false: the WebView localStorage holds the Hub session token
+         and the Tauri stores hold the chosen Hub URL — keep them out of Google
+         auto-backups until they move to Keystore-backed storage. -->
     <application
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.ci_os_hub_mobile"
@@ -15,6 +19,7 @@
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

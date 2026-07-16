@@ -99,6 +99,23 @@ describe('frontend sentry', () => {
     expect(captureException).toHaveBeenCalledWith(expect.any(Error));
   });
 
+  it.each([
+    ['iPhone', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15', 'ios-web'],
+    ['Android', 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36', 'android-web'],
+  ])('tags mobile Tauri errors from an %s webview by platform, not desktop-web', async (_name, ua, expectedTag) => {
+    (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    const originalUa = navigator.userAgent;
+    Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true });
+    try {
+      const { captureHubException } = await import('./sentry');
+      captureHubException(new Error('boom'), { surface: 'test' });
+      expect(setTag).toHaveBeenCalledWith('component', expectedTag);
+      expect(setTag).not.toHaveBeenCalledWith('component', 'desktop-web');
+    } finally {
+      Object.defineProperty(window.navigator, 'userAgent', { value: originalUa, configurable: true });
+    }
+  });
+
   it('stores and applies an explicit device id', async () => {
     const { setHubSentryDeviceId } = await import('./sentry');
 

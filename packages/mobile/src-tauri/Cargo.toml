@@ -24,7 +24,10 @@ tauri-build = { version = "2", features = [] }
 # the React frontend and connects to a remote Hub appliance over the network.
 tauri = { version = "2", features = ["image-png", "devtools"] }
 tauri-plugin-os = "2"
-tauri-plugin-notification = "2"
+# NOTE: tauri-plugin-notification was removed until notifications are a real
+# feature (see packages/mobile/ROADMAP.md — push epic). It dragged
+# POST_NOTIFICATIONS / RECEIVE_BOOT_COMPLETED / WAKE_LOCK into the merged
+# Android manifest with zero frontend callers.
 tauri-plugin-store = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"

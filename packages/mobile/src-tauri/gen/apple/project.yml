@@ -39,6 +39,9 @@ targets:
         buildPhase: resources
         type: folder
       - path: LaunchScreen.storyboard
+      # App Store privacy manifest — must land in the bundle root as a resource.
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: ci-os-hub-mobile_iOS/Info.plist
       properties:
@@ -67,11 +70,20 @@ targets:
           UISceneConfigurations:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default Configuration
-        # Dev: `tauri ios dev` serves the frontend over http://127.0.0.1:PORT,
-        # which iOS ATS blocks (only `localhost` is auto-excepted). Release builds
-        # load embedded assets via tauri:// so this only affects local dev.
+        # NSAllowsLocalNetworking is needed in BOTH dev and release:
+        # - dev: `tauri ios dev` serves the frontend over http://127.0.0.1:PORT,
+        #   which ATS blocks (only `localhost` is auto-excepted);
+        # - release: connecting to a LAN Hub appliance (http://192.168.x/10.x per
+        #   capabilities/default.json) depends on this narrow exception too.
+        # It is the local-only carve-out — NOT NSAllowsArbitraryLoads — and needs
+        # no App Review justification. Do not remove during cleanup.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Connecting to a LAN Hub triggers iOS's Local Network privacy prompt;
+        # Apple requires an app-provided purpose string.
+        NSLocalNetworkUsageDescription: Companion Hub connects to your Hub appliance on your local network.
+        # Standard TLS only — pre-answers App Store Connect export compliance.
+        ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements
     scheme:

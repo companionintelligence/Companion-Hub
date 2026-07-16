@@ -18,6 +18,7 @@
 		59B13AB2444A52DD65A208D2 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */; };
 		6A4C459E688BEE5F125D0429 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7A4DB32945F336FC5CF023F7 /* Security.framework */; };
 		75318803EB8E93CF09E91A2F /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 250314429D9F32E2F8DF0F7A /* Metal.framework */; };
+		8A9C2DA3085061DF45DF6B20 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B8BDE4DD8FD81BC09A2FAD50 /* PrivacyInfo.xcprivacy */; };
 		C016559BE676D88A8D67C74F /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 122EE36778473B804E1F00E9 /* QuartzCore.framework */; };
 		E83CCA3A60D765EEE68FD7D5 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */; };
 /* End PBXBuildFile section */
@@ -40,6 +41,7 @@
 		916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		B0383C943636A1376A38F184 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		B8BDE4DD8FD81BC09A2FAD50 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		EE09F9A3AA7528C1D45D4DD7 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -100,6 +102,7 @@
 				29487BAB3F4CE9A9ABB2E0EC /* assets */,
 				0CC08BC13B21538D2C5B5168 /* Assets.xcassets */,
 				DF7B083C1647FAB3D7140197 /* LaunchScreen.storyboard */,
+				B8BDE4DD8FD81BC09A2FAD50 /* PrivacyInfo.xcprivacy */,
 				A0055E4233C729504934CAFC /* ci-os-hub-mobile_iOS */,
 				2FF896ADA45FAB86D6F5CE8C /* Externals */,
 				27CA3D1555F94FD0520F6055 /* Sources */,
@@ -221,6 +224,7 @@
 			files = (
 				1D1F0190595E356E4524F7F3 /* Assets.xcassets in Resources */,
 				E83CCA3A60D765EEE68FD7D5 /* LaunchScreen.storyboard in Resources */,
+				8A9C2DA3085061DF45DF6B20 /* PrivacyInfo.xcprivacy in Resources */,
 				18AB5F9B0C6AE434AFD3286C /* assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
