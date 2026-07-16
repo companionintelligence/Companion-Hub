@@ -4,6 +4,7 @@ import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinn
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { buildAppAccessPoints } from '@/modules/app/components/app-access-points/app-access-points';
+import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -32,8 +33,13 @@ const POLL_TIMEOUT_MS = 180_000;
 /** Trusted install URN of the first-party Companion Memory app (logo tile). */
 const CI_MEMORY_URN = 'ci-memory:ci-marketplace';
 
-/** Statuses that mean the restart is not going to complete on its own. */
-const DOWN_STATUSES = new Set(['stopped', 'missing', 'install_failed', 'uninstalling', 'uninstalled']);
+/**
+ * Statuses that mean the restart is not going to complete on its own. Typed
+ * against the generated status union so a member that drifts out of the enum
+ * (or a typo) is a compile error, not dead code; post-uninstall shows up as
+ * `app: null`, handled separately.
+ */
+const DOWN_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['stopped', 'missing', 'install_failed', 'uninstalling']);
 
 /**
  * Validate the `?next=` destination. The backend redirects here with an
@@ -70,9 +76,13 @@ export function resolveSafeTarget(
     }
   }
 
+  // Fall back ONLY to an access point that is actually serving the app.
+  // A derivable-but-unprovisioned URL (state 'available'/'unavailable' with a
+  // non-null url) would auto-navigate the user to a dead host; null instead
+  // keeps them on the page's safe dashboard action.
   const active = accessPoints.find((point) => point.state === 'active' && point.url);
 
-  return active?.url ?? urls[0] ?? null;
+  return active?.url ?? null;
 }
 
 type Phase = 'connecting' | 'ready' | 'error' | 'timeout';
@@ -85,7 +95,18 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
   const { data, isError } = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
-    refetchInterval: POLL_INTERVAL_MS,
+    // Poll only while the outcome is still open. Terminal states (running, app
+    // row gone, down-status) stop the interval — otherwise an abandoned tab
+    // (error card, timeout, ready-without-target) would hit the backend every
+    // 2s forever. While non-terminal, polling continues even past the page's
+    // own timeout so a late recovery still self-resolves ("ready wins").
+    refetchInterval: (query) => {
+      const polled = query.state.data;
+      const polledStatus = polled?.app?.status;
+      const terminal = polledStatus === 'running' || (polled && !polled.app) || (polledStatus !== undefined && DOWN_STATUSES.has(polledStatus));
+
+      return terminal ? false : POLL_INTERVAL_MS;
+    },
     refetchIntervalInBackground: true,
   });
 
@@ -96,7 +117,10 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
   // The allowlist/fallback must not be derived from the provider's loading
   // defaults (empty userSettings) — hold the hop until the context is real.
-  const contextReady = !appContext.isLoading;
+  // isError covers the failed-query case, where isLoading is false but the
+  // provider is still serving those same defaults; a persistent failure lands
+  // in the timeout phase, whose dashboard-only fallback is safe.
+  const contextReady = !appContext.isLoading && !appContext.isError;
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = appContext;
 
   const target = useMemo(() => {

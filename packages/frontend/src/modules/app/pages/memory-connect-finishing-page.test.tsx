@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, useUserContext, useNavigate, searchParams, buildAppAccessPoints } = vi.hoisted(() => ({
+const { useQuery, useUserContext, useAppContext, useNavigate, searchParams, buildAppAccessPoints } = vi.hoisted(() => ({
   useQuery: vi.fn(),
   useUserContext: vi.fn(),
+  useAppContext: vi.fn(),
   useNavigate: vi.fn(),
   searchParams: { current: new URLSearchParams() },
   buildAppAccessPoints: vi.fn(),
@@ -39,22 +40,25 @@ vi.mock('@/context/user-context', () => ({
 
 vi.mock('@/context/app-context', () => ({
   AppContextProvider: ({ children }: { children: React.ReactNode }) => children,
-  useAppContext: () => ({
-    isLoading: false,
-    userSettings: {
-      sslPort: 443,
-      internalIp: '0.0.0.0',
-      domain: 'example.org',
-      ciHubOrganizationSlug: 'companion',
-      ciHubDeviceSlug: 'studio',
-      ciHubHubSubdomain: 'hub-studio-companion',
-    },
-    cloudflareAvailable: true,
-    tailscaleAvailable: false,
-    tailscaleNodeFqdn: null,
-    tailscaleHttpsEnabled: false,
-  }),
+  useAppContext,
 }));
+
+const APP_CONTEXT = {
+  isLoading: false,
+  isError: false,
+  userSettings: {
+    sslPort: 443,
+    internalIp: '0.0.0.0',
+    domain: 'example.org',
+    ciHubOrganizationSlug: 'companion',
+    ciHubDeviceSlug: 'studio',
+    ciHubHubSubdomain: 'hub-studio-companion',
+  },
+  cloudflareAvailable: true,
+  tailscaleAvailable: false,
+  tailscaleNodeFqdn: null,
+  tailscaleHttpsEnabled: false,
+};
 
 // The access-point builder pulls in the whole app-details component graph; the
 // page only needs its {url, state} output, and resolveSafeTarget's own origin
@@ -93,6 +97,7 @@ describe('MemoryConnectFinishingPage', () => {
     vi.clearAllMocks();
     vi.stubGlobal('location', { ...window.location, origin: 'https://hub.example.org', assign: vi.fn() });
     useUserContext.mockReturnValue({ isLoggedIn: true, isLoading: false });
+    useAppContext.mockReturnValue(APP_CONTEXT);
     buildAppAccessPoints.mockReturnValue([{ key: 'public', url: APP_URL, state: 'active' }]);
     setParams({ app: APP_URN, next: APP_URL });
     useQuery.mockReturnValue(appData('restarting'));
@@ -198,6 +203,22 @@ describe('MemoryConnectFinishingPage', () => {
     expect(window.location.assign).not.toHaveBeenCalled();
   });
 
+  it('never navigates while the app-context query has failed (allowlist would be built from empty defaults)', () => {
+    vi.useFakeTimers();
+    useQuery.mockReturnValue(appData('running'));
+    useAppContext.mockReturnValue({ ...APP_CONTEXT, isError: true });
+
+    render(<MemoryConnectFinishingPage />);
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    // Not ready without real settings: keeps the connecting card, no auto-hop.
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_TITLE')).toBeInTheDocument();
+    expect(window.location.assign).not.toHaveBeenCalled();
+  });
+
   it('shows the page loader while the session is still resolving', () => {
     useUserContext.mockReturnValue({ isLoggedIn: false, isLoading: true });
 
@@ -257,8 +278,11 @@ describe('resolveSafeTarget', () => {
     expect(resolveSafeTarget(null, shuffled, origin)).toBe('https://active.example.org/');
   });
 
-  it('falls back to the first URL when nothing is active, and null when there is nothing at all', () => {
-    expect(resolveSafeTarget(null, [{ url: 'https://only.example.org/', state: 'available' }], origin)).toBe('https://only.example.org/');
+  it('returns null when no access point is ACTIVE — never auto-navigates to a derivable-but-dead URL', () => {
+    // 'available'/'unavailable' points carry a derived url that may have no
+    // tunnel/DNS route behind it; falling back to one would land on a 404/530.
+    expect(resolveSafeTarget(null, [{ url: 'https://only.example.org/', state: 'available' }], origin)).toBeNull();
+    expect(resolveSafeTarget(null, [{ url: 'https://dead.example.org/', state: 'unavailable' }], origin)).toBeNull();
     expect(resolveSafeTarget(null, [], origin)).toBeNull();
   });
 });

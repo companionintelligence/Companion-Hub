@@ -91,7 +91,7 @@ export class MemoryConnectController {
     // re-appears) rather than dead-ending on the Hub dashboard.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect(this.service.abandonConnect(state));
+      res.redirect(this.service.abandonConnect(state, this.currentUserId(req)));
 
       return;
     }
