@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { isMemoryProviderApp } from './memory-provider.predicate';
@@ -39,8 +40,21 @@ export interface MemoryConsumerEnv {
  */
 export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
 
-/** App statuses in which ci-memory is booting / coming up (not reachable yet, but on its way). */
-const PROVIDER_STARTING_STATUSES = new Set(['installing', 'starting', 'restarting', 'updating', 'restoring', 'backing_up', 'resetting']);
+/**
+ * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
+ * its way). Typed against `AppStatus` — like the sibling `DOWN_APP_STATUSES` — so a
+ * typo or a value newly added to the enum is a compile error here rather than a
+ * silent fall-through to "offline".
+ */
+const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
+  'installing',
+  'starting',
+  'restarting',
+  'updating',
+  'restoring',
+  'backing_up',
+  'resetting',
+]);
 
 /**
  * Resolves the installed Companion Memory provider and classifies memory
@@ -132,9 +146,7 @@ export class MemoryProviderResolver {
   async getProviderRuntimeStatus(): Promise<MemoryProviderRuntimeStatus> {
     const installed = await this.appsService.getInstalledAppsLite();
 
-    const row = installed.find((r: { appName: string; appStoreSlug: string; status?: string }) =>
-      isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }),
-    ) as { status?: string } | undefined;
+    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
 
     if (!row) {
       return 'absent';
@@ -144,7 +156,7 @@ export class MemoryProviderResolver {
       return 'ready';
     }
 
-    return PROVIDER_STARTING_STATUSES.has(row.status ?? '') ? 'starting' : 'offline';
+    return PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline';
   }
 
   /**

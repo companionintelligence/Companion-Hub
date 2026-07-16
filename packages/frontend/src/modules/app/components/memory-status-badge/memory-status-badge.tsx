@@ -26,9 +26,12 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   const pill = 'inline-flex shrink-0 items-center rounded-full border px-2 py-1 text-[11px] font-medium';
   const mutedPill = 'border-border/70 bg-muted/30 text-muted-foreground';
 
-  // A live connection outranks provider readiness: the app holds a valid key, so a
-  // momentarily-down ci-memory shouldn't downgrade the app to "not connected".
-  if (connected) {
+  // A live connection outranks a merely-down provider: the app holds a valid key,
+  // so a momentarily starting/offline ci-memory shouldn't downgrade it to "not
+  // connected". But require the provider to still exist — if ci-memory was
+  // uninstalled (absent) the connection is dead, so fall through to "not installed"
+  // rather than showing a green "connected" pill for a provider that is gone.
+  if (connected && memoryInstalled) {
     return (
       <span className={cn(pill, 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400')}>
         <CheckCircle2 className="mr-1 h-3.5 w-3.5" />

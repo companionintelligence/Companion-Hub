@@ -61,4 +61,13 @@ describe('MemoryStatusBadge', () => {
     render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
     expect(screen.getByText('MEMORY_CONNECT_BADGE_CONNECTED')).toBeInTheDocument();
   });
+
+  it('does NOT show "connected" when the connection is stale and ci-memory has been uninstalled (provider absent)', () => {
+    // e.g. a swallowed/raced consumer-clear after ci-memory uninstall leaves state='connected'
+    // with the provider gone — the badge must report "not installed", not a green connected pill.
+    mockConnection({ connected: true, memoryInstalled: false, providerStatus: 'absent' });
+    render(<MemoryStatusBadge appUrn="ci-openclaw:local" />);
+    expect(screen.getByText('MEMORY_CONNECT_BADGE_NOT_INSTALLED')).toBeInTheDocument();
+    expect(screen.queryByText('MEMORY_CONNECT_BADGE_CONNECTED')).not.toBeInTheDocument();
+  });
 });
