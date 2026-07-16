@@ -26,6 +26,7 @@ import {
 } from './lib/register-hub';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
+import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
@@ -109,6 +110,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       {
         command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>]`,
         description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
+      },
+      {
+        command: `${BASE_COMMAND} device-id [--from-hub]`,
+        description: "Print this machine's stable device ID (default: local resolver; --from-hub asks the running Hub API)",
       },
     ],
   },
@@ -1041,6 +1046,40 @@ export async function setupHub(env: HubEnv) {
 
 export function printConfig(env: HubEnv) {
   printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
+}
+
+export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } = {}) {
+  if (options.fromHub) {
+    const env = options.env ?? 'local';
+    const ctx = resolveHubContext(env);
+    const apiBase = resolveRegisterApiBase(ctx.envFile);
+    try {
+      const deviceInfo = await fetchDeviceId(apiBase);
+      if (!deviceInfo.device_id) {
+        printMessageBox(
+          'Device ID unavailable',
+          ['The running Hub could not resolve a device ID.', 'Check backend logs and ensure the appliance initialized correctly.'],
+          'red',
+        );
+        return;
+      }
+      console.log(deviceInfo.device_id);
+      return;
+    } catch (error) {
+      printMessageBox(
+        'Device ID lookup failed',
+        [error instanceof Error ? error.message : String(error), `Ensure the Hub is running: ${BASE_COMMAND} up ${env}`],
+        'red',
+      );
+      return;
+    }
+  }
+
+  try {
+    console.log(await resolveLocalDeviceId());
+  } catch (error) {
+    printMessageBox('Device ID lookup failed', [error instanceof Error ? error.message : String(error)], 'red');
+  }
 }
 
 export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
