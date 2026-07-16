@@ -3,6 +3,7 @@ import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey } from '@/
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
+import { CI_MEMORY_APP_NAME } from './memory-provider';
 import { MEMORY_STATUS_QUERY_PREFIX } from './use-memory-connection';
 import { updateInstallationProgress } from './use-installation-progress';
 
@@ -12,7 +13,7 @@ import { updateInstallationProgress } from './use-installation-progress';
  * (installing→ready, running→offline, …) — but those queries are keyed by the
  * CONSUMER's urn, so ci-memory's own SSE event never touches them on its own.
  */
-const MEMORY_PROVIDER_APP_NAME = 'ci-memory';
+const MEMORY_PROVIDER_APP_NAME = CI_MEMORY_APP_NAME;
 
 export type AppInstallErrorCache = {
   message: string;

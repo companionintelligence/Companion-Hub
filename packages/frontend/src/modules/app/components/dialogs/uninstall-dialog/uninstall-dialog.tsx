@@ -6,6 +6,7 @@ import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import { useMemoryConsumers } from '@/modules/app/helpers/use-memory-connection';
+import { MemoryProviderForceWarning } from '../memory-provider-force-warning';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { AlertTriangle } from 'lucide-react';
@@ -69,23 +70,12 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
           {requiresForce && (
-            <div className="mt-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-start">
-              <p className="font-medium text-destructive">{t('APP_UNINSTALL_MEMORY_PROVIDER_WARNING', { count: consumers.length })}</p>
-              <ul className="mt-1 list-disc ps-5 text-muted-foreground">
-                {consumers.map((c) => (
-                  <li key={c.appUrn}>{c.name}</li>
-                ))}
-              </ul>
-              <p className="mt-2 text-muted-foreground">{t('APP_UNINSTALL_MEMORY_PROVIDER_CONSEQUENCE')}</p>
-              <div className="mt-3">
-                <Switch
-                  name="uninstall-force-confirm"
-                  checked={forceConfirmed}
-                  onCheckedChange={setForceConfirmed}
-                  label={t('APP_UNINSTALL_MEMORY_PROVIDER_FORCE_LABEL')}
-                />
-              </div>
-            </div>
+            <MemoryProviderForceWarning
+              consumers={consumers}
+              forceConfirmed={forceConfirmed}
+              onForceConfirmedChange={setForceConfirmed}
+              switchName="uninstall-force-confirm"
+            />
           )}
           <div className="flex justify-center pt-3">
             <Switch
