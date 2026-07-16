@@ -306,8 +306,20 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Handle the browser returning from ci-memory: validate `state`, exchange the
-   * one-time code for the key (server-to-server), persist it, apply it to the
-   * app (regenerate env + restart), and return where to send the browser next.
+   * one-time code for the key (server-to-server), persist it, kick off the
+   * apply (regenerate env + restart), and return where to send the browser next.
+   *
+   * The restart is NOT awaited here — a compose restart takes tens of seconds,
+   * and holding the browser's top-level navigation open that long is how a
+   * routine client-side network blip turns into an aborted callback (and a
+   * Cloudflare 524 past ~100s). Instead the browser is sent to the SPA's
+   * `/memory-connect/finishing` interstitial, which watches the app's status
+   * and forwards to `next` once it is running again.
+   *
+   * A replayed `state` (the browser refreshing the callback URL after an
+   * aborted navigation) is recognized via the store's tombstone and routed to
+   * the same interstitial WITHOUT re-exchanging — the code is single-use and
+   * the credential is already stored.
    *
    * Only an unknown/expired `state` throws (there is no app to return to). Once
    * the state is resolved, ANY downstream failure (provider gone, app mismatch,
@@ -318,7 +330,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
     const attempt = this.pending.consume(state);
 
-    if (!attempt) {
+    if (attempt.outcome === 'unknown') {
       throw new BadRequestException('Invalid or expired connect state');
     }
 
@@ -326,11 +338,18 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // callback must be the SAME Hub user who started the flow. On the single-owner
     // appliance this always holds; on a multi-user Hub it stops a low-priv user
     // from binding the owner's app to the attacker's memory account (or vice
-    // versa). No key is exchanged when it fails.
+    // versa). No key is exchanged when it fails. Applied to replays too — a
+    // different user replaying a consumed state learns nothing but the app URL.
     if (attempt.userId !== currentUserId) {
       this.logger.error(`[MemoryConnect] callback user mismatch for ${attempt.appUrn}: started by ${attempt.userId}, completed by ${currentUserId}`);
 
       return { next: attempt.next, error: true };
+    }
+
+    if (attempt.outcome === 'replayed') {
+      this.logger.info(`[MemoryConnect] callback replayed for ${attempt.appUrn}; skipping exchange`);
+
+      return { next: this.buildFinishingPath(attempt.appUrn, attempt.next) };
     }
 
     const provider = await this.resolver.findProvider();
@@ -359,8 +378,14 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       // Store the internal URL as CI_SERVER_URL — the agent container reaches
       // ci-memory over the same shared docker network the Hub used for exchange.
       await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
-      await this.applyAndRestart(attempt.appUrn);
+      const applied = await this.applyAndScheduleRestart(attempt.appUrn);
 
+      if (applied === 'restarting') {
+        return { next: this.buildFinishingPath(attempt.appUrn, attempt.next) };
+      }
+
+      // 'deferred' (app is down; env rewritten in place) or 'failed' — nothing is
+      // restarting for the interstitial to watch, so land on the app directly.
       return { next: attempt.next };
     } catch (err) {
       this.logger.error(`[MemoryConnect] exchange failed for ${attempt.appUrn}`, err);
@@ -372,12 +397,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * Abandon a pending connect (the user denied consent on ci-memory, or an
    * upstream error): free the pending `state` and return where to send the
-   * browser — the originating app if the state is still known, else the Hub.
+   * browser — the originating app if the state is still known (including a
+   * refresh of the deny redirect, via the tombstone), else the Hub.
    */
   abandonConnect(state: string | undefined): string {
     const attempt = state ? this.pending.consume(state) : null;
 
-    return attempt?.next ?? '/';
+    return attempt && attempt.outcome !== 'unknown' ? attempt.next : '/';
   }
 
   /**
@@ -634,6 +660,58 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const hubOrigin = await this.hubOrigin();
 
     return hubOrigin ? `${hubOrigin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}` : null;
+  }
+
+  /**
+   * The SPA interstitial that watches the app come back up after a connect,
+   * then forwards to `next`. Relative — the callback redirect and the SPA share
+   * the Hub origin. `next` was already validated by resolveSafeNext at
+   * startConnect; the page re-checks it client-side before navigating.
+   */
+  private buildFinishingPath(appUrn: AppUrn, next: string): string {
+    return `/memory-connect/finishing?${new URLSearchParams({ app: appUrn, next }).toString()}`;
+  }
+
+  /**
+   * The browser-callback variant of {@link applyAndRestart}: apply the app's
+   * connection state, but only SCHEDULE the restart of a live app rather than
+   * waiting out the compose cycle — the caller is holding a top-level browser
+   * navigation open, and `restartApp` resolves as soon as the app's status has
+   * flipped to `restarting` (its detached completion handler does the
+   * success/error bookkeeping + SSE). That ordering matters: by the time the
+   * browser reaches the finishing interstitial, a status poll can never read a
+   * stale `running`.
+   *
+   * A DOWN app gets its env rewritten in place, exactly as in applyAndRestart
+   * ('deferred'). `skipPull` — this restart exists to pick up an env change;
+   * pulling a newer image would only widen the window the user waits out.
+   */
+  private async applyAndScheduleRestart(appUrn: AppUrn): Promise<'restarting' | 'deferred' | 'failed'> {
+    try {
+      const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+
+      if (await this.isAppDown(appUrn)) {
+        const applied = await lifecycle.regenerateAppEnv(appUrn);
+
+        if (!applied) {
+          this.logger.error(`[MemoryConnect] could not rewrite ${appUrn}'s env while it is down; its creds are stale on disk`);
+
+          return 'failed';
+        }
+
+        this.logger.debug(`[MemoryConnect] ${appUrn} is not running — env rewritten in place; it applies on next start`);
+
+        return 'deferred';
+      }
+
+      await lifecycle.restartApp({ appUrn, skipPull: true });
+
+      return 'restarting';
+    } catch (err) {
+      this.logger.error(`[MemoryConnect] failed to apply the connection change to ${appUrn}`, err);
+
+      return 'failed';
+    }
   }
 
   /**

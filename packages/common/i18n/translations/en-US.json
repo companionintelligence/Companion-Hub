@@ -1597,5 +1597,13 @@
   "MEMORY_CONNECT_DISCONNECTED_TOAST": "Disconnected from Companion Memory.",
   "MEMORY_CONNECT_DISCONNECT_ERROR": "Could not disconnect. Please try again.",
   "MEMORY_CONNECT_DISCONNECT_TITLE": "Disconnect {{name}} from Companion Memory?",
-  "MEMORY_CONNECT_DISCONNECT_CONFIRM": "This revokes the app's access to your Companion Memory and restarts it. You can reconnect at any time."
+  "MEMORY_CONNECT_DISCONNECT_CONFIRM": "This revokes the app's access to your Companion Memory and restarts it. You can reconnect at any time.",
+  "MEMORY_CONNECT_FINISHING_TITLE": "Connecting Companion Memory",
+  "MEMORY_CONNECT_FINISHING_DESC": "Restarting {{name}} to apply your Companion Memory connection. This usually takes under a minute…",
+  "MEMORY_CONNECT_FINISHING_READY": "Connected! Opening {{name}}…",
+  "MEMORY_CONNECT_FINISHING_ERROR_TITLE": "The app didn't come back up",
+  "MEMORY_CONNECT_FINISHING_ERROR_DESC": "Your Companion Memory connection was saved, but {{name}} failed to restart. You can try opening it anyway, or manage it from the dashboard.",
+  "MEMORY_CONNECT_FINISHING_TIMEOUT_DESC": "Your Companion Memory connection was saved, but {{name}} is taking longer than expected to restart.",
+  "MEMORY_CONNECT_FINISHING_OPEN_ANYWAY": "Open app anyway",
+  "MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD": "Back to dashboard"
 }
