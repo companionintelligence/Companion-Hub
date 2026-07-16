@@ -3,17 +3,27 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
+/** Coarse ci-memory lifecycle, mirrors the backend MemoryProviderRuntimeStatus. */
+export type MemoryProviderStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
 export interface MemoryConnectionStatus {
   applicable: boolean;
+  /** A ci-memory row exists (installing/stopped included) — else nothing to connect to. */
   memoryInstalled: boolean;
+  /** ci-memory is actually running, i.e. a connect can succeed right now. */
+  memoryReady: boolean;
+  /** Why it isn't ready, so the UI can say "starting" vs "offline". */
+  providerStatus: MemoryProviderStatus;
   state: 'unconfigured' | 'connected' | 'skipped' | 'manual';
   connectUrl: string | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
 }
 
-export const memoryStatusQueryKey = (appUrn: string) => ['memory-connection-status', appUrn];
+/** Query-key prefix, shared with the SSE cache so ci-memory events can invalidate every consumer's status. */
+export const MEMORY_STATUS_QUERY_PREFIX = 'memory-connection-status';
+export const memoryStatusQueryKey = (appUrn: string) => [MEMORY_STATUS_QUERY_PREFIX, appUrn];
 
 /**
  * Shared Companion Memory connection state for an app, used by both the
@@ -36,6 +46,16 @@ export function useMemoryConnection(appUrn: string) {
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
+    // While Companion Memory is installed but not yet running (installing / booting
+    // / stopped), poll so the badge + Connect button flip to ready shortly after it
+    // comes up — the status is keyed by THIS app's urn, so ci-memory's own status
+    // change doesn't refetch it on its own. The SSE cache also invalidates this on
+    // ci-memory lifecycle events (instant); this is the safety net if one is missed.
+    // Off once ready (or absent), so a settled page doesn't poll.
+    refetchInterval: (q) => {
+      const data = q.state.data as MemoryConnectionStatus | null | undefined;
+      return data?.applicable && data.memoryInstalled && !data.memoryReady ? 10_000 : false;
+    },
   });
 
   const disconnect = useMutation({
@@ -66,6 +86,10 @@ export function useMemoryConnection(appUrn: string) {
     isLoading: query.isLoading,
     connected: status?.state === 'connected',
     memoryInstalled: !!status?.memoryInstalled,
+    /** ci-memory is running — a connect can succeed now. */
+    memoryReady: !!status?.memoryReady,
+    /** Coarse provider lifecycle for precise "starting"/"offline" copy. */
+    providerStatus: status?.providerStatus ?? 'absent',
     connectUrl: status?.connectUrl ?? null,
     connect,
     disconnect: () => disconnect.mutate(),

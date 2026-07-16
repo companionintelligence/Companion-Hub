@@ -205,6 +205,15 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/login');
   }
 
+  // Carry a memory-connect result marker (set by the Hub's memory-connect start/
+  // callback redirects at `/?memoryConnect=…`) across this root→/home hop so the
+  // dashboard can surface it as a toast; without this the query is dropped here.
+  // Whitelisted values only, so arbitrary query junk is never reflected onward.
+  const memoryConnect = url.searchParams.get('memoryConnect');
+  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
+    return redirect(`/home?memoryConnect=${memoryConnect}`);
+  }
+
   return redirect('/home');
 }
 

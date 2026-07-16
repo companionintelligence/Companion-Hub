@@ -680,7 +680,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // Companion Memory connect/disconnect, sized to match the Open button and
   // placed just before it (running case). Only for memory-consumer apps; the
   // status itself is shown by the header badge. When Companion Memory isn't
-  // installed there is nothing to connect to, so no button is rendered.
+  // installed there is nothing to connect to, so no button is rendered; while it
+  // is installed but not yet running the action shows disabled (it can't succeed
+  // until ci-memory is up).
   const memoryButton = ((): React.JSX.Element | null => {
     if (!memory.applicable) {
       return null;
@@ -703,7 +705,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    if (memory.memoryInstalled) {
+    if (memory.memoryReady) {
       return (
         <ActionButton
           key="memory-connect"
@@ -717,6 +719,32 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           data-tooltip-id="app-actions-tooltip"
           data-tooltip-content={t('MEMORY_CONNECT_DESC')}
         />
+      );
+    }
+
+    // Companion Memory is installed but not running yet (installing / booting /
+    // stopped). Show the action disabled so the affordance stays visible, with a
+    // tooltip that says why it's inert — connecting can't succeed until it's up.
+    // The tooltip anchor sits on a wrapper span, not the button: a disabled
+    // <button> has `pointer-events: none`, so hover would never reach it — the
+    // pointer passes through to the span, which is what triggers the tooltip.
+    if (memory.memoryInstalled) {
+      return (
+        <span
+          key="memory-connect-pending"
+          className="inline-flex"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={memory.providerStatus === 'offline' ? t('MEMORY_CONNECT_OFFLINE_DESC') : t('MEMORY_CONNECT_STARTING_DESC')}
+        >
+          <ActionButton
+            IconComponent={BrainCircuit}
+            title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
+            disabled
+            variant="outline"
+            size="lg"
+            className="launch-action-button memory-action-button"
+          />
+        </span>
       );
     }
 

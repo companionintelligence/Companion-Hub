@@ -51,8 +51,25 @@ export class MemoryConnectController {
     // `next` is validated server-side in startConnect (origin-allowlisted against
     // the Hub + the connecting app), so an attacker can't use it as an open redirect.
     // Bind the flow to the initiating user so the callback must be the same user.
-    const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
-    res.redirect(consentUrl);
+    try {
+      const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
+      res.redirect(consentUrl);
+    } catch (err) {
+      // A connect that can't start (ci-memory not installed / not reachable yet /
+      // no Hub origin) must not dump a raw 400 JSON body into a top-level browser
+      // navigation. The readiness gating normally keeps the launcher link hidden
+      // until ci-memory is running, so this only covers the race where it goes down
+      // between the status poll and the click — land the user back on the Hub with
+      // an error marker (mirrors the callback's ?memoryConnect=error handling).
+      if (err instanceof BadRequestException) {
+        this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
+        res.redirect('/?memoryConnect=unavailable');
+
+        return;
+      }
+
+      throw err;
+    }
   }
 
   @Get('callback')
