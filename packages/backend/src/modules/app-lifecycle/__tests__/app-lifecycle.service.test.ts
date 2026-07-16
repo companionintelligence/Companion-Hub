@@ -56,6 +56,9 @@ describe('AppLifecycleService', () => {
     appEventsQueue = mock<AppEventsQueue>();
     commandFactory = mock<AppLifecycleCommandFactory>();
     appsRepository = mock<AppsRepository>();
+    // Completion handlers use a compare-and-set write; default to "applied" so
+    // their SSE emissions fire unless a test exercises the takeover race.
+    appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     configService = mock<ConfigurationService>();
     marketplaceService = mock<MarketplaceService>();
     imageSizeService = mock<ImageSizeService>();
@@ -1006,6 +1009,12 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async () => {
         callOrder.push('db_update');
         return fakeApp as any;
+      });
+      // The completion handlers claim their outcome with a compare-and-set;
+      // report it as applied so the SSE ordering under test still fires.
+      appsRepository.updateAppByIdIfStatus.mockImplementation(async () => {
+        callOrder.push('db_update');
+        return true;
       });
       appsRepository.deleteAppById.mockImplementation(async () => {
         callOrder.push('db_delete');

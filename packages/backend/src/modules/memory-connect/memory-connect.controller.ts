@@ -11,7 +11,9 @@ import { MemoryConnectService } from './memory-connect.service';
  * Endpoints backing the memory-connect flow.
  *
  *   GET  /api/memory-connect/start            → browser: begin connect (→ ci-memory consent)
- *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to `next`
+ *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to the
+ *                                               SPA's /memory-connect/finishing interstitial (which
+ *                                               watches the restart and forwards to `next`)
  *   GET  /api/memory-connect/apps/:urn/state  → wrapper: {state, connectUrl}
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
@@ -89,15 +91,19 @@ export class MemoryConnectController {
     // re-appears) rather than dead-ending on the Hub dashboard.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect(this.service.abandonConnect(state));
+      res.redirect(this.service.abandonConnect(state, this.currentUserId(req)));
 
       return;
     }
 
     try {
-      // handleCallback returns the app URL even on a downstream failure, so the
-      // user always lands back on their app rather than the dashboard. The current
-      // user must match the one who started the flow (login-CSRF guard).
+      // On success `next` is the SPA's finishing interstitial (the restart is
+      // scheduled, not awaited — this handler must answer the browser fast); on a
+      // downstream failure it is the app URL, so the user always lands back on
+      // their app rather than the dashboard. A replayed state (refresh after an
+      // aborted navigation) resolves to the interstitial too, without a second
+      // exchange. The current user must match the one who started the flow
+      // (login-CSRF guard).
       const { next } = await this.service.handleCallback(code, state, this.currentUserId(req));
       res.redirect(next);
     } catch (err) {

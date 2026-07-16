@@ -1,0 +1,146 @@
+/*
+ * Scoped styles for the memory-connect finishing interstitial. Deliberately
+ * mirrors the ci-memory consent page and the agent-app connect gates (navy
+ * background, elevated card, teal brand-gradient pill) rather than the Hub
+ * SPA's theme tokens, so consent → finishing → app reads as one continuous
+ * ceremony — including following prefers-color-scheme like those pages do.
+ */
+.mcf-page {
+  --mcf-bg: #041620;
+  --mcf-card: #0a222e;
+  --mcf-border: #1f4a55;
+  --mcf-fg: #f5f8fa;
+  --mcf-fg-dim: #9bb2b7;
+  --mcf-brand-grad: linear-gradient(135deg, #0b6e74 0%, #079d99 100%);
+  --mcf-on-accent: #fff;
+  --mcf-shadow: 0 6px 24px rgba(4, 22, 32, 0.22);
+  color-scheme: dark;
+  min-height: calc(100vh - var(--titlebar-height, 0px));
+  display: grid;
+  place-items: center;
+  background: var(--mcf-bg);
+  color: var(--mcf-fg);
+  padding: 40px 20px;
+}
+
+@media (prefers-color-scheme: light) {
+  .mcf-page {
+    --mcf-bg: #f3f3f3;
+    --mcf-card: #f7f7f9;
+    --mcf-border: #d3dddf;
+    --mcf-fg: #010f16;
+    --mcf-fg-dim: #4f6168;
+    --mcf-shadow: 0 6px 24px rgba(4, 22, 32, 0.12);
+    color-scheme: light;
+  }
+}
+
+.mcf-card {
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+  background: var(--mcf-card);
+  border: 1px solid var(--mcf-border);
+  border-radius: 14px;
+  padding: 36px 28px;
+  box-shadow: var(--mcf-shadow);
+}
+
+.mcf-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 0 auto 22px;
+}
+
+.mcf-brand-link {
+  color: var(--mcf-fg-dim);
+  display: flex;
+  align-items: center;
+}
+
+.mcf-status {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 18px;
+}
+
+.mcf-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(155, 178, 183, 0.25);
+  border-top-color: #079d99;
+  animation: mcf-spin 0.8s linear infinite;
+}
+
+@keyframes mcf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mcf-spinner {
+    animation: none;
+  }
+}
+
+.mcf-check {
+  color: #079d99;
+}
+
+.mcf-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.mcf-desc {
+  line-height: 1.5;
+  color: var(--mcf-fg-dim);
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+
+.mcf-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcf-btn {
+  display: block;
+  width: 100%;
+  padding: 11px 20px;
+  border-radius: 999px;
+  border: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  font-family: inherit;
+}
+
+.mcf-btn-primary {
+  background: var(--mcf-brand-grad);
+  color: var(--mcf-on-accent);
+}
+
+.mcf-btn-primary:hover {
+  filter: brightness(1.06);
+}
+
+.mcf-btn-secondary {
+  background: transparent;
+  color: var(--mcf-fg-dim);
+  border: 1px solid var(--mcf-border);
+}
+
+.mcf-btn-secondary:hover {
+  color: var(--mcf-fg);
+  border-color: var(--mcf-fg-dim);
+}

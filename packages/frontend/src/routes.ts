@@ -11,6 +11,9 @@ export default [
   // Onboarding (authenticated but outside dashboard layout)
   route('onboarding', './modules/onboarding/pages/onboarding-page.tsx', { id: 'onboarding' }),
   route('restore-apps', './modules/auth/pages/restore-apps-page.tsx', { id: 'restore-apps' }),
+  // Memory-connect finishing interstitial: the connect callback lands here while
+  // the app restarts to pick up its new creds (full-page, self-gated).
+  route('memory-connect/finishing', './modules/app/pages/memory-connect-finishing-page.tsx', { id: 'memory-connect-finishing' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
     route('home', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),
