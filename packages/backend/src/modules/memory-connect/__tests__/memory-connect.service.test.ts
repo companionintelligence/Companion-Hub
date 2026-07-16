@@ -588,4 +588,18 @@ describe('MemoryConnectService.listConnectedConsumers', () => {
       { appUrn: 'ci-openclaw:ci-marketplace', name: 'ci-openclaw' },
     ]);
   });
+
+  it('skips a malformed connection row instead of throwing', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'no-separator-here', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    // Force the name fallback (extractAppUrn) so the malformed URN throws inside the loop.
+    resolver.getAppName.mockResolvedValue(undefined);
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers).toEqual([{ appUrn: 'ci-hermes:ci-marketplace', name: 'ci-hermes' }]);
+  });
 });

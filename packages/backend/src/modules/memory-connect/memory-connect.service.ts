@@ -513,9 +513,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * The installed apps that currently hold a live Companion Memory connection —
    * used to guard against removing the shared provider out from under them.
-   * Excludes (a) the provider's own connection row (ci-memory holds one too) and
-   * (b) stale rows whose app is no longer installed. Names are the app's display
-   * name, falling back to the URN's app-name half when it can't be resolved.
+   * Excludes (a) the provider's own connection row (ci-memory holds one too),
+   * (b) stale rows whose app is no longer installed, and (c) any row whose URN is
+   * malformed (skipped defensively — a row that can't be parsed can't map to a
+   * real consumer, so it must not turn the guard/consumers endpoint into a 500).
+   * Names are the app's display name, falling back to the URN's app-name half.
    */
   async listConnectedConsumers(): Promise<Array<{ appUrn: string; name: string }>> {
     const rows = await this.connections.listConnected();
@@ -524,16 +526,20 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     for (const row of rows) {
       const urn = row.appUrn as AppUrn;
 
-      if (isMemoryProviderApp({ urn })) {
-        continue;
-      }
+      try {
+        if (isMemoryProviderApp({ urn })) {
+          continue;
+        }
 
-      if (!(await this.apps.getAppByUrn(urn))) {
-        continue;
-      }
+        if (!(await this.apps.getAppByUrn(urn))) {
+          continue;
+        }
 
-      const name = (await this.resolver.getAppName(urn)) ?? extractAppUrn(urn).appName;
-      consumers.push({ appUrn: row.appUrn, name });
+        const name = (await this.resolver.getAppName(urn)) ?? extractAppUrn(urn).appName;
+        consumers.push({ appUrn: row.appUrn, name });
+      } catch (err) {
+        this.logger.warn(`[MemoryConnect] skipping unparseable connection row ${row.appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     return consumers;

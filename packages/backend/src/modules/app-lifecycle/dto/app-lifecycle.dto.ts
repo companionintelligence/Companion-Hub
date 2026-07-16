@@ -39,10 +39,14 @@ const uninstallAppBodySchema = z.object({
   force: z.boolean().optional().default(false),
 });
 
-const resetAppBodySchema = z.object({
-  // Required to reset the shared Companion Memory provider while consumer apps are still connected.
-  force: z.boolean().optional().default(false),
-});
+const resetAppBodySchema = z
+  .object({
+    // Required to reset the shared Companion Memory provider while consumer apps are still connected.
+    force: z.boolean().optional().default(false),
+  })
+  // The reset route historically took no body; tolerate a missing/empty one so existing
+  // bodyless callers keep working (force then defaults to false → the guard still applies).
+  .default({ force: false });
 
 const updateAppBodySchema = z.object({
   performBackup: z.boolean(),
