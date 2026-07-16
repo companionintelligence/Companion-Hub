@@ -11,7 +11,7 @@ import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
-import { MemoryProviderResolver } from './memory-provider.resolver';
+import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
 
 /**
@@ -87,8 +87,12 @@ export interface MemoryConnectStatus {
 export interface MemoryConnectUiStatus extends MemoryConnectStatus {
   /** Whether this app is a memory consumer at all (else the UI shows nothing). */
   applicable: boolean;
-  /** Whether Companion Memory is installed to connect to. */
+  /** Whether Companion Memory is installed (a row exists) — installing/stopped included. */
   memoryInstalled: boolean;
+  /** Whether Companion Memory is actually running, i.e. a connect can succeed right now. */
+  memoryReady: boolean;
+  /** Coarse provider lifecycle, so the UI can say WHY it isn't ready (starting vs offline). */
+  providerStatus: MemoryProviderRuntimeStatus;
   /**
    * ISO instant the current key expires, when connected — else null. The key
    * auto-rotates before this, so the UI frames it as "renews automatically" and
@@ -378,22 +382,25 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Wrapper-facing status: current state + the launcher URL to start connecting.
-   * `connectUrl` is null unless Companion Memory is actually installed — otherwise
-   * a wrapper would render a connect gate that dead-ends on startConnect's
-   * "Companion Memory is not installed" 400. `findProvider` here is the
-   * lightweight, probe-free variant, run in parallel with the other lookups.
+   * `connectUrl` is null unless Companion Memory is actually running — otherwise a
+   * wrapper would render a connect gate that dead-ends on startConnect's "not
+   * installed" / "not reachable yet" 400. `getProviderRuntimeStatus` here is the
+   * lightweight DB-only check, run in parallel with the other lookups.
    */
   async getStatus(appUrn: AppUrn): Promise<MemoryConnectStatus> {
-    const [state, launcherUrl, memoryInstalled] = await Promise.all([
+    const [state, launcherUrl, providerStatus] = await Promise.all([
       this.connections.getState(appUrn),
       this.buildLauncherUrl(appUrn),
-      // Cheap DB-only existence check, and fault-tolerant: a transient failure
+      // Cheap DB-only status check, and fault-tolerant: a transient failure
       // degrades to "no connect URL" rather than 500ing the whole status poll
       // (the state + launcher URL are independent of the provider lookup).
-      this.resolver.isProviderInstalled().catch(() => false),
+      this.resolver.getProviderRuntimeStatus().catch(() => 'absent' as const),
     ]);
 
-    return { state, connectUrl: memoryInstalled ? launcherUrl : null };
+    // Only offer the connect launcher when ci-memory is actually running. While it
+    // is merely installing/stopped a launcher link would dead-end on startConnect's
+    // "not reachable yet" 400, so the wrapper gate must suppress itself (null URL).
+    return { state, connectUrl: providerStatus === 'ready' ? launcherUrl : null };
   }
 
   /**
@@ -403,31 +410,50 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    */
   async getUiStatus(appUrn: AppUrn): Promise<MemoryConnectUiStatus> {
     // Non-consumer apps render no card, so short-circuit before the provider
-    // availability probe + state/launcher lookups (the common case — most
-    // installed apps are not memory consumers).
+    // status + state/launcher lookups (the common case — most installed apps
+    // are not memory consumers).
     if (!(await this.resolver.isConsumerApp(appUrn))) {
-      return { applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null };
+      return {
+        applicable: false,
+        memoryInstalled: false,
+        memoryReady: false,
+        providerStatus: 'absent',
+        state: 'unconfigured',
+        connectUrl: null,
+        keyExpiresAt: null,
+      };
     }
 
-    // getRow (not getState) so we get the key's expiry in the same query.
-    const [provider, row, connectUrl] = await Promise.all([
-      this.resolver.findProvider(),
+    // getRow (not getState) so we get the key's expiry in the same query. The
+    // coarse provider status (DB-only lite check) drives installed/ready — a mere
+    // install-in-progress row must not read as "ready".
+    const [providerStatus, row, launcherUrl] = await Promise.all([
+      this.resolver.getProviderRuntimeStatus().catch(() => 'absent' as const),
       this.connections.getRow(appUrn),
       this.buildLauncherUrl(appUrn),
     ]);
 
-    // Lazy staleness detection: if we think we're connected but ci-memory no
-    // longer accepts the stored key (e.g. it was reset), clear it so the app
-    // re-prompts instead of silently running with a dead credential.
+    const memoryInstalled = providerStatus !== 'absent';
+    const memoryReady = providerStatus === 'ready';
+
     let effectiveState = row?.state ?? 'unconfigured';
     // Normalize to a canonical UTC ISO string: Postgres hands back a
     // space-separated form that Safari's `new Date()` rejects, so the UI must
     // never see the raw column value.
     let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
-    if (effectiveState === 'connected' && provider) {
+
+    // Lazy staleness detection: if we think we're connected but ci-memory no
+    // longer accepts the stored key (e.g. it was reset), clear it so the app
+    // re-prompts instead of silently running with a dead credential. Only worth
+    // doing when ci-memory is actually running — otherwise isKeyValid can't reach
+    // it (and fails safe), so we'd only be paying a network timeout on every poll
+    // while it's down. findProvider is resolved lazily here (for the internal S2S
+    // URL) rather than on every call.
+    if (effectiveState === 'connected' && memoryReady) {
+      const provider = await this.resolver.findProvider();
       // Decrypt from the row already loaded above — avoids a second findByAppUrn.
       const creds = this.connections.credsFromRow(row);
-      if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+      if (provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
         // Clear the dead key AND restart the app: clearing alone leaves the
         // container running with the injected dead credential (401ing every
         // memory call) until some unrelated restart. Restarting regenerates the
@@ -440,7 +466,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
     }
 
-    return { applicable: true, memoryInstalled: !!provider, state: effectiveState, connectUrl, keyExpiresAt };
+    // Withhold the launcher URL unless ci-memory is running, so the Connect button
+    // can never navigate into a startConnect that would 400.
+    return {
+      applicable: true,
+      memoryInstalled,
+      memoryReady,
+      providerStatus,
+      state: effectiveState,
+      connectUrl: memoryReady ? launcherUrl : null,
+      keyExpiresAt,
+    };
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */

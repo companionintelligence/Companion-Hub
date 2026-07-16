@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { CompactSystemStat } from '../components/compact-system-stat';
 import { HorizontalAppList } from '../components/horizontal-app-list';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
@@ -19,6 +19,7 @@ export default () => {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
     const state = location.state as DashboardLocationState | null;
@@ -30,6 +31,21 @@ export default () => {
 
     navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null });
   }, [location.hash, location.pathname, location.search, location.state, navigate, t]);
+
+  // Surface the outcome of a memory-connect attempt that bounced back here (the
+  // Hub's memory-connect start/callback redirect to `/?memoryConnect=…`, preserved
+  // across the root redirect). Toast once with a stable id (idempotent under
+  // StrictMode's double-invoke), then strip the marker so a refresh doesn't repeat it.
+  useEffect(() => {
+    const marker = searchParams.get('memoryConnect');
+    if (marker !== 'error' && marker !== 'unavailable') return;
+
+    toast.error(t(marker === 'unavailable' ? 'MEMORY_CONNECT_UNAVAILABLE_TOAST' : 'MEMORY_CONNECT_ERROR_TOAST'), { id: 'memory-connect-result' });
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('memoryConnect');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, t]);
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),

@@ -9,7 +9,9 @@ import { MemoryConnectService } from '../memory-connect.service';
 function makeService() {
   const resolver = {
     findProvider: vi.fn(),
-    isProviderInstalled: vi.fn().mockResolvedValue(true),
+    // Default to a running provider so the existing status/connect expectations
+    // exercise the "ready" path; individual tests override for not-ready cases.
+    getProviderRuntimeStatus: vi.fn().mockResolvedValue('ready'),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
     isConsumerApp: vi.fn().mockResolvedValue(true),
     getAppName: vi.fn().mockResolvedValue('OpenClaw'),
@@ -301,7 +303,31 @@ describe('MemoryConnectService side effects', () => {
 
     const status = await service.getUiStatus('some-random-app:local');
 
-    expect(status).toEqual({ applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null });
+    expect(status).toEqual({
+      applicable: false,
+      memoryInstalled: false,
+      memoryReady: false,
+      providerStatus: 'absent',
+      state: 'unconfigured',
+      connectUrl: null,
+      keyExpiresAt: null,
+    });
+    expect(resolver.findProvider).not.toHaveBeenCalled();
+  });
+
+  it('getUiStatus reports the provider as installed-but-not-ready and withholds the connect URL while ci-memory is installing', async () => {
+    const { service, resolver, connections } = makeService();
+    resolver.getProviderRuntimeStatus.mockResolvedValue('starting');
+    connections.getRow.mockResolvedValue({ state: 'unconfigured', keyExpiresAt: null });
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(status.memoryInstalled).toBe(true);
+    expect(status.memoryReady).toBe(false);
+    expect(status.providerStatus).toBe('starting');
+    // No launcher URL while it isn't running — the Connect button stays inert.
+    expect(status.connectUrl).toBeNull();
+    // Never probe key validity (nor restart) against a provider that isn't up.
     expect(resolver.findProvider).not.toHaveBeenCalled();
   });
 
@@ -443,7 +469,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockResolvedValue(true);
+    resolver.getProviderRuntimeStatus.mockResolvedValue('ready');
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -454,7 +480,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus withholds the connectUrl when Companion Memory is not installed (no dead-end gate)', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockResolvedValue(false);
+    resolver.getProviderRuntimeStatus.mockResolvedValue('absent');
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -463,10 +489,22 @@ describe('MemoryConnectService side effects', () => {
     expect(status.connectUrl).toBeNull();
   });
 
+  it('getStatus withholds the connectUrl while Companion Memory is only installing (not reachable yet)', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.getState.mockResolvedValue('unconfigured');
+    resolver.getProviderRuntimeStatus.mockResolvedValue('starting');
+
+    const status = await service.getStatus('ci-openclaw:local');
+
+    // The wrapper gate stays suppressed until ci-memory is actually running,
+    // rather than linking to a startConnect that 400s with "not reachable yet".
+    expect(status.connectUrl).toBeNull();
+  });
+
   it('getStatus still returns state (connectUrl null) when the provider lookup fails', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockRejectedValue(new Error('db blip'));
+    resolver.getProviderRuntimeStatus.mockRejectedValue(new Error('db blip'));
 
     const status = await service.getStatus('ci-openclaw:local');
 

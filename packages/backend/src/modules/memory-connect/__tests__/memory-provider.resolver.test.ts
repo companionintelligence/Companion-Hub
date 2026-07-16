@@ -49,33 +49,47 @@ describe('MemoryProviderResolver.consumerEnv', () => {
   });
 });
 
-describe('MemoryProviderResolver.isProviderInstalled', () => {
+describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('is true for an official-store ci-memory row via the DB-only lite check (no availability/full probe)', async () => {
+  it("is 'ready' for a running official-store ci-memory row via the DB-only lite check (no availability/full probe)", async () => {
     const { resolver, appsService } = makeResolver([]);
     appsService.getInstalledAppsLite.mockResolvedValue([
-      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' },
-      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace' },
+      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' },
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' },
     ]);
 
-    expect(await resolver.isProviderInstalled()).toBe(true);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('ready');
     expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
     expect(appsService.getInstalledApps).not.toHaveBeenCalled();
   });
 
-  it('is false for a ci-memory row from a non-official store (no id-squat)', async () => {
+  it("is 'starting' while ci-memory is still installing (a mere row is not connectable)", async () => {
     const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party' }]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'installing' }]);
 
-    expect(await resolver.isProviderInstalled()).toBe(false);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('starting');
   });
 
-  it('is false when ci-memory is not installed', async () => {
+  it("is 'offline' when ci-memory is installed but stopped", async () => {
     const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' }]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'stopped' }]);
 
-    expect(await resolver.isProviderInstalled()).toBe(false);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('offline');
+  });
+
+  it("is 'absent' for a ci-memory row from a non-official store (no id-squat)", async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party', status: 'running' }]);
+
+    expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
+  });
+
+  it("is 'absent' when ci-memory is not installed", async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' }]);
+
+    expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
   });
 });
 
