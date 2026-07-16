@@ -1,12 +1,17 @@
 import { resetAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Switch } from '@/components/ui/Switch';
+import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
+import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
+import { useMemoryConsumers } from '@/modules/app/helpers/use-memory-connection';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { AlertTriangle } from 'lucide-react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -17,18 +22,39 @@ interface IProps {
 }
 export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
+
+  const [forceConfirmed, setForceConfirmed] = useState(false);
+
+  const isProvider = isMemoryProviderUrn(info.urn);
+  const consumersQuery = useMemoryConsumers(isOpen && isProvider);
+  const consumers = consumersQuery.data ?? [];
+  const requiresForce = isProvider && consumers.length > 0;
+
+  // Reset the force acknowledgement whenever the dialog (re)opens.
+  useEffect(() => {
+    if (isOpen) {
+      setForceConfirmed(false);
+    }
+  }, [isOpen]);
 
   const resetMutation = useMutation({
     ...resetAppMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+      // A pre-flight rejection (e.g. the memory-provider guard's 409) fails
+      // synchronously and emits no lifecycle SSE event, so clear the optimistic
+      // 'resetting' status by re-syncing from the server.
+      invalidateAppQueries(queryClient, info.urn);
     },
     onMutate: () => {
       setOptimisticStatus('resetting', info.urn);
       onClose();
     },
   });
+
+  const submitDisabled = (isProvider && consumersQuery.isLoading) || (requiresForce && !forceConfirmed);
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -40,9 +66,33 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
           <h3>{t('COMMON_ACTION_CANNOT_BE_UNDONE')}</h3>
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_LOST')}</span>
+          {requiresForce && (
+            <div className="mt-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-start">
+              <p className="font-medium text-destructive">{t('APP_UNINSTALL_MEMORY_PROVIDER_WARNING', { count: consumers.length })}</p>
+              <ul className="mt-1 list-disc ps-5 text-muted-foreground">
+                {consumers.map((c) => (
+                  <li key={c.appUrn}>{c.name}</li>
+                ))}
+              </ul>
+              <p className="mt-2 text-muted-foreground">{t('APP_UNINSTALL_MEMORY_PROVIDER_CONSEQUENCE')}</p>
+              <div className="mt-3">
+                <Switch
+                  name="reset-force-confirm"
+                  checked={forceConfirmed}
+                  onCheckedChange={setForceConfirmed}
+                  label={t('APP_UNINSTALL_MEMORY_PROVIDER_FORCE_LABEL')}
+                />
+              </div>
+            </div>
+          )}
         </DialogDescription>
         <DialogFooter>
-          <Button loading={resetMutation.isPending} onClick={() => resetMutation.mutate({ path: { urn: info.urn } })} intent="danger">
+          <Button
+            loading={resetMutation.isPending}
+            disabled={submitDisabled}
+            onClick={() => resetMutation.mutate({ path: { urn: info.urn }, body: { force: requiresForce && forceConfirmed } })}
+            intent="danger"
+          >
             {t('APP_RESET_FORM_SUBMIT')}
           </Button>
         </DialogFooter>

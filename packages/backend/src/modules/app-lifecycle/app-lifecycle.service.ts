@@ -37,6 +37,7 @@ import { publishesHostPort } from '../apps/app-exposure.helpers';
 import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -942,16 +943,50 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
+   * Refuse to destroy Companion Memory (the shared provider) while other installed
+   * apps still hold a live connection to it — uninstalling or resetting it would
+   * sever their connections and irrecoverably delete the shared memory store.
+   * `force` (an explicit user/agent confirmation) bypasses the guard; non-provider
+   * apps are never affected. Fails closed if the memory module can't be resolved:
+   * a data-destroying operation must not proceed when the safety check can't run.
+   */
+  private async assertMemoryProviderNotInUse(appUrn: AppUrn, force: boolean | undefined): Promise<void> {
+    if (force || !isMemoryProviderApp({ urn: appUrn })) {
+      return;
+    }
+
+    const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
+    const memoryConnect = this.moduleRef.get(MemoryConnectService, { strict: false });
+
+    if (!memoryConnect) {
+      throw new TranslatableError('APP_ERROR_MEMORY_PROVIDER_IN_USE', { id: appUrn, count: '?', apps: '' }, HttpStatus.CONFLICT);
+    }
+
+    const consumers = await memoryConnect.listConnectedConsumers();
+
+    if (consumers.length > 0) {
+      throw new TranslatableError(
+        'APP_ERROR_MEMORY_PROVIDER_IN_USE',
+        { id: appUrn, count: String(consumers.length), apps: consumers.map((c) => c.name).join(', ') },
+        HttpStatus.CONFLICT,
+      );
+    }
+  }
+
+  /**
    * Uninstall an app by its ID
    */
-  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean }) {
-    const { appUrn, deleteAllData } = params;
+  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+    const { appUrn, deleteAllData, force } = params;
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
+
+    // Guard the shared memory provider before any destructive side effect runs.
+    await this.assertMemoryProviderNotInUse(appUrn, force);
 
     // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
     await this.backupManager.deleteAppBackupsByUrn(appUrn);
@@ -1033,13 +1068,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Reset an app by its ID
    */
-  public async resetApp(params: { appUrn: AppUrn }) {
-    const { appUrn } = params;
+  public async resetApp(params: { appUrn: AppUrn; force?: boolean }) {
+    const { appUrn, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
+
+    // Reset wipes volumes + app-data — guard the shared memory provider before it runs.
+    await this.assertMemoryProviderNotInUse(appUrn, force);
 
     const appStatusBeforeReset = app?.status;
     await this.appRepository.updateAppById(app.id, { status: 'resetting' });

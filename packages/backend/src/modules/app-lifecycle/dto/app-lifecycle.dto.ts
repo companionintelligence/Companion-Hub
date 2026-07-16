@@ -35,6 +35,13 @@ export const appFormSchema = z
 
 const uninstallAppBodySchema = z.object({
   deleteAllData: z.boolean().optional().default(true),
+  // Required to uninstall the shared Companion Memory provider while consumer apps are still connected.
+  force: z.boolean().optional().default(false),
+});
+
+const resetAppBodySchema = z.object({
+  // Required to reset the shared Companion Memory provider while consumer apps are still connected.
+  force: z.boolean().optional().default(false),
 });
 
 const updateAppBodySchema = z.object({
@@ -62,6 +69,8 @@ const cancelOperationResponseSchema = z.object({
 export class AppFormBody extends createZodDto(appFormSchema) {}
 
 export class UninstallAppBody extends createZodDto(uninstallAppBodySchema) {}
+
+export class ResetAppBody extends createZodDto(resetAppBodySchema) {}
 
 export class UpdateAppBody extends createZodDto(updateAppBodySchema) {}
 

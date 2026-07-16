@@ -2772,6 +2772,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetAppBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -4158,6 +4168,20 @@
         ]
       }
     },
+    "/api/memory-connect/consumers": {
+      "get": {
+        "operationId": "consumers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
     "/api/memory-connect/apps/{urn}/skip": {
       "post": {
         "operationId": "skip",
@@ -4692,6 +4716,10 @@
         "properties": {}
       },
       "UninstallAppBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "ResetAppBody": {
         "type": "object",
         "properties": {}
       },

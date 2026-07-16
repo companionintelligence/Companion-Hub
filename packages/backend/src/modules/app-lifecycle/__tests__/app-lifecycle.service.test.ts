@@ -1426,6 +1426,97 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('memory provider uninstall/reset guard', () => {
+    const providerUrn = 'ci-memory:ci-marketplace' as any;
+    const nonProviderUrn = 'myapp:ci-marketplace' as any;
+    const providerApp = { id: 7, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' as const, config: {}, exposedLocal: false };
+
+    let memoryConnect: { listConnectedConsumers: ReturnType<typeof vi.fn>; handleUninstall: ReturnType<typeof vi.fn> };
+    let moduleRefGet: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      memoryConnect = { listConnectedConsumers: vi.fn().mockResolvedValue([]), handleUninstall: vi.fn().mockResolvedValue(undefined) };
+      // The guard lazily resolves MemoryConnectService via the (mocked) ModuleRef.
+      moduleRefGet = vi.mocked((service as any).moduleRef.get);
+      moduleRefGet.mockReturnValue(memoryConnect);
+      appsRepository.getAppByUrn.mockResolvedValue(providerApp as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('blocks uninstall of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([
+        { appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' },
+        { appUrn: 'ci-openclaw:ci-marketplace', name: 'OpenClaw' },
+      ]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '2', apps: 'Hermes, OpenClaw' } },
+        status: 409,
+      });
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced uninstall of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true, force: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('allows uninstall of the provider when no consumers remain', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('does not consult consumers when uninstalling a non-provider app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...providerApp, appName: 'myapp' } as any);
+
+      await service.uninstallApp({ appUrn: nonProviderUrn, deleteAllData: true });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the memory module cannot be resolved', async () => {
+      moduleRefGet.mockReturnValue(undefined);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE' },
+        status: 409,
+      });
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('blocks reset of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '1', apps: 'Hermes' } },
+        status: 409,
+      });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced reset of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn, force: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'reset', appUrn: providerUrn }));
+    });
+  });
+
   describe('cancelOperation', () => {
     const appUrn = 'cancelme:ci-marketplace' as any;
     const requestId = '00000000-0000-4000-8000-000000000abc';

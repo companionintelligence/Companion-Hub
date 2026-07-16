@@ -13,6 +13,7 @@ import { MemoryConnectService } from './memory-connect.service';
  *   GET  /api/memory-connect/start            → browser: begin connect (→ ci-memory consent)
  *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to `next`
  *   GET  /api/memory-connect/apps/:urn/state  → wrapper: {state, connectUrl}
+ *   GET  /api/memory-connect/consumers        → browser: {consumers} still connected to the provider
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
@@ -117,6 +118,12 @@ export class MemoryConnectController {
   @Get('apps/:urn/status')
   async status(@Param('urn') urn: string) {
     return this.service.getUiStatus(this.decodeUrn(urn));
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('consumers')
+  async consumers() {
+    return { consumers: await this.service.listConnectedConsumers() };
   }
 
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)

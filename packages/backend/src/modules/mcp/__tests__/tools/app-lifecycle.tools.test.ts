@@ -82,6 +82,17 @@ describe('AppLifecycleTools', () => {
       const result = await tools.uninstallApp({ appUrn: 'ci-store:test' });
       expect(result.requestId).toBe('uuid-5');
     });
+    it('should default force to false and pass force: true when specified', async () => {
+      lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
+      await tools.uninstallApp({ appUrn: 'ci-store:test' });
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
+      await tools.uninstallApp({ appUrn: 'ci-store:test', force: true });
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+    });
+    it('should propagate a guard rejection from the service', async () => {
+      lifecycleService.uninstallApp.mockRejectedValue(new Error('APP_ERROR_MEMORY_PROVIDER_IN_USE'));
+      await expect(tools.uninstallApp({ appUrn: 'ci-memory:ci-marketplace' })).rejects.toThrow();
+    });
   });
 
   describe('hub_reset_app', () => {
@@ -89,6 +100,13 @@ describe('AppLifecycleTools', () => {
       lifecycleService.resetApp.mockResolvedValue({ requestId: 'uuid-6' });
       const result = await tools.resetApp({ appUrn: 'ci-store:test' });
       expect(result).toEqual({ requestId: 'uuid-6' });
+    });
+    it('should default force to false and pass force: true when specified', async () => {
+      lifecycleService.resetApp.mockResolvedValue({ requestId: 'uuid-6' });
+      await tools.resetApp({ appUrn: 'ci-store:test' });
+      expect(lifecycleService.resetApp).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
+      await tools.resetApp({ appUrn: 'ci-store:test', force: true });
+      expect(lifecycleService.resetApp).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
     });
   });
 

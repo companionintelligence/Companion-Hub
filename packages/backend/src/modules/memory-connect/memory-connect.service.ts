@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -507,6 +508,35 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     await this.connections.clear(appUrn);
     await this.applyAndRestart(appUrn);
+  }
+
+  /**
+   * The installed apps that currently hold a live Companion Memory connection —
+   * used to guard against removing the shared provider out from under them.
+   * Excludes (a) the provider's own connection row (ci-memory holds one too) and
+   * (b) stale rows whose app is no longer installed. Names are the app's display
+   * name, falling back to the URN's app-name half when it can't be resolved.
+   */
+  async listConnectedConsumers(): Promise<Array<{ appUrn: string; name: string }>> {
+    const rows = await this.connections.listConnected();
+    const consumers: Array<{ appUrn: string; name: string }> = [];
+
+    for (const row of rows) {
+      const urn = row.appUrn as AppUrn;
+
+      if (isMemoryProviderApp({ urn })) {
+        continue;
+      }
+
+      if (!(await this.apps.getAppByUrn(urn))) {
+        continue;
+      }
+
+      const name = (await this.resolver.getAppName(urn)) ?? extractAppUrn(urn).appName;
+      consumers.push({ appUrn: row.appUrn, name });
+    }
+
+    return consumers;
   }
 
   /**

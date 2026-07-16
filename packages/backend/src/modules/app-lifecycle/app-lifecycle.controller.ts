@@ -9,6 +9,7 @@ import {
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
 } from './dto/app-lifecycle.dto';
@@ -88,14 +89,14 @@ export class AppLifecycleController {
   @Delete(':urn/uninstall')
   @ApiResponse({ type: LifecycleRequestDto })
   async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody) {
-    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData });
+    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData, force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/reset')
   @ApiResponse({ type: LifecycleRequestDto })
-  async resetApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn) });
+  async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody) {
+    const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn), force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 

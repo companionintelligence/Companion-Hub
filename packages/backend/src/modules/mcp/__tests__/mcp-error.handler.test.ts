@@ -64,5 +64,15 @@ describe('mcp-error.handler', () => {
       expect(result.content[0].text).toBe('An unexpected error occurred.');
       expect(result.isError).toBe(true);
     });
+
+    it('should append intlParams so the agent sees the still-connected consumers', () => {
+      const error = new HttpException(
+        { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '2', apps: 'Hermes, OpenClaw' } },
+        HttpStatus.CONFLICT,
+      );
+      const result = formatToolError(error);
+      expect(result.content[0].text).toContain('APP_ERROR_MEMORY_PROVIDER_IN_USE');
+      expect(result.content[0].text).toContain('Hermes, OpenClaw');
+    });
   });
 });

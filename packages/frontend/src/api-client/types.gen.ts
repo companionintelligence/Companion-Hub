@@ -667,6 +667,11 @@ export type LifecycleRequestDto = {
 
 export type UninstallAppBody = {
     deleteAllData?: boolean;
+    force?: boolean;
+};
+
+export type ResetAppBody = {
+    force?: boolean;
 };
 
 export type UpdateAppBody = {
@@ -2943,7 +2948,7 @@ export type UninstallAppResponses = {
 export type UninstallAppResponse = UninstallAppResponses[keyof UninstallAppResponses];
 
 export type ResetAppData = {
-    body?: never;
+    body?: ResetAppBody;
     path: {
         urn: string;
     };

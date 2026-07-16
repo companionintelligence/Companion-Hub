@@ -25,6 +25,34 @@ export interface MemoryConnectionStatus {
 export const MEMORY_STATUS_QUERY_PREFIX = 'memory-connection-status';
 export const memoryStatusQueryKey = (appUrn: string) => [MEMORY_STATUS_QUERY_PREFIX, appUrn];
 
+/** An installed app still holding a live Companion Memory connection. */
+export interface MemoryConsumer {
+  appUrn: string;
+  name: string;
+}
+
+export const MEMORY_CONSUMERS_QUERY_KEY = ['memory-connect-consumers'];
+
+/**
+ * The installed apps still connected to Companion Memory (GET
+ * /api/memory-connect/consumers). Used to warn — and gate a forced confirmation —
+ * before uninstalling or resetting the shared provider. `enabled` keeps it from
+ * firing except when the dialog for the provider itself is open.
+ */
+export function useMemoryConsumers(enabled: boolean) {
+  return useQuery({
+    queryKey: MEMORY_CONSUMERS_QUERY_KEY,
+    enabled,
+    queryFn: async () => {
+      // throwOnError: the generated client resolves (not rejects) on non-2xx by
+      // default, which would mask a failed fetch as `data: undefined`.
+      const { data } = await client.get({ url: '/api/memory-connect/consumers', throwOnError: true });
+      return ((data as { consumers?: MemoryConsumer[] } | undefined)?.consumers ?? []) as MemoryConsumer[];
+    },
+    staleTime: 15_000,
+  });
+}
+
 /**
  * Shared Companion Memory connection state for an app, used by both the
  * app-detail status badge and the Connect/Disconnect action button. Both call

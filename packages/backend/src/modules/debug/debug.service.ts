@@ -24,7 +24,7 @@ export class DebugService {
     // Clean up
     const apps = await this.db.select().from(app).where(eq(app.appStoreSlug, 'seed'));
     for (const app of apps) {
-      await this.appLifecycleService.uninstallApp({ appUrn: createAppUrn(app.appName, app.appStoreSlug), deleteAllData: true });
+      await this.appLifecycleService.uninstallApp({ appUrn: createAppUrn(app.appName, app.appStoreSlug), deleteAllData: true, force: true });
     }
 
     if ((await this.db.select().from(appStore).where(eq(appStore.slug, 'seed'))).length > 0) {
@@ -87,7 +87,7 @@ export class DebugService {
 
     for (const installedApp of apps) {
       const appUrn = createAppUrn(installedApp.appName, installedApp.appStoreSlug);
-      await this.appLifecycleService.uninstallApp({ appUrn, deleteAllData: true });
+      await this.appLifecycleService.uninstallApp({ appUrn, deleteAllData: true, force: true });
     }
 
     return { message: `Started uninstalling ${apps.length} apps` };
