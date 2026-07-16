@@ -5620,13 +5620,23 @@ fn extract_ioreg_platform_uuid(output: &str) -> Option<String> {
         if !line.contains("IOPlatformUUID") {
             continue;
         }
-        let mut parts = line.split('"');
-        parts.next();
-        if let Some(uuid) = parts.next() {
-            let uuid = uuid.trim();
-            if is_usable_host_device_id(uuid) {
-                return Some(uuid.to_string());
-            }
+        let Some(idx) = line.find("IOPlatformUUID") else {
+            continue;
+        };
+        let rest = &line[idx + "IOPlatformUUID".len()..];
+        let Some(eq_idx) = rest.find('=') else {
+            continue;
+        };
+        let after_eq = rest[eq_idx + 1..].trim();
+        let Some(after_quote) = after_eq.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = after_quote.find('"') else {
+            continue;
+        };
+        let uuid = after_quote[..end].trim();
+        if is_usable_host_device_id(uuid) {
+            return Some(uuid.to_string());
         }
     }
     None
