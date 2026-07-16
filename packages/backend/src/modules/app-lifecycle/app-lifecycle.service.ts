@@ -448,8 +448,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       .then(async ({ success, message }) => {
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
-          await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-          this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+          // Compare-and-set: only claim the outcome if this command still owns the
+          // status. A restart scheduled while this start was executing has already
+          // set 'restarting' (and queued behind the per-app mutex); a blind write
+          // here would flash a false 'running' mid-restart.
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'running', pendingRestart: false });
+          if (applied) {
+            this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+          }
 
           // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
           const { isProduction: isProdEnv } = this.config.getConfig();
@@ -459,8 +465,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
         } else {
           this.logger.error(`Failed to start app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'stopped' });
+          if (applied) {
+            this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
+          }
           this.agentNotifyService?.notify('start_error', { appUrn }, 'high');
           this.reportAppFailure(appUrn, 'start', message);
         }
@@ -847,14 +855,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async ({ success, message }) => {
+        // Compare-and-set (see startApp): claim the outcome only if a newer
+        // command hasn't taken over the status while this one was queued.
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
-          await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-          this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
+          if (applied) {
+            this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+          }
         } else {
           this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
+          if (applied) {
+            this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+          }
           this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
           this.reportAppFailure(appUrn, 'restart', message);
         }
@@ -892,17 +906,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: { ...app.config, skipPull },
     });
 
+    // Compare-and-set (see startApp): claim the outcome only if a newer command
+    // hasn't taken over the status while this restart was queued/executing. The
+    // return value reflects the compose result either way.
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
-      await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-      this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+      const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
+      if (applied) {
+        this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+      }
 
       return true;
     }
 
     this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-    await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-    this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+    const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
+    if (applied) {
+      this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+    }
     this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
     this.reportAppFailure(appUrn, 'restart', message);
 

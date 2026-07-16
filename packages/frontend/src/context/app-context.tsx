@@ -8,12 +8,6 @@ interface AppContextValue extends AppContextDto {
   refreshAppContext: () => Promise<void>;
   setAppContext: (newAppContext: Partial<AppContextDto>) => void;
   isLoading: boolean;
-  /**
-   * True when the query has failed (retries exhausted) and the values served are
-   * the loading DEFAULTS, not real settings. `isLoading` is false in that state,
-   * so consumers that derive URLs/origins from userSettings must check this too.
-   */
-  isError: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -83,7 +77,6 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const value = {
     ...resolved,
     isLoading,
-    isError: Boolean(error && !appContext),
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {
       queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {

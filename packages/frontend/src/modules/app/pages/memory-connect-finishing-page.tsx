@@ -1,9 +1,8 @@
-import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
+import { appContextOptions, getAppOptions, getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
-import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
-import { buildAppAccessPoints } from '@/modules/app/components/app-access-points/app-access-points';
+import { buildAppAccessPoints, buildTailscaleServedPortSet } from '@/modules/app/components/app-access-points/app-access-points';
 import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
@@ -22,13 +21,23 @@ import './memory-connect-finishing-page.css';
  *
  * Lives OUTSIDE the authenticated dashboard layout (no chrome, no
  * SSEProvider — hence polling), and deliberately mirrors the ci-memory consent
- * page's aesthetic so consent → finishing → app reads as one flow.
+ * page's aesthetic so consent → finishing → app reads as one flow. App-context
+ * data is read through a page-local query (not AppContextProvider) so a failed
+ * fetch can retry on an interval instead of parking the flow, and so this cold
+ * page doesn't trigger the provider's dashboard prefetches.
  */
 
 const POLL_INTERVAL_MS = 2000;
+/** Poll cadence once the page's own timeout has passed — late recovery still
+ *  self-resolves, without an abandoned tab hammering the backend every 2s. */
+const SLOW_POLL_INTERVAL_MS = 15_000;
 /** Beat between "running" and the hop, so the app's own gateway can start listening. */
 const OPEN_APP_GRACE_MS = 1500;
 const POLL_TIMEOUT_MS = 180_000;
+/** Consecutive fetch failures before the poll is considered settled-failed. */
+const POLL_FAILURE_LIMIT = 3;
+/** Retry cadence for the app-context query while it has no data (initial blip). */
+const CONTEXT_RETRY_INTERVAL_MS = 5000;
 
 /** Trusted install URN of the first-party Companion Memory app (logo tile). */
 const CI_MEMORY_URN = 'ci-memory:ci-marketplace';
@@ -41,12 +50,66 @@ const CI_MEMORY_URN = 'ci-memory:ci-marketplace';
  */
 const DOWN_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>(['stopped', 'missing', 'install_failed', 'uninstalling']);
 
+interface AppSnapshot {
+  app?: { status: AppStatus } | null;
+}
+
+/**
+ * Whether the poll snapshot can no longer change on its own: the app is
+ * running (we're leaving), its row is gone, it landed on a down status, or the
+ * fetch itself has settled into failure. Shared by the poll's stop condition
+ * and the phase derivation so the two can't drift. Exported for tests.
+ */
+export function isTerminalSnapshot(data: AppSnapshot | undefined, failureCount: number): boolean {
+  if (failureCount >= POLL_FAILURE_LIMIT) {
+    return true;
+  }
+
+  if (!data) {
+    return false;
+  }
+
+  if (!data.app) {
+    return true;
+  }
+
+  return data.app.status === 'running' || DOWN_STATUSES.has(data.app.status);
+}
+
+export type Phase = 'connecting' | 'ready' | 'error' | 'timeout';
+
+/**
+ * Precedence is load-bearing: `ready` wins over everything (a late recovery
+ * self-resolves even after the timeout card); a definitive failure (`error`)
+ * wins over the softer `timeout` copy so the message never downgrades from
+ * "failed" to "taking longer than expected". A transient fetch blip (fewer
+ * than {@link POLL_FAILURE_LIMIT} consecutive failures) keeps the connecting
+ * spinner rather than flashing a false failure card. Exported for tests.
+ */
+export function derivePhase(data: AppSnapshot | undefined, failureCount: number, timedOut: boolean): Phase {
+  const status = data?.app?.status;
+
+  if (status === 'running') {
+    return 'ready';
+  }
+
+  if ((data && !data.app) || (status !== undefined && DOWN_STATUSES.has(status)) || failureCount >= POLL_FAILURE_LIMIT) {
+    return 'error';
+  }
+
+  if (timedOut) {
+    return 'timeout';
+  }
+
+  return 'connecting';
+}
+
 /**
  * Validate the `?next=` destination. The backend redirects here with an
  * already-validated `next`, but the param is attacker-craftable as a bare SPA
  * link — so only honor it when it is http(s) AND its origin is the Hub's own
  * or one of the app's known access points; otherwise fall back to the app's
- * best access-point URL (active first). Exported for tests.
+ * best access-point URL. Exported for tests.
  */
 export function resolveSafeTarget(
   rawNext: string | null,
@@ -85,80 +148,83 @@ export function resolveSafeTarget(
   return active?.url ?? null;
 }
 
-type Phase = 'connecting' | 'ready' | 'error' | 'timeout';
-
 const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string | null }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const appContext = useAppContext();
   const [timedOut, setTimedOut] = useState(false);
 
-  const { data, isError } = useQuery({
+  const appQuery = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
-    // Poll only while the outcome is still open. Terminal states (running, app
-    // row gone, down-status) stop the interval — otherwise an abandoned tab
-    // (error card, timeout, ready-without-target) would hit the backend every
-    // 2s forever. While non-terminal, polling continues even past the page's
-    // own timeout so a late recovery still self-resolves ("ready wins").
+    // Poll only while the outcome is still open; slow down once the page's own
+    // timeout has passed (late recovery still self-resolves, without an
+    // abandoned tab hitting the backend every 2s forever).
     refetchInterval: (query) => {
-      const polled = query.state.data;
-      const polledStatus = polled?.app?.status;
-      const terminal = polledStatus === 'running' || (polled && !polled.app) || (polledStatus !== undefined && DOWN_STATUSES.has(polledStatus));
+      if (isTerminalSnapshot(query.state.data, query.state.fetchFailureCount)) {
+        return false;
+      }
 
-      return terminal ? false : POLL_INTERVAL_MS;
+      return timedOut ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: true,
   });
 
+  const { data, failureCount } = appQuery;
   const app = data?.app;
   const info = data?.info;
-  const status = app?.status;
-  const appName = info?.name ?? appUrn.split(':')[0];
+  // Only ever display a SERVER-CONFIRMED name: the URN is raw query-string text,
+  // and interpolating it into first-party copy would let a crafted link put
+  // arbitrary words in the Hub's mouth.
+  const appName = info?.name;
 
-  // The allowlist/fallback must not be derived from the provider's loading
-  // defaults (empty userSettings) — hold the hop until the context is real.
-  // isError covers the failed-query case, where isLoading is false but the
-  // provider is still serving those same defaults; a persistent failure lands
-  // in the timeout phase, whose dashboard-only fallback is safe.
-  const contextReady = !appContext.isLoading && !appContext.isError;
-  const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = appContext;
+  // Page-local app-context read (settings needed for the origin allowlist).
+  // Unlike AppContextProvider — which swallows errors into empty defaults and
+  // never refetches — a failure here retries on an interval, so a transient
+  // blip at page load can't permanently strand the hop.
+  const contextQuery = useQuery({
+    ...appContextOptions(),
+    staleTime: 30_000,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 5_000),
+    refetchInterval: (query) => (query.state.data ? false : CONTEXT_RETRY_INTERVAL_MS),
+  });
+  const ctx = contextQuery.data;
+
+  const { data: serveStatus } = useQuery({
+    ...getServeStatusOptions(),
+    select: (payload) => payload as { entries: Array<{ listenPort?: number }> },
+    enabled: Boolean(ctx?.tailscaleAvailable),
+  });
+  const tailscaleServedPorts = useMemo(() => buildTailscaleServedPortSet(serveStatus?.entries ?? []), [serveStatus?.entries]);
 
   const target = useMemo(() => {
-    if (!contextReady) {
+    // Never derive the allowlist/fallback from missing context or app info —
+    // an empty-settings allowlist would reject the validated next and could
+    // fall back to a bogus local URL.
+    if (!ctx || !info) {
       return null;
     }
 
-    const accessPoints = info
-      ? buildAppAccessPoints({
-          app,
-          info,
-          sslPort: userSettings.sslPort,
-          internalIp: userSettings.internalIp,
-          publicDomain: userSettings.domain,
-          cloudflareAvailable,
-          tailscaleAvailable,
-          tailscaleNodeFqdn,
-          tailscaleHttpsEnabled,
-          organizationSlug: userSettings.ciHubOrganizationSlug,
-          deviceSlug: userSettings.ciHubDeviceSlug,
-          hubSubdomain: userSettings.ciHubHubSubdomain,
-        })
-      : [];
+    const { userSettings } = ctx;
+    const accessPoints = buildAppAccessPoints({
+      app,
+      info,
+      sslPort: userSettings.sslPort,
+      internalIp: userSettings.internalIp,
+      publicDomain: userSettings.domain,
+      cloudflareAvailable: ctx.cloudflareAvailable,
+      tailscaleAvailable: ctx.tailscaleAvailable,
+      tailscaleNodeFqdn: ctx.tailscaleNodeFqdn,
+      tailscaleHttpsEnabled: ctx.tailscaleHttpsEnabled,
+      tailscaleServedPorts,
+      organizationSlug: userSettings.ciHubOrganizationSlug,
+      deviceSlug: userSettings.ciHubDeviceSlug,
+      hubSubdomain: userSettings.ciHubHubSubdomain,
+    });
 
     return resolveSafeTarget(rawNext, accessPoints, window.location.origin);
-  }, [contextReady, app, info, rawNext, userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled]);
+  }, [ctx, app, info, rawNext, tailscaleServedPorts]);
 
-  // Ready wins over timeout so a late recovery still self-resolves; a query
-  // error only counts once there is no data at all (transient poll failures
-  // keep the last snapshot and the interval keeps refetching).
-  const phase: Phase =
-    contextReady && status === 'running'
-      ? 'ready'
-      : timedOut
-        ? 'timeout'
-        : (data && !app) || (isError && !data) || (status && DOWN_STATUSES.has(status))
-          ? 'error'
-          : 'connecting';
+  const phase = derivePhase(data, failureCount, timedOut);
 
   useEffect(() => {
     const id = window.setTimeout(() => setTimedOut(true), POLL_TIMEOUT_MS);
@@ -167,18 +233,30 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   }, []);
 
   // Timer-with-cleanup (StrictMode-safe): the double mount clears and
-  // reschedules; navigation fires once, after the grace beat.
+  // reschedules; navigation fires once, after the grace beat. `replace`, not
+  // `assign`: the interstitial must not stay in history, or Back from the app
+  // lands here and immediately re-forwards — an unescapable loop.
   useEffect(() => {
     if (phase !== 'ready' || !target) {
       return;
     }
 
-    const id = window.setTimeout(() => window.location.assign(target), OPEN_APP_GRACE_MS);
+    const id = window.setTimeout(() => window.location.replace(target), OPEN_APP_GRACE_MS);
 
     return () => window.clearTimeout(id);
   }, [phase, target]);
 
   const failed = phase === 'error' || phase === 'timeout';
+
+  // Interpolate the name only when the server confirmed it; otherwise use the
+  // nameless copy variant.
+  const named = (key: string, genericKey: string) => (appName ? t(key, { name: appName }) : t(genericKey));
+
+  const dashboardButton = (
+    <button type="button" className="mcf-btn mcf-btn-secondary" onClick={() => navigate('/home')}>
+      {t('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')}
+    </button>
+  );
 
   return (
     <div className="mcf-page">
@@ -214,36 +292,32 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
         {phase === 'ready' ? (
           <>
-            <h1 className="mcf-title">{t('MEMORY_CONNECT_FINISHING_READY', { name: appName })}</h1>
-            {!target && (
-              <div className="mcf-actions">
-                <button type="button" className="mcf-btn mcf-btn-secondary" onClick={() => navigate('/home')}>
-                  {t('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')}
-                </button>
-              </div>
-            )}
+            <h1 className="mcf-title">
+              {target ? named('MEMORY_CONNECT_FINISHING_READY', 'MEMORY_CONNECT_FINISHING_READY_GENERIC') : t('MEMORY_CONNECT_FINISHING_READY_DONE')}
+            </h1>
+            {!target && <div className="mcf-actions">{dashboardButton}</div>}
           </>
         ) : failed ? (
           <>
             <h1 className="mcf-title">{t('MEMORY_CONNECT_FINISHING_ERROR_TITLE')}</h1>
             <p className="mcf-desc">
-              {t(phase === 'timeout' ? 'MEMORY_CONNECT_FINISHING_TIMEOUT_DESC' : 'MEMORY_CONNECT_FINISHING_ERROR_DESC', { name: appName })}
+              {phase === 'timeout'
+                ? named('MEMORY_CONNECT_FINISHING_TIMEOUT_DESC', 'MEMORY_CONNECT_FINISHING_TIMEOUT_DESC_GENERIC')
+                : named('MEMORY_CONNECT_FINISHING_ERROR_DESC', 'MEMORY_CONNECT_FINISHING_ERROR_DESC_GENERIC')}
             </p>
             <div className="mcf-actions">
               {target && (
                 <button type="button" className="mcf-btn mcf-btn-primary" onClick={() => window.location.assign(target)}>
-                  {t('MEMORY_CONNECT_FINISHING_OPEN_ANYWAY')}
+                  {t('APP_ACTION_OPEN_ANYWAY')}
                 </button>
               )}
-              <button type="button" className="mcf-btn mcf-btn-secondary" onClick={() => navigate('/home')}>
-                {t('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')}
-              </button>
+              {dashboardButton}
             </div>
           </>
         ) : (
           <>
             <h1 className="mcf-title">{t('MEMORY_CONNECT_FINISHING_TITLE')}</h1>
-            <p className="mcf-desc">{t('MEMORY_CONNECT_FINISHING_DESC', { name: appName })}</p>
+            <p className="mcf-desc">{named('MEMORY_CONNECT_FINISHING_DESC', 'MEMORY_CONNECT_FINISHING_DESC_GENERIC')}</p>
           </>
         )}
       </main>
@@ -271,9 +345,5 @@ export default function MemoryConnectFinishingPage() {
     return <Navigate to="/home" replace />;
   }
 
-  return (
-    <AppContextProvider>
-      <FinishingContent appUrn={appUrn} rawNext={params.get('next')} />
-    </AppContextProvider>
-  );
+  return <FinishingContent appUrn={appUrn} rawNext={params.get('next')} />;
 }

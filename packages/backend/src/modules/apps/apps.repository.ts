@@ -42,6 +42,24 @@ export class AppsRepository {
   }
 
   /**
+   * Update an app's row only if its status is still `expectedStatus`. The
+   * compare-and-set the detached lifecycle completion handlers use, so a
+   * command finishing late cannot clobber the status a newer command has
+   * already claimed (e.g. a start's success handler overwriting the
+   * 'restarting' a just-scheduled restart set while queued behind it).
+   * Returns whether the update was applied.
+   */
+  public async updateAppByIdIfStatus(appId: number, expectedStatus: AppStatus, data: Partial<NewApp>): Promise<boolean> {
+    const updatedApps = await this.db
+      .update(app)
+      .set({ ...data, updatedAt: new Date().toISOString() })
+      .where(and(eq(app.id, appId), eq(app.status, expectedStatus)))
+      .returning()
+      .execute();
+    return updatedApps.length > 0;
+  }
+
+  /**
    * Given an app id, delete the app
    *
    * @param {string} appId - The id of the app to delete

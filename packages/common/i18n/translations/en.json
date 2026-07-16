@@ -1604,6 +1604,10 @@
   "MEMORY_CONNECT_FINISHING_ERROR_TITLE": "The app didn't come back up",
   "MEMORY_CONNECT_FINISHING_ERROR_DESC": "Your Companion Memory connection was saved, but {{name}} failed to restart. You can try opening it anyway, or manage it from the dashboard.",
   "MEMORY_CONNECT_FINISHING_TIMEOUT_DESC": "Your Companion Memory connection was saved, but {{name}} is taking longer than expected to restart.",
-  "MEMORY_CONNECT_FINISHING_OPEN_ANYWAY": "Open app anyway",
-  "MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD": "Back to dashboard"
+  "MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD": "Back to dashboard",
+  "MEMORY_CONNECT_FINISHING_DESC_GENERIC": "Restarting the app to apply your Companion Memory connection. This usually takes under a minute…",
+  "MEMORY_CONNECT_FINISHING_READY_GENERIC": "Connected! Opening the app…",
+  "MEMORY_CONNECT_FINISHING_READY_DONE": "Connected! You can open the app from the dashboard.",
+  "MEMORY_CONNECT_FINISHING_ERROR_DESC_GENERIC": "This app could not be reached. You can manage your apps from the dashboard.",
+  "MEMORY_CONNECT_FINISHING_TIMEOUT_DESC_GENERIC": "This app is taking longer than expected to restart. You can manage it from the dashboard."
 }

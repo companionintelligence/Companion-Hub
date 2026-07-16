@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -318,36 +319,36 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * `/memory-connect/finishing` interstitial, which watches the app's status
    * and forwards to `next` once it is running again.
    *
-   * A replayed `state` (the browser refreshing the callback URL after an
-   * aborted navigation) is recognized via the store's tombstone and repeats
-   * the redirect the first attempt actually resolved to, WITHOUT re-exchanging
-   * — the code is single-use, and a replay must never fabricate a success (or
-   * a failure) the first attempt didn't have. Until the first attempt
-   * resolves, the tombstone's redirect is the app URL — the safe landing.
+   * The store resolves the `state` bound to the current user and the presented
+   * code (hashed): a replay of the SAME code repeats the redirect the first
+   * attempt actually resolved to, WITHOUT re-exchanging — never fabricating a
+   * success (or failure) the first attempt didn't have. A DIFFERENT code on a
+   * consumed state is a fresh consent grant (deny → back → allow, or a retry
+   * after a failed exchange) and runs the full flow again. A request from
+   * another Hub user is `foreign`: it neither consumes the attempt nor learns
+   * anything about it (login-CSRF / authorization-code-injection guard — on a
+   * multi-user Hub this stops a low-priv user from binding the owner's app to
+   * the attacker's memory account, or from burning the owner's in-flight
+   * state).
    *
    * Only an unknown/expired `state` throws (there is no app to return to). Once
-   * the state is resolved, ANY downstream failure (provider gone, app mismatch,
-   * user mismatch, exchange error) still returns the originating app's URL with
+   * the state is resolved for its owner, ANY downstream failure (provider gone,
+   * app mismatch, exchange error) still returns the originating app's URL with
    * `error: true`, so the user lands back on their app (where the interstitial
    * re-appears) rather than dead-ending on the Hub dashboard.
    */
   async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
-    const attempt = this.pending.consume(state);
+    const attempt = this.pending.consume(state, currentUserId, this.hashCode(code));
 
     if (attempt.outcome === 'unknown') {
       throw new BadRequestException('Invalid or expired connect state');
     }
 
-    // Login-CSRF / authorization-code-injection guard: the browser completing the
-    // callback must be the SAME Hub user who started the flow. On the single-owner
-    // appliance this always holds; on a multi-user Hub it stops a low-priv user
-    // from binding the owner's app to the attacker's memory account (or vice
-    // versa). No key is exchanged when it fails. Applied to replays too — a
-    // different user replaying a consumed state learns nothing but the app URL.
-    if (attempt.userId !== currentUserId) {
-      this.logger.error(`[MemoryConnect] callback user mismatch for ${attempt.appUrn}: started by ${attempt.userId}, completed by ${currentUserId}`);
+    if (attempt.outcome === 'foreign') {
+      this.logger.error(`[MemoryConnect] callback user mismatch: state not owned by user ${currentUserId}`);
 
-      return { next: attempt.next, error: true };
+      // Land on the dashboard; a non-initiator learns nothing (not even the app).
+      return { next: '/', error: true };
     }
 
     if (attempt.outcome === 'replayed') {
@@ -359,51 +360,61 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
+    const result = await this.completeConnect(attempt.appUrn, attempt.next, code);
+
+    // Record where this attempt actually resolved, unconditionally, so a replay
+    // repeats the exact redirect — success, failure, or deferral alike.
+    this.pending.recordOutcome(state, result.next);
+
+    return result;
+  }
+
+  /**
+   * The exchange-and-apply half of a consumed callback: swap the one-time code
+   * for a key, persist it, schedule the restart, and return where to send the
+   * browser (the finishing interstitial while a restart is in flight, else the
+   * app URL).
+   */
+  private async completeConnect(appUrn: AppUrn, next: string, code: string): Promise<{ next: string; error?: boolean }> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
-      this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${attempt.appUrn}`);
+      this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${appUrn}`);
 
-      return { next: attempt.next, error: true };
+      return { next, error: true };
     }
 
     try {
       const exchanged = await this.exchange.exchange(provider.internalUrl, code);
 
       // Defense in depth: the code must be for the same app the flow started for.
-      if (exchanged.appUrn !== attempt.appUrn) {
-        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${attempt.appUrn}, got ${exchanged.appUrn}`);
+      if (exchanged.appUrn !== appUrn) {
+        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
 
         // The exchange minted a key under `exchanged.appUrn` (CI-Server rotates by
         // app name), but the Hub will not store it — revoke it so it does not
         // linger unmanaged on CI-Server. revoke() never throws (logs on failure).
         await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
 
-        return { next: attempt.next, error: true };
+        return { next, error: true };
       }
 
       // Store the internal URL as CI_SERVER_URL — the agent container reaches
       // ci-memory over the same shared docker network the Hub used for exchange.
-      await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
-      const applied = await this.applyConnection(attempt.appUrn, 'schedule');
+      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
+      const applied = await this.applyConnection(appUrn, 'schedule');
 
       if (applied === 'restarting') {
-        // Record the real outcome so a replay repeats this redirect. The other
-        // outcomes keep the tombstone's default (the app URL), which is already
-        // where they land.
-        const finishing = this.buildFinishingPath(attempt.appUrn, attempt.next);
-        this.pending.recordOutcome(state, finishing);
-
-        return { next: finishing };
+        return { next: this.buildFinishingPath(appUrn, next) };
       }
 
       // 'deferred' (app is down; env rewritten in place) or 'failed' — nothing is
       // restarting for the interstitial to watch, so land on the app directly.
-      return { next: attempt.next };
+      return { next };
     } catch (err) {
-      this.logger.error(`[MemoryConnect] exchange failed for ${attempt.appUrn}`, err);
+      this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return { next: attempt.next, error: true };
+      return { next, error: true };
     }
   }
 
@@ -411,18 +422,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Abandon a pending connect (the user denied consent on ci-memory, or an
    * upstream error): free the pending `state` and return where to send the
    * browser — the originating app if the state is still known (including a
-   * refresh of the deny redirect, via the tombstone), else the Hub. The same
-   * initiating-user check as the callback applies: another Hub user replaying
-   * a deny URL learns nothing (not even the app URL).
+   * refresh of the deny redirect, via the tombstone), else the Hub. A foreign
+   * user's deny replay learns nothing (not even the app URL).
    */
   abandonConnect(state: string | undefined, currentUserId: string): string {
-    const attempt = state ? this.pending.consume(state) : null;
+    const attempt = this.pending.consume(state, currentUserId);
 
-    if (!attempt || attempt.outcome === 'unknown' || attempt.userId !== currentUserId) {
+    if (attempt.outcome === 'unknown' || attempt.outcome === 'foreign') {
       return '/';
     }
 
-    return attempt.outcome === 'replayed' ? attempt.redirect : attempt.next;
+    return attempt.redirect;
+  }
+
+  /**
+   * Hash a one-time code for the tombstone comparison. The raw code is never
+   * retained — the hash only answers "is this the same code as last time?" so
+   * a fresh consent grant is distinguishable from a browser replay.
+   */
+  private hashCode(code: string): string {
+    return createHash('sha256').update(code).digest('hex');
   }
 
   /**
@@ -714,14 +733,20 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    *    self-heal) whose retry/strand-warning logic needs to know whether the restart
    *    actually took. `restartApp` would return as soon as the restart is PUBLISHED,
    *    reporting success for a compose failure.
-   *  - `'schedule'` — dispatch via `restartApp` (with `skipPull`: this restart exists
-   *    to pick up an env change; pulling a newer image only widens the wait) and return
-   *    `'restarting'` as soon as the app's status has flipped. For the browser callback,
-   *    which must answer the navigation immediately; `restartApp`'s detached completion
-   *    handler does the success/error bookkeeping + SSE. The status flip happening
-   *    BEFORE this resolves is what keeps the finishing interstitial's status poll from
-   *    ever reading a stale `running`.
+   *  - `'schedule'` — dispatch via `restartApp` and return `'restarting'` as soon as
+   *    the app's status has flipped. For the browser callback, which must answer the
+   *    navigation immediately; `restartApp`'s detached completion handler does the
+   *    success/error bookkeeping + SSE. The status flip happening BEFORE this resolves
+   *    is what keeps the finishing interstitial's status poll from ever reading a
+   *    stale `running`.
+   *
+   * Both modes pass `skipPull`: every apply here exists to pick up an env change, so
+   * pulling a newer image only widens the wait — and worse, a rotation sweep hitting a
+   * `force_pull` app while the registry is unreachable would fail a restart that the
+   * local image could have served, knocking over a healthy app.
    */
+  private async applyConnection(appUrn: AppUrn, restart: 'await'): Promise<'restarted' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'schedule'): Promise<'restarting' | 'deferred' | 'failed'>;
   private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule'): Promise<ApplyOutcome> {
     try {
       const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
@@ -746,7 +771,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         return 'restarting';
       }
 
-      const restarted = await lifecycle.restartAppAndWait({ appUrn });
+      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true });
 
       return restarted ? 'restarted' : 'failed';
     } catch (err) {

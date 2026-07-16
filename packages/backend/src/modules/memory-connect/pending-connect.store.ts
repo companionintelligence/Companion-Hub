@@ -36,9 +36,16 @@ interface PendingEntry {
 
 interface TombstoneEntry extends PendingEntry {
   /**
-   * The redirect the first (authoritative) attempt actually resolved to, so a
-   * replay repeats the real outcome instead of assuming success. Initialized
-   * to `next` (the safe landing for a failed, deferred, or still-in-flight
+   * Hash of the one-time code the consuming request presented (null for the
+   * deny path, which carries none). A later request with a DIFFERENT code is
+   * not a replay — the user went back to the consent page and granted again,
+   * and CI-Server issued a fresh single-use code — so it re-opens the attempt.
+   */
+  codeHash: string | null;
+  /**
+   * The redirect the consuming attempt actually resolved to, so a replay
+   * repeats the real outcome instead of assuming success. Initialized to
+   * `next` (the safe landing for a failed, deferred, or still-in-flight
    * attempt) and upgraded via {@link PendingConnectStore.recordOutcome} once
    * the attempt resolves to something else (the finishing interstitial).
    */
@@ -46,33 +53,39 @@ interface TombstoneEntry extends PendingEntry {
 }
 
 /**
- * `consumed` — first (and authoritative) consume of a live state: the caller
- * should run the exchange. `replayed` — the state was already consumed within
- * the tombstone window: the flow's outcome already happened, the caller must
- * NOT re-exchange, only send the browser to the recorded `redirect`. `unknown`
- * — never issued, or expired before completion.
+ * `consumed` — this request owns the attempt and should run the exchange
+ * (first consume of a live state, or a fresh consent grant on a consumed one).
+ * `replayed` — the same request happened before: don't re-exchange, just send
+ * the browser to the recorded `redirect`. `foreign` — the state exists but is
+ * bound to a different Hub user; nothing is consumed and nothing about the
+ * attempt is disclosed. `unknown` — never issued, or expired.
  */
 export type ConsumeResult =
-  | { outcome: 'consumed'; appUrn: AppUrn; next: string; userId: string }
+  | { outcome: 'consumed'; appUrn: AppUrn; next: string; userId: string; redirect: string }
   | { outcome: 'replayed'; appUrn: AppUrn; next: string; userId: string; redirect: string }
+  | { outcome: 'foreign' }
   | { outcome: 'unknown' };
 
 /**
  * In-memory store of in-flight connect attempts, keyed by a random `state`
  * nonce. This is the login-CSRF / code-injection guard for the cross-origin
  * hop: the Hub only accepts a callback whose `state` matches an attempt it
- * started, and binds it to the exact app URN.
+ * started, bound to the exact app URN AND the initiating user — a request from
+ * any other user is `foreign` and leaves the attempt untouched, so it can
+ * neither learn the destination nor burn the initiator's flow.
  *
  * Kept in memory deliberately — an attempt lives for a single browser round
  * trip (minutes). If the Hub restarts mid-flow the user simply retries; nothing
  * durable is lost (the durable credential is only written after a successful
  * exchange).
  *
- * A consumed entry leaves a tombstone recording how the attempt resolved, so a
- * benign replay of the callback URL (the browser refreshing after
- * `ERR_NETWORK_CHANGED` aborted the navigation mid-restart, or the back
- * button) repeats the original redirect — never a second exchange, and never a
- * fabricated success for an attempt that actually failed.
+ * A consumed entry leaves a tombstone recording the presented code (hashed)
+ * and how the attempt resolved. A replay of the same code repeats the original
+ * redirect — never a second exchange, and never a fabricated success for an
+ * attempt that actually failed. A request with a DIFFERENT code re-opens the
+ * attempt: the user denied (or hit an error) and then granted consent again
+ * from the same consent page, and that fresh grant must be honored, not
+ * swallowed as a replay.
  */
 @Injectable()
 export class PendingConnectStore {
@@ -98,34 +111,67 @@ export class PendingConnectStore {
   }
 
   /**
-   * Consume a `state` nonce. The first consume of a live, unexpired state wins
-   * (`consumed`) and leaves a tombstone; consuming again within
-   * {@link TOMBSTONE_TTL_MS} reports `replayed` with the recorded outcome (and
-   * keeps the tombstone, so repeated refreshes keep resolving). An expired
-   * pending entry is dropped WITHOUT a tombstone — its flow never completed, so
-   * a later callback must read as invalid, not as a replay of a success.
+   * Resolve a `state` nonce for the given user, optionally presenting the hash
+   * of the one-time code the request carries.
+   *
+   * The first resolve of a live state by its initiating user consumes it
+   * (`consumed`) and leaves a tombstone. Resolving again within
+   * {@link TOMBSTONE_TTL_MS} with the SAME code (or none) reports `replayed`
+   * with the recorded outcome; with a DIFFERENT code it re-opens the attempt as
+   * `consumed` — a fresh consent grant carries a fresh single-use code. A
+   * request from another user (or with no user at all — fail closed) is
+   * `foreign` and consumes nothing. An expired pending entry is dropped WITHOUT
+   * a tombstone — its flow never completed, so a later callback must read as
+   * invalid, not as a replay of a success.
    */
-  consume(state: string): ConsumeResult {
+  consume(state: string | undefined, userId: string, codeHash?: string): ConsumeResult {
     this.prune();
+
+    if (!state) {
+      return { outcome: 'unknown' };
+    }
+
+    if (!userId) {
+      return { outcome: 'foreign' };
+    }
 
     const entry = this.entries.get(state);
 
     if (entry) {
-      this.entries.delete(state);
-
-      if (entry.expiresAt < Date.now()) {
-        return { outcome: 'unknown' };
+      if (entry.userId !== userId) {
+        return { outcome: 'foreign' };
       }
 
+      this.entries.delete(state);
       this.evictOldestIfFull(this.tombstones, MAX_TOMBSTONES);
-      this.tombstones.set(state, { ...entry, redirect: entry.next, expiresAt: Date.now() + TOMBSTONE_TTL_MS });
+      this.tombstones.set(state, {
+        ...entry,
+        codeHash: codeHash ?? null,
+        redirect: entry.next,
+        expiresAt: Date.now() + TOMBSTONE_TTL_MS,
+      });
 
-      return { outcome: 'consumed', appUrn: entry.appUrn, next: entry.next, userId: entry.userId };
+      return { outcome: 'consumed', appUrn: entry.appUrn, next: entry.next, userId: entry.userId, redirect: entry.next };
     }
 
     const tombstone = this.tombstones.get(state);
 
-    if (tombstone && tombstone.expiresAt >= Date.now()) {
+    if (tombstone) {
+      if (tombstone.userId !== userId) {
+        return { outcome: 'foreign' };
+      }
+
+      if (codeHash && codeHash !== tombstone.codeHash) {
+        // A fresh single-use code on a consumed state: the user granted consent
+        // again (deny → back → allow, or retry after a failed exchange). Re-open
+        // the attempt so the new grant is exchanged rather than swallowed.
+        tombstone.codeHash = codeHash;
+        tombstone.redirect = tombstone.next;
+        tombstone.expiresAt = Date.now() + TOMBSTONE_TTL_MS;
+
+        return { outcome: 'consumed', appUrn: tombstone.appUrn, next: tombstone.next, userId: tombstone.userId, redirect: tombstone.next };
+      }
+
       return {
         outcome: 'replayed',
         appUrn: tombstone.appUrn,
@@ -140,9 +186,9 @@ export class PendingConnectStore {
 
   /**
    * Record where the consumed attempt actually sent the browser, so replays
-   * repeat that exact redirect. Only called when the outcome differs from the
-   * default (`next`) — today, the finishing interstitial once a restart was
-   * scheduled. A no-op if the tombstone has expired or been evicted.
+   * repeat that exact redirect. A no-op if the tombstone has expired or been
+   * evicted — the replay then falls back to the default (the app URL), which
+   * is always a safe landing.
    */
   recordOutcome(state: string, redirect: string): void {
     const tombstone = this.tombstones.get(state);
