@@ -5,14 +5,18 @@ import { ResetDialog } from './reset-dialog';
 
 const h = vi.hoisted(() => ({
   mutate: vi.fn(),
-  opts: undefined as undefined | Record<string, (arg?: unknown) => void>,
   invalidateAppQueries: vi.fn(),
-  consumers: { data: [] as Array<{ appUrn: string; name: string }>, isLoading: false },
+  gate: {
+    requiresForce: false,
+    consumers: [] as Array<{ appUrn: string; name: string }>,
+    unableToVerify: false,
+    submitDisabledBase: false,
+  },
 }));
 
 vi.mock('@tanstack/react-query', () => ({
   useMutation: (opts: Record<string, (arg?: unknown) => void>) => {
-    h.opts = opts;
+    void opts;
     return { mutate: h.mutate, isPending: false };
   },
   useQueryClient: () => ({}),
@@ -30,9 +34,22 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   invalidateAppQueries: (...args: unknown[]) => h.invalidateAppQueries(...args),
 }));
 
-vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
-  useMemoryConsumers: () => h.consumers,
-}));
+vi.mock('@/modules/app/helpers/use-memory-connection', async () => {
+  const react = await vi.importActual<typeof import('react')>('react');
+  return {
+    useMemoryProviderForceGate: () => {
+      const [forceConfirmed, setForceConfirmed] = react.useState(false);
+      return {
+        requiresForce: h.gate.requiresForce,
+        consumers: h.gate.consumers,
+        unableToVerify: h.gate.unableToVerify,
+        forceConfirmed,
+        setForceConfirmed,
+        submitDisabled: h.gate.submitDisabledBase || (h.gate.requiresForce && !forceConfirmed),
+      };
+    },
+  };
+});
 
 vi.mock('react-hot-toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
 
@@ -42,7 +59,7 @@ const providerApp = { id: 'ci-memory', name: 'Companion Memory', urn: 'ci-memory
 describe('ResetDialog', () => {
   beforeEach(() => {
     h.mutate.mockReset();
-    h.consumers = { data: [], isLoading: false };
+    h.gate = { requiresForce: false, consumers: [], unableToVerify: false, submitDisabledBase: false };
   });
 
   it('resets a normal app immediately with force: false', async () => {
@@ -54,7 +71,12 @@ describe('ResetDialog', () => {
   });
 
   it('gates the provider reset behind the force switch and sends force: true', async () => {
-    h.consumers = { data: [{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }], isLoading: false };
+    h.gate = {
+      requiresForce: true,
+      consumers: [{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }],
+      unableToVerify: false,
+      submitDisabledBase: false,
+    };
     const user = userEvent.setup();
     render(<ResetDialog info={providerApp} isOpen onClose={vi.fn()} />);
 

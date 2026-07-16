@@ -1,5 +1,7 @@
 import { client } from '@/api-client/client.gen';
+import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -51,6 +53,56 @@ export function useMemoryConsumers(enabled: boolean) {
     },
     staleTime: 15_000,
   });
+}
+
+export interface MemoryProviderForceGate {
+  /** True when the target app is the memory provider and a forced confirmation is required. */
+  requiresForce: boolean;
+  /** The connected consumer apps (empty when there are none, or when the list couldn't be fetched). */
+  consumers: MemoryConsumer[];
+  /** True when the target is the provider but the consumer list couldn't be loaded. */
+  unableToVerify: boolean;
+  forceConfirmed: boolean;
+  setForceConfirmed: (checked: boolean) => void;
+  /** Whether the dialog's confirm button should be disabled. */
+  submitDisabled: boolean;
+}
+
+/**
+ * Shared uninstall/reset gating for the Companion Memory provider. Centralizes
+ * the logic both destructive dialogs need so they can't drift: detects the
+ * provider, fetches its connected consumers while the dialog is open, and drives
+ * the forced-confirmation switch.
+ *
+ * Fails CLOSED: if the target is the provider but the consumer list can't be
+ * fetched, `requiresForce`/`unableToVerify` stay true, so the UI still demands an
+ * explicit confirmation instead of silently letting a `force:false` submit
+ * through (the backend guard is authoritative, but the UI shouldn't look like a
+ * safe "no consumers" dialog when it actually doesn't know).
+ */
+export function useMemoryProviderForceGate(appUrn: string, isOpen: boolean): MemoryProviderForceGate {
+  const isProvider = isMemoryProviderUrn(appUrn);
+  const consumersQuery = useMemoryConsumers(isOpen && isProvider);
+  const consumers = consumersQuery.data ?? [];
+  const unableToVerify = isProvider && consumersQuery.isError;
+  const requiresForce = isProvider && (consumers.length > 0 || unableToVerify);
+
+  const [forceConfirmed, setForceConfirmed] = useState(false);
+
+  // Re-arm the acknowledgement whenever the dialog (re)opens OR the target app
+  // changes, so a prior confirmation can never carry into a different destructive
+  // action. `appUrn` is intentionally a re-run trigger even though the body
+  // doesn't read it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is a deliberate reset trigger, not a value the effect reads.
+  useEffect(() => {
+    if (isOpen) {
+      setForceConfirmed(false);
+    }
+  }, [isOpen, appUrn]);
+
+  const submitDisabled = (isProvider && consumersQuery.isLoading) || (requiresForce && !forceConfirmed);
+
+  return { requiresForce, consumers, unableToVerify, forceConfirmed, setForceConfirmed, submitDisabled };
 }
 
 /**

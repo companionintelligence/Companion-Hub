@@ -367,6 +367,7 @@
   "APP_UNINSTALL_FORM_SUBMIT": "Uninstall",
   "APP_UNINSTALL_FORM_TITLE": "Uninstall {{name}} ?",
   "APP_UNINSTALL_MEMORY_PROVIDER_WARNING": "{{count}} installed app(s) are still connected to Companion Memory:",
+  "APP_UNINSTALL_MEMORY_PROVIDER_UNKNOWN": "Couldn't check which apps are connected to Companion Memory. Proceed only if you're sure.",
   "APP_UNINSTALL_MEMORY_PROVIDER_CONSEQUENCE": "Proceeding disconnects and restarts them, and deleting data permanently erases all shared memories.",
   "APP_UNINSTALL_MEMORY_PROVIDER_FORCE_LABEL": "I understand — disconnect these apps and proceed",
   "APP_UNINSTALL_SUCCESS": "App {{id}} uninstalled successfully",

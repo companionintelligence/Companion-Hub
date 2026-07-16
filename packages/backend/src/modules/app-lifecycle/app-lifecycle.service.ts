@@ -38,6 +38,7 @@ import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '.
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -950,13 +951,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * apps are never affected. Fails closed if the memory module can't be resolved:
    * a data-destroying operation must not proceed when the safety check can't run.
    */
+  /**
+   * Lazily resolve MemoryConnectService. The dynamic import + ModuleRef lookup
+   * avoids a static module cycle with memory-connect; a resolution failure (module
+   * unloadable — `ModuleRef.get` throws rather than returning undefined) is folded
+   * into `undefined` so callers can decide how to handle a missing service.
+   */
+  private async getMemoryConnectService(): Promise<MemoryConnectService | undefined> {
+    try {
+      const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
+      return this.moduleRef.get(MemoryConnectService, { strict: false }) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async assertMemoryProviderNotInUse(appUrn: AppUrn, force: boolean | undefined): Promise<void> {
     if (force || !isMemoryProviderApp({ urn: appUrn })) {
       return;
     }
 
-    const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
-    const memoryConnect = this.moduleRef.get(MemoryConnectService, { strict: false });
+    const memoryConnect = await this.getMemoryConnectService();
 
     if (!memoryConnect) {
       throw new TranslatableError('APP_ERROR_MEMORY_PROVIDER_IN_USE', { id: appUrn, count: '?', apps: '' }, HttpStatus.CONFLICT);
@@ -995,11 +1010,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
     // Revoke any Companion Memory key minted for this app and drop its connection
-    // state so access dies with the app. Best-effort + lazily resolved (via
-    // ModuleRef) to avoid a static module cycle with memory-connect.
+    // state so access dies with the app. Best-effort — the app is going away
+    // regardless, so a resolution/cleanup failure is logged, not fatal.
     try {
-      const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
-      const memoryConnect = this.moduleRef.get(MemoryConnectService, { strict: false });
+      const memoryConnect = await this.getMemoryConnectService();
       await memoryConnect?.handleUninstall(appUrn);
     } catch (err) {
       this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);

@@ -513,11 +513,15 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   /**
    * The installed apps that currently hold a live Companion Memory connection —
    * used to guard against removing the shared provider out from under them.
-   * Excludes (a) the provider's own connection row (ci-memory holds one too),
-   * (b) stale rows whose app is no longer installed, and (c) any row whose URN is
-   * malformed (skipped defensively — a row that can't be parsed can't map to a
-   * real consumer, so it must not turn the guard/consumers endpoint into a 500).
-   * Names are the app's display name, falling back to the URN's app-name half.
+   * Excludes (a) the provider's own connection row (ci-memory holds one too) and
+   * (b) stale rows whose app is no longer installed. Names are the app's display
+   * name, falling back to the URN's app-name half.
+   *
+   * A row whose URN can't even be PARSED is skipped (it can't map to a real
+   * consumer). That is the ONLY thing swallowed here: a DB/resolver error while
+   * resolving a genuinely-connected row is allowed to propagate, so the caller
+   * (the uninstall/reset guard) fails CLOSED rather than silently dropping a
+   * still-connected consumer and letting the shared store be destroyed.
    */
   async listConnectedConsumers(): Promise<Array<{ appUrn: string; name: string }>> {
     const rows = await this.connections.listConnected();
@@ -526,20 +530,26 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     for (const row of rows) {
       const urn = row.appUrn as AppUrn;
 
+      // Validate the URN up front and skip only on a PARSE failure — everything
+      // below (the DB existence check, the name resolution) must be free to throw.
+      let fallbackName: string;
       try {
-        if (isMemoryProviderApp({ urn })) {
-          continue;
-        }
-
-        if (!(await this.apps.getAppByUrn(urn))) {
-          continue;
-        }
-
-        const name = (await this.resolver.getAppName(urn)) ?? extractAppUrn(urn).appName;
-        consumers.push({ appUrn: row.appUrn, name });
+        fallbackName = extractAppUrn(urn).appName;
       } catch (err) {
         this.logger.warn(`[MemoryConnect] skipping unparseable connection row ${row.appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
       }
+
+      if (isMemoryProviderApp({ urn })) {
+        continue;
+      }
+
+      if (!(await this.apps.getAppByUrn(urn))) {
+        continue;
+      }
+
+      const name = (await this.resolver.getAppName(urn)) ?? fallbackName;
+      consumers.push({ appUrn: row.appUrn, name });
     }
 
     return consumers;

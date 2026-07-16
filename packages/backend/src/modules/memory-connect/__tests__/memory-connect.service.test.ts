@@ -602,4 +602,14 @@ describe('MemoryConnectService.listConnectedConsumers', () => {
 
     expect(consumers).toEqual([{ appUrn: 'ci-hermes:ci-marketplace', name: 'ci-hermes' }]);
   });
+
+  it('propagates a DB error on a real row instead of dropping the consumer (fails closed)', async () => {
+    const { service, connections, appsRepository } = makeService();
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' }]);
+    // A transient infra error on a genuinely-connected row must NOT be swallowed —
+    // otherwise the uninstall/reset guard would see 0 consumers and destroy the store.
+    appsRepository.getAppByUrn.mockRejectedValue(new Error('db pool exhausted'));
+
+    await expect(service.listConnectedConsumers()).rejects.toThrow('db pool exhausted');
+  });
 });

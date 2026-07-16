@@ -3,12 +3,17 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UninstallDialog } from './uninstall-dialog';
 
-// Capture the mutate spy and the options passed to useMutation so we can exercise onError.
+// Capture the mutate spy + useMutation options, and drive the force-gate per test.
 const h = vi.hoisted(() => ({
   mutate: vi.fn(),
   opts: undefined as undefined | Record<string, (arg?: unknown) => void>,
   invalidateAppQueries: vi.fn(),
-  consumers: { data: [] as Array<{ appUrn: string; name: string }>, isLoading: false },
+  gate: {
+    requiresForce: false,
+    consumers: [] as Array<{ appUrn: string; name: string }>,
+    unableToVerify: false,
+    submitDisabledBase: false,
+  },
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -31,9 +36,23 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   invalidateAppQueries: (...args: unknown[]) => h.invalidateAppQueries(...args),
 }));
 
-vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
-  useMemoryConsumers: () => h.consumers,
-}));
+// Mock the gate but keep a real forceConfirmed state so the switch toggle is exercised.
+vi.mock('@/modules/app/helpers/use-memory-connection', async () => {
+  const react = await vi.importActual<typeof import('react')>('react');
+  return {
+    useMemoryProviderForceGate: () => {
+      const [forceConfirmed, setForceConfirmed] = react.useState(false);
+      return {
+        requiresForce: h.gate.requiresForce,
+        consumers: h.gate.consumers,
+        unableToVerify: h.gate.unableToVerify,
+        forceConfirmed,
+        setForceConfirmed,
+        submitDisabled: h.gate.submitDisabledBase || (h.gate.requiresForce && !forceConfirmed),
+      };
+    },
+  };
+});
 
 const mockToastError = vi.fn();
 vi.mock('react-hot-toast', () => ({
@@ -49,21 +68,26 @@ describe('UninstallDialog', () => {
     h.invalidateAppQueries.mockReset();
     mockToastError.mockReset();
     h.opts = undefined;
-    h.consumers = { data: [], isLoading: false };
+    h.gate = { requiresForce: false, consumers: [], unableToVerify: false, submitDisabledBase: false };
   });
 
   it('uninstalls a normal app without a provider warning and force: false', async () => {
     const user = userEvent.setup();
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.queryByText(/still connected to Companion Memory/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connected to Companion Memory/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: true, force: false } });
   });
 
   it('lists connected consumers and gates the provider uninstall behind the force switch', async () => {
-    h.consumers = { data: [{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }], isLoading: false };
+    h.gate = {
+      requiresForce: true,
+      consumers: [{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }],
+      unableToVerify: false,
+      submitDisabledBase: false,
+    };
     const user = userEvent.setup();
     render(<UninstallDialog info={providerApp} isOpen onClose={vi.fn()} />);
 
@@ -80,12 +104,26 @@ describe('UninstallDialog', () => {
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { deleteAllData: true, force: true } });
   });
 
-  it('treats the provider like a normal app when no consumers are connected', async () => {
-    h.consumers = { data: [], isLoading: false };
+  it('shows a generic warning and still gates when the consumer list could not be verified', async () => {
+    h.gate = { requiresForce: true, consumers: [], unableToVerify: true, submitDisabledBase: false };
     const user = userEvent.setup();
     render(<UninstallDialog info={providerApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.queryByText(/still connected to Companion Memory/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Couldn't check which apps are connected/)).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Uninstall' });
+    expect(submit).toBeDisabled();
+
+    await user.click(screen.getByRole('switch', { name: 'uninstall-force-confirm' }));
+    await user.click(submit);
+    expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { deleteAllData: true, force: true } });
+  });
+
+  it('treats the provider like a normal app when no consumers are connected', async () => {
+    h.gate = { requiresForce: false, consumers: [], unableToVerify: false, submitDisabledBase: false };
+    const user = userEvent.setup();
+    render(<UninstallDialog info={providerApp} isOpen onClose={vi.fn()} />);
+
+    expect(screen.queryByText(/connected to Companion Memory/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { deleteAllData: true, force: false } });

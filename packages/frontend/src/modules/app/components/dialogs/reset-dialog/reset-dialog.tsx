@@ -2,16 +2,14 @@ import { resetAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
-import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
-import { useMemoryConsumers } from '@/modules/app/helpers/use-memory-connection';
+import { useMemoryProviderForceGate } from '@/modules/app/helpers/use-memory-connection';
 import { MemoryProviderForceWarning } from '../memory-provider-force-warning';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { AlertTriangle } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
-import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -25,19 +23,10 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
 
-  const [forceConfirmed, setForceConfirmed] = useState(false);
-
-  const isProvider = isMemoryProviderUrn(info.urn);
-  const consumersQuery = useMemoryConsumers(isOpen && isProvider);
-  const consumers = consumersQuery.data ?? [];
-  const requiresForce = isProvider && consumers.length > 0;
-
-  // Reset the force acknowledgement whenever the dialog (re)opens.
-  useEffect(() => {
-    if (isOpen) {
-      setForceConfirmed(false);
-    }
-  }, [isOpen]);
+  const { requiresForce, consumers, unableToVerify, forceConfirmed, setForceConfirmed, submitDisabled } = useMemoryProviderForceGate(
+    info.urn,
+    isOpen,
+  );
 
   const resetMutation = useMutation({
     ...resetAppMutation(),
@@ -54,8 +43,6 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
     },
   });
 
-  const submitDisabled = (isProvider && consumersQuery.isLoading) || (requiresForce && !forceConfirmed);
-
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent type="danger" size="sm">
@@ -69,6 +56,7 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           {requiresForce && (
             <MemoryProviderForceWarning
               consumers={consumers}
+              unableToVerify={unableToVerify}
               forceConfirmed={forceConfirmed}
               onForceConfirmedChange={setForceConfirmed}
               switchName="reset-force-confirm"
