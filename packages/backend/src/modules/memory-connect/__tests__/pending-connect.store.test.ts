@@ -141,6 +141,23 @@ describe('PendingConnectStore', () => {
       expect(store.consume(state, 'user-1', 'hash-a')).toEqual({ outcome: 'unknown' });
     });
 
+    it('does not slide the tombstone TTL on re-arm — the ceiling is absolute from the first consume', () => {
+      const store = new PendingConnectStore();
+      const state = store.create('ci-openclaw:local', 'https://app.example.com/', 'user-1');
+
+      // First consume at T0 — tombstone expires at T0 + 10 min.
+      expect(store.consume(state, 'user-1', 'hash-a').outcome).toBe('consumed');
+
+      // A fresh consent grant 9 minutes in re-opens the attempt, but must NOT push
+      // the expiry forward: a leaked state cannot be kept re-armable indefinitely.
+      vi.advanceTimersByTime(9 * 60 * 1000);
+      expect(store.consume(state, 'user-1', 'hash-b').outcome).toBe('consumed');
+
+      // 2 minutes later (T0 + 11 min) the original ceiling has passed.
+      vi.advanceTimersByTime(2 * 60 * 1000);
+      expect(store.consume(state, 'user-1', 'hash-b')).toEqual({ outcome: 'unknown' });
+    });
+
     it('expires tombstones: replayed within the 10-minute window, unknown after it', () => {
       const store = new PendingConnectStore();
       const state = store.create('ci-openclaw:local', 'https://app.example.com/', 'user-1');

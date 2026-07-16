@@ -44,10 +44,13 @@ vi.mock('@/context/user-context', () => ({
 
 // The access-point builder pulls in the whole app-details component graph; the
 // page only needs its {url, state} output, and resolveSafeTarget's own origin
-// matrix is covered by the pure-function tests below.
+// matrix is covered by the pure-function tests below. The served-port stub
+// mirrors the real helper's number-only filter so it can't drift into admitting
+// undefined ports.
 vi.mock('@/modules/app/components/app-access-points/app-access-points', () => ({
   buildAppAccessPoints,
-  buildTailscaleServedPortSet: (entries: Array<{ listenPort?: number }>) => new Set(entries.map((entry) => entry.listenPort)),
+  buildTailscaleServedPortSet: (entries: Array<{ listenPort?: number }>) =>
+    new Set(entries.map((entry) => entry.listenPort).filter((port): port is number => typeof port === 'number')),
 }));
 
 vi.mock('@/components/app-logo/app-logo', () => ({
@@ -58,7 +61,7 @@ vi.mock('@/components/ui/LoadingSpinner/loading-spinner', () => ({
   PageLoadingSpinner: () => <div data-testid="page-loading" />,
 }));
 
-import MemoryConnectFinishingPage, { derivePhase, isTerminalSnapshot, resolveSafeTarget } from './memory-connect-finishing-page';
+import MemoryConnectFinishingPage, { derivePhase, isPollSettled, resolveSafeTarget } from './memory-connect-finishing-page';
 
 const APP_URN = 'ci-hermes:ci-marketplace';
 const APP_URL = 'https://ci-hermes-hub-studio-companion.example.org/';
@@ -212,8 +215,10 @@ describe('MemoryConnectFinishingPage', () => {
     expect(screen.getByText('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')).toBeInTheDocument();
   });
 
-  it('keeps the connecting spinner through a transient fetch blip (below the failure limit)', () => {
-    appResult.current = { data: undefined, failureCount: 1 };
+  it('keeps the connecting spinner through a transient fetch blip (no data yet)', () => {
+    // React Query keeps the last snapshot on a failed refetch; with none yet the
+    // page must stay on the connecting spinner rather than flashing a false error.
+    appResult.current = { data: undefined };
 
     render(<MemoryConnectFinishingPage />);
 
@@ -221,13 +226,23 @@ describe('MemoryConnectFinishingPage', () => {
     expect(screen.queryByText('MEMORY_CONNECT_FINISHING_ERROR_TITLE')).not.toBeInTheDocument();
   });
 
-  it('shows the error card once fetch failures settle (at the failure limit)', () => {
-    appResult.current = { data: undefined, failureCount: 3 };
+  it('recovers and forwards when a transient down status later flips back to running', () => {
+    // A slow restart can momentarily report 'stopped' (e.g. a queue RPC timeout
+    // mid-compose); the poll must keep going so the later recovery still hops.
+    vi.useFakeTimers();
+    appResult.current = appData('stopped');
 
-    render(<MemoryConnectFinishingPage />);
-
+    const { rerender } = render(<MemoryConnectFinishingPage />);
     expect(screen.getByText('MEMORY_CONNECT_FINISHING_ERROR_TITLE')).toBeInTheDocument();
-    expect(screen.getByText('MEMORY_CONNECT_FINISHING_ERROR_DESC_GENERIC')).toBeInTheDocument();
+
+    appResult.current = appData('running');
+    rerender(<MemoryConnectFinishingPage />);
+
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_READY')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(window.location.replace).toHaveBeenCalledWith(APP_URL);
   });
 
   it('times out into the error card when the restart never completes', () => {
@@ -346,34 +361,33 @@ describe('resolveSafeTarget', () => {
   });
 });
 
-describe('phase and terminal derivation', () => {
+describe('phase and poll-settled derivation', () => {
   const snapshot = (status: string) => ({ app: { status } }) as Parameters<typeof derivePhase>[0];
 
   it('ready wins over timeout — a late recovery still self-resolves', () => {
-    expect(derivePhase(snapshot('running'), 0, true)).toBe('ready');
+    expect(derivePhase(snapshot('running'), true)).toBe('ready');
   });
 
   it('a definitive failure wins over timeout — the message never downgrades', () => {
-    expect(derivePhase(snapshot('stopped'), 0, true)).toBe('error');
-    expect(derivePhase({ app: null }, 0, true)).toBe('error');
+    expect(derivePhase(snapshot('stopped'), true)).toBe('error');
+    expect(derivePhase({ app: null }, true)).toBe('error');
   });
 
-  it('a transient blip keeps connecting; settled failure is an error', () => {
-    expect(derivePhase(undefined, 1, false)).toBe('connecting');
-    expect(derivePhase(undefined, 3, false)).toBe('error');
+  it('a fetch blip (no/last snapshot) keeps connecting rather than flashing an error', () => {
+    expect(derivePhase(undefined, false)).toBe('connecting');
   });
 
   it('timeout applies only while indeterminate', () => {
-    expect(derivePhase(snapshot('restarting'), 0, true)).toBe('timeout');
-    expect(derivePhase(snapshot('restarting'), 0, false)).toBe('connecting');
+    expect(derivePhase(snapshot('restarting'), true)).toBe('timeout');
+    expect(derivePhase(snapshot('restarting'), false)).toBe('connecting');
   });
 
-  it('terminal matches the phases that stop the poll, including settled failure', () => {
-    expect(isTerminalSnapshot(snapshot('running'), 0)).toBe(true);
-    expect(isTerminalSnapshot({ app: null }, 0)).toBe(true);
-    expect(isTerminalSnapshot(snapshot('stopped'), 0)).toBe(true);
-    expect(isTerminalSnapshot(snapshot('restarting'), 0)).toBe(false);
-    expect(isTerminalSnapshot(undefined, 1)).toBe(false);
-    expect(isTerminalSnapshot(undefined, 3)).toBe(true);
+  it('poll stops only on running or a vanished row — a down status keeps polling for recovery', () => {
+    expect(isPollSettled(snapshot('running'))).toBe(true);
+    expect(isPollSettled({ app: null })).toBe(true);
+    // A down status is NOT settled: it may still recover, so keep polling.
+    expect(isPollSettled(snapshot('stopped'))).toBe(false);
+    expect(isPollSettled(snapshot('restarting'))).toBe(false);
+    expect(isPollSettled(undefined)).toBe(false);
   });
 });

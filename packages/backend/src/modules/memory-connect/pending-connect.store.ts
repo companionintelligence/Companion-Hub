@@ -165,9 +165,15 @@ export class PendingConnectStore {
         // A fresh single-use code on a consumed state: the user granted consent
         // again (deny → back → allow, or retry after a failed exchange). Re-open
         // the attempt so the new grant is exchanged rather than swallowed.
+        //
+        // Deliberately do NOT extend expiresAt here: a legitimate re-grant lands
+        // within seconds, well inside the original 10-minute window, so the TTL
+        // stays an ABSOLUTE ceiling from the first consume rather than a sliding
+        // one. Refreshing it would let repeated fresh-code hits keep a consumed
+        // state re-armable indefinitely, widening the window in which a leaked
+        // state could be re-exchanged.
         tombstone.codeHash = codeHash;
         tombstone.redirect = tombstone.next;
-        tombstone.expiresAt = Date.now() + TOMBSTONE_TTL_MS;
 
         return { outcome: 'consumed', appUrn: tombstone.appUrn, next: tombstone.next, userId: tombstone.userId, redirect: tombstone.next };
       }

@@ -197,7 +197,10 @@ describe('MemoryConnectService.handleCallback', () => {
     expect(exchange.exchange).not.toHaveBeenCalled();
     expect(connections.storeConnected).not.toHaveBeenCalled();
     expect(lifecycle.restartApp).not.toHaveBeenCalled();
-    expect(result).toEqual({ next: '/', error: true });
+    // Same landing as an unknown/expired state, so a probing non-initiator can't
+    // tell 'foreign' from 'unknown', and the real user whose session drifted
+    // still gets a failure toast.
+    expect(result).toEqual({ next: '/?memoryConnect=error', error: true });
   });
 
   it('routes a replayed state to its RECORDED redirect without re-exchanging or restarting', async () => {
