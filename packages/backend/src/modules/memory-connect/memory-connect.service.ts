@@ -347,8 +347,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     if (attempt.outcome === 'foreign') {
       this.logger.error(`[MemoryConnect] callback user mismatch: state not owned by user ${currentUserId}`);
 
-      // Land on the dashboard; a non-initiator learns nothing (not even the app).
-      return { next: '/', error: true };
+      // Land on the dashboard with the generic error marker — same landing as an
+      // unknown/expired state (the controller's catch also uses this), so the
+      // outcome is indistinguishable to a probing non-initiator (no foreign-vs-
+      // unknown oracle) while still surfacing a failure toast to the real user
+      // whose session drifted. A non-initiator still learns nothing (not the app).
+      return { next: '/?memoryConnect=error', error: true };
     }
 
     if (attempt.outcome === 'replayed') {

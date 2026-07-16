@@ -50,11 +50,14 @@ export class AppsRepository {
    * Returns whether the update was applied.
    */
   public async updateAppByIdIfStatus(appId: number, expectedStatus: AppStatus, data: Partial<NewApp>): Promise<boolean> {
+    // Return only the id: callers use this solely as an applied/not-applied
+    // boolean, so there is no need to ship the whole row (including the config
+    // jsonb) back over the wire on every start/restart completion.
     const updatedApps = await this.db
       .update(app)
       .set({ ...data, updatedAt: new Date().toISOString() })
       .where(and(eq(app.id, appId), eq(app.status, expectedStatus)))
-      .returning()
+      .returning({ id: app.id })
       .execute();
     return updatedApps.length > 0;
   }

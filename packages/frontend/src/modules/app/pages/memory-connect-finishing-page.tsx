@@ -28,14 +28,13 @@ import './memory-connect-finishing-page.css';
  */
 
 const POLL_INTERVAL_MS = 2000;
-/** Poll cadence once the page's own timeout has passed — late recovery still
- *  self-resolves, without an abandoned tab hammering the backend every 2s. */
+/** Poll cadence once the outcome looks settled (timed out, or a down status that
+ *  may yet recover) — late recovery still self-resolves, without an abandoned tab
+ *  hammering the backend every 2s. */
 const SLOW_POLL_INTERVAL_MS = 15_000;
 /** Beat between "running" and the hop, so the app's own gateway can start listening. */
 const OPEN_APP_GRACE_MS = 1500;
 const POLL_TIMEOUT_MS = 180_000;
-/** Consecutive fetch failures before the poll is considered settled-failed. */
-const POLL_FAILURE_LIMIT = 3;
 /** Retry cadence for the app-context query while it has no data (initial blip). */
 const CONTEXT_RETRY_INTERVAL_MS = 5000;
 
@@ -55,16 +54,16 @@ interface AppSnapshot {
 }
 
 /**
- * Whether the poll snapshot can no longer change on its own: the app is
- * running (we're leaving), its row is gone, it landed on a down status, or the
- * fetch itself has settled into failure. Shared by the poll's stop condition
- * and the phase derivation so the two can't drift. Exported for tests.
+ * Whether the poll can stop for good: the app is running (we're navigating
+ * away) or its row is gone (uninstalled — nothing will come back). A down
+ * status is deliberately NOT settled: a slow restart can momentarily report
+ * `stopped` (e.g. a queue RPC timeout mid-compose) and then recover, so the
+ * poll keeps running — at the slow cadence — and a later flip to `running`
+ * still forwards the user. A fetch failure is likewise not settled: React
+ * Query keeps the last snapshot, so a transient blip never stops the poll.
+ * Exported for tests.
  */
-export function isTerminalSnapshot(data: AppSnapshot | undefined, failureCount: number): boolean {
-  if (failureCount >= POLL_FAILURE_LIMIT) {
-    return true;
-  }
-
+export function isPollSettled(data: AppSnapshot | undefined): boolean {
   if (!data) {
     return false;
   }
@@ -73,27 +72,28 @@ export function isTerminalSnapshot(data: AppSnapshot | undefined, failureCount: 
     return true;
   }
 
-  return data.app.status === 'running' || DOWN_STATUSES.has(data.app.status);
+  return data.app.status === 'running';
 }
 
 export type Phase = 'connecting' | 'ready' | 'error' | 'timeout';
 
 /**
  * Precedence is load-bearing: `ready` wins over everything (a late recovery
- * self-resolves even after the timeout card); a definitive failure (`error`)
- * wins over the softer `timeout` copy so the message never downgrades from
- * "failed" to "taking longer than expected". A transient fetch blip (fewer
- * than {@link POLL_FAILURE_LIMIT} consecutive failures) keeps the connecting
- * spinner rather than flashing a false failure card. Exported for tests.
+ * self-resolves even after an error or timeout card is showing); a definitive
+ * failure (`error` — a down status or a vanished row) wins over the softer
+ * `timeout` copy so the message never downgrades from "failed" to "taking
+ * longer than expected". A transient fetch blip leaves the last snapshot (or no
+ * data) in place, which reads as `connecting` — the poll keeps trying rather
+ * than flashing a false failure card. Exported for tests.
  */
-export function derivePhase(data: AppSnapshot | undefined, failureCount: number, timedOut: boolean): Phase {
+export function derivePhase(data: AppSnapshot | undefined, timedOut: boolean): Phase {
   const status = data?.app?.status;
 
   if (status === 'running') {
     return 'ready';
   }
 
-  if ((data && !data.app) || (status !== undefined && DOWN_STATUSES.has(status)) || failureCount >= POLL_FAILURE_LIMIT) {
+  if ((data && !data.app) || (status !== undefined && DOWN_STATUSES.has(status))) {
     return 'error';
   }
 
@@ -155,20 +155,26 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
   const appQuery = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
-    // Poll only while the outcome is still open; slow down once the page's own
-    // timeout has passed (late recovery still self-resolves, without an
-    // abandoned tab hitting the backend every 2s forever).
+    // Poll until we're leaving (running) or the app's row is gone; a down or
+    // still-transitioning app keeps polling so a late recovery self-resolves.
+    // Slow the cadence once we've timed out or landed on a (possibly transient)
+    // down status, so an abandoned tab doesn't hit the backend every 2s forever.
     refetchInterval: (query) => {
-      if (isTerminalSnapshot(query.state.data, query.state.fetchFailureCount)) {
+      const snapshot = query.state.data;
+
+      if (isPollSettled(snapshot)) {
         return false;
       }
 
-      return timedOut ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+      const status = snapshot?.app?.status;
+      const settledSlow = timedOut || (status !== undefined && DOWN_STATUSES.has(status));
+
+      return settledSlow ? SLOW_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: true,
   });
 
-  const { data, failureCount } = appQuery;
+  const { data } = appQuery;
   const app = data?.app;
   const info = data?.info;
   // Only ever display a SERVER-CONFIRMED name: the URN is raw query-string text,
@@ -224,7 +230,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
     return resolveSafeTarget(rawNext, accessPoints, window.location.origin);
   }, [ctx, app, info, rawNext, tailscaleServedPorts]);
 
-  const phase = derivePhase(data, failureCount, timedOut);
+  const phase = derivePhase(data, timedOut);
 
   useEffect(() => {
     const id = window.setTimeout(() => setTimedOut(true), POLL_TIMEOUT_MS);
