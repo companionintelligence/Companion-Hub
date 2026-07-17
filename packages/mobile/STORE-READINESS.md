@@ -47,6 +47,7 @@ Fixed as part of this prep — no action needed:
 - Already compliant: `targetSdk=36` (Play's 2025 floor is 35), `minSdk=24`, R8 + proguard on release, `usesCleartextTraffic=false` in release, INTERNET-only permissions.
 
 **Security / UX**
+- **Self-updater gated off mobile.** `isTauri()` is true on iOS/Android, so the desktop update checker was mounting there and polling our own release feed from inside a store-shipped app — it can only offer `.dmg`/`.exe` artifacts a phone cannot install, and self-updating outside the store is an App Store rejection (2.4.5 / 3.2.2). It stayed silent only by accident: the mobile Rust shell never registers `get_desktop_release_version_command`, so the invoke rejected. The gate is now explicit (`canSelfUpdate()`) and covered by tests, so adding a version command later can't silently arm it.
 - Removed `tauri-plugin-notification` (zero callers, but it added POST_NOTIFICATIONS/RECEIVE_BOOT_COMPLETED/WAKE_LOCK to the manifest).
 - CSP: dropped bare `http:` from `img-src`.
 - Fixed the infinite "Connecting…" trap when a stored Hub is unreachable.

@@ -12,8 +12,22 @@ import {
   type UpdateInfo,
   wasToastShown,
 } from '@/lib/update-service';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 
 export type { UpdateInfo } from '@/lib/update-service';
+
+/**
+ * The iOS/Android app ships through the App Store and Play, so it must never
+ * offer an update from our own feed — the artifacts are desktop .dmg/.exe
+ * builds it cannot install, and self-updating outside the store is an App
+ * Store rejection (guidelines 2.4.5 / 3.2.2).
+ *
+ * `isTauri()` is true on mobile, so this needs saying explicitly. It happens to
+ * be inert there today only because the mobile Rust shell never registers
+ * `get_desktop_release_version_command` and the invoke rejects — add a version
+ * command for any reason and the phone starts advertising desktop downloads.
+ */
+const canSelfUpdate = (): boolean => isTauri() && !isTauriMobileSync();
 
 export interface UseUpdateCheckerResult {
   update: UpdateInfo | null;
@@ -59,7 +73,7 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
 
   const runCheck = useCallback(
     async (showToastNotification = true) => {
-      if (!isTauri()) return null;
+      if (!canSelfUpdate()) return null;
       setChecking(true);
       try {
         const result = await checkForUpdates();
@@ -96,7 +110,7 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!canSelfUpdate()) return;
 
     void runCheck(true);
 
