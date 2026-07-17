@@ -93,12 +93,13 @@ export class AuthController {
   }
 
   /**
-   * The Hub's browser-reachable origin (`https://<hubSubdomain>.<domain>`), or null
-   * when the appliance isn't registered / provisioned yet. The desktop session
-   * handoff must open this exact host so the planted cookie is scoped to where the
-   * Hub's routes (memory-connect, forward-auth) actually live.
+   * The Hub's browser-reachable origin (`https://<hubSubdomain>.<domain>`) together
+   * with this appliance's org slug, or null when it isn't registered / provisioned
+   * yet. The desktop session handoff opens this exact host so the planted cookie is
+   * scoped to where the Hub's routes (memory-connect, forward-auth) actually live,
+   * and the org slug bounds which sibling app hosts are an acceptable redirect target.
    */
-  private async resolvePublicHubOrigin(): Promise<string | null> {
+  private async resolvePublicHub(): Promise<{ origin: string; orgSlug: string } | null> {
     const org = await this.deviceRegistration.getFirstDeviceRegistration();
     const domain = this.config.getConfig().domain;
 
@@ -106,17 +107,21 @@ export class AuthController {
       return null;
     }
 
-    return `https://${org.hubSubdomain}.${domain}`;
+    return { origin: `https://${org.hubSubdomain}.${domain}`, orgSlug: org.slug ?? '' };
   }
 
   /**
    * Whether `next` is a permitted post-handoff redirect target: the Hub's own
-   * origin, or an https sibling under this appliance's public/local domain root
-   * (i.e. one of its marketplace apps). The Set-Cookie is scoped to the Hub host
-   * regardless, so this only governs where the browser lands after the cookie is
-   * planted — closing the open-redirect the raw `next` would otherwise allow.
+   * origin, or an https sibling that belongs to THIS appliance — a marketplace app
+   * host under the appliance's public/local domain root whose subdomain ends at this
+   * org's `-<orgSlug>` label boundary (every app host is `<app>-<…>-<orgSlug>` and
+   * the Hub is `hub-<…>-<orgSlug>`). Scoping to the org slug keeps a co-tenant host
+   * on the same shared registrable domain — a *different* org's `-<slug>` — out of
+   * the allowlist. The Set-Cookie is scoped to the Hub host regardless, so this only
+   * governs where the browser lands after the cookie is planted — closing the
+   * open-redirect the raw `next` would otherwise allow.
    */
-  private isSafeHandoffNext(next: string, hubOrigin: string): boolean {
+  private isSafeHandoffNext(next: string, hubOrigin: string, orgSlug: string): boolean {
     let url: URL;
     try {
       url = new URL(next);
@@ -128,18 +133,25 @@ export class AuthController {
       return true;
     }
 
-    if (url.protocol !== 'https:') {
+    if (url.protocol !== 'https:' || !orgSlug) {
       return false;
     }
 
     const { domain, localDomain } = this.config.getConfig();
     const host = url.hostname.toLowerCase();
+    const slugLabel = `-${orgSlug.toLowerCase()}`;
 
     return [domain, localDomain]
       .filter((root): root is string => Boolean(root) && root !== 'example.com')
       .some((root) => {
         const suffix = `.${root.toLowerCase()}`;
-        return host !== root.toLowerCase() && host.endsWith(suffix);
+        if (host === root.toLowerCase() || !host.endsWith(suffix)) {
+          return false;
+        }
+        // The subdomain must be one of this org's hosts: `<app>-<…>-<orgSlug>`, which
+        // requires at least one label before the `-<orgSlug>` boundary.
+        const label = host.slice(0, -suffix.length);
+        return label.length > slugLabel.length && label.endsWith(slugLabel);
       });
   }
 
@@ -245,12 +257,12 @@ export class AuthController {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
 
-    const hubOrigin = await this.resolvePublicHubOrigin();
-    if (!hubOrigin) {
+    const hub = await this.resolvePublicHub();
+    if (!hub) {
       return BrowserHandoffMintDto.parse({ url: null }, { reportOnly: true });
     }
 
-    if (!this.isSafeHandoffNext(body.next, hubOrigin)) {
+    if (!this.isSafeHandoffNext(body.next, hub.origin, hub.orgSlug)) {
       throw new BadRequestException('Unsupported handoff target');
     }
 
@@ -260,7 +272,7 @@ export class AuthController {
     // the session as a browser cookie.
     this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), 60);
 
-    return BrowserHandoffMintDto.parse({ url: `${hubOrigin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
+    return BrowserHandoffMintDto.parse({ url: `${hub.origin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
   }
 
   /**
@@ -316,8 +328,8 @@ export class AuthController {
 
     // Defense in depth: re-validate the stored target against the current public Hub
     // origin before trusting it, in case registration changed since the mint.
-    const hubOrigin = await this.resolvePublicHubOrigin();
-    if (!sessionId || !next || !hubOrigin || !this.isSafeHandoffNext(next, hubOrigin)) {
+    const hub = await this.resolvePublicHub();
+    if (!sessionId || !next || !hub || !this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
       return res.redirect('/');
     }
 

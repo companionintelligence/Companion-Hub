@@ -366,7 +366,7 @@ describe('AuthController', () => {
     const hubOrigin = 'https://hub-core-2-myorg.companionintelligence.com';
 
     const mockHubOrigin = () => {
-      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-myorg' } as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-myorg', slug: 'myorg' } as never);
       config.getConfig.mockReturnValue({ domain: 'companionintelligence.com', localDomain: 'ci.lan' } as never);
     };
 
@@ -408,6 +408,18 @@ describe('AuthController', () => {
       expect(cache.set).not.toHaveBeenCalled();
     });
 
+    it('rejects a co-tenant host on the shared registrable domain (different org slug)', async () => {
+      mockHubOrigin();
+      const req = { cookies: { 'ci-hub-sid': 'sess-3b' }, get: vi.fn(), headers: {} } as unknown as Request;
+
+      // Same registrable domain, but a different org's `-<slug>` boundary — not one of
+      // this appliance's own app hosts, so it must not be an accepted redirect target.
+      await expect(
+        authController.mintBrowserHandoff({ next: 'https://ci-hermes-core-9-attackerorg.companionintelligence.com/' }, req),
+      ).rejects.toThrow();
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
     it('fails open with url:null when no public Hub origin is known yet', async () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
       config.getConfig.mockReturnValue({ domain: 'example.com', localDomain: 'ci.lan' } as never);
@@ -441,6 +453,9 @@ describe('AuthController', () => {
       'cross-site',
       'same-site',
       'same-origin',
+      // A spoofed multi-valued header (duplicate Sec-Fetch-Site joined by the runtime)
+      // must not slip past the `=== 'none'` allow-list.
+      'none, cross-site',
     ])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
       const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
