@@ -22,6 +22,13 @@ function tokenResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+/** Clear the captured handler so a second flow registers its own. Assigning
+ * `deepLinkHandler = null` inline would narrow its type to `null` for the rest
+ * of the block, making the later optional call look uncallable to tsc. */
+function resetDeepLinkHandler(): void {
+  deepLinkHandler = null;
+}
+
 beforeEach(() => {
   openUrl.mockClear();
   httpFetch.mockReset();
@@ -80,5 +87,164 @@ describe('loginWithPortalOidc', () => {
     const promise = loginWithPortalOidc();
     await fireCallback('code');
     await expect(promise).rejects.toThrow('bad verifier');
+  });
+});
+
+/**
+ * PKCE is the whole defense for a public client using a custom-scheme redirect:
+ * `cihub://` can be claimed by another installed app, so an attacker who steals
+ * the authorization code still cannot exchange it without the verifier. These
+ * assert the cryptographic properties rather than just param presence.
+ */
+describe('loginWithPortalOidc — PKCE security properties', () => {
+  /** Recompute the S256 challenge the way a spec-compliant server would. */
+  async function s256(verifier: string): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+    return btoa(String.fromCharCode(...new Uint8Array(digest)))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  it('sends a code_challenge that is the real SHA-256 of the code_verifier', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+
+    const promise = loginWithPortalOidc();
+    const authorizeUrl = await fireCallback('code');
+    await promise;
+
+    const challenge = authorizeUrl.searchParams.get('code_challenge') ?? '';
+    const verifier = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body).get('code_verifier') ?? '';
+
+    // If this drifts, the Portal rejects every exchange — or worse, someone
+    // "fixes" it by switching to method=plain and silently removes the defense.
+    expect(verifier).not.toBe('');
+    expect(challenge).toBe(await s256(verifier));
+    expect(authorizeUrl.searchParams.get('code_challenge_method')).toBe('S256');
+  });
+
+  it('never leaks the code_verifier to the browser/authorize URL', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+
+    const promise = loginWithPortalOidc();
+    const authorizeUrl = await fireCallback('code');
+    await promise;
+
+    const verifier = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body).get('code_verifier') ?? '';
+    // The verifier must exist only in app memory + the token POST. Leaking it
+    // into the browser-visible URL would defeat PKCE entirely.
+    expect(authorizeUrl.toString()).not.toContain(verifier);
+    expect(String(openUrl.mock.calls[0]?.[0])).not.toContain(verifier);
+  });
+
+  it('generates a fresh verifier and state per sign-in (no replay across attempts)', async () => {
+    // mockImplementation (not mockResolvedValue): each call needs its own
+    // Response — a body can only be read once.
+    httpFetch.mockImplementation(async () => tokenResponse({ access_token: 'AT' }));
+
+    const first = loginWithPortalOidc();
+    const urlA = await fireCallback('code-a');
+    await first;
+    const verifierA = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body).get('code_verifier');
+
+    // Reset the captured handler so the second run registers its own.
+    resetDeepLinkHandler();
+    httpFetch.mockClear();
+    openUrl.mockClear();
+
+    const second = loginWithPortalOidc();
+    await vi.waitFor(() => {
+      expect(openUrl).toHaveBeenCalled();
+      expect(deepLinkHandler).toBeTruthy();
+    });
+    const urlB = new URL(openUrl.mock.calls[0]?.[0] as string);
+    deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?code=code-b&state=${urlB.searchParams.get('state')}` });
+    await second;
+    const verifierB = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body).get('code_verifier');
+
+    expect(urlA.searchParams.get('state')).not.toBe(urlB.searchParams.get('state'));
+    expect(urlA.searchParams.get('code_challenge')).not.toBe(urlB.searchParams.get('code_challenge'));
+    expect(verifierA).not.toBe(verifierB);
+  });
+});
+
+describe('loginWithPortalOidc — callback handling', () => {
+  it('surfaces an error returned by the Portal (user denied consent)', async () => {
+    const promise = loginWithPortalOidc();
+    await vi.waitFor(() => expect(deepLinkHandler).toBeTruthy());
+    deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?error=access_denied&error_description=User%20denied%20access` });
+
+    await expect(promise).rejects.toThrow('User denied access');
+    expect(httpFetch).not.toHaveBeenCalled(); // never try to exchange
+  });
+
+  it('falls back to the raw error code when no description is given', async () => {
+    const promise = loginWithPortalOidc();
+    await vi.waitFor(() => expect(deepLinkHandler).toBeTruthy());
+    deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?error=server_error` });
+    await expect(promise).rejects.toThrow('server_error');
+  });
+
+  it('ignores unrelated deep links and keeps waiting for the real callback', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+    const promise = loginWithPortalOidc();
+    await vi.waitFor(() => expect(deepLinkHandler).toBeTruthy());
+
+    // A pairing link or an App Intent arriving mid-login must not resolve or
+    // reject the OIDC flow — they belong to other consumers.
+    deepLinkHandler?.({ payload: 'cihub://pair?code=abc123' });
+    deepLinkHandler?.({ payload: 'cihub://intent/settings' });
+    deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?state=only-state-no-code` });
+    expect(httpFetch).not.toHaveBeenCalled();
+
+    // The genuine callback still completes the flow.
+    const url = new URL(openUrl.mock.calls[0]?.[0] as string);
+    deepLinkHandler?.({ payload: `${OIDC_REDIRECT_URI}?code=real&state=${url.searchParams.get('state')}` });
+    await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
+  });
+
+  it('handles an array payload (the plugin may batch deep links)', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+    const promise = loginWithPortalOidc();
+    await vi.waitFor(() => expect(deepLinkHandler).toBeTruthy());
+
+    const url = new URL(openUrl.mock.calls[0]?.[0] as string);
+    deepLinkHandler?.({ payload: ['cihub://pair?code=abc123', `${OIDC_REDIRECT_URI}?code=real&state=${url.searchParams.get('state')}`] });
+
+    await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
+  });
+
+  it('cancels quietly when the caller aborts, and drops the listener', async () => {
+    const controller = new AbortController();
+    const promise = loginWithPortalOidc(undefined, { signal: controller.signal });
+    await vi.waitFor(() => expect(deepLinkHandler).toBeTruthy());
+
+    controller.abort();
+
+    await expect(promise).rejects.toMatchObject({ name: 'OidcCancelledError' });
+    expect(unlisten).toHaveBeenCalled(); // no leaked listener after cancel
+    expect(httpFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects immediately when handed an already-aborted signal', async () => {
+    const promise = loginWithPortalOidc(undefined, { signal: AbortSignal.abort() });
+    await expect(promise).rejects.toMatchObject({ name: 'OidcCancelledError' });
+  });
+
+  it('defaults token_type and tolerates a response without id_token/expires_in', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+    const promise = loginWithPortalOidc();
+    await fireCallback('code');
+    await expect(promise).resolves.toEqual({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: null });
+  });
+
+  it('honors a custom Portal URL and strips a trailing slash', async () => {
+    httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
+    const promise = loginWithPortalOidc('https://staging.example.com/');
+    const url = await fireCallback('code');
+    await promise;
+
+    expect(url.origin + url.pathname).toBe('https://staging.example.com/api/auth/oauth2/authorize');
+    expect(httpFetch.mock.calls[0]?.[0]).toBe('https://staging.example.com/api/auth/oauth2/token');
   });
 });
