@@ -107,6 +107,18 @@ const sessionRefreshResponseSchema = z.object({
   issuedAt: z.number(),
 });
 
+const browserHandoffMintSchema = z.object({
+  // Bounded so a rogue caller can't stuff a multi-KB blob into the (SQLite-backed)
+  // ticket cache; legitimate Hub/app URLs are well under this.
+  next: z.string().min(1).max(2048),
+});
+
+const browserHandoffMintResponseSchema = z.object({
+  // null when no public Hub origin is known yet — the caller then fails open to a
+  // plain external open instead of the handoff.
+  url: z.string().nullable(),
+});
+
 // Login
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
@@ -114,6 +126,8 @@ export class LoginDto extends createZodDto(loginResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}
 export class SessionRefreshDto extends createZodDto(sessionRefreshResponseSchema) {}
+export class BrowserHandoffMintBody extends createZodDto(browserHandoffMintSchema) {}
+export class BrowserHandoffMintDto extends createZodDto(browserHandoffMintResponseSchema) {}
 
 // Register
 export class RegisterBody extends createZodDto(credentialsSchema) {}
