@@ -109,6 +109,36 @@ describe('useMemoryConnection connect()', () => {
     expect(window.location.href).toBe(CURRENT_HREF); // webview stayed put
   });
 
+  it('desktop: refetches this app status the first time the window regains focus after connect', async () => {
+    ext.getTauriInvoke.mockReturnValue(vi.fn());
+    const result = await renderReady();
+    expect(h.get).toHaveBeenCalledTimes(1); // initial status load
+
+    result.current.connect(); // arms the one-shot focus listener
+
+    // The consent completes in a separate browser; returning to the desktop app
+    // fires window 'focus', which must invalidate + refetch this app's status.
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(h.get).toHaveBeenCalledTimes(2));
+
+    // One-shot: a second focus must NOT trigger another refetch.
+    window.dispatchEvent(new Event('focus'));
+    await Promise.resolve();
+    expect(h.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('web: does not arm a focus listener (full-page return refreshes instead)', async () => {
+    ext.getTauriInvoke.mockReturnValue(null);
+    const result = await renderReady();
+    expect(h.get).toHaveBeenCalledTimes(1);
+
+    result.current.connect();
+
+    window.dispatchEvent(new Event('focus'));
+    await Promise.resolve();
+    expect(h.get).toHaveBeenCalledTimes(1); // no extra refetch on focus in the browser
+  });
+
   it('web: navigates same-origin with a next param back to this page', async () => {
     ext.getTauriInvoke.mockReturnValue(null); // plain browser (web client)
     const result = await renderReady();

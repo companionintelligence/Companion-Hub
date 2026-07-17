@@ -128,15 +128,6 @@ export function useMemoryConnection(appUrn: string) {
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
-    // Desktop only: refetch when the window regains focus. The desktop Connect
-    // action hands the consent flow to the system browser (see `connect` below),
-    // so this webview never reloads on completion — unlike the web path, which
-    // lands on `next` with a full navigation that refetches everything. Without
-    // this, a just-connected app would keep showing "Connect" until an unrelated
-    // refetch, because the SSE cache only invalidates this query on ci-memory's
-    // OWN lifecycle events, not on a consumer app's connection state changing.
-    // Left off in the browser, where the full-page return already refreshes it.
-    refetchOnWindowFocus: !!getTauriInvoke(),
     // While Companion Memory is actively coming up ('starting': installing / booting
     // / mid-maintenance), poll so the badge + Connect button flip to ready shortly
     // after it does — the status is keyed by THIS app's urn, so ci-memory's own
@@ -179,11 +170,24 @@ export function useMemoryConnection(appUrn: string) {
     // unreachable — so HubStatus falls back to "Stopped" and the whole flow
     // collapses to the "Hub Not Running" gate. Hand the flow to the system browser
     // instead (the same escape the Open button uses); `next` is omitted so the
-    // backend returns to the app's own public URL. The button flips to "Disconnect"
-    // when the user switches back to the desktop app, via the query's
-    // Tauri-only refetchOnWindowFocus above.
+    // backend returns to the app's own public URL.
     if (getTauriInvoke()) {
       void openExternal(status.connectUrl);
+
+      // The consent completes in that separate browser, so this webview never
+      // reloads (unlike the web path's full-page return to `next`). Refetch this
+      // app's status the first time the user returns to the desktop window, so the
+      // button reflects the new connection (→ "Disconnect"). One-shot `focus`
+      // listener: it fires on native window refocus and removes itself. We
+      // invalidate (not just mark stale) so the refetch isn't suppressed by
+      // staleTime. TanStack's refetchOnWindowFocus is unfit here — it only hooks
+      // `visibilitychange`, which a non-occluded desktop window may never emit,
+      // and it's gated by staleTime.
+      const refetchOnReturn = () => {
+        window.removeEventListener('focus', refetchOnReturn);
+        void queryClient.invalidateQueries({ queryKey: memoryStatusQueryKey(appUrn) });
+      };
+      window.addEventListener('focus', refetchOnReturn);
       return;
     }
 
