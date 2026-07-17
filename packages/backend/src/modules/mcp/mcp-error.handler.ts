@@ -16,6 +16,24 @@ export function formatToolSuccess(result: unknown): McpToolResult {
   };
 }
 
+/** Pull `intlParams` off an HttpException-style response body, if present. */
+function extractIntlParams(error: unknown): Record<string, string | undefined> | undefined {
+  const getResponse = (error as { getResponse?: () => unknown }).getResponse;
+  if (typeof getResponse !== 'function') {
+    return undefined;
+  }
+
+  const body = getResponse.call(error);
+  if (body && typeof body === 'object' && 'intlParams' in body) {
+    const intlParams = (body as { intlParams?: unknown }).intlParams;
+    if (intlParams && typeof intlParams === 'object') {
+      return intlParams as Record<string, string | undefined>;
+    }
+  }
+
+  return undefined;
+}
+
 export function formatToolError(error: unknown, appUrn?: string): McpToolResult {
   let message: string;
 
@@ -27,7 +45,11 @@ export function formatToolError(error: unknown, appUrn?: string): McpToolResult 
     } else if (statusCode === HttpStatus.UNAUTHORIZED || statusCode === HttpStatus.FORBIDDEN) {
       message = 'Authentication failed. Check the Hub API key configuration.';
     } else {
-      message = error.message;
+      // TranslatableError carries the human-readable detail (e.g. the still-connected
+      // consumer apps) in `intlParams`; `error.message` is only the translation key,
+      // so append the params or the agent gets an opaque key string.
+      const intlParams = extractIntlParams(error);
+      message = intlParams ? `${error.message} ${JSON.stringify(intlParams)}` : error.message;
     }
   } else {
     message = 'An unexpected error occurred.';

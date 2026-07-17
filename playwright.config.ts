@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Single source of truth for the backend port. The backend process reads API_PORT while
+// Playwright's health check and the direct-call specs use BACKEND_PORT, so both the backend's
+// API_PORT and the vite /api proxy target are wired to this one value (below). They can't
+// diverge, so the backend never listens on a port nothing is waiting on.
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const USE_REAL_PORTAL = process.env.E2E_USE_REAL_PORTAL === 'true';
@@ -11,6 +15,7 @@ const SERVER_IP = process.env.SERVER_IP || 'localhost';
 const backendEnv: Record<string, string> = {
   NODE_ENV: 'development',
   E2E_TEST: 'true',
+  API_PORT: BACKEND_PORT,
   POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
   POSTGRES_PORT: process.env.POSTGRES_PORT || '6543',
   POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'companion',
@@ -126,6 +131,13 @@ export default defineConfig({
       timeout: process.env.CI ? 120000 : 60000,
       stdout: 'pipe',
       stderr: 'pipe',
+      // Pin the port contract so vite serves on FRONTEND_PORT (not its default 5005) and
+      // proxies /api to the backend on API_PORT. Single source of truth for every entrypoint
+      // (CI, extended, fleet, local) so callers don't each have to re-export these.
+      env: {
+        FRONTEND_PORT,
+        API_PORT: BACKEND_PORT,
+      },
     },
   ],
 });

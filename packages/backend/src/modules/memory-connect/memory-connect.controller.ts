@@ -11,8 +11,11 @@ import { MemoryConnectService } from './memory-connect.service';
  * Endpoints backing the memory-connect flow.
  *
  *   GET  /api/memory-connect/start            → browser: begin connect (→ ci-memory consent)
- *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to `next`
+ *   GET  /api/memory-connect/callback         → browser: return from ci-memory, apply, redirect to the
+ *                                               SPA's /memory-connect/finishing interstitial (which
+ *                                               watches the restart and forwards to `next`)
  *   GET  /api/memory-connect/apps/:urn/state  → wrapper: {state, connectUrl}
+ *   GET  /api/memory-connect/consumers        → browser: {consumers} still connected to the provider
  *   POST /api/memory-connect/apps/:urn/skip   → wrapper: mark skipped
  *   POST /api/memory-connect/apps/:urn/disconnect → browser: revoke + clear + restart
  *
@@ -51,8 +54,25 @@ export class MemoryConnectController {
     // `next` is validated server-side in startConnect (origin-allowlisted against
     // the Hub + the connecting app), so an attacker can't use it as an open redirect.
     // Bind the flow to the initiating user so the callback must be the same user.
-    const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
-    res.redirect(consentUrl);
+    try {
+      const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
+      res.redirect(consentUrl);
+    } catch (err) {
+      // A connect that can't start (ci-memory not installed / not reachable yet /
+      // no Hub origin) must not dump a raw 400 JSON body into a top-level browser
+      // navigation. The readiness gating normally keeps the launcher link hidden
+      // until ci-memory is running, so this only covers the race where it goes down
+      // between the status poll and the click — land the user back on the Hub with
+      // an error marker (mirrors the callback's ?memoryConnect=error handling).
+      if (err instanceof BadRequestException) {
+        this.logger.warn(`[MemoryConnect] connect could not start for ${app}: ${err.message}`);
+        res.redirect('/?memoryConnect=unavailable');
+
+        return;
+      }
+
+      throw err;
+    }
   }
 
   @Get('callback')
@@ -72,15 +92,19 @@ export class MemoryConnectController {
     // re-appears) rather than dead-ending on the Hub dashboard.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect(this.service.abandonConnect(state));
+      res.redirect(this.service.abandonConnect(state, this.currentUserId(req)));
 
       return;
     }
 
     try {
-      // handleCallback returns the app URL even on a downstream failure, so the
-      // user always lands back on their app rather than the dashboard. The current
-      // user must match the one who started the flow (login-CSRF guard).
+      // On success `next` is the SPA's finishing interstitial (the restart is
+      // scheduled, not awaited — this handler must answer the browser fast); on a
+      // downstream failure it is the app URL, so the user always lands back on
+      // their app rather than the dashboard. A replayed state (refresh after an
+      // aborted navigation) resolves to the interstitial too, without a second
+      // exchange. The current user must match the one who started the flow
+      // (login-CSRF guard).
       const { next } = await this.service.handleCallback(code, state, this.currentUserId(req));
       res.redirect(next);
     } catch (err) {
@@ -100,6 +124,12 @@ export class MemoryConnectController {
   @Get('apps/:urn/status')
   async status(@Param('urn') urn: string) {
     return this.service.getUiStatus(this.decodeUrn(urn));
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('consumers')
+  async consumers() {
+    return { consumers: await this.service.listConnectedConsumers() };
   }
 
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)

@@ -1,19 +1,109 @@
 import { client } from '@/api-client/client.gen';
+import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+
+/** Coarse ci-memory lifecycle, mirrors the backend MemoryProviderRuntimeStatus. */
+export type MemoryProviderStatus = 'ready' | 'starting' | 'offline' | 'absent';
 
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
 export interface MemoryConnectionStatus {
   applicable: boolean;
+  /** A ci-memory row exists (installing/stopped included) — else nothing to connect to. */
   memoryInstalled: boolean;
+  /** ci-memory is actually running, i.e. a connect can succeed right now. */
+  memoryReady: boolean;
+  /** Why it isn't ready, so the UI can say "starting" vs "offline". */
+  providerStatus: MemoryProviderStatus;
   state: 'unconfigured' | 'connected' | 'skipped' | 'manual';
   connectUrl: string | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
 }
 
-export const memoryStatusQueryKey = (appUrn: string) => ['memory-connection-status', appUrn];
+/** Query-key prefix, shared with the SSE cache so ci-memory events can invalidate every consumer's status. */
+export const MEMORY_STATUS_QUERY_PREFIX = 'memory-connection-status';
+export const memoryStatusQueryKey = (appUrn: string) => [MEMORY_STATUS_QUERY_PREFIX, appUrn];
+
+/** An installed app still holding a live Companion Memory connection. */
+export interface MemoryConsumer {
+  appUrn: string;
+  name: string;
+}
+
+export const MEMORY_CONSUMERS_QUERY_KEY = ['memory-connect-consumers'];
+
+/**
+ * The installed apps still connected to Companion Memory (GET
+ * /api/memory-connect/consumers). Used to warn — and gate a forced confirmation —
+ * before uninstalling or resetting the shared provider. `enabled` keeps it from
+ * firing except when the dialog for the provider itself is open.
+ */
+export function useMemoryConsumers(enabled: boolean) {
+  return useQuery({
+    queryKey: MEMORY_CONSUMERS_QUERY_KEY,
+    enabled,
+    queryFn: async () => {
+      // throwOnError: the generated client resolves (not rejects) on non-2xx by
+      // default, which would mask a failed fetch as `data: undefined`.
+      const { data } = await client.get({ url: '/api/memory-connect/consumers', throwOnError: true });
+      return ((data as { consumers?: MemoryConsumer[] } | undefined)?.consumers ?? []) as MemoryConsumer[];
+    },
+    staleTime: 15_000,
+  });
+}
+
+export interface MemoryProviderForceGate {
+  /** True when the target app is the memory provider and a forced confirmation is required. */
+  requiresForce: boolean;
+  /** The connected consumer apps (empty when there are none, or when the list couldn't be fetched). */
+  consumers: MemoryConsumer[];
+  /** True when the target is the provider but the consumer list couldn't be loaded. */
+  unableToVerify: boolean;
+  forceConfirmed: boolean;
+  setForceConfirmed: (checked: boolean) => void;
+  /** Whether the dialog's confirm button should be disabled. */
+  submitDisabled: boolean;
+}
+
+/**
+ * Shared uninstall/reset gating for the Companion Memory provider. Centralizes
+ * the logic both destructive dialogs need so they can't drift: detects the
+ * provider, fetches its connected consumers while the dialog is open, and drives
+ * the forced-confirmation switch.
+ *
+ * Fails CLOSED: if the target is the provider but the consumer list can't be
+ * fetched, `requiresForce`/`unableToVerify` stay true, so the UI still demands an
+ * explicit confirmation instead of silently letting a `force:false` submit
+ * through (the backend guard is authoritative, but the UI shouldn't look like a
+ * safe "no consumers" dialog when it actually doesn't know).
+ */
+export function useMemoryProviderForceGate(appUrn: string, isOpen: boolean): MemoryProviderForceGate {
+  const isProvider = isMemoryProviderUrn(appUrn);
+  const consumersQuery = useMemoryConsumers(isOpen && isProvider);
+  const consumers = consumersQuery.data ?? [];
+  const unableToVerify = isProvider && consumersQuery.isError;
+  const requiresForce = isProvider && (consumers.length > 0 || unableToVerify);
+
+  const [forceConfirmed, setForceConfirmed] = useState(false);
+
+  // Re-arm the acknowledgement whenever the dialog (re)opens OR the target app
+  // changes, so a prior confirmation can never carry into a different destructive
+  // action. `appUrn` is intentionally a re-run trigger even though the body
+  // doesn't read it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is a deliberate reset trigger, not a value the effect reads.
+  useEffect(() => {
+    if (isOpen) {
+      setForceConfirmed(false);
+    }
+  }, [isOpen, appUrn]);
+
+  const submitDisabled = (isProvider && consumersQuery.isLoading) || (requiresForce && !forceConfirmed);
+
+  return { requiresForce, consumers, unableToVerify, forceConfirmed, setForceConfirmed, submitDisabled };
+}
 
 /**
  * Shared Companion Memory connection state for an app, used by both the
@@ -36,6 +126,18 @@ export function useMemoryConnection(appUrn: string) {
       return (data ?? null) as MemoryConnectionStatus | null;
     },
     staleTime: 15_000,
+    // While Companion Memory is actively coming up ('starting': installing / booting
+    // / mid-maintenance), poll so the badge + Connect button flip to ready shortly
+    // after it does — the status is keyed by THIS app's urn, so ci-memory's own
+    // status change doesn't refetch it on its own. The SSE cache also invalidates
+    // this on ci-memory lifecycle events (instant); this is the safety net if one is
+    // missed. Deliberately NOT polling while 'offline' (stopped/failed) or 'ready':
+    // those are settled states, and offline→ready is driven by a start event the SSE
+    // cache already catches, so polling them would just burn requests indefinitely.
+    refetchInterval: (q) => {
+      const data = q.state.data as MemoryConnectionStatus | null | undefined;
+      return data?.applicable && data.providerStatus === 'starting' ? 10_000 : false;
+    },
   });
 
   const disconnect = useMutation({
@@ -66,6 +168,10 @@ export function useMemoryConnection(appUrn: string) {
     isLoading: query.isLoading,
     connected: status?.state === 'connected',
     memoryInstalled: !!status?.memoryInstalled,
+    /** ci-memory is running — a connect can succeed now. */
+    memoryReady: !!status?.memoryReady,
+    /** Coarse provider lifecycle for precise "starting"/"offline" copy. */
+    providerStatus: status?.providerStatus ?? 'absent',
     connectUrl: status?.connectUrl ?? null,
     connect,
     disconnect: () => disconnect.mutate(),

@@ -43,6 +43,26 @@ export interface AppInfo {
 }
 
 /**
+ * Why CI-Cloud could not write an app's public DNS record.
+ *
+ * - `conflict` — the hostname is held by a DNS record CI-Cloud will not clobber
+ *   (another device/tunnel, or a non-tunnel record). Retrying cannot fix it.
+ * - `zone_unreachable` — the selected domain's zone is not provisioned for this
+ *   device in CI-Cloud's environment.
+ * - `api_error` — Cloudflare rejected the write; usually transient.
+ * - `invalid_subdomain` — the requested subdomain has no valid DNS label, so
+ *   CI-Cloud rejected it before Cloudflare was ever involved.
+ */
+export type PublicDnsFailureReason = 'conflict' | 'zone_unreachable' | 'api_error' | 'invalid_subdomain';
+
+export interface PublicDnsFailure {
+  app: string;
+  hostname?: string;
+  reason: PublicDnsFailureReason;
+  message?: string;
+}
+
+/**
  * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
  * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
  * record for (a partially-applied sync). Callers must treat a non-empty
@@ -51,6 +71,12 @@ export interface AppInfo {
 export interface CloudflareSyncResult {
   ok: boolean;
   failed: string[];
+  /**
+   * Per-app failure detail. Empty when talking to a CI-Cloud that predates
+   * structured failures — `failed` remains the source of truth for *which* apps
+   * failed, and callers fall back to generic messaging when this is empty.
+   */
+  failures: PublicDnsFailure[];
   synced: number;
 }
 
@@ -190,7 +216,7 @@ export class CloudflareClientService {
 
     if (!this.tunnelId) {
       this.logger.warn('Cannot sync state: Tunnel not initialized and no tunnelId provided');
-      return { ok: false, failed: [], synced: 0 };
+      return { ok: false, failed: [], failures: [], synced: 0 };
     }
 
     try {
@@ -210,21 +236,62 @@ export class CloudflareClientService {
         // be created) and `synced` (count of DNS records created). Surface a
         // clear warning instead of silently reporting success — a partially
         // applied sync means those apps will not load at their public domain.
-        const failed: string[] = Array.isArray(response.data.failed) ? response.data.failed : [];
+        // Validate the ELEMENTS, not just the container. This is a wire boundary between
+        // two independently deployed services — the same reason `failures` is optional at
+        // all — so a malformed entry is as plausible as a missing one. A `null` or a bare
+        // string in `failures` would throw on `failure.app` in the map below; that throw
+        // lands in this method's own catch, which reports `ok: false` — turning a PARTIAL
+        // sync into a hard failure and making the UI toast every exposed app instead of
+        // the few that really failed. Misreporting the blast radius is the bug this PR
+        // exists to fix, so drop junk entries rather than letting them rewrite the verdict.
+        const failed: string[] = Array.isArray(response.data.failed)
+          ? response.data.failed.filter((name): name is string => typeof name === 'string')
+          : [];
+        // `reason` is required too: it is the whole point of the entry, and an entry
+        // without one would render as `(undefined: …)`. Any string is accepted rather
+        // than only the known classes — a NEWER CI-Cloud may add one, and every consumer
+        // already degrades gracefully on a reason it does not recognise.
+        const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
+          ? response.data.failures.filter(
+              (failure): failure is PublicDnsFailure =>
+                typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
+            )
+          : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
 
         if (failed.length > 0) {
+          // Report what actually went wrong per app. Blaming zone provisioning for
+          // every failure sent debugging down the wrong path when the real cause
+          // was a DNS record CI-Cloud refused to overwrite (CI-Portal#403).
+          //
+          // Drive the list from `failed`, not from `failures`, and enrich it where CI-Cloud
+          // gave us detail. `failures` need not cover every failed app — an older CI-Cloud
+          // sends none, a newer one may omit some, and the validation above deliberately
+          // drops malformed entries — so building the list from it named fewer apps than
+          // the `failed.length` count in the very same sentence, and the apps it dropped
+          // were the ones with no other detail to find them by.
+          const failureByApp = new Map(failures.map((failure) => [failure.app, failure]));
+          const detail = failed
+            .map((name) => {
+              const failure = failureByApp.get(name);
+
+              return failure ? `${name} (${failure.reason}: ${failure.message ?? 'no detail'})` : name;
+            })
+            .join(', ');
+
           this.logger.warn(
-            `[Cloudflare] State sync only partially applied: ${failed.length} app(s) did NOT get a public DNS record and will not load at their public domain: ${failed.join(', ')}. ` +
-              `Verify the selected domain's zone is reachable in this environment (see CI-Cloud DNS logs for the underlying Cloudflare error).`,
+            `[Cloudflare] State sync only partially applied: ${failed.length} app(s) did NOT get a public DNS record and will not load at their public domain: ${detail}.` +
+              (failures.length > 0
+                ? ''
+                : " Verify the selected domain's zone is reachable in this environment (see CI-Cloud DNS logs for the underlying Cloudflare error)."),
           );
         } else {
           this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
         }
 
-        return { ok: true, failed, synced: synced ?? 0 };
+        return { ok: true, failed, failures, synced: synced ?? 0 };
       }
-      return { ok: false, failed: [], synced: 0 };
+      return { ok: false, failed: [], failures: [], synced: 0 };
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`Failed to sync state: ${error.message}`);
@@ -234,7 +301,7 @@ export class CloudflareClientService {
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
-      return { ok: false, failed: [], synced: 0 };
+      return { ok: false, failed: [], failures: [], synced: 0 };
     }
   }
 

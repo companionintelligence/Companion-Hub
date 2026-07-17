@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { isMemoryProviderApp } from './memory-provider.predicate';
@@ -24,6 +25,36 @@ export interface MemoryConsumerEnv {
   urlEnv: string;
   tokenEnv: string;
 }
+
+/**
+ * Coarse readiness of the installed Companion Memory provider, derived from the
+ * ci-memory app's lifecycle status — what the Hub UI and the wrapper connect gates
+ * key on to decide whether a connect can actually succeed:
+ *   `ready`    — running; a connect will work now.
+ *   `starting` — installing / booting / mid-maintenance; it's on its way up, so hold off.
+ *   `offline`  — installed but down (stopped, install_failed, …); a connect can't work.
+ *   `absent`   — not installed at all.
+ *
+ * The distinction matters because a mere DB row exists from the moment an install
+ * BEGINS — long before ci-memory is reachable — so "installed" must not read as "ready".
+ */
+export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
+/**
+ * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
+ * its way). Typed against `AppStatus` — like the sibling `DOWN_APP_STATUSES` — so a
+ * typo or a value newly added to the enum is a compile error here rather than a
+ * silent fall-through to "offline".
+ */
+const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
+  'installing',
+  'starting',
+  'restarting',
+  'updating',
+  'restoring',
+  'backing_up',
+  'resetting',
+]);
 
 /**
  * Resolves the installed Companion Memory provider and classifies memory
@@ -101,18 +132,31 @@ export class MemoryProviderResolver {
   }
 
   /**
-   * Cheap existence check: is Companion Memory installed? Uses the DB-only lite
-   * listing (no per-app manifest/compose fan-out that {@link findProvider} pays via
-   * `getInstalledApps`), so callers that only need "is there a provider" — e.g. the
-   * wrapper status poll — don't do filesystem work per installed app. Reconstructs
-   * each app's urn from its DB row (`<appName>:<appStoreSlug>`).
+   * Coarse runtime status of Companion Memory. Uses the DB-only lite listing (no
+   * per-app manifest/compose fan-out that {@link findProvider} pays via
+   * `getInstalledApps`), so the frequently-polled callers — the wrapper connect
+   * gate and the app-detail badge — don't do filesystem work per installed app.
+   *
+   * Keyed on the ci-memory row's lifecycle `status`, because connecting only works
+   * once it is actually `running`: a row in `installing` / `stopped` must resolve to
+   * a not-`ready` value so those surfaces don't offer a connect that dead-ends on
+   * startConnect's "not reachable yet" 400. Reconstructs the urn from the DB row
+   * (`<appName>:<appStoreSlug>`).
    */
-  async isProviderInstalled(): Promise<boolean> {
+  async getProviderRuntimeStatus(): Promise<MemoryProviderRuntimeStatus> {
     const installed = await this.appsService.getInstalledAppsLite();
 
-    return installed.some((row: { appName: string; appStoreSlug: string }) =>
-      isMemoryProviderApp({ urn: `${row.appName}:${row.appStoreSlug}` as AppUrn }),
-    );
+    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
+
+    if (!row) {
+      return 'absent';
+    }
+
+    if (row.status === 'running') {
+      return 'ready';
+    }
+
+    return PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline';
   }
 
   /**

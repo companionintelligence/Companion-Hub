@@ -3,6 +3,7 @@ import { buildPortalAxiosConfig, readPortalInternalUrlOverride, resolveOutboundP
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import axios, { type AxiosInstance } from 'axios';
+import type { PublicDnsFailure } from '@/modules/cloudflare/cloudflare-client.service';
 
 export type PortalStoreListingsParams = {
   category?: string;
@@ -156,11 +157,13 @@ export class PortalClientService {
     return response.data;
   }
 
-  async postTunnelState(payload: {
-    organizationId: string;
-    tunnelId: string;
-    apps: unknown[];
-  }): Promise<{ success?: boolean; failed?: string[]; synced?: number }> {
+  async postTunnelState(payload: { organizationId: string; tunnelId: string; apps: unknown[] }): Promise<{
+    success?: boolean;
+    failed?: string[];
+    /** Per-app failure detail; absent on CI-Cloud versions that predate it. */
+    failures?: PublicDnsFailure[];
+    synced?: number;
+  }> {
     return this.postJson('tunnels/state', payload, { authenticated: true });
   }
 

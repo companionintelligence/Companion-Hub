@@ -2,6 +2,10 @@ name: E2E Tests
 
 on:
   workflow_dispatch:
+  schedule:
+    # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
+    # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
+    - cron: "0 1 * * *"
   workflow_call:
     inputs:
       version:
@@ -10,7 +14,11 @@ on:
         type: string
 
 concurrency:
-  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  # Cancel only superseded runs of the same pull request. Every scheduled, dispatched,
+  # or workflow_call run gets its own bucket (run_id is unique), so independent runs —
+  # e.g. the nightly schedule and the run nightly-release.yml starts via workflow_call —
+  # never share a group and never cancel each other.
+  group: e2e-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -81,12 +89,10 @@ jobs:
 
       - run: pnpm exec playwright install --with-deps chromium
 
-      - name: Start mock portal
-        run: |
-          pnpm exec tsx e2e/mock-portal/server.ts &
-          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
-          sleep 2
-          curl -sf "http://localhost:${MOCK_PORTAL_PORT}/v2/" || echo "Warning: mock portal not responding"
+      # The mock portal is owned by Playwright's webServer (see playwright.config.ts):
+      # it starts the server, waits on /___control, and tears it down. Do NOT pre-start
+      # it here — with reuseExistingServer:false under CI, a second instance collides on
+      # MOCK_PORTAL_PORT and Playwright aborts the whole run. See CI-Hub#890.
 
       - name: Run E2E tests
         run: pnpm run test:e2e:ci

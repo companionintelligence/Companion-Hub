@@ -3,7 +3,15 @@ import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey } from '@/
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
+import { CI_MEMORY_APP_NAME } from './memory-provider';
+import { MEMORY_STATUS_QUERY_PREFIX } from './use-memory-connection';
 import { updateInstallationProgress } from './use-installation-progress';
+
+// Reserved app-directory name of Companion Memory (shared with the provider gate).
+// When ci-memory itself changes lifecycle state, every consumer app's
+// memory-connection status can flip (installing→ready, running→offline, …) — but
+// those queries are keyed by the CONSUMER's urn, so ci-memory's own SSE event
+// never touches them on its own.
 
 export type AppInstallErrorCache = {
   message: string;
@@ -145,6 +153,17 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   const urn = appUrn as AppUrn;
+
+  // If Companion Memory itself changed lifecycle, nudge every consumer's memory
+  // status (keyed by the consumer's urn, so the provider's own event misses them).
+  // Skip pure install-progress ticks — the status is stably "starting" throughout,
+  // so refetching on each tick would be wasted work.
+  if (appUrn.split(':')[0] === CI_MEMORY_APP_NAME) {
+    const isInstallProgressTick = event === 'status_change' && appStatus === 'installing' && typeof progress === 'number';
+    if (!isInstallProgressTick) {
+      void queryClient.invalidateQueries({ queryKey: [MEMORY_STATUS_QUERY_PREFIX] });
+    }
+  }
 
   if (event === 'install_error' && error) {
     setCachedAppStatus(queryClient, appUrn, appStatus);

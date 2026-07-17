@@ -37,6 +37,8 @@ import { publishesHostPort } from '../apps/app-exposure.helpers';
 import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -448,8 +450,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       .then(async ({ success, message }) => {
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
-          await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-          this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+          // Compare-and-set: only claim the outcome if this command still owns the
+          // status. A restart scheduled while this start was executing has already
+          // set 'restarting' (and queued behind the per-app mutex); a blind write
+          // here would flash a false 'running' mid-restart.
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'running', pendingRestart: false });
+          if (applied) {
+            this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+          }
 
           // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
           const { isProduction: isProdEnv } = this.config.getConfig();
@@ -459,8 +467,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           }
         } else {
           this.logger.error(`Failed to start app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'stopped' });
+          if (applied) {
+            this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
+          }
           this.agentNotifyService?.notify('start_error', { appUrn }, 'high');
           this.reportAppFailure(appUrn, 'start', message);
         }
@@ -847,14 +857,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async ({ success, message }) => {
+        // Compare-and-set (see startApp): claim the outcome only if a newer
+        // command hasn't taken over the status while this one was queued.
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
-          await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-          this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
+          if (applied) {
+            this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+          }
         } else {
           this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
+          if (applied) {
+            this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+          }
           this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
           this.reportAppFailure(appUrn, 'restart', message);
         }
@@ -865,16 +881,150 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
+   * Restart an app and WAIT for the compose restart to actually finish.
+   *
+   * {@link restartApp} resolves as soon as the command is published — its result is
+   * handled in a detached `.then` — which is right for a UI action driven by SSE, but
+   * useless to a caller that must know whether the container really came back up (the
+   * memory-connect key rotation strands an app on a retired key if it does not).
+   * Returns whether the restart succeeded; the status/SSE bookkeeping is identical.
+   */
+  public async restartAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull } = params;
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
+    }
+
+    await this.appRepository.updateAppById(app.id, { status: 'restarting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
+
+    const requestId = crypto.randomUUID();
+    const { success, message } = await this.appEventsQueue.publish({
+      command: 'restart',
+      appUrn,
+      requestId,
+      form: { ...app.config, skipPull },
+    });
+
+    // Compare-and-set (see startApp): claim the outcome only if a newer command
+    // hasn't taken over the status while this restart was queued/executing. The
+    // return value reflects the compose result either way.
+    if (success) {
+      this.logger.info(`App ${appUrn} restarted successfully`);
+      const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
+      if (applied) {
+        this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
+      }
+
+      return true;
+    }
+
+    this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
+    const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
+    if (applied) {
+      this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+    }
+    this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
+    this.reportAppFailure(appUrn, 'restart', message);
+
+    return false;
+  }
+
+  /**
+   * Rewrite an app's env file from its current stored config, without touching its
+   * containers.
+   *
+   * For applying a config change to an app that is DOWN: a stopped app must not be
+   * composed up just to pick up an env change, but leaving the file stale is not
+   * harmless either — it is how a revoked credential survives on disk, and how an app
+   * that is mid-install comes up with the env the installer wrote before the change
+   * landed. Returns whether the env was rewritten.
+   */
+  public async regenerateAppEnv(appUrn: AppUrn): Promise<boolean> {
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      return false;
+    }
+
+    const requestId = crypto.randomUUID();
+    const { success, message } = await this.appEventsQueue.publish({
+      command: 'generate_env',
+      appUrn,
+      requestId,
+      form: app.config,
+    });
+
+    if (!success) {
+      this.logger.error(`Failed to regenerate env for app ${appUrn}: ${message}`);
+    }
+
+    return success;
+  }
+
+  /**
+   * Lazily resolve MemoryConnectService. The dynamic import + ModuleRef lookup
+   * avoids a static module cycle with memory-connect; a resolution failure (module
+   * unloadable — `ModuleRef.get` throws rather than returning undefined) is folded
+   * into `undefined` so callers can decide how to handle a missing service.
+   */
+  private async getMemoryConnectService(): Promise<MemoryConnectService | undefined> {
+    try {
+      const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
+      return this.moduleRef.get(MemoryConnectService, { strict: false }) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Refuse to destroy Companion Memory (the shared provider) while other installed
+   * apps still hold a live connection to it — uninstalling or resetting it would
+   * sever their connections and irrecoverably delete the shared memory store.
+   * `force` (an explicit user/agent confirmation) bypasses the guard; non-provider
+   * apps are never affected. Fails closed if the memory module can't be resolved:
+   * a data-destroying operation must not proceed when the safety check can't run.
+   */
+  private async assertMemoryProviderNotInUse(appUrn: AppUrn, force: boolean | undefined): Promise<void> {
+    if (force || !isMemoryProviderApp({ urn: appUrn })) {
+      return;
+    }
+
+    const memoryConnect = await this.getMemoryConnectService();
+
+    if (!memoryConnect) {
+      // The safety check couldn't run — fail closed with a distinct message
+      // rather than pretending "0 apps" via the in-use copy.
+      throw new TranslatableError('APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE', { id: appUrn }, HttpStatus.CONFLICT);
+    }
+
+    const consumers = await memoryConnect.listConnectedConsumers();
+
+    if (consumers.length > 0) {
+      throw new TranslatableError(
+        'APP_ERROR_MEMORY_PROVIDER_IN_USE',
+        { id: appUrn, count: String(consumers.length), apps: consumers.map((c) => c.name).join(', ') },
+        HttpStatus.CONFLICT,
+      );
+    }
+  }
+
+  /**
    * Uninstall an app by its ID
    */
-  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean }) {
-    const { appUrn, deleteAllData } = params;
+  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+    const { appUrn, deleteAllData, force } = params;
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
+
+    // Guard the shared memory provider before any destructive side effect runs.
+    await this.assertMemoryProviderNotInUse(appUrn, force);
 
     // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
     await this.backupManager.deleteAppBackupsByUrn(appUrn);
@@ -883,11 +1033,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
     // Revoke any Companion Memory key minted for this app and drop its connection
-    // state so access dies with the app. Best-effort + lazily resolved (via
-    // ModuleRef) to avoid a static module cycle with memory-connect.
+    // state so access dies with the app. Best-effort — the app is going away
+    // regardless, so a resolution/cleanup failure is logged, not fatal.
     try {
-      const { MemoryConnectService } = await import('../memory-connect/memory-connect.service');
-      const memoryConnect = this.moduleRef.get(MemoryConnectService, { strict: false });
+      const memoryConnect = await this.getMemoryConnectService();
       await memoryConnect?.handleUninstall(appUrn);
     } catch (err) {
       this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
@@ -956,13 +1105,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Reset an app by its ID
    */
-  public async resetApp(params: { appUrn: AppUrn }) {
-    const { appUrn } = params;
+  public async resetApp(params: { appUrn: AppUrn; force?: boolean }) {
+    const { appUrn, force } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
+
+    // Reset wipes volumes + app-data — guard the shared memory provider before it runs.
+    await this.assertMemoryProviderNotInUse(appUrn, force);
 
     const appStatusBeforeReset = app?.status;
     await this.appRepository.updateAppById(app.id, { status: 'resetting' });

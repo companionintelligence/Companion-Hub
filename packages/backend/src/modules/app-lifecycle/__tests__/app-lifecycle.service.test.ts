@@ -56,6 +56,9 @@ describe('AppLifecycleService', () => {
     appEventsQueue = mock<AppEventsQueue>();
     commandFactory = mock<AppLifecycleCommandFactory>();
     appsRepository = mock<AppsRepository>();
+    // Completion handlers use a compare-and-set write; default to "applied" so
+    // their SSE emissions fire unless a test exercises the takeover race.
+    appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     configService = mock<ConfigurationService>();
     marketplaceService = mock<MarketplaceService>();
     imageSizeService = mock<ImageSizeService>();
@@ -299,7 +302,7 @@ describe('AppLifecycleService', () => {
         userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
-      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
@@ -317,6 +320,103 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
         'anything-llm:ci-marketplace',
       );
+    });
+
+    it('surfaces the DNS failure class instead of always blaming zone provisioning', async () => {
+      // A stale record CI-Cloud refuses to overwrite is not a domain problem, and
+      // saying so sent the CI-Portal#403 investigation down the wrong path.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: ['anything-llm'],
+        failures: [
+          {
+            app: 'anything-llm',
+            hostname: 'anything-llm-laptop-cid.companionintelligence.com',
+            reason: 'conflict',
+            message: 'already in use by another tunnel',
+          },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('already claimed by another device or tunnel'));
+      expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining("verify the selected domain's zone is provisioned"));
+
+      // The class rides along on the SSE event so the toast can say what is wrong.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace', errorCode: 'conflict' }),
+        'anything-llm:ci-marketplace',
+      );
+    });
+
+    it('names every failed app in the log, including ones it cannot map to a hostname', async () => {
+      // The log used to list only the apps it could rebuild a hostname for, while the
+      // count came from result.failed — so a failed app with no DB row (or the
+      // privileged Hub entry) vanished from the message entirely. That is the same
+      // class of misleading operator error this PR exists to fix.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        // 'OS Hub' is the privileged entry: it has no DB row, so it maps to no toast
+        // target and used to be dropped from the log.
+        failed: ['anything-llm', 'OS Hub'],
+        failures: [
+          { app: 'anything-llm', reason: 'conflict', message: 'already in use by another tunnel' },
+          { app: 'OS Hub', reason: 'api_error', message: 'rate limited' },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Both apps are named: the one we could resolve, by hostname; the one we could
+      // not, by the name CI-Cloud sent.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintelligence.com'));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OS Hub'));
+      // The count and the list agree.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('NOT created for 2 app(s)'));
     });
 
     it('excludes only the targeted app URN when releasing DNS for a routing change', async () => {
@@ -380,7 +480,7 @@ describe('AppLifecycleService', () => {
       } as any);
       // A full sync failure (e.g. CI-Cloud unreachable / non-success response),
       // distinct from a partial per-app failure.
-      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
@@ -910,6 +1010,12 @@ describe('AppLifecycleService', () => {
         callOrder.push('db_update');
         return fakeApp as any;
       });
+      // The completion handlers claim their outcome with a compare-and-set;
+      // report it as applied so the SSE ordering under test still fires.
+      appsRepository.updateAppByIdIfStatus.mockImplementation(async () => {
+        callOrder.push('db_update');
+        return true;
+      });
       appsRepository.deleteAppById.mockImplementation(async () => {
         callOrder.push('db_delete');
       });
@@ -1326,6 +1432,97 @@ describe('AppLifecycleService', () => {
       const successIdx = callOrder.indexOf('sse:install_success');
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+  });
+
+  describe('memory provider uninstall/reset guard', () => {
+    const providerUrn = 'ci-memory:ci-marketplace' as any;
+    const nonProviderUrn = 'myapp:ci-marketplace' as any;
+    const providerApp = { id: 7, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' as const, config: {}, exposedLocal: false };
+
+    let memoryConnect: { listConnectedConsumers: ReturnType<typeof vi.fn>; handleUninstall: ReturnType<typeof vi.fn> };
+    let moduleRefGet: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      memoryConnect = { listConnectedConsumers: vi.fn().mockResolvedValue([]), handleUninstall: vi.fn().mockResolvedValue(undefined) };
+      // The guard lazily resolves MemoryConnectService via the (mocked) ModuleRef.
+      moduleRefGet = vi.mocked((service as any).moduleRef.get);
+      moduleRefGet.mockReturnValue(memoryConnect);
+      appsRepository.getAppByUrn.mockResolvedValue(providerApp as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('blocks uninstall of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([
+        { appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' },
+        { appUrn: 'ci-openclaw:ci-marketplace', name: 'OpenClaw' },
+      ]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '2', apps: 'Hermes, OpenClaw' } },
+        status: 409,
+      });
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced uninstall of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true, force: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('allows uninstall of the provider when no consumers remain', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('does not consult consumers when uninstalling a non-provider app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...providerApp, appName: 'myapp' } as any);
+
+      await service.uninstallApp({ appUrn: nonProviderUrn, deleteAllData: true });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the memory module cannot be resolved', async () => {
+      moduleRefGet.mockReturnValue(undefined);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE' },
+        status: 409,
+      });
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('blocks reset of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '1', apps: 'Hermes' } },
+        status: 409,
+      });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced reset of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn, force: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'reset', appUrn: providerUrn }));
     });
   });
 

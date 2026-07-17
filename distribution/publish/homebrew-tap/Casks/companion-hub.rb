@@ -2,16 +2,16 @@
 # Published via: https://github.com/companionintelligence/homebrew-tap
 
 cask "companion-hub" do
-  version "0.2.40"
+  version "0.2.42"
 
   on_intel do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_x64.dmg"
-    sha256 "524dcd1ad6389826b93ebbd1b01a6e15baf2341ab62dc42e627c9bda676aa8ad"
+    sha256 "c136c198a18208062e775a05de2e350aab90bd27505347bf05d3a7d4a7692149"
   end
 
   on_arm do
     url "https://github.com/companionintelligence/CI-Hub/releases/download/v#{version}/Companion.Hub_#{version}_aarch64.dmg"
-    sha256 "d5885031c172546513a04d7cb6c4b997867c967fb6890177d7ccf0aa03f286fd"
+    sha256 "4ba73b8126f67c73d675333948913ab15ef634e49676a188815ba6dcbd522828"
   end
 
   name "Companion Hub"
