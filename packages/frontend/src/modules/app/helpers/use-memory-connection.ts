@@ -1,4 +1,6 @@
 import { client } from '@/api-client/client.gen';
+import { openExternal } from '@/lib/helpers/open-external';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
@@ -158,7 +160,25 @@ export function useMemoryConnection(appUrn: string) {
       return;
     }
 
-    // Return to this app-detail page after the connection is applied.
+    // The connect consent round-trip (start → ci-memory consent → callback →
+    // finishing interstitial) runs entirely on the Hub's PUBLIC tunnel origin and
+    // needs an authenticated session there. In the desktop app the webview is
+    // served from the bundled LOCAL origin (tauri://localhost) and wrapped by the
+    // HubStatus gate, which depends on the Tauri IPC plus a 127.0.0.1 health probe.
+    // A `window.location.href` navigation would throw the webview onto the remote
+    // origin, where the Tauri IPC is permission-denied and the localhost probe is
+    // unreachable — so HubStatus falls back to "Stopped" and the whole flow
+    // collapses to the "Hub Not Running" gate. Hand the flow to the system browser
+    // instead (the same escape the Open button uses); `next` is omitted so the
+    // backend returns to the app's own public URL, and this app-detail page's
+    // status poll/SSE flips the button to "Disconnect" once the user returns.
+    if (getTauriInvoke()) {
+      void openExternal(status.connectUrl);
+      return;
+    }
+
+    // Web: same-origin navigation — return to this app-detail page after the
+    // connection is applied.
     window.location.href = `${status.connectUrl}&next=${encodeURIComponent(window.location.href)}`;
   };
 
