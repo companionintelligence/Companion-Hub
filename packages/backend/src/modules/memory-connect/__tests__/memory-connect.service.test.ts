@@ -684,3 +684,72 @@ describe('MemoryConnectService side effects', () => {
     expect(connections.clear).not.toHaveBeenCalled();
   });
 });
+
+describe('MemoryConnectService.listConnectedConsumers', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("excludes the provider's own connection row", async () => {
+    const { service, connections } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-memory:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers.map((c) => c.appUrn)).toEqual(['ci-hermes:ci-marketplace']);
+  });
+
+  it('excludes stale rows whose app is no longer installed', async () => {
+    const { service, connections, appsRepository } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-gone:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === 'ci-gone:ci-marketplace' ? undefined : { status: 'running' }));
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers.map((c) => c.appUrn)).toEqual(['ci-hermes:ci-marketplace']);
+  });
+
+  it('resolves the display name, falling back to the URN app-name half', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    resolver.getAppName.mockImplementation(async (urn: string) => (urn === 'ci-hermes:ci-marketplace' ? 'Hermes' : undefined));
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers).toEqual([
+      { appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' },
+      { appUrn: 'ci-openclaw:ci-marketplace', name: 'ci-openclaw' },
+    ]);
+  });
+
+  it('skips a malformed connection row instead of throwing', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'no-separator-here', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    // Force the name fallback (extractAppUrn) so the malformed URN throws inside the loop.
+    resolver.getAppName.mockResolvedValue(undefined);
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers).toEqual([{ appUrn: 'ci-hermes:ci-marketplace', name: 'ci-hermes' }]);
+  });
+
+  it('propagates a DB error on a real row instead of dropping the consumer (fails closed)', async () => {
+    const { service, connections, appsRepository } = makeService();
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' }]);
+    // A transient infra error on a genuinely-connected row must NOT be swallowed —
+    // otherwise the uninstall/reset guard would see 0 consumers and destroy the store.
+    appsRepository.getAppByUrn.mockRejectedValue(new Error('db pool exhausted'));
+
+    await expect(service.listConnectedConsumers()).rejects.toThrow('db pool exhausted');
+  });
+});

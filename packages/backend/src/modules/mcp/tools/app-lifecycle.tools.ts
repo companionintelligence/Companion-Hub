@@ -52,21 +52,42 @@ export class AppLifecycleTools implements OnModuleInit {
       category: 'App Lifecycle',
       name: 'hub_uninstall_app',
       destructive: true, // ISSUE-MCP-2: removes the app and (by default) deletes its data volumes.
-      description: 'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId.',
+      description:
+        'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId. Uninstalling the shared Companion Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: urnProp, deleteAllData: { type: 'boolean', description: 'Delete Docker volumes and app data (default true)' } },
+        properties: {
+          appUrn: urnProp,
+          deleteAllData: { type: 'boolean', description: 'Delete Docker volumes and app data (default true)' },
+          force: {
+            type: 'boolean',
+            description:
+              'Required to uninstall the shared Companion Memory provider while other apps are still connected. Forcing disconnects every consumer and, with deleteAllData, irrecoverably deletes the shared memory store. Default false.',
+          },
+        },
         required: ['appUrn'],
       },
-      handler: (p) => this.uninstallApp(p as { appUrn: string; deleteAllData?: boolean }),
+      handler: (p) => this.uninstallApp(p as { appUrn: string; deleteAllData?: boolean; force?: boolean }),
     });
     this.registry.register({
       category: 'App Lifecycle',
       name: 'hub_reset_app',
       destructive: true, // ISSUE-MCP-2: wipes all app data back to defaults.
-      description: 'Reset an app to its default state, removing all data. Returns a requestId.',
-      inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
-      handler: (p) => this.resetApp(p as { appUrn: string }),
+      description:
+        'Reset an app to its default state, removing all data. Returns a requestId. Resetting the shared Companion Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          appUrn: urnProp,
+          force: {
+            type: 'boolean',
+            description:
+              'Required to reset the shared Companion Memory provider while other apps are still connected. Forcing disconnects every consumer and irrecoverably erases the shared memory store. Default false.',
+          },
+        },
+        required: ['appUrn'],
+      },
+      handler: (p) => this.resetApp(p as { appUrn: string; force?: boolean }),
     });
     this.registry.register({
       category: 'App Lifecycle',
@@ -136,11 +157,15 @@ export class AppLifecycleTools implements OnModuleInit {
   async restartApp(params: { appUrn: string }) {
     return this.appLifecycleService.restartApp({ appUrn: castAppUrn(params.appUrn) });
   }
-  async uninstallApp(params: { appUrn: string; deleteAllData?: boolean }) {
-    return this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(params.appUrn), deleteAllData: params.deleteAllData ?? true });
+  async uninstallApp(params: { appUrn: string; deleteAllData?: boolean; force?: boolean }) {
+    return this.appLifecycleService.uninstallApp({
+      appUrn: castAppUrn(params.appUrn),
+      deleteAllData: params.deleteAllData ?? true,
+      force: params.force ?? false,
+    });
   }
-  async resetApp(params: { appUrn: string }) {
-    return this.appLifecycleService.resetApp({ appUrn: castAppUrn(params.appUrn) });
+  async resetApp(params: { appUrn: string; force?: boolean }) {
+    return this.appLifecycleService.resetApp({ appUrn: castAppUrn(params.appUrn), force: params.force ?? false });
   }
   async updateApp(params: { appUrn: string; performBackup?: boolean }) {
     return this.appLifecycleService.updateApp({ appUrn: castAppUrn(params.appUrn), performBackup: params.performBackup ?? true });
