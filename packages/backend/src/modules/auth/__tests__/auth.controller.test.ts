@@ -451,7 +451,7 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('/');
     });
 
-    it('consume redirects home for a missing/expired/replayed ticket without setting a cookie', async () => {
+    it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {
       cache.get.mockReturnValue(undefined as never);
       const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
       const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
@@ -459,6 +459,9 @@ describe('AuthController', () => {
       await authController.consumeBrowserHandoff('gone', req, res);
 
       expect(res.cookie).not.toHaveBeenCalled();
+      // A cache miss must not trigger a delete — this endpoint is unauthenticated, so a
+      // per-miss SQLite write would be a flood amplifier.
+      expect(cache.del).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('/');
     });
 

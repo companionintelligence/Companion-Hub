@@ -108,7 +108,9 @@ const sessionRefreshResponseSchema = z.object({
 });
 
 const browserHandoffMintSchema = z.object({
-  next: z.string().min(1),
+  // Bounded so a rogue caller can't stuff a multi-KB blob into the (SQLite-backed)
+  // ticket cache; legitimate Hub/app URLs are well under this.
+  next: z.string().min(1).max(2048),
 });
 
 const browserHandoffMintResponseSchema = z.object({

@@ -293,11 +293,13 @@ export class AuthController {
 
     const cacheKey = `browser_handoff:${ticket}`;
     const cached = this.cache.get(cacheKey);
-    this.cache.del(cacheKey); // single-use — consume before doing anything else.
-
     if (!cached) {
+      // Unknown/expired ticket. Return without deleting: this endpoint is
+      // unauthenticated, so deleting on every miss would let a ticket flood force a
+      // synchronous SQLite write (event-loop pressure) per bogus request.
       return res.redirect('/');
     }
+    this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
 
     let sessionId: string;
     let next: string;
