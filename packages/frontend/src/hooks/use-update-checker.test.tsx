@@ -228,12 +228,32 @@ describe('useUpdateChecker — desktop behaviour', () => {
     expect(svc.checkForUpdates).toHaveBeenCalledTimes(3); // no leaked interval
   });
 
-  it('clears `checking` even when the check throws', async () => {
+  it('swallows a thrown feed check instead of leaking an unhandled rejection', async () => {
+    // The mount and the poll both call runCheck as `void runCheck(true)`, so
+    // anything that escapes it lands as an unhandled rejection with nobody to
+    // catch it — noise in Sentry at best. checkForUpdates absorbs its own
+    // errors today, so this guards the day it stops.
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
     svc.checkForUpdates.mockRejectedValue(new Error('feed down'));
 
     const { result } = renderHook(() => useUpdateChecker());
 
     await waitFor(() => expect(svc.checkForUpdates).toHaveBeenCalled());
     await waitFor(() => expect(result.current.checking).toBe(false));
+    expect(result.current.update).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 10));
+    process.off('unhandledRejection', unhandled);
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('reports a thrown feed check to recheck() as "nothing found", not a rejection', async () => {
+    svc.checkForUpdates.mockRejectedValue(new Error('feed down'));
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await act(async () => {
+      await expect(result.current.recheck()).resolves.toBeNull();
+    });
   });
 });

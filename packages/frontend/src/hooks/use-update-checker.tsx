@@ -95,6 +95,13 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
         }
 
         return result;
+      } catch {
+        // The poll and the mount both call this as `void runCheck(true)`, so a
+        // throw here escapes as an unhandled rejection rather than reaching
+        // anyone who could act on it. An update check is best-effort: a bad
+        // feed response should look the same as "nothing to report".
+        setUpdate(null);
+        return null;
       } finally {
         setChecking(false);
       }
