@@ -944,14 +944,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Refuse to destroy Companion Memory (the shared provider) while other installed
-   * apps still hold a live connection to it — uninstalling or resetting it would
-   * sever their connections and irrecoverably delete the shared memory store.
-   * `force` (an explicit user/agent confirmation) bypasses the guard; non-provider
-   * apps are never affected. Fails closed if the memory module can't be resolved:
-   * a data-destroying operation must not proceed when the safety check can't run.
-   */
-  /**
    * Lazily resolve MemoryConnectService. The dynamic import + ModuleRef lookup
    * avoids a static module cycle with memory-connect; a resolution failure (module
    * unloadable — `ModuleRef.get` throws rather than returning undefined) is folded
@@ -966,6 +958,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
+  /**
+   * Refuse to destroy Companion Memory (the shared provider) while other installed
+   * apps still hold a live connection to it — uninstalling or resetting it would
+   * sever their connections and irrecoverably delete the shared memory store.
+   * `force` (an explicit user/agent confirmation) bypasses the guard; non-provider
+   * apps are never affected. Fails closed if the memory module can't be resolved:
+   * a data-destroying operation must not proceed when the safety check can't run.
+   */
   private async assertMemoryProviderNotInUse(appUrn: AppUrn, force: boolean | undefined): Promise<void> {
     if (force || !isMemoryProviderApp({ urn: appUrn })) {
       return;
@@ -974,7 +974,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const memoryConnect = await this.getMemoryConnectService();
 
     if (!memoryConnect) {
-      throw new TranslatableError('APP_ERROR_MEMORY_PROVIDER_IN_USE', { id: appUrn, count: '?', apps: '' }, HttpStatus.CONFLICT);
+      // The safety check couldn't run — fail closed with a distinct message
+      // rather than pretending "0 apps" via the in-use copy.
+      throw new TranslatableError('APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE', { id: appUrn }, HttpStatus.CONFLICT);
     }
 
     const consumers = await memoryConnect.listConnectedConsumers();

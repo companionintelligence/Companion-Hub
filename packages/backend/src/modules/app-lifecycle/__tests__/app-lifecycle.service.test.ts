@@ -1490,7 +1490,7 @@ describe('AppLifecycleService', () => {
       moduleRefGet.mockReturnValue(undefined);
 
       await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
-        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE' },
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE' },
         status: 409,
       });
       expect(appEventsQueue.publish).not.toHaveBeenCalled();

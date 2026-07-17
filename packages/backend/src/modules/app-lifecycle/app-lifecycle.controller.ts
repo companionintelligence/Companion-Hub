@@ -13,7 +13,7 @@ import {
   UninstallAppBody,
   UpdateAppBody,
 } from './dto/app-lifecycle.dto';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiBody, ApiResponse } from '@nestjs/swagger';
 
 interface RehydrateBody {
   force?: boolean;
@@ -95,6 +95,8 @@ export class AppLifecycleController {
 
   @Post(':urn/reset')
   @ApiResponse({ type: LifecycleRequestDto })
+  // The route historically took no body and the schema defaults `force`, so the body is optional.
+  @ApiBody({ type: ResetAppBody, required: false })
   async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody) {
     const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn), force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
