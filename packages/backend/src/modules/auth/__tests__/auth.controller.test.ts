@@ -425,7 +425,8 @@ describe('AuthController', () => {
       const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
 
-      const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
+      // The real desktop flow arrives as a user-initiated navigation (Sec-Fetch-Site: none).
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
       const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
 
       await authController.consumeBrowserHandoff('ticket-abc', req, res);
@@ -434,6 +435,20 @@ describe('AuthController', () => {
       expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
       expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sess-1', expect.objectContaining({ httpOnly: true }));
       expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it.each(['cross-site', 'same-site'])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      // Login-CSRF guard fires before the ticket is read, so a lured victim never
+      // gets the attacker's session and the ticket is left intact.
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(cache.del).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('/');
     });
 
     it('consume redirects home for a missing/expired/replayed ticket without setting a cookie', async () => {

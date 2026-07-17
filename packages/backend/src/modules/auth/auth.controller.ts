@@ -270,9 +270,23 @@ export class AuthController {
    * memory-connect / forward-auth hops authenticate), then redirects to the
    * server-stored `next`. A missing, expired, or replayed ticket lands on `/`
    * without setting anything.
+   *
+   * Login-CSRF hardening: because this plants a session cookie, an actor who can
+   * mint a ticket (any authenticated Hub session) could otherwise lure a victim to
+   * this URL and plant THEIR session into the victim's browser. The legitimate flow
+   * only ever arrives as a fresh, user-initiated navigation opened by the desktop
+   * app (`Sec-Fetch-Site: none`), so a `cross-site` (attacker page) or `same-site`
+   * (compromised sibling app subdomain) navigation is rejected before the ticket is
+   * touched. Browsers that omit the header are allowed for compatibility.
    */
   @Get('/browser-handoff')
   async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const fetchSite = req.get('sec-fetch-site');
+    if (fetchSite === 'cross-site' || fetchSite === 'same-site') {
+      this.logger.warn(`[BrowserHandoff] rejected consume from non-first-party navigation (sec-fetch-site=${fetchSite})`);
+      return res.redirect('/');
+    }
+
     if (!ticket) {
       return res.redirect('/');
     }
