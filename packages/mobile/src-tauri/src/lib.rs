@@ -271,7 +271,111 @@ fn extract_intent(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_intent, extract_pairing_code, extract_portal_auth, PortalAuthPayload};
+    use super::{
+        deep_link_urls_from_payload, extract_intent, extract_pairing_code, extract_portal_auth,
+        PortalAuthPayload,
+    };
+
+    // --- deep_link_urls_from_payload -------------------------------------
+    // Every deep link the plugin delivers passes through here first. The
+    // payload shape varies by platform/version (JSON array, JSON-quoted
+    // string, or bare URL), so all three must survive.
+
+    #[test]
+    fn payload_json_array_yields_every_url() {
+        assert_eq!(
+            deep_link_urls_from_payload(r#"["cihub://auth?token=a","cihub://pair?code=abc123"]"#),
+            vec![
+                "cihub://auth?token=a".to_string(),
+                "cihub://pair?code=abc123".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn payload_json_quoted_string_is_unquoted() {
+        // A JSON-encoded single string must be decoded, not passed through with
+        // its quotes — otherwise the `cihub://` prefix checks all miss.
+        assert_eq!(
+            deep_link_urls_from_payload(r#""cihub://intent/connect""#),
+            vec!["cihub://intent/connect".to_string()]
+        );
+    }
+
+    #[test]
+    fn payload_bare_url_is_passed_through() {
+        assert_eq!(
+            deep_link_urls_from_payload("cihub://intent/settings"),
+            vec!["cihub://intent/settings".to_string()]
+        );
+    }
+
+    #[test]
+    fn payload_empty_or_blank_yields_nothing() {
+        assert!(deep_link_urls_from_payload("").is_empty());
+        assert!(deep_link_urls_from_payload("   ").is_empty());
+        assert!(deep_link_urls_from_payload("[]").is_empty());
+    }
+
+    // --- extract_pairing_code validation ---------------------------------
+
+    #[test]
+    fn extract_pairing_code_enforces_six_alphanumerics() {
+        // Wrong length or non-alphanumeric must not be queued as a pairing code.
+        assert_eq!(extract_pairing_code("cihub://pair?code=abc12"), None); // 5
+        assert_eq!(extract_pairing_code("cihub://pair?code=abc1234"), None); // 7
+        assert_eq!(extract_pairing_code("cihub://pair?code=ab-123"), None); // punctuation
+        assert_eq!(extract_pairing_code("cihub://pair?code="), None); // empty
+        assert_eq!(extract_pairing_code("cihub://pair"), None); // no code at all
+    }
+
+    #[test]
+    fn extract_pairing_code_reads_past_other_query_params() {
+        assert_eq!(
+            extract_pairing_code("cihub://pair?source=email&code=abc123"),
+            Some("ABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_pairing_code_path_form_ignores_trailing_query() {
+        assert_eq!(
+            extract_pairing_code("cihub://pair/abc123?utm=x"),
+            Some("ABC123".to_string())
+        );
+    }
+
+    // --- extract_portal_auth validation ----------------------------------
+
+    #[test]
+    fn extract_portal_auth_rejects_missing_or_empty_token() {
+        assert_eq!(extract_portal_auth("cihub://auth?token="), None);
+        assert_eq!(extract_portal_auth("cihub://auth"), None); // no query
+        assert_eq!(extract_portal_auth("cihub://auth?other=1"), None);
+    }
+
+    #[test]
+    fn extract_portal_auth_reads_past_other_query_params() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?state=xyz&token=tok-123"),
+            Some(PortalAuthPayload {
+                token: "tok-123".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn oidc_callback_is_claimed_by_no_rust_extractor() {
+        // Design invariant: `cihub://auth/callback?code=…&state=…` is the OIDC
+        // PKCE leg, consumed by the frontend's own `deep-link://new-url`
+        // listener (modules/mobile-connect/oidc.ts). If the Rust shell ever
+        // started swallowing it into pending-portal-auth, OIDC login would hang
+        // waiting for a callback that already got eaten.
+        let cb = "cihub://auth/callback?code=authcode&state=abc";
+        assert_eq!(extract_portal_auth(cb), None); // no `token=` param
+        assert_eq!(extract_intent(cb), None);
+        assert_eq!(extract_pairing_code(cb), None);
+    }
 
     #[test]
     fn extract_pairing_code_from_query_param() {
