@@ -47,10 +47,9 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
 import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
-
-const openExternalUrl = (url: string) => openExternal(url);
 
 interface IProps {
   app?: AppDetails | null;
@@ -166,6 +165,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const [searchParams] = useSearchParams();
   const autoInstallTriggeredRef = useRef(false);
   const memory = useMemoryConnection(info.urn);
+
+  // Opening an app hands the flow to the system browser, which (in the desktop app)
+  // holds no Hub session cookie. Only a memory-consumer app matters here: its
+  // interstitial navigates to the Hub origin and would otherwise demand a second Hub
+  // login, so bridge the desktop session into that browser first. Every other app
+  // opens directly — no reason to route them through a Hub round-trip. The bridge
+  // fails open, so an unavailable handoff never blocks the open.
+  const openExternalUrl = (url: string) => (memory.applicable ? openExternalWithHubSession(url) : openExternal(url));
 
   // Clear the optimistic "cancelling" flag once the app leaves the installing state (the
   // install_cancelled SSE flips it to uninstalled/missing), so a later re-install isn't affected.

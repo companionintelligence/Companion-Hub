@@ -1,5 +1,5 @@
 import { client } from '@/api-client/client.gen';
-import { openExternal } from '@/lib/helpers/open-external';
+import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -171,8 +171,12 @@ export function useMemoryConnection(appUrn: string) {
     // collapses to the "Hub Not Running" gate. Hand the flow to the system browser
     // instead (the same escape the Open button uses); `next` is omitted so the
     // backend returns to the app's own public URL.
+    //
+    // openExternalWithHubSession first plants the Hub session cookie in that system
+    // browser (via a one-time handoff ticket), so the consent round-trip's Hub hops
+    // authenticate instead of bouncing to a second Hub login.
     if (getTauriInvoke()) {
-      void openExternal(status.connectUrl);
+      void openExternalWithHubSession(status.connectUrl);
 
       // The consent completes in that separate browser, so this webview never
       // reloads (unlike the web path's full-page return to `next`). Refetch this

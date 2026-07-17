@@ -7,8 +7,8 @@ import { useMemoryConnection, useMemoryProviderForceGate } from './use-memory-co
 const h = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('@/api-client/client.gen', () => ({ client: { get: (...args: unknown[]) => h.get(...args) } }));
 
-const ext = vi.hoisted(() => ({ openExternal: vi.fn(), getTauriInvoke: vi.fn() }));
-vi.mock('@/lib/helpers/open-external', () => ({ openExternal: ext.openExternal }));
+const ext = vi.hoisted(() => ({ openExternalWithHubSession: vi.fn(), getTauriInvoke: vi.fn() }));
+vi.mock('@/lib/hub-browser-handoff', () => ({ openExternalWithHubSession: ext.openExternalWithHubSession }));
 vi.mock('@/lib/helpers/tauri-invoke', () => ({ getTauriInvoke: ext.getTauriInvoke }));
 
 const wrapper = () => {
@@ -83,7 +83,7 @@ describe('useMemoryConnection connect()', () => {
 
   beforeEach(() => {
     h.get.mockReset();
-    ext.openExternal.mockReset();
+    ext.openExternalWithHubSession.mockReset();
     ext.getTauriInvoke.mockReset();
     Object.defineProperty(window, 'location', { configurable: true, writable: true, value: { href: CURRENT_HREF } });
   });
@@ -105,7 +105,9 @@ describe('useMemoryConnection connect()', () => {
 
     result.current.connect();
 
-    expect(ext.openExternal).toHaveBeenCalledWith(CONNECT_URL);
+    // The session-handoff helper is responsible for planting the Hub cookie in the
+    // system browser before opening; use-memory-connection just delegates to it.
+    expect(ext.openExternalWithHubSession).toHaveBeenCalledWith(CONNECT_URL);
     expect(window.location.href).toBe(CURRENT_HREF); // webview stayed put
   });
 
@@ -145,7 +147,7 @@ describe('useMemoryConnection connect()', () => {
 
     result.current.connect();
 
-    expect(ext.openExternal).not.toHaveBeenCalled();
+    expect(ext.openExternalWithHubSession).not.toHaveBeenCalled();
     expect(window.location.href).toBe(`${CONNECT_URL}&next=${encodeURIComponent(CURRENT_HREF)}`);
   });
 
@@ -157,7 +159,7 @@ describe('useMemoryConnection connect()', () => {
 
     result.current.connect();
 
-    expect(ext.openExternal).not.toHaveBeenCalled();
+    expect(ext.openExternalWithHubSession).not.toHaveBeenCalled();
     expect(window.location.href).toBe(CURRENT_HREF);
   });
 });
