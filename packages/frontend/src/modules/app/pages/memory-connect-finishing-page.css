@@ -98,11 +98,13 @@
   margin: 0 0 24px;
 }
 
-/* The interpolated app name — full-strength color over the dimmed body copy so
- * it reads as the subject of the sentence (mirrors the consent page's `.app`). */
+/* The interpolated app name — full-strength color + bold so it reads as the
+ * subject of the sentence over the dimmed body copy. Weight matches .mcf-title
+ * (700) rather than 600: the same class is used inside the headings, where 600
+ * would render the name LIGHTER than the surrounding title text. */
 .mcf-app {
   color: var(--mcf-fg);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .mcf-actions {

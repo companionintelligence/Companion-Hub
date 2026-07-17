@@ -68,7 +68,13 @@ vi.mock('@/components/ui/LoadingSpinner/loading-spinner', () => ({
   PageLoadingSpinner: () => <div data-testid="page-loading" />,
 }));
 
-import MemoryConnectFinishingPage, { derivePhase, isCrossOriginTarget, isPollSettled, resolveSafeTarget } from './memory-connect-finishing-page';
+import MemoryConnectFinishingPage, {
+  derivePhase,
+  isCrossOriginTarget,
+  isPollSettled,
+  isProbeAvailable,
+  resolveSafeTarget,
+} from './memory-connect-finishing-page';
 
 const APP_URN = 'ci-hermes:ci-marketplace';
 const APP_URL = 'https://ci-hermes-hub-studio-companion.example.org/';
@@ -452,6 +458,21 @@ describe('resolveSafeTarget', () => {
     expect(resolveSafeTarget(null, [{ url: 'https://only.example.org/', state: 'available' }], origin)).toBeNull();
     expect(resolveSafeTarget(null, [{ url: 'https://dead.example.org/', state: 'unavailable' }], origin)).toBeNull();
     expect(resolveSafeTarget(null, [], origin)).toBeNull();
+  });
+});
+
+describe('isProbeAvailable', () => {
+  it('is true ONLY for a strict boolean true — never a truthy non-true value', () => {
+    // The same guard backs both the refetch-stop condition and the reachability
+    // gate; a truthy-vs-strict split there could stop polling while the gate
+    // stays closed, hanging the hop. Pin the strict contract.
+    expect(isProbeAvailable({ available: true })).toBe(true);
+    expect(isProbeAvailable({ available: false })).toBe(false);
+    expect(isProbeAvailable({ available: 'yes' })).toBe(false);
+    expect(isProbeAvailable({ available: 1 })).toBe(false);
+    expect(isProbeAvailable({})).toBe(false);
+    expect(isProbeAvailable(undefined)).toBe(false);
+    expect(isProbeAvailable(null)).toBe(false);
   });
 });
 

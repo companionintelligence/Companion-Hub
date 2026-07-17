@@ -94,10 +94,15 @@ export function isPollSettled(data: AppSnapshot | undefined): boolean {
 
 export type Phase = 'connecting' | 'propagating' | 'ready' | 'error' | 'timeout';
 
-/** The fields the page reads from the check-availability probe (untyped in the generated client). */
-interface AppAvailability {
-  available: boolean;
-  stage?: 'ready' | 'propagating' | 'error';
+/**
+ * Whether the check-availability probe reports the app's public URL is serving.
+ * The generated client types the response `unknown`, so read the one field we
+ * need here with a single strict-boolean check — used by BOTH the refetch-stop
+ * condition and the reachability gate so they can never disagree on a truthy
+ * non-`true` value. Exported for tests.
+ */
+export function isProbeAvailable(payload: unknown): boolean {
+  return (payload as { available?: unknown } | undefined)?.available === true;
 }
 
 /**
@@ -283,13 +288,12 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   const gateOnReachability = isCrossOriginTarget(target, window.location.origin);
   const availabilityQuery = useQuery({
     ...checkAvailabilityOptions({ path: { urn: appUrn } }),
-    select: (payload) => payload as AppAvailability | undefined,
     enabled: restartPhase === 'ready' && gateOnReachability,
     // Even after the propagation window lapses into the timeout card, keep
     // probing at the slow cadence — a late DNS/tunnel success still flips the
     // page to ready and forwards the user (mirrors the status poll's design).
     refetchInterval: (query) => {
-      if ((query.state.data as AppAvailability | undefined)?.available) {
+      if (isProbeAvailable(query.state.data)) {
         return false;
       }
 
@@ -302,7 +306,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   // Fail OPEN on a broken probe (query error after retries): the probe is a
   // UX nicety; a Hub-side hiccup in it must not strand a user whose app is in
   // fact up. Worst case they briefly see the Cloudflare page — today's behavior.
-  const targetReachable = !gateOnReachability || availabilityQuery.data?.available === true || availabilityQuery.isError;
+  const targetReachable = !gateOnReachability || isProbeAvailable(availabilityQuery.data) || availabilityQuery.isError;
 
   // Layered on top of derivePhase so its exported contract (and tests) stay
   // intact. Precedence mirrors the status phases: a late probe success wins
