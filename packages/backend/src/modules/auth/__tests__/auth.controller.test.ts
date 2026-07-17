@@ -437,7 +437,11 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith(next);
     });
 
-    it.each(['cross-site', 'same-site'])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
+    it.each([
+      'cross-site',
+      'same-site',
+      'same-origin',
+    ])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
       const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
 

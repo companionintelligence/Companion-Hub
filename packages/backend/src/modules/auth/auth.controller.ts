@@ -275,15 +275,18 @@ export class AuthController {
    * mint a ticket (any authenticated Hub session) could otherwise lure a victim to
    * this URL and plant THEIR session into the victim's browser. The legitimate flow
    * only ever arrives as a fresh, user-initiated navigation opened by the desktop
-   * app (`Sec-Fetch-Site: none`), so a `cross-site` (attacker page) or `same-site`
-   * (compromised sibling app subdomain) navigation is rejected before the ticket is
-   * touched. Browsers that omit the header are allowed for compatibility.
+   * app (`Sec-Fetch-Site: none`), so this ALLOW-lists only `none` (and an absent
+   * header, for browsers that don't send Fetch Metadata) and rejects every
+   * page-initiated navigation — `cross-site` (attacker page), `same-site`
+   * (compromised sibling app), `same-origin`, or a spoofed multi-valued header —
+   * before the ticket is touched. The reject path is intentionally silent: this
+   * endpoint is unauthenticated, so a per-request log write would be a flood
+   * amplifier (same reason the ticket-miss path below no longer deletes).
    */
   @Get('/browser-handoff')
   async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
     const fetchSite = req.get('sec-fetch-site');
-    if (fetchSite === 'cross-site' || fetchSite === 'same-site') {
-      this.logger.warn(`[BrowserHandoff] rejected consume from non-first-party navigation (sec-fetch-site=${fetchSite})`);
+    if (fetchSite !== undefined && fetchSite !== 'none') {
       return res.redirect('/');
     }
 
