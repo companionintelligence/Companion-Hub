@@ -1,20 +1,26 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { useQuery, useUserContext, useNavigate, searchParams, buildAppAccessPoints, appResult, contextResult } = vi.hoisted(() => ({
-  useQuery: vi.fn(),
-  useUserContext: vi.fn(),
-  useNavigate: vi.fn(),
-  searchParams: { current: new URLSearchParams() },
-  buildAppAccessPoints: vi.fn(),
-  appResult: { current: {} as Record<string, unknown> },
-  contextResult: { current: {} as Record<string, unknown> },
-}));
+const { useQuery, useUserContext, useNavigate, searchParams, buildAppAccessPoints, appResult, contextResult, availabilityResult } = vi.hoisted(
+  () => ({
+    useQuery: vi.fn(),
+    useUserContext: vi.fn(),
+    useNavigate: vi.fn(),
+    searchParams: { current: new URLSearchParams() },
+    buildAppAccessPoints: vi.fn(),
+    appResult: { current: {} as Record<string, unknown> },
+    contextResult: { current: {} as Record<string, unknown> },
+    availabilityResult: { current: {} as Record<string, unknown> },
+  }),
+);
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+  // The named copy renders through <Trans>; stub it to its key so the
+  // getByText(KEY) assertions below keep matching (mirrors the t() stub).
+  Trans: ({ i18nKey }: { i18nKey: string }) => <>{i18nKey}</>,
 }));
 
 vi.mock('react-router', async () => {
@@ -36,6 +42,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['getApp'] }),
   appContextOptions: () => ({ queryKey: ['appContext'] }),
   getServeStatusOptions: () => ({ queryKey: ['getServeStatus'] }),
+  checkAvailabilityOptions: () => ({ queryKey: ['checkAvailability'] }),
 }));
 
 vi.mock('@/context/user-context', () => ({
@@ -61,7 +68,13 @@ vi.mock('@/components/ui/LoadingSpinner/loading-spinner', () => ({
   PageLoadingSpinner: () => <div data-testid="page-loading" />,
 }));
 
-import MemoryConnectFinishingPage, { derivePhase, isPollSettled, resolveSafeTarget } from './memory-connect-finishing-page';
+import MemoryConnectFinishingPage, {
+  derivePhase,
+  isCrossOriginTarget,
+  isPollSettled,
+  isProbeAvailable,
+  resolveSafeTarget,
+} from './memory-connect-finishing-page';
 
 const APP_URN = 'ci-hermes:ci-marketplace';
 const APP_URL = 'https://ci-hermes-hub-studio-companion.example.org/';
@@ -102,10 +115,13 @@ describe('MemoryConnectFinishingPage', () => {
     setParams({ app: APP_URN, next: APP_URL });
     appResult.current = appData('restarting');
     contextResult.current = { data: CTX };
+    // Default: the public URL answers immediately, so the hop is not held.
+    availabilityResult.current = { data: { available: true, stage: 'ready' }, isError: false };
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) => {
       const key = options.queryKey?.[0];
       if (key === 'appContext') return contextResult.current;
       if (key === 'getServeStatus') return { data: undefined };
+      if (key === 'checkAvailability') return availabilityResult.current;
       return appResult.current;
     });
   });
@@ -245,6 +261,90 @@ describe('MemoryConnectFinishingPage', () => {
     expect(window.location.replace).toHaveBeenCalledWith(APP_URL);
   });
 
+  it('holds on the propagating card (no navigation) while the public URL does not answer yet', () => {
+    vi.useFakeTimers();
+    appResult.current = appData('running');
+    availabilityResult.current = { data: { available: false, stage: 'propagating' }, isError: false };
+
+    render(<MemoryConnectFinishingPage />);
+
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_TITLE')).toBeInTheDocument();
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_DESC')).toBeInTheDocument();
+    // The escape hatch to the Hub is available while the user waits.
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(window.location.replace).not.toHaveBeenCalled();
+  });
+
+  it('forwards once the probe flips to available', () => {
+    vi.useFakeTimers();
+    appResult.current = appData('running');
+    availabilityResult.current = { data: { available: false, stage: 'propagating' }, isError: false };
+
+    const { rerender } = render(<MemoryConnectFinishingPage />);
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_TITLE')).toBeInTheDocument();
+
+    availabilityResult.current = { data: { available: true, stage: 'ready' }, isError: false };
+    rerender(<MemoryConnectFinishingPage />);
+
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_READY')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(window.location.replace).toHaveBeenCalledWith(APP_URL);
+  });
+
+  it('lapses into the timeout card with propagation copy (and Open anyway) when the URL never answers', () => {
+    vi.useFakeTimers();
+    appResult.current = appData('running');
+    availabilityResult.current = { data: { available: false, stage: 'propagating' }, isError: false };
+
+    render(<MemoryConnectFinishingPage />);
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC')).toBeInTheDocument();
+    expect(window.location.replace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('APP_ACTION_OPEN_ANYWAY'));
+    expect(window.location.assign).toHaveBeenCalledWith(APP_URL);
+  });
+
+  it('fails open when the probe endpoint itself errors — the hop must not be stranded by a broken probe', () => {
+    vi.useFakeTimers();
+    appResult.current = appData('running');
+    availabilityResult.current = { data: undefined, isError: true };
+
+    render(<MemoryConnectFinishingPage />);
+
+    expect(screen.getByText('MEMORY_CONNECT_FINISHING_READY')).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(window.location.replace).toHaveBeenCalledWith(APP_URL);
+  });
+
+  it('skips the reachability gate for a same-origin next (nothing to propagate)', () => {
+    vi.useFakeTimers();
+    appResult.current = appData('running');
+    availabilityResult.current = { data: { available: false, stage: 'propagating' }, isError: false };
+    setParams({ app: APP_URN, next: 'https://hub.example.org/apps/ci-hermes' });
+
+    render(<MemoryConnectFinishingPage />);
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(window.location.replace).toHaveBeenCalledWith('https://hub.example.org/apps/ci-hermes');
+  });
+
   it('times out into the error card when the restart never completes', () => {
     vi.useFakeTimers();
     appResult.current = appData('restarting');
@@ -358,6 +458,36 @@ describe('resolveSafeTarget', () => {
     expect(resolveSafeTarget(null, [{ url: 'https://only.example.org/', state: 'available' }], origin)).toBeNull();
     expect(resolveSafeTarget(null, [{ url: 'https://dead.example.org/', state: 'unavailable' }], origin)).toBeNull();
     expect(resolveSafeTarget(null, [], origin)).toBeNull();
+  });
+});
+
+describe('isProbeAvailable', () => {
+  it('is true ONLY for a strict boolean true — never a truthy non-true value', () => {
+    // The same guard backs both the refetch-stop condition and the reachability
+    // gate; a truthy-vs-strict split there could stop polling while the gate
+    // stays closed, hanging the hop. Pin the strict contract.
+    expect(isProbeAvailable({ available: true })).toBe(true);
+    expect(isProbeAvailable({ available: false })).toBe(false);
+    expect(isProbeAvailable({ available: 'yes' })).toBe(false);
+    expect(isProbeAvailable({ available: 1 })).toBe(false);
+    expect(isProbeAvailable({})).toBe(false);
+    expect(isProbeAvailable(undefined)).toBe(false);
+    expect(isProbeAvailable(null)).toBe(false);
+  });
+});
+
+describe('isCrossOriginTarget', () => {
+  const origin = 'https://hub.example.org';
+
+  it('gates only when the target leaves the current origin', () => {
+    expect(isCrossOriginTarget('https://app.example.org/', origin)).toBe(true);
+    expect(isCrossOriginTarget('https://hub.example.org/apps/x', origin)).toBe(false);
+    expect(isCrossOriginTarget('/apps/x', origin)).toBe(false);
+  });
+
+  it('never gates on a missing or unparseable target', () => {
+    expect(isCrossOriginTarget(null, origin)).toBe(false);
+    expect(isCrossOriginTarget('http://', origin)).toBe(false);
   });
 });
 
