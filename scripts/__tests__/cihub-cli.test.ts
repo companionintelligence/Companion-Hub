@@ -104,6 +104,11 @@ describe('renderHelp', () => {
     expect(plain).toContain('models rm');
   });
 
+  it('documents the device-id command', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('cihub device-id [--from-hub]');
+  });
+
   it('shows the cihub status command', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('cihub status');

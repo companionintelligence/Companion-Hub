@@ -1,7 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { lookup } from 'node:dns/promises';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertSafeOutboundHttpsUrl, assertSafeOutboundUrl } from '../ssrf-url';
 
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(),
+}));
+
 describe('ssrf-url', () => {
+  beforeEach(() => {
+    vi.mocked(lookup).mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  });
   it('rejects localhost https URLs', async () => {
     await expect(assertSafeOutboundHttpsUrl('https://127.0.0.1/')).rejects.toThrow(/not allowed/i);
   });
