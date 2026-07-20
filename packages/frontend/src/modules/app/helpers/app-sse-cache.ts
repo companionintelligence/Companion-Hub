@@ -29,7 +29,7 @@ export type AppSsePayload = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
-  /** Translation key for a non-fatal caveat on an otherwise-successful op (rendered as a warning toast). */
+  /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
   warningCode?: string;
   progress?: number;
   active?: InstallQueueState['active'];

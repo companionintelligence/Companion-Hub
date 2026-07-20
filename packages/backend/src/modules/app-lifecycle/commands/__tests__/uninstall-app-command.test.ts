@@ -123,6 +123,19 @@ describe('UninstallAppCommand', () => {
     });
   });
 
+  it('lists both remnants when the app folder AND app data deletion fail (#907)', async () => {
+    appFilesManager.deleteAppFolder.mockResolvedValue(false);
+    appFilesManager.deleteAppDataDir.mockResolvedValue(false);
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({
+      success: true,
+      message: `App ${appUrn} uninstalled, but its app folder and app data could not be fully removed and may leave a remnant on disk.`,
+      warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+    });
+  });
+
   it('does not flag app data as a remnant when data deletion is skipped (deleteAllData=false)', async () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(false); // would-be failure, but never called
 

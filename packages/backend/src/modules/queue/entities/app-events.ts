@@ -85,9 +85,9 @@ export const appEventResultSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
-  // Translation key for a non-fatal caveat on an otherwise-successful command (e.g.
-  // uninstall left a disk remnant it could not remove). Surfaced to the user as a
-  // warning toast; does not flip `success`.
+  // Identifier for a non-fatal caveat on an otherwise-successful command (e.g.
+  // uninstall left a disk remnant it could not remove). The client maps it to a
+  // warning toast (a discriminator, like errorCode); does not flip `success`.
   warningCode: z.string().optional(),
   // Set by a command when it stopped because the operation was cancelled (vs. failed). The service's
   // completion handling branches on this to finalize a cancel rather than a success/error.

@@ -1518,6 +1518,10 @@ describe('AppLifecycleService', () => {
       await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
         requestId: expect.any(String),
       });
+
+      // ...but the cleanup IS dispatched (just not awaited) — guard against a
+      // regression that silently drops the sweep from the uninstall path.
+      await vi.waitFor(() => expect(memoryConnect.handleUninstall).toHaveBeenCalledWith(providerUrn));
     });
 
     it('does not consult consumers when uninstalling a non-provider app', async () => {

@@ -66,9 +66,9 @@ const appScopedEventSchema = z.object({
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
-  // Translation key for a non-fatal caveat on an otherwise-successful op (e.g.
-  // uninstall completed but a root-owned path could not be fully removed). The
-  // client renders it as a warning toast instead of the plain success toast.
+  // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
+  // completed but a root-owned path could not be fully removed). The client maps it
+  // to a warning toast — a discriminator like errorCode, not rendered as a raw key.
   warningCode: z.string().optional(),
 });
 
