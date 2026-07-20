@@ -33,15 +33,11 @@
   }
 }
 
-/* Bare centered stack — mirrors ci-memory's hop page. `.mcf-card` is a <main>,
- * so app.css's global `main { height: 100% }` also applies to it and makes the
- * card fill `.mcf-page`, top-anchoring its content instead of letting
- * `place-items: center` center it. `height: auto` restores content-sizing so
- * the centering works (this was the whole bug — the display model was fine). */
+/* Bare centered stack — mirrors ci-memory's hop page. Content-sized (a plain
+ * <div>, see the .tsx) so `.mcf-page`'s `place-items: center` centers it. */
 .mcf-card {
   width: 100%;
   max-width: 440px;
-  height: auto;
   text-align: center;
 }
 

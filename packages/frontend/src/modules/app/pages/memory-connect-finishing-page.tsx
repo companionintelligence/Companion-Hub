@@ -371,7 +371,11 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
   return (
     <div className="mcf-page">
-      <main className="mcf-card">
+      {/* A <div>, not a <main>: the app shell already renders <main id="root">,
+          so a nested <main> would be an invalid second landmark — and it would
+          inherit app.css's global `main { height: 100% }`, filling this box and
+          defeating the centering. */}
+      <div className="mcf-card">
         <div className="mcf-brand">
           <AppLogo urn={appUrn} size={56} alt={appName} />
           <span className="mcf-brand-link" aria-hidden="true">
@@ -439,7 +443,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
             <p className="mcf-desc">{named('MEMORY_CONNECT_FINISHING_DESC', 'MEMORY_CONNECT_FINISHING_DESC_GENERIC')}</p>
           </>
         )}
-      </main>
+      </div>
     </div>
   );
 };
