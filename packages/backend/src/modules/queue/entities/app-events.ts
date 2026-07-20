@@ -88,6 +88,9 @@ export const appEventResultSchema = z.object({
   // Non-fatal caveat on an otherwise-successful command; does not flip `success`.
   // Semantics documented on appScopedEventSchema.warningCode (common/schemas/sse.ts).
   warningCode: z.string().optional(),
+  // Optional human-readable detail for the caveat (e.g. the host path of a remnant the
+  // uninstall couldn't remove, so the client can show a manual cleanup command).
+  warningDetail: z.string().optional(),
   // Set by a command when it stopped because the operation was cancelled (vs. failed). The service's
   // completion handling branches on this to finalize a cancel rather than a success/error.
   cancelled: z.boolean().optional(),

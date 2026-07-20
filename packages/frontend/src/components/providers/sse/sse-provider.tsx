@@ -48,7 +48,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath, warningCode } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, warningCode, warningDetail } = payload;
 
       if (error) {
         console.error(error);
@@ -127,12 +127,29 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           break;
         case 'uninstall_success':
           // The app is gone, but the delete may have left a remnant it couldn't
-          // remove (e.g. a container-created root-owned path, #907) — warn instead
-          // of claiming a clean removal. Branch on the code's VALUE (like errorCode
-          // above): a future, unrecognized warningCode must fall through to the
-          // plain success toast rather than mislabel itself as a disk remnant.
+          // remove even via a privileged cleanup (e.g. a container-created root-owned
+          // path, #907) — warn instead of claiming a clean removal. Branch on the
+          // code's VALUE (like errorCode above): a future, unrecognized warningCode
+          // must fall through to the plain success toast, not mislabel itself.
           if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
-            toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
+            if (warningDetail) {
+              // Actionable: show the exact host path + command the operator can run.
+              const command = `sudo rm -rf ${warningDetail}`;
+              toast(
+                () => (
+                  <span className="text-sm">
+                    <Trans
+                      i18nKey="APP_UNINSTALL_PARTIAL_REMNANT_MANUAL"
+                      values={{ id: appName, command }}
+                      components={{ cmd: <code className="font-mono text-xs break-all" /> }}
+                    />
+                  </span>
+                ),
+                { icon: '⚠️', duration: 20000 },
+              );
+            } else {
+              toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
+            }
           } else {
             toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
           }

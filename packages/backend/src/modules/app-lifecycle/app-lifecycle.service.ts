@@ -1261,9 +1261,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
           // Carry a non-fatal caveat (e.g. a disk remnant the delete could not
           // remove, #907) so the client can warn instead of a plain success toast.
-          // The infra-failure arm of the publish result has no warningCode.
+          // warningDetail carries the host path so the client can show a manual
+          // cleanup command. The infra-failure arm of the publish result has neither.
           const warningCode = 'warningCode' in result ? result.warningCode : undefined;
-          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing', warningCode });
+          const warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing', warningCode, warningDetail });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.settleCommandOutcome({

@@ -155,4 +155,26 @@ describe('SSEProvider', () => {
     expect(mockToastSuccess).toHaveBeenCalledTimes(1);
     expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringContaining('uninstalled successfully'));
   });
+
+  it('shows an actionable manual-cleanup command when uninstall_success carries a warningDetail path (#907)', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({
+        event: 'uninstall_success',
+        appUrn: 'excalidraw:community',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/community/excalidraw',
+      });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToast).toHaveBeenCalledTimes(1);
+    const [message, opts] = mockToast.mock.calls[0] as [() => ReactNode, { icon?: string }];
+    expect(opts).toEqual(expect.objectContaining({ icon: '⚠️' }));
+
+    // The toast body must render the exact host path in a runnable command.
+    render(<MemoryRouter>{message()}</MemoryRouter>);
+    expect(screen.getByText('sudo rm -rf /srv/app-data/community/excalidraw')).toBeInTheDocument();
+  });
 });
