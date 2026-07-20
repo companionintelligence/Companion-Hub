@@ -59,6 +59,31 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);
 
+/** Lifecycle states where a transient Docker `stopped` snapshot must not clobber UI. */
+const TRANSITIONAL_APP_STATUSES = new Set([
+  'installing',
+  'uninstalling',
+  'stopping',
+  'starting',
+  'updating',
+  'resetting',
+  'restarting',
+  'backing_up',
+  'restoring',
+]);
+
+function shouldApplyGenericStatusChange(currentStatus: string | undefined, nextStatus: string): boolean {
+  if (!currentStatus || currentStatus === nextStatus) {
+    return true;
+  }
+
+  if (TRANSITIONAL_APP_STATUSES.has(currentStatus) && (nextStatus === 'stopped' || nextStatus === 'missing')) {
+    return false;
+  }
+
+  return true;
+}
+
 function runtimeHealthQueryKey(appUrn: string) {
   return ['app-runtime-health', appUrn];
 }
@@ -75,16 +100,30 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
 }
 
-function setCachedAppStatus(queryClient: QueryClient, appUrn: string, appStatus?: string) {
+function setCachedAppStatus(
+  queryClient: QueryClient,
+  appUrn: string,
+  appStatus?: string,
+  options?: { allowDowngradeFromTransitional?: boolean },
+): 'applied' | 'rejected' | 'no-cache' {
   if (!appStatus) {
-    return;
+    return 'no-cache';
   }
+
+  let outcome: 'applied' | 'rejected' | 'no-cache' = 'no-cache';
 
   queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) => {
     if (!current?.app) {
       return current;
     }
 
+    const allowDowngrade = options?.allowDowngradeFromTransitional ?? false;
+    if (!allowDowngrade && !shouldApplyGenericStatusChange(current.app.status, appStatus)) {
+      outcome = 'rejected';
+      return current;
+    }
+
+    outcome = 'applied';
     return {
       ...current,
       app: {
@@ -93,6 +132,8 @@ function setCachedAppStatus(queryClient: QueryClient, appUrn: string, appStatus?
       },
     };
   });
+
+  return outcome;
 }
 
 function clearUninstalledAppCaches(queryClient: QueryClient, appUrn: string) {
@@ -206,7 +247,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
-    setCachedAppStatus(queryClient, appUrn, appStatus);
+    setCachedAppStatus(queryClient, appUrn, appStatus, { allowDowngradeFromTransitional: true });
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
@@ -246,7 +287,9 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (appStatus) {
-    setCachedAppStatus(queryClient, appUrn, appStatus);
-    invalidateAppQueries(queryClient, appUrn);
+    const outcome = setCachedAppStatus(queryClient, appUrn, appStatus);
+    if (outcome !== 'rejected') {
+      invalidateAppQueries(queryClient, appUrn);
+    }
   }
 }
