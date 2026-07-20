@@ -1218,6 +1218,18 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });
 
+    it('uninstallApp success: threads the command warningCode into the uninstall_success SSE (#907)', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({ success: true, message: 'partial', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT' } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'uninstall_success', appUrn, warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT' }),
+      );
+    });
+
     // ── resetApp ─────────────────────────────────────────────────────────
     it('resetApp success: DB committed before SSE', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);

@@ -48,7 +48,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, warningCode } = payload;
 
       if (error) {
         console.error(error);
@@ -126,7 +126,14 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_STOP_TOAST', appName));
           break;
         case 'uninstall_success':
-          toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          // The app is gone, but the delete may have left a remnant it couldn't
+          // remove (e.g. a container-created root-owned path, #907) — warn instead
+          // of claiming a clean removal.
+          if (warningCode) {
+            toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
+          } else {
+            toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          }
           break;
         case 'uninstall_error':
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName));

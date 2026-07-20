@@ -106,6 +106,7 @@ describe('UninstallAppCommand', () => {
     expect(result).toEqual({
       success: true,
       message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
+      warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
     });
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'));
   });
@@ -118,6 +119,7 @@ describe('UninstallAppCommand', () => {
     expect(result).toEqual({
       success: true,
       message: `App ${appUrn} uninstalled, but its app folder could not be fully removed and may leave a remnant on disk.`,
+      warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
     });
   });
 

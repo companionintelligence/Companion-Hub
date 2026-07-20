@@ -5,9 +5,10 @@ import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SSEProvider } from './sse-provider';
 
-const { mockUseSSE, mockHandleAppSseEvent, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
+const { mockUseSSE, mockHandleAppSseEvent, mockToast, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
   mockUseSSE: vi.fn(),
   mockHandleAppSseEvent: vi.fn(),
+  mockToast: vi.fn(),
   mockToastError: vi.fn(),
   mockToastDismiss: vi.fn(),
   mockToastSuccess: vi.fn(),
@@ -21,13 +22,15 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
-    error: (...args: unknown[]) => mockToastError(...args),
-    success: (...args: unknown[]) => mockToastSuccess(...args),
-    dismiss: (...args: unknown[]) => mockToastDismiss(...args),
-  },
-}));
+vi.mock('react-hot-toast', () => {
+  // The default export is itself callable (plain warning toast) AND carries
+  // .success/.error/.dismiss — mirror that so `toast(...)` is exercised too.
+  const toast = (...args: unknown[]) => mockToast(...args);
+  toast.error = (...args: unknown[]) => mockToastError(...args);
+  toast.success = (...args: unknown[]) => mockToastSuccess(...args);
+  toast.dismiss = (...args: unknown[]) => mockToastDismiss(...args);
+  return { default: toast };
+});
 
 describe('SSEProvider', () => {
   beforeEach(() => {
@@ -110,5 +113,46 @@ describe('SSEProvider', () => {
     await userEvent.click(logsLink);
 
     expect(mockToastDismiss).toHaveBeenCalledWith('start-error-toast');
+  });
+
+  const renderProvider = () => {
+    let onEvent: ((data: unknown) => void) | undefined;
+    mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+      onEvent = config.onEvent;
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <SSEProvider>
+            <div>child</div>
+          </SSEProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return () => onEvent;
+  };
+
+  it('warns (not a plain success) when uninstall_success carries a warningCode (#907)', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({ event: 'uninstall_success', appUrn: 'excalidraw:community', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT' });
+    });
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+    expect(mockToast).toHaveBeenCalledTimes(1);
+    expect(mockToast).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'), expect.objectContaining({ icon: '⚠️' }));
+  });
+
+  it('shows the plain success toast when uninstall_success has no warningCode', () => {
+    const getOnEvent = renderProvider();
+
+    act(() => {
+      getOnEvent()?.({ event: 'uninstall_success', appUrn: 'excalidraw:community' });
+    });
+
+    expect(mockToast).not.toHaveBeenCalled();
+    expect(mockToastSuccess).toHaveBeenCalledTimes(1);
+    expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringContaining('uninstalled successfully'));
   });
 });

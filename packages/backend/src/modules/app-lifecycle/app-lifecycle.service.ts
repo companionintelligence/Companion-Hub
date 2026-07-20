@@ -1232,7 +1232,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'uninstall');
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
-      .then(async ({ success, message }) => {
+      .then(async (result) => {
+        const { success, message } = result;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1257,7 +1258,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
 
-          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
+          // Carry a non-fatal caveat (e.g. a disk remnant the delete could not
+          // remove, #907) so the client can warn instead of a plain success toast.
+          // The infra-failure arm of the publish result has no warningCode.
+          const warningCode = 'warningCode' in result ? result.warningCode : undefined;
+          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing', warningCode });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.settleCommandOutcome({

@@ -18,7 +18,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
     super(moduleRef, docker);
   }
 
-  public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string }> {
+  public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string; warningCode?: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -114,6 +114,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         return {
           success: true,
           message: `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed and may leave a remnant on disk.`,
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
         };
       }
 
