@@ -1611,7 +1611,7 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
       expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
-      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared in finally
+      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared after worker-side cancel finalization
     });
 
     it('finalizes a cancelled result returned by the command (in-flight abort)', async () => {

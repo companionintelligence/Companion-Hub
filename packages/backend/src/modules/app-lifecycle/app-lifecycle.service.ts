@@ -238,6 +238,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           message: 'Operation cancelled before it started',
         });
         await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        this.operationRegistry.clear(data.appUrn, data.requestId);
         return;
       }
 
@@ -266,12 +267,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // in 'installing'.
       if (result.cancelled) {
         await this.handleCancelledResult(data.command, data.appUrn, result);
+        this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
+        // Install success is finalized worker-side (markInstallSucceeded); the publisher-side
+        // handler only performs optional follow-up work.
+        if (isInstall) {
+          this.operationRegistry.clear(data.appUrn, data.requestId);
+        }
       } else {
         await this.handleFailedResult(data.command, data.appUrn, result);
+        if (isInstall) {
+          this.operationRegistry.clear(data.appUrn, data.requestId);
+        }
       }
 
       await reply(result);
@@ -279,8 +289,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.error('Error invoking command:', err);
       await reply(toAppCommandFailureResult(err));
     } finally {
-      // Clear the registry entry for this op (requestId-matched so a replacement op is preserved).
-      this.operationRegistry.clear(data.appUrn, data.requestId);
+      // Do not clear the operation registry here. The publisher-side completion handler
+      // claims the entry via settleCommandOutcome/claimCompletion once the RPC reply is
+      // delivered; clearing worker-side first would race that claim and strand apps in
+      // transitional statuses (e.g. update -> start-after-update). Superseded handlers
+      // still lose the claim when a newer op replaced the registry entry.
       release();
       if (isInstall) {
         this.installPipelineTracker.setActive(null);
@@ -950,6 +963,77 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
+   * Start an app and wait for the queue worker to finish.
+   *
+   * {@link startApp} resolves once the command is published; this variant is for callers
+   * (such as post-update restart) that must not proceed until the app reaches a terminal
+   * start outcome.
+   */
+  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull } = params;
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    await this.appRepository.updateAppById(app.id, { status: 'starting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'starting' });
+
+    const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'start');
+    const { success, message } = await this.appEventsQueue.publish({
+      appUrn,
+      command: 'start',
+      requestId,
+      form: { ...app.config, skipPull },
+    });
+
+    if (success) {
+      this.logger.info(`App ${appUrn} started successfully`);
+      await this.settleCommandOutcome({
+        appId: app.id,
+        appUrn,
+        requestId,
+        command: 'start',
+        success: true,
+        successOutcome: {
+          status: 'running',
+          event: 'start_success',
+          clearPendingRestart: true,
+          afterApply: async () => {
+            const { isProduction: isProdEnv } = this.config.getConfig();
+            if (isProdEnv && app.exposedLocal) {
+              this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
+              await this.syncExposure();
+            }
+          },
+        },
+      });
+
+      return true;
+    }
+
+    this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+    await this.settleCommandOutcome({
+      appId: app.id,
+      appUrn,
+      requestId,
+      command: 'start',
+      success: false,
+      message,
+      failureOutcome: {
+        status: 'stopped',
+        event: 'start_error',
+        notifyEvent: 'start_error',
+        failurePhase: 'start',
+      },
+    });
+
+    return false;
+  }
+
+  /**
    * Restart an app and WAIT for the compose restart to actually finish.
    *
    * {@link restartApp} resolves as soon as the command is published — its result is
@@ -1475,7 +1559,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
-            this.fireAndForgetLifecycle('start-after-update', appUrn, () => this.startApp({ appUrn }));
+            await this.startAppAndWait({ appUrn });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
