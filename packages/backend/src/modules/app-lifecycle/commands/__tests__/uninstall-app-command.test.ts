@@ -23,6 +23,19 @@ describe('UninstallAppCommand', () => {
   let appFilesManager: MockProxy<AppFilesManager>;
   let portManager: MockProxy<PortManagerService>;
 
+  // Single token-dispatch map for every command built in this suite, so a new
+  // constructor dependency only has to be added here.
+  const makeModuleRef = () =>
+    ({
+      get: vi.fn((token: unknown) => {
+        if (token === LoggerService) return logger;
+        if (token === AppFilesManager) return appFilesManager;
+        if (token === DockerService) return dockerService;
+        if (token === PortManagerService) return portManager;
+        return null;
+      }),
+    }) as unknown as ModuleRef;
+
   beforeEach(() => {
     logger = mockDeep<LoggerService>();
     appFilesManager = mock<AppFilesManager>();
@@ -39,18 +52,7 @@ describe('UninstallAppCommand', () => {
       removeAppNetworks: vi.fn().mockResolvedValue(undefined),
     };
 
-    const moduleRef = {
-      get: vi.fn((token: unknown) => {
-        if (token === LoggerService) return logger;
-        if (token === AppFilesManager) return appFilesManager;
-        if (token === DockerService) return dockerService;
-        if (token === PortManagerService) return portManager;
-        return null;
-      }),
-    } as unknown as ModuleRef;
-
-    const dockerode = mock<Dockerode>();
-    command = new UninstallAppCommand(moduleRef, dockerode);
+    command = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>());
   });
 
   it('runs compose down with --rmi all and explicit image/network cleanup', async () => {
@@ -77,18 +79,7 @@ describe('UninstallAppCommand', () => {
   });
 
   it('preserves Docker volumes when deleteAllData is false', async () => {
-    const moduleRef = {
-      get: vi.fn((token: unknown) => {
-        if (token === LoggerService) return logger;
-        if (token === AppFilesManager) return appFilesManager;
-        if (token === DockerService) return dockerService;
-        if (token === PortManagerService) return portManager;
-        return null;
-      }),
-    } as unknown as ModuleRef;
-
-    const dockerode = mock<Dockerode>();
-    const preserveDataCommand = new UninstallAppCommand(moduleRef, dockerode, false);
+    const preserveDataCommand = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>(), false);
 
     const result = await preserveDataCommand.execute(appUrn);
 
@@ -139,16 +130,7 @@ describe('UninstallAppCommand', () => {
   it('does not flag app data as a remnant when data deletion is skipped (deleteAllData=false)', async () => {
     appFilesManager.deleteAppDataDir.mockResolvedValue(false); // would-be failure, but never called
 
-    const moduleRef = {
-      get: vi.fn((token: unknown) => {
-        if (token === LoggerService) return logger;
-        if (token === AppFilesManager) return appFilesManager;
-        if (token === DockerService) return dockerService;
-        if (token === PortManagerService) return portManager;
-        return null;
-      }),
-    } as unknown as ModuleRef;
-    const preserveDataCommand = new UninstallAppCommand(moduleRef, mock<Dockerode>(), false);
+    const preserveDataCommand = new UninstallAppCommand(makeModuleRef(), mock<Dockerode>(), false);
 
     const result = await preserveDataCommand.execute(appUrn);
 

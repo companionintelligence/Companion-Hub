@@ -128,8 +128,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'uninstall_success':
           // The app is gone, but the delete may have left a remnant it couldn't
           // remove (e.g. a container-created root-owned path, #907) — warn instead
-          // of claiming a clean removal.
-          if (warningCode) {
+          // of claiming a clean removal. Branch on the code's VALUE (like errorCode
+          // above): a future, unrecognized warningCode must fall through to the
+          // plain success toast rather than mislabel itself as a disk remnant.
+          if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
             toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
           } else {
             toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));

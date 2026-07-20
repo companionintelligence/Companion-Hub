@@ -2,9 +2,9 @@ import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
-import { AppEventsQueue, appEventSchema } from './entities/app-events';
-import { RepoEventsQueue, repoCommandSchema } from './entities/repo-events';
-import { SystemEventsQueue, systemCommandSchema } from './entities/system-events';
+import { AppEventsQueue, appEventResultSchema, appEventSchema } from './entities/app-events';
+import { RepoEventsQueue, repoCommandResultSchema, repoCommandSchema } from './entities/repo-events';
+import { SystemEventsQueue, systemCommandResultSchema, systemCommandSchema } from './entities/system-events';
 import { QueueFactory } from './queue.factory';
 import { QueueHealthIndicator } from './queue.health';
 
@@ -24,6 +24,10 @@ import { QueueHealthIndicator } from './queue.health';
           queueName: 'app-events-queue',
           workers: 3,
           eventSchema: appEventSchema,
+          // Must match AppEventsQueue's Queue<T, R> type: publish() validates the
+          // RPC reply against this schema and zod strips unknown keys, so the
+          // minimal default would silently drop result fields (e.g. warningCode).
+          resultSchema: appEventResultSchema,
           timeout: timeout,
         });
       },
@@ -38,6 +42,7 @@ import { QueueHealthIndicator } from './queue.health';
           queueName: 'repo-queue',
           workers: 3,
           eventSchema: repoCommandSchema,
+          resultSchema: repoCommandResultSchema,
           timeout: timeout,
         });
       },
@@ -52,6 +57,7 @@ import { QueueHealthIndicator } from './queue.health';
           queueName: 'system-events-queue',
           workers: 1,
           eventSchema: systemCommandSchema,
+          resultSchema: systemCommandResultSchema,
           timeout: timeout,
         });
       },

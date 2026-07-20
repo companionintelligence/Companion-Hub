@@ -1207,14 +1207,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // HTTP response open (#906). A cleanup miss is non-fatal (the key lapses on
     // its own TTL), so it stays at warn — not the error level the shared
     // completion-handler logger would use.
-    void (async () => {
-      try {
-        const memoryConnect = await this.getMemoryConnectService();
-        await memoryConnect?.handleUninstall(appUrn);
-      } catch (err) {
-        this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
+    void this.getMemoryConnectService()
+      .then((memoryConnect) => memoryConnect?.handleUninstall(appUrn))
+      .catch((err) => this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`));
 
     const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
     const isPortExpose = isPortExposeApp(installedInfo) || isPortExposeApp(app.config);

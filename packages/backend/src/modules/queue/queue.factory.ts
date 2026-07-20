@@ -342,7 +342,20 @@ export class QueueFactory implements OnApplicationShutdown {
     return currentError;
   }
 
-  public async createQueue<T extends z.ZodType>(params: { queueName: string; workers?: number; eventSchema: T; timeout?: number }) {
+  public async createQueue<T extends z.ZodType>(params: {
+    queueName: string;
+    workers?: number;
+    eventSchema: T;
+    timeout?: number;
+    /**
+     * The queue's result schema. MUST match the R of the Queue<T, R> class the
+     * caller binds this queue to: publish() validates the RPC reply with
+     * `resultSchema.safeParse`, and zod strips unknown keys — so a narrower
+     * runtime schema silently drops result fields (errorCode, warningCode, …)
+     * that the type claims are there. Defaults to the minimal {success, message}.
+     */
+    resultSchema?: z.ZodType<{ success: boolean; message: string }>;
+  }) {
     if (process.env.CI_HUB_OPENAPI_GENERATE === '1') {
       return {
         onEvent: () => {
@@ -374,7 +387,7 @@ export class QueueFactory implements OnApplicationShutdown {
     }
 
     const publisher = new EventPublisher(this.rabbit, this.logger, params.queueName);
-    const resultSchema = z.object({ success: z.boolean(), message: z.string() });
+    const resultSchema = params.resultSchema ?? z.object({ success: z.boolean(), message: z.string() });
     publisher.initialize();
 
     const { queueName, workers = 3, eventSchema, timeout } = params;
