@@ -15,16 +15,9 @@
   --mcf-brand-grad: linear-gradient(135deg, #0b6e74 0%, #079d99 100%);
   --mcf-on-accent: #fff;
   color-scheme: dark;
-  /* Flex column centering — NOT `grid; place-items: center`. This page renders
-   * inside `main#root`, which app.css pins to `height: 100%; overflow: hidden`;
-   * inside that box a grid track won't stretch, so the content anchors to the
-   * top. Flex `justify-content: center` centers reliably there (the pattern the
-   * onboarding / restore-apps interstitials already use). */
   min-height: calc(100vh - var(--titlebar-height, 0px));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   background: var(--mcf-bg);
   color: var(--mcf-fg);
   padding: 40px 20px;
@@ -40,7 +33,8 @@
   }
 }
 
-/* Bare centered stack, sized by its content — mirrors ci-memory's hop page. */
+/* Bare centered stack — mirrors ci-memory's hop page. Content-sized (a plain
+ * <div>, see the .tsx) so `.mcf-page`'s `place-items: center` centers it. */
 .mcf-card {
   width: 100%;
   max-width: 440px;
