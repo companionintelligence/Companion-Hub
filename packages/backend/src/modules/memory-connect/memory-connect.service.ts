@@ -657,22 +657,27 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    */
   private async clearConsumersAfterProviderUninstall(providerUrn: AppUrn): Promise<void> {
     const connected = await this.connections.listConnected();
+    const consumers = connected.filter((row) => row.appUrn !== providerUrn);
 
-    for (const row of connected) {
-      if (row.appUrn === providerUrn) {
-        continue;
-      }
+    // Re-arm every consumer CONCURRENTLY. Serially this took the sum of all consumer
+    // restarts (~28s for two in a production incident); the app-events queue runs
+    // multiple workers, so parallel dispatch bounds the wait to the slowest single
+    // restart instead. Each consumer is isolated in its own try/catch and the batch
+    // is awaited with allSettled, so one wedged app is logged but never strands the
+    // others or rejects the sweep (#906).
+    await Promise.allSettled(
+      consumers.map(async (row) => {
+        const consumerUrn = row.appUrn as AppUrn;
 
-      const consumerUrn = row.appUrn as AppUrn;
-
-      try {
-        await this.connections.clear(consumerUrn);
-        await this.applyConnection(consumerUrn, 'await');
-        this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: Companion Memory was uninstalled`);
-      } catch (err) {
-        this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after Companion Memory uninstall`, err);
-      }
-    }
+        try {
+          await this.connections.clear(consumerUrn);
+          await this.applyConnection(consumerUrn, 'await');
+          this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: Companion Memory was uninstalled`);
+        } catch (err) {
+          this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after Companion Memory uninstall`, err);
+        }
+      }),
+    );
   }
 
   /**

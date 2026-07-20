@@ -121,8 +121,8 @@ describe('InstallAppCommand — pull policy', () => {
     appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
-    appFilesManager.deleteAppFolder.mockResolvedValue();
-    appFilesManager.deleteAppDataDir.mockResolvedValue();
+    appFilesManager.deleteAppFolder.mockResolvedValue(true);
+    appFilesManager.deleteAppDataDir.mockResolvedValue(true);
 
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });

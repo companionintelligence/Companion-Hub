@@ -1218,6 +1218,28 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });
 
+    it('uninstallApp success: threads the command warningCode + warningDetail into the uninstall_success SSE (#907)', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          appUrn,
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/app-data/store/app',
+        }),
+      );
+    });
+
     // ── resetApp ─────────────────────────────────────────────────────────
     it('resetApp success: DB committed before SSE', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
@@ -1494,6 +1516,22 @@ describe('AppLifecycleService', () => {
 
       await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('dispatches the memory-connect cleanup off the response path — a slow sweep never blocks uninstall (#906)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]); // guard passes (provider, 0 consumers)
+      // Provider teardown re-arms every consumer by restarting containers; that sweep
+      // must not hold the HTTP response. A handleUninstall that never settles must
+      // still let uninstallApp resolve with a requestId (it would hang if awaited).
+      memoryConnect.handleUninstall.mockReturnValue(new Promise<void>(() => {}));
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      // ...but the cleanup IS dispatched (just not awaited) — guard against a
+      // regression that silently drops the sweep from the uninstall path.
+      await vi.waitFor(() => expect(memoryConnect.handleUninstall).toHaveBeenCalledWith(providerUrn));
     });
 
     it('does not consult consumers when uninstalling a non-provider app', async () => {

@@ -29,6 +29,10 @@ export type AppSsePayload = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
+  warningCode?: string;
+  /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
+  warningDetail?: string;
   progress?: number;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];

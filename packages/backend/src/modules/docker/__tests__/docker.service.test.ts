@@ -6,6 +6,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../../apps/app-files-manager';
 import { AppsService } from '../../apps/apps.service';
 import { DOCKERODE } from '../constants';
+import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import * as child_process from 'node:child_process';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -780,6 +781,73 @@ describe('DockerService', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('removeAppDataDirAsRoot (privileged uninstall-remnant cleanup)', () => {
+    const validUrn = 'ci-memory:ci-marketplace' as any;
+    const inputs = { ciHubAppDataPath: undefined, appDataPath: undefined, rootFolderHost: '/host/root' };
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ userSettings: {}, rootFolderHost: '/host/root' } as any);
+      delete process.env.CI_HUB_APP_DATA_PATH;
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+    });
+
+    afterEach(() => {
+      delete process.env.CI_HUB_CLEANUP_IMAGE;
+    });
+
+    it('runs a root, no-network, --rm helper that mounts ONLY the app data dir and empties it', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+
+      const hostDir = getAppDataHostPath(validUrn, inputs);
+      const ok = await service.removeAppDataDirAsRoot(validUrn);
+
+      expect(ok).toBe(true);
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'run',
+          '--rm',
+          '--network',
+          'none',
+          '--user',
+          '0:0',
+          '-v',
+          `${hostDir}:/target:rw`,
+          'alpine:3.20',
+          'find',
+          '/target',
+          '-mindepth',
+          '1',
+          '-delete',
+        ],
+        { stdio: 'pipe' },
+      );
+    });
+
+    it('returns false when the helper container exits non-zero', async () => {
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(1));
+
+      await expect(service.removeAppDataDirAsRoot(validUrn)).resolves.toBe(false);
+    });
+
+    it('refuses (and never spawns) when the resolved path is not exactly {app-data-root}/{store}/{app}', async () => {
+      // An unsafe app-name segment ('..') must be rejected by the guardrails.
+      const ok = await service.removeAppDataDirAsRoot('..:ci-marketplace' as any);
+
+      expect(ok).toBe(false);
+      expect(child_process.spawn).not.toHaveBeenCalled();
+    });
+
+    it('honors the CI_HUB_CLEANUP_IMAGE override', async () => {
+      process.env.CI_HUB_CLEANUP_IMAGE = 'busybox:1.36';
+      (child_process.spawn as any).mockReturnValue(createComposeProbeProcess(0));
+
+      await service.removeAppDataDirAsRoot(validUrn);
+
+      expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
     });
   });
 });

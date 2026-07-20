@@ -1201,13 +1201,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Revoke any Companion Memory key minted for this app and drop its connection
     // state so access dies with the app. Best-effort — the app is going away
-    // regardless, so a resolution/cleanup failure is logged, not fatal.
-    try {
-      const memoryConnect = await this.getMemoryConnectService();
-      await memoryConnect?.handleUninstall(appUrn);
-    } catch (err) {
-      this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    // regardless. Dispatched OFF the response path: when the app IS the memory
+    // provider this re-arms every connected consumer (a container-restart sweep
+    // that ran ~28s in a production incident), which must not hold the uninstall
+    // HTTP response open (#906). A cleanup miss is non-fatal (the key lapses on
+    // its own TTL), so it stays at warn — not the error level the shared
+    // completion-handler logger would use.
+    void this.getMemoryConnectService()
+      .then((memoryConnect) => memoryConnect?.handleUninstall(appUrn))
+      .catch((err) => this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`));
 
     const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
     const isPortExpose = isPortExposeApp(installedInfo) || isPortExposeApp(app.config);
@@ -1231,7 +1233,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'uninstall');
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
-      .then(async ({ success, message }) => {
+      .then(async (result) => {
+        const { success, message } = result;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1256,7 +1259,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
 
-          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
+          // Carry a non-fatal caveat (e.g. a disk remnant the delete could not
+          // remove, #907) so the client can warn instead of a plain success toast.
+          // warningDetail carries the host path so the client can show a manual
+          // cleanup command. The infra-failure arm of the publish result has neither.
+          const warningCode = 'warningCode' in result ? result.warningCode : undefined;
+          const warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+          this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing', warningCode, warningDetail });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
           await this.settleCommandOutcome({

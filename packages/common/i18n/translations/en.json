@@ -371,6 +371,8 @@
   "APP_UNINSTALL_MEMORY_PROVIDER_UNKNOWN": "Couldn't check which apps are connected to Companion Memory. Proceed only if you're sure.",
   "APP_UNINSTALL_MEMORY_PROVIDER_CONSEQUENCE": "Proceeding disconnects and restarts them, and deleting data permanently erases all shared memories.",
   "APP_UNINSTALL_MEMORY_PROVIDER_FORCE_LABEL": "I understand — disconnect these apps and proceed",
+  "APP_UNINSTALL_PARTIAL_REMNANT": "App {{id}} was uninstalled, but some files could not be fully removed and may remain on disk.",
+  "APP_UNINSTALL_PARTIAL_REMNANT_MANUAL": "App {{id}} was uninstalled, but some files couldn't be removed automatically. To delete the leftover data, run this on the host: <cmd>{{command}}</cmd>",
   "APP_UNINSTALL_SUCCESS": "App {{id}} uninstalled successfully",
   "APP_UPDATE_CONFIG_SUCCESS": "Settings saved. The app is restarting to apply your changes.",
   "APP_UPDATE_CONFIG_SUCCESS_STOPPED": "Settings saved. Changes will apply when you next start the app.",
