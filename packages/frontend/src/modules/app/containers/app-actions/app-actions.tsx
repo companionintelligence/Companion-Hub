@@ -891,6 +891,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       // them, and the only available action (uninstall) would destroy the app + data,
       // so show just the disabled progress button until the operation completes.
       buttons.push(LoadingButton);
+      secondaryActions.push(
+        <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} disabled />,
+        <IconActionButton key="restart" icon={RotateCw} label={t('COMMON_RESTART')} disabled />,
+      );
       break;
     case 'install_failed':
       buttons.push(RetryInstallButton);

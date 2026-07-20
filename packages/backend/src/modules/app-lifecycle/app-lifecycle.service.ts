@@ -1,6 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
+import type { SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -23,7 +24,8 @@ import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
-import { AppOperationRegistry, type OperationCommand } from './app-operation-registry';
+import { AppOperationRegistry, type CancellabilityTier, type OperationCommand } from './app-operation-registry';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { appFormSchema } from './dto/app-lifecycle.dto';
@@ -42,6 +44,7 @@ import type { MemoryConnectService } from '../memory-connect/memory-connect.serv
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
+type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appUrn: string }>['event'];
 
 /** Trimmed subdomain when Cloudflare routing requires it to be globally unique on this Hub. */
 function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
@@ -235,6 +238,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           message: 'Operation cancelled before it started',
         });
         await reply({ success: false, cancelled: true, message: 'Operation cancelled before it started' });
+        this.operationRegistry.clear(data.appUrn, data.requestId);
         return;
       }
 
@@ -263,12 +267,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // in 'installing'.
       if (result.cancelled) {
         await this.handleCancelledResult(data.command, data.appUrn, result);
+        this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
+        // Install success is finalized worker-side (markInstallSucceeded); the publisher-side
+        // handler only performs optional follow-up work.
+        if (isInstall) {
+          this.operationRegistry.clear(data.appUrn, data.requestId);
+        }
       } else {
         await this.handleFailedResult(data.command, data.appUrn, result);
+        if (isInstall) {
+          this.operationRegistry.clear(data.appUrn, data.requestId);
+        }
       }
 
       await reply(result);
@@ -276,8 +289,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       this.logger.error('Error invoking command:', err);
       await reply(toAppCommandFailureResult(err));
     } finally {
-      // Clear the registry entry for this op (requestId-matched so a replacement op is preserved).
-      this.operationRegistry.clear(data.appUrn, data.requestId);
+      // Do not clear the operation registry here. The publisher-side completion handler
+      // claims the entry via settleCommandOutcome/claimCompletion once the RPC reply is
+      // delivered; clearing worker-side first would race that claim and strand apps in
+      // transitional statuses (e.g. update -> start-after-update). Superseded handlers
+      // still lose the claim when a newer op replaced the registry entry.
       release();
       if (isInstall) {
         this.installPipelineTracker.setActive(null);
@@ -445,34 +461,47 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'starting' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'start');
     this.appEventsQueue
       .publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } })
       .then(async ({ success, message }) => {
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
-          // Compare-and-set: only claim the outcome if this command still owns the
-          // status. A restart scheduled while this start was executing has already
-          // set 'restarting' (and queued behind the per-app mutex); a blind write
-          // here would flash a false 'running' mid-restart.
-          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'running', pendingRestart: false });
-          if (applied) {
-            this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
-          }
-
-          // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
-          const { isProduction: isProdEnv } = this.config.getConfig();
-          if (isProdEnv && app.exposedLocal) {
-            this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
-            await this.syncExposure();
-          }
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'start',
+            success: true,
+            successOutcome: {
+              status: 'running',
+              event: 'start_success',
+              clearPendingRestart: true,
+              afterApply: async () => {
+                const { isProduction: isProdEnv } = this.config.getConfig();
+                if (isProdEnv && app.exposedLocal) {
+                  this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
+                  await this.syncExposure();
+                }
+              },
+            },
+          });
         } else {
           this.logger.error(`Failed to start app ${appUrn}: ${message}`);
-          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'starting', { status: 'stopped' });
-          if (applied) {
-            this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
-          }
-          this.agentNotifyService?.notify('start_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'start', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'start',
+            success: false,
+            message,
+            failureOutcome: {
+              status: 'stopped',
+              event: 'start_error',
+              notifyEvent: 'start_error',
+              failurePhase: 'start',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('start', appUrn, err));
@@ -679,7 +708,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Register the operation BEFORE publishing so a cancel arriving during the publish->dequeue
     // window (tier-A) can be honoured. Cleared in invokeCommand's finally.
-    this.operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+    this.registerDispatchedCommand(appUrn, requestId, 'install');
 
     this.appEventsQueue
       .publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } })
@@ -692,25 +721,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         }
         if (success) {
           this.logger.info(`App ${appUrn} installed successfully`);
-          const latest = await this.appRepository.getAppById(appId);
-          if (latest?.status === 'installing') {
+          const claimed = this.operationRegistry.claimCompletion(appUrn, requestId);
+          if (claimed) {
             await this.appRepository.updateAppById(appId, { status: 'running' });
             this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+
+            const appIntentSyncService = this.appIntentSyncService;
+            if (appIntentSyncService) {
+              this.fireAndForgetLifecycle('register-intents', appUrn, () => appIntentSyncService.registerAppIntents(appUrn, appInfo));
+            }
+
+            if (recordExposedLocal || (appInfo.exposable && !exposedLocal)) {
+              await this.syncExposure();
+            }
           }
           void this.emitInstallQueueUpdate();
-
-          // Sync any app-declared intents (agents.intents[]) into CI-Server's
-          // catalog so installing the app grows the assistant's vocabulary.
-          // Best-effort and detached: never fails the install (mirrors the #843
-          // install-sink pattern for side-effects hanging off the lifecycle).
-          const appIntentSyncService = this.appIntentSyncService;
-          if (appIntentSyncService) {
-            this.fireAndForgetLifecycle('register-intents', appUrn, () => appIntentSyncService.registerAppIntents(appUrn, appInfo));
-          }
-
-          if (recordExposedLocal || (appInfo.exposable && !exposedLocal)) {
-            await this.syncExposure();
-          }
         } else {
           const isRpcTimeout = /timed out|RPC_TIMEOUT/i.test(message);
           if (isRpcTimeout) {
@@ -762,31 +787,52 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'stop');
     this.appEventsQueue
       .publish({ command: 'stop', appUrn, requestId, form: app.config })
       .then(async ({ success, message }) => {
         if (success) {
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
-          this.logger.info(`App ${appUrn} stopped successfully`);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'stop',
+            success: true,
+            successOutcome: {
+              status: 'stopped',
+              event: 'stop_success',
+              afterApply: async () => {
+                this.logger.info(`App ${appUrn} stopped successfully`);
+                try {
+                  const { PortExposeService } = await import('../custom-apps/port-expose.service');
+                  const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
+                  await portExposeService?.syncPortExposeRoutes().catch(() => undefined);
+                } catch (err) {
+                  this.logger.warn(`Port-expose route sync skipped after stop for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+                }
 
-          try {
-            const { PortExposeService } = await import('../custom-apps/port-expose.service');
-            const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
-            await portExposeService?.syncPortExposeRoutes().catch(() => undefined);
-          } catch (err) {
-            this.logger.warn(`Port-expose route sync skipped after stop for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-
-          if (app.exposedLocal || app.exposureMode === 'cloudflare' || app.exposureMode === 'tailscale') {
-            await this.syncExposure();
-          }
+                if (app.exposedLocal || app.exposureMode === 'cloudflare' || app.exposureMode === 'tailscale') {
+                  await this.syncExposure();
+                }
+              },
+            },
+          });
         } else {
           this.logger.error(`Failed to stop app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'running' });
-          this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
-          this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'stop', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'stop',
+            success: false,
+            message,
+            failureOutcome: {
+              status: 'running',
+              event: 'stop_error',
+              notifyEvent: 'stop_error',
+              failurePhase: 'stop',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('stop', appUrn, err));
@@ -809,6 +855,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const release = await this.mutex.acquire(appUrn);
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'stop');
 
     try {
       await this.appRepository.updateAppById(app.id, { status: 'stopping' });
@@ -816,20 +863,40 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
       try {
         const result = await this.dockerService.forceStopApp(appUrn);
-        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-        this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
-        this.logger.warn(`App ${appUrn} force-stopped successfully`, result);
-
-        if (app.exposedLocal) {
-          await this.syncExposure();
-        }
+        await this.settleCommandOutcome({
+          appId: app.id,
+          appUrn,
+          requestId,
+          command: 'stop',
+          success: true,
+          successOutcome: {
+            status: 'stopped',
+            event: 'stop_success',
+            afterApply: async () => {
+              this.logger.warn(`App ${appUrn} force-stopped successfully`, result);
+              if (app.exposedLocal) {
+                await this.syncExposure();
+              }
+            },
+          },
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.error(`Failed to force-stop app ${appUrn}: ${message}`);
-        await this.appRepository.updateAppById(app.id, { status: app.status });
-        this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: app.status, error: message });
-        this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
-        this.reportAppFailure(appUrn, 'stop', message);
+        await this.settleCommandOutcome({
+          appId: app.id,
+          appUrn,
+          requestId,
+          command: 'stop',
+          success: false,
+          message,
+          failureOutcome: {
+            status: app.status,
+            event: 'stop_error',
+            notifyEvent: 'stop_error',
+            failurePhase: 'stop',
+          },
+        });
         throw new TranslatableError('APP_ACTION_FAILED_TO_RESOLVE', { error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
       }
     } finally {
@@ -854,30 +921,116 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.appEventsQueue
       .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
       .then(async ({ success, message }) => {
-        // Compare-and-set (see startApp): claim the outcome only if a newer
-        // command hasn't taken over the status while this one was queued.
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
-          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
-          if (applied) {
-            this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
-          }
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'restart',
+            success: true,
+            successOutcome: {
+              status: 'running',
+              event: 'restart_success',
+              clearPendingRestart: true,
+            },
+          });
         } else {
           this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
-          if (applied) {
-            this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
-          }
-          this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'restart', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'restart',
+            success: false,
+            message,
+            failureOutcome: {
+              status: 'stopped',
+              event: 'restart_error',
+              notifyEvent: 'restart_error',
+              failurePhase: 'restart',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('restart', appUrn, err));
 
     return { requestId };
+  }
+
+  /**
+   * Start an app and wait for the queue worker to finish.
+   *
+   * {@link startApp} resolves once the command is published; this variant is for callers
+   * (such as post-update restart) that must not proceed until the app reaches a terminal
+   * start outcome.
+   */
+  public async startAppAndWait(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<boolean> {
+    const { appUrn, skipPull } = params;
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    await this.appRepository.updateAppById(app.id, { status: 'starting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'starting' });
+
+    const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'start');
+    const { success, message } = await this.appEventsQueue.publish({
+      appUrn,
+      command: 'start',
+      requestId,
+      form: { ...app.config, skipPull },
+    });
+
+    if (success) {
+      this.logger.info(`App ${appUrn} started successfully`);
+      await this.settleCommandOutcome({
+        appId: app.id,
+        appUrn,
+        requestId,
+        command: 'start',
+        success: true,
+        successOutcome: {
+          status: 'running',
+          event: 'start_success',
+          clearPendingRestart: true,
+          afterApply: async () => {
+            const { isProduction: isProdEnv } = this.config.getConfig();
+            if (isProdEnv && app.exposedLocal) {
+              this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
+              await this.syncExposure();
+            }
+          },
+        },
+      });
+
+      return true;
+    }
+
+    this.logger.error(`Failed to start app ${appUrn}: ${message}`);
+    await this.settleCommandOutcome({
+      appId: app.id,
+      appUrn,
+      requestId,
+      command: 'start',
+      success: false,
+      message,
+      failureOutcome: {
+        status: 'stopped',
+        event: 'start_error',
+        notifyEvent: 'start_error',
+        failurePhase: 'start',
+      },
+    });
+
+    return false;
   }
 
   /**
@@ -901,6 +1054,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'restart');
     const { success, message } = await this.appEventsQueue.publish({
       command: 'restart',
       appUrn,
@@ -908,26 +1062,39 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       form: { ...app.config, skipPull },
     });
 
-    // Compare-and-set (see startApp): claim the outcome only if a newer command
-    // hasn't taken over the status while this restart was queued/executing. The
-    // return value reflects the compose result either way.
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
-      const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'running', pendingRestart: false });
-      if (applied) {
-        this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
-      }
+      await this.settleCommandOutcome({
+        appId: app.id,
+        appUrn,
+        requestId,
+        command: 'restart',
+        success: true,
+        successOutcome: {
+          status: 'running',
+          event: 'restart_success',
+          clearPendingRestart: true,
+        },
+      });
 
       return true;
     }
 
     this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-    const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'restarting', { status: 'stopped' });
-    if (applied) {
-      this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
-    }
-    this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'restart', message);
+    await this.settleCommandOutcome({
+      appId: app.id,
+      appUrn,
+      requestId,
+      command: 'restart',
+      success: false,
+      message,
+      failureOutcome: {
+        status: 'stopped',
+        event: 'restart_error',
+        notifyEvent: 'restart_error',
+        failurePhase: 'restart',
+      },
+    });
 
     return false;
   }
@@ -1061,10 +1228,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'uninstall');
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async ({ success, message }) => {
         if (success) {
+          if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+            return;
+          }
+
           this.logger.info(`App ${appUrn} uninstalled successfully`);
 
           await this.appRepository.deleteAppById(app.id);
@@ -1075,15 +1247,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             });
           }
 
-          // Drop the app's declared intents from CI-Server's catalog. Best-effort
-          // and detached; never fails the uninstall.
           const appIntentSyncService = this.appIntentSyncService;
           if (appIntentSyncService) {
             this.fireAndForgetLifecycle('unregister-intents', appUrn, () => appIntentSyncService.unregisterAppIntents(appUrn));
           }
 
-          // Release Portal DNS/tunnel routes before telling the UI uninstall is done,
-          // so reinstalling the same hostname does not hit stale "domain in use" checks.
           await this.syncExposure().catch((err) => {
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -1091,10 +1259,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });
-          this.agentNotifyService?.notify('uninstall_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'uninstall', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'uninstall',
+            success: false,
+            message,
+            failureOutcome: {
+              status: 'stopped',
+              event: 'uninstall_error',
+              notifyEvent: 'uninstall_error',
+              failurePhase: 'uninstall',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('uninstall', appUrn, err));
@@ -1121,24 +1299,45 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'resetting' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'reset');
     this.appEventsQueue
       .publish({ command: 'reset', appUrn, requestId, form: app.config })
       .then(async ({ success, message }) => {
         if (success) {
           this.logger.info(`App ${appUrn} reset successfully`);
-          await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-          this.sseService.emit('app', { event: 'reset_success', appUrn, appStatus: 'stopped' });
-
-          if (appStatusBeforeReset === 'running') {
-            this.fireAndForgetLifecycle('start-after-reset', appUrn, () => this.startApp({ appUrn }));
-          }
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'reset',
+            success: true,
+            successOutcome: {
+              status: 'stopped',
+              event: 'reset_success',
+              afterApply: async () => {
+                if (appStatusBeforeReset === 'running') {
+                  this.fireAndForgetLifecycle('start-after-reset', appUrn, () => this.startApp({ appUrn }));
+                }
+              },
+            },
+          });
         } else {
           this.logger.error(`Failed to reset app ${appUrn}: ${message}`);
           const restoredStatus = appStatusBeforeReset ?? 'stopped';
-          await this.appRepository.updateAppById(app.id, { status: restoredStatus });
-          this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: restoredStatus, error: message });
-          this.agentNotifyService?.notify('reset_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'reset', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'reset',
+            success: false,
+            message,
+            failureOutcome: {
+              status: restoredStatus,
+              event: 'reset_error',
+              notifyEvent: 'reset_error',
+              failurePhase: 'reset',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('reset', appUrn, err));
@@ -1342,10 +1541,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'updating' });
 
     const requestId = crypto.randomUUID();
+    this.registerDispatchedCommand(appUrn, requestId, 'update');
     this.appEventsQueue
       .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup })
       .then(async ({ success, message }) => {
         if (success) {
+          if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+            return;
+          }
+
           const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
           const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
@@ -1355,15 +1559,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
-            this.fireAndForgetLifecycle('start-after-update', appUrn, () => this.startApp({ appUrn }));
+            await this.startAppAndWait({ appUrn });
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
           const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
-          await this.appRepository.updateAppById(app.id, { status: restoredStatus });
-          this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: restoredStatus, error: message });
-          this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
-          this.reportAppFailure(appUrn, 'update', message);
+          await this.settleCommandOutcome({
+            appId: app.id,
+            appUrn,
+            requestId,
+            command: 'update',
+            success: false,
+            message,
+            failureOutcome: {
+              status: restoredStatus,
+              event: 'update_error',
+              notifyEvent: 'update_error',
+              failurePhase: 'update',
+            },
+          });
         }
       })
       .catch((err) => this.logLifecycleHandlerError('update', appUrn, err));
@@ -1487,5 +1701,89 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
     this.errorReportingService?.reportAppFailure({ appUrn, phase, message });
+  }
+
+  private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {
+    this.operationRegistry.register(appUrn, {
+      requestId,
+      command,
+      tier: this.cancellabilityTierFor(command),
+    });
+  }
+
+  private cancellabilityTierFor(command: OperationCommand): CancellabilityTier {
+    switch (command) {
+      case 'install':
+      case 'start':
+      case 'stop':
+      case 'restart':
+      case 'generate_env':
+        return 'safe';
+      case 'update':
+      case 'reset':
+        return 'before_ponr';
+      case 'uninstall':
+      case 'backup':
+      case 'restore':
+        return 'non_cancellable';
+    }
+  }
+
+  private async settleCommandOutcome(params: {
+    appId: number;
+    appUrn: AppUrn;
+    requestId: string;
+    command: OperationCommand;
+    success: boolean;
+    message?: string;
+    successOutcome?: {
+      status: AppStatus;
+      event: AppOutcomeSseEvent;
+      clearPendingRestart?: boolean;
+      afterApply?: () => Promise<void>;
+    };
+    failureOutcome?: {
+      status: AppStatus;
+      event: AppOutcomeSseEvent;
+      notifyEvent: string;
+      failurePhase: AppFailurePhase;
+      notifySeverity?: 'high' | 'info';
+    };
+  }): Promise<boolean> {
+    if (!this.operationRegistry.claimCompletion(params.appUrn, params.requestId)) {
+      this.logger.debug(`[lifecycle] Superseded ${params.command} completion for ${params.appUrn} (req=${params.requestId})`);
+      return false;
+    }
+
+    if (params.success && params.successOutcome) {
+      await this.appRepository.updateAppById(params.appId, {
+        status: params.successOutcome.status,
+        ...(params.successOutcome.clearPendingRestart ? { pendingRestart: false } : {}),
+      });
+      this.sseService.emit('app', {
+        event: params.successOutcome.event,
+        appUrn: params.appUrn,
+        appStatus: params.successOutcome.status,
+      });
+      if (params.successOutcome.afterApply) {
+        await params.successOutcome.afterApply();
+      }
+      return true;
+    }
+
+    if (!params.success && params.failureOutcome) {
+      await this.appRepository.updateAppById(params.appId, { status: params.failureOutcome.status });
+      this.sseService.emit('app', {
+        event: params.failureOutcome.event,
+        appUrn: params.appUrn,
+        appStatus: params.failureOutcome.status,
+        error: params.message,
+      });
+      this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
+      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error');
+      return true;
+    }
+
+    return true;
   }
 }

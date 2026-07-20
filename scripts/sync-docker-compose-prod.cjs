@@ -17,7 +17,7 @@ const rootCompose = fs.readFileSync(source, 'utf-8');
 
 const buildBlockRe = /(\n {2}ci-os-hub:[\s\S]*?\n)( {4}build:[\s\S]*?\n)( {4}depends_on:)/;
 
-const desktopHubService = `    image: \${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
+const desktopHubService = `    image: \${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-os-hub:latest}
     pull_policy: if_not_present
 `;
 

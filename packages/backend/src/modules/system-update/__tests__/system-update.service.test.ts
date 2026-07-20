@@ -12,6 +12,10 @@ vi.mock('node:fs', () => ({
     existsSync: vi.fn(() => false),
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+    appendFileSync: vi.fn(),
+    openSync: vi.fn(() => 3),
+    closeSync: vi.fn(),
     promises: { writeFile: vi.fn() },
   },
 }));
@@ -60,10 +64,13 @@ describe('SystemUpdateService', () => {
   });
 
   describe('performUpdate', () => {
-    it('should pull the full stack and recreate containers on restart', async () => {
+    it('should pull the Hub image and recreate ci-os-hub on restart', async () => {
       vi.useFakeTimers();
       vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\n`);
+      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
+      vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
+      vi.mocked(fs.appendFileSync).mockImplementation(() => undefined);
+      vi.mocked(fs.openSync).mockReturnValue(3);
 
       const { spawn } = await import('node:child_process');
       const mockProcess = {
@@ -71,6 +78,7 @@ describe('SystemUpdateService', () => {
         stderr: { on: vi.fn() },
         on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
           if (event === 'close') cb(0);
+          if (event === 'spawn') cb();
         }),
         unref: vi.fn(),
       };
@@ -82,18 +90,19 @@ describe('SystemUpdateService', () => {
 
       expect(result.success).toBe(true);
       expect(fs.writeFileSync).toHaveBeenCalled();
+      const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1] as string;
+      expect(written).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:1.1.0`);
+      expect(written).toContain('CI_HUB_VERSION=1.1.0');
       expect(spawn).toHaveBeenCalledTimes(2);
 
       const pullCall = (spawn as any).mock.calls[0];
       expect(pullCall[1]).toContain('pull');
-      expect(pullCall[1]).not.toContain('ci-os-hub');
+      expect(pullCall[1]).toContain('ci-os-hub');
 
       const upCall = (spawn as any).mock.calls[1];
       expect(upCall[1]).toContain('up');
-      expect(upCall[1]).toContain('--pull');
-      expect(upCall[1]).toContain('always');
-      expect(upCall[1]).toContain('--force-recreate');
-      expect(upCall[1]).toContain('--remove-orphans');
+      expect(upCall[1]).toContain('--no-deps');
+      expect(upCall[1]).toContain('ci-os-hub');
 
       vi.useRealTimers();
     });
