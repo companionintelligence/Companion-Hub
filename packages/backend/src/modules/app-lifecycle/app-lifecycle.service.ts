@@ -1,6 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
+import type { SSE } from '@ci-hub/common/schemas';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -43,6 +44,7 @@ import type { MemoryConnectService } from '../memory-connect/memory-connect.serv
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
+type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appUrn: string }>['event'];
 
 /** Trimmed subdomain when Cloudflare routing requires it to be globally unique on this Hub. */
 function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
@@ -1652,13 +1654,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     message?: string;
     successOutcome?: {
       status: AppStatus;
-      event: string;
+      event: AppOutcomeSseEvent;
       clearPendingRestart?: boolean;
       afterApply?: () => Promise<void>;
     };
     failureOutcome?: {
       status: AppStatus;
-      event: string;
+      event: AppOutcomeSseEvent;
       notifyEvent: string;
       failurePhase: AppFailurePhase;
       notifySeverity?: 'high' | 'info';
