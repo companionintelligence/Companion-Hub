@@ -24,11 +24,13 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
 
 vi.mock('react-hot-toast', () => {
   // The default export is itself callable (plain warning toast) AND carries
-  // .success/.error/.dismiss — mirror that so `toast(...)` is exercised too.
-  const toast = (...args: unknown[]) => mockToast(...args);
-  toast.error = (...args: unknown[]) => mockToastError(...args);
-  toast.success = (...args: unknown[]) => mockToastSuccess(...args);
-  toast.dismiss = (...args: unknown[]) => mockToastDismiss(...args);
+  // .success/.error/.dismiss — mirror that shape via Object.assign so the callable
+  // and its methods stay type-safe, and so `toast(...)` is exercised too.
+  const toast = Object.assign((...args: unknown[]) => mockToast(...args), {
+    error: (...args: unknown[]) => mockToastError(...args),
+    success: (...args: unknown[]) => mockToastSuccess(...args),
+    dismiss: (...args: unknown[]) => mockToastDismiss(...args),
+  });
   return { default: toast };
 });
 
