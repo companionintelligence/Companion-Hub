@@ -25,6 +25,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
@@ -50,6 +53,8 @@ describe('AppLifecycleService', () => {
   let mutex: any;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
+  let agentNotifyService: MockProxy<AgentNotifyService>;
+  let errorReportingService: MockProxy<ErrorReportingService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -79,6 +84,8 @@ describe('AppLifecycleService', () => {
     };
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(logger);
+    agentNotifyService = mock<AgentNotifyService>();
+    errorReportingService = mock<ErrorReportingService>();
     appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -106,6 +113,8 @@ describe('AppLifecycleService', () => {
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: AppOperationRegistry, useValue: operationRegistry },
+        { provide: AgentNotifyService, useValue: agentNotifyService },
+        { provide: ErrorReportingService, useValue: errorReportingService },
         { provide: ModuleRef, useValue: { get: vi.fn() } },
       ],
     }).compile();
@@ -1652,6 +1661,81 @@ describe('AppLifecycleService', () => {
       // Status guard: already install_failed → no second status write / SSE.
       expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+    });
+  });
+
+  describe('command-identity completion claims (#903)', () => {
+    const appUrn = 'myapp:ci-marketplace' as AppUrn;
+    const fakeApp = {
+      id: 42,
+      appName: 'myapp',
+      appStoreSlug: 'ci-marketplace',
+      status: 'running',
+      config: {},
+      exposedLocal: false,
+      exposureMode: 'local',
+    };
+
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    /** Resolve publish callbacks only after every command in the test has registered. */
+    function deferPublishResults(...results: Array<{ success: boolean; message: string }>) {
+      const resolvers: Array<(value: { success: boolean; message: string }) => void> = [];
+      appEventsQueue.publish.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+      return () => {
+        for (const [index, result] of results.entries()) {
+          resolvers[index]?.(result);
+        }
+      };
+    }
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockResolvedValue(fakeApp as any);
+      appEventsQueue.publish.mockReset();
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
+
+      await service.restartApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', appUrn, appStatus: 'stopped' }));
+    });
+
+    it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
+
+      await service.stopApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+    });
+
+    it('superseded restart failure does not fire phantom failure alerts', async () => {
+      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
+
+      await service.restartApp({ appUrn });
+      await service.stopApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
+      expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
     });
   });
 });

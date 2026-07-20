@@ -81,4 +81,20 @@ describe('AppOperationRegistry', () => {
     registry.clear(APP, REQ);
     expect(registry.get(APP)).toBeUndefined();
   });
+
+  it('claimCompletion() succeeds only for the latest requestId and clears the entry', () => {
+    registry.register(APP, { requestId: REQ, command: 'restart', tier: 'safe' });
+    expect(registry.claimCompletion(APP, 'stale')).toBe(false);
+    expect(registry.get(APP)).toBeDefined();
+    expect(registry.claimCompletion(APP, REQ)).toBe(true);
+    expect(registry.get(APP)).toBeUndefined();
+  });
+
+  it('ownsOutcome() reflects whether the requestId is still current', () => {
+    registry.register(APP, { requestId: REQ, command: 'start', tier: 'safe' });
+    expect(registry.ownsOutcome(APP, REQ)).toBe(true);
+    registry.register(APP, { requestId: 'newer', command: 'restart', tier: 'safe' });
+    expect(registry.ownsOutcome(APP, REQ)).toBe(false);
+    expect(registry.ownsOutcome(APP, 'newer')).toBe(true);
+  });
 });
