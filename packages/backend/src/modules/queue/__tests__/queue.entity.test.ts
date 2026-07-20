@@ -183,4 +183,30 @@ describe('Queue', () => {
     expect(newRpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-2' });
     expect(rpcClient.send).not.toHaveBeenCalled();
   });
+
+  it('registers a consumer error handler so setup failures do not crash the process', () => {
+    const logger = mock<LoggerService>();
+    const consumer = { on: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+    const rabbit = mock<Connection>();
+    rabbit.createConsumer.mockReturnValue(consumer as never);
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    const queue = new Queue(
+      rabbit,
+      rpcClient,
+      publisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    queue.onEvent(async () => {
+      /* no-op */
+    });
+
+    expect(rabbit.createConsumer).toHaveBeenCalled();
+    expect(consumer.on).toHaveBeenCalledWith('error', expect.any(Function));
+  });
 });

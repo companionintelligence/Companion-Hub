@@ -91,6 +91,9 @@ export class QueueFactory implements OnApplicationShutdown {
       password,
       port,
       connectionTimeout: 30000,
+      acquireTimeout: 60000,
+      retryLow: 2000,
+      retryHigh: 30000,
       heartbeat: 60,
       frameMax: 8192,
     });
@@ -106,7 +109,14 @@ export class QueueFactory implements OnApplicationShutdown {
     });
 
     this.rabbit.on('error', async (error) => {
-      this.logger.error('Queue connection error', error);
+      const message = error instanceof Error ? error.message : String(error);
+      const isDnsTransient = /EAI_AGAIN|EAI_NODATA|ENOTFOUND/i.test(message);
+
+      if (isDnsTransient && !this.rabbit?.ready) {
+        this.logger.warn(`Queue broker not reachable yet (${message})`);
+      } else {
+        this.logger.error('Queue connection error', error);
+      }
 
       // The library's Connection class handles reconnection internally.
       // Only trigger manual reconnect if the connection is truly dead and
