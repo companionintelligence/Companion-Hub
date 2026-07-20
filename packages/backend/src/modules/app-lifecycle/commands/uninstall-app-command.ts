@@ -151,7 +151,18 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       return { removed: true };
     }
 
-    const hostPath = appFilesManager.getAppDataHostDir(appUrn);
+    // The host path is ONLY for user-facing guidance (the manual `rm` command), so
+    // resolving it must never turn an otherwise-successful uninstall into a failure.
+    // getAppDataHostDir can throw on a misconfigured non-absolute ROOT_FOLDER_HOST;
+    // treat that as "path unavailable" (a generic remnant warning) rather than aborting.
+    let hostPath: string | undefined;
+    try {
+      hostPath = appFilesManager.getAppDataHostDir(appUrn);
+    } catch (err) {
+      logger.warn(
+        `App ${appUrn}: could not resolve host app-data path for manual-cleanup guidance: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Only a permission error is worth escalating to root — anything else won't be
     // fixed by root either, so surface the manual path straight away.
@@ -159,7 +170,7 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       return { removed: false, hostPath };
     }
 
-    logger.warn(`App ${appUrn} app-data not removable as non-root; attempting a privileged cleanup of ${hostPath}`);
+    logger.warn(`App ${appUrn} app-data not removable as non-root; attempting a privileged cleanup of ${hostPath ?? 'its data directory'}`);
     const emptied = await dockerService.removeAppDataDirAsRoot(appUrn);
     // The helper only empties the dir (never the mountpoint), so the Hub still removes
     // the now-empty directory itself — re-verify from the Hub's own view.

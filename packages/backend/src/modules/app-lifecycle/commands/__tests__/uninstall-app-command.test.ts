@@ -111,6 +111,26 @@ describe('UninstallAppCommand', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'));
   });
 
+  it('still reports a (warning) success — never a fatal error — when the host path cannot be resolved (#918 review)', async () => {
+    // getAppDataHostDir is only used to build the manual-cleanup command; if it throws
+    // (e.g. a misconfigured non-absolute ROOT_FOLDER_HOST) the uninstall must degrade to a
+    // generic remnant warning, NOT flip an already-successful teardown into an error.
+    appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: false });
+    appFilesManager.getAppDataHostDir.mockImplementation(() => {
+      throw new Error('App data host path must be absolute, got: relative/path');
+    });
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({
+      success: true,
+      message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
+      warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+      // No warningDetail: the path was unavailable, so no manual command is offered.
+    });
+    expect(dockerService.removeAppDataDirAsRoot).not.toHaveBeenCalled();
+  });
+
   it('escalates to a privileged cleanup on a permission error, then reports a clean uninstall (#907)', async () => {
     appFilesManager.deleteAppDataDirDetailed.mockResolvedValue({ removed: false, permissionDenied: true });
     dockerService.removeAppDataDirAsRoot.mockResolvedValue(true);

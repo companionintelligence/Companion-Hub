@@ -134,7 +134,11 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
             if (warningDetail) {
               // Actionable: show the exact host path + command the operator can run.
-              const command = `sudo rm -rf ${warningDetail}`;
+              // Single-quote the path (escaping any embedded quote) and add `--`: an
+              // operator-configured root can contain spaces or shell metacharacters, so
+              // an unquoted path could be mis-split or read as an option on paste.
+              const quotedPath = `'${warningDetail.replace(/'/g, "'\\''")}'`;
+              const command = `sudo rm -rf -- ${quotedPath}`;
               toast(
                 () => (
                   <span className="text-sm">

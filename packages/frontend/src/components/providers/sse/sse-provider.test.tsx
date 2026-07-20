@@ -175,8 +175,9 @@ describe('SSEProvider', () => {
     const [message, opts] = mockToast.mock.calls[0] as [() => ReactNode, { icon?: string }];
     expect(opts).toEqual(expect.objectContaining({ icon: '⚠️' }));
 
-    // The toast body must render the exact host path in a runnable command.
+    // The toast body must render the exact host path in a runnable, shell-safe command
+    // (single-quoted + `--` so a path with spaces/metacharacters can't misfire on paste).
     render(<MemoryRouter>{message()}</MemoryRouter>);
-    expect(screen.getByText('sudo rm -rf /srv/app-data/community/excalidraw')).toBeInTheDocument();
+    expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
   });
 });
