@@ -30,7 +30,7 @@ describe('docker-compose.prod.yml sync', () => {
     expect(root).toContain('build:');
     expect(root).toContain('dockerfile: Dockerfile');
     expect(desktop).not.toContain('dockerfile: Dockerfile');
-    expect(desktop).toContain('image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}');
+    expect(desktop).toContain('image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-os-hub:latest}');
     expect(desktop).toContain('pull_policy: if_not_present');
   });
 

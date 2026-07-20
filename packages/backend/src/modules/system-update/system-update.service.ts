@@ -9,7 +9,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
-const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
+/** Prefer the live mounted compose file inside the running Hub container. */
+const COMPOSE_FILENAMES = ['docker-compose.yml', 'docker-compose.prod.yml'] as const;
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -72,27 +73,42 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(dataDir, COMPOSE_FILENAMES[0]);
   }
 
-  private pinHubImageInEnv(envFile: string, targetVersion?: string): string | undefined {
+  private upsertEnvLine(lines: string[], key: string, value: string): string[] {
+    const line = `${key}=${value}`;
+    let replaced = false;
+    const next = lines.map((entry) => {
+      if (entry.startsWith(`${key}=`)) {
+        replaced = true;
+        return line;
+      }
+      return entry;
+    });
+    if (!replaced) {
+      next.push(line);
+    }
+    return next;
+  }
+
+  /** Pin the stack image + reported Hub version so UI and compose agree after restart. */
+  private pinHubStackVersionInEnv(envFile: string, targetVersion?: string): string | undefined {
     if (!targetVersion || !fs.existsSync(envFile)) {
       return undefined;
     }
 
-    const imageLine = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:${targetVersion}`;
+    const imageLine = `${HUB_STACK_IMAGE_REPO}:${targetVersion}`;
     const content = fs.readFileSync(envFile, 'utf8');
-    const lines = content.split('\n');
-    let replaced = false;
-    const next = lines.map((line) => {
-      if (line.startsWith('CI_HUB_IMAGE=')) {
-        replaced = true;
-        return imageLine;
-      }
-      return line;
-    });
-    if (!replaced) {
-      next.push(imageLine);
-    }
-    fs.writeFileSync(envFile, next.join('\n'));
+    let lines = content.split('\n');
+    lines = this.upsertEnvLine(lines, 'CI_HUB_IMAGE', imageLine);
+    lines = this.upsertEnvLine(lines, 'CI_HUB_VERSION', targetVersion);
+    fs.writeFileSync(envFile, lines.join('\n'));
+    this.logger.info(`Pinned stack update in ${envFile}: CI_HUB_IMAGE=${imageLine}, CI_HUB_VERSION=${targetVersion}`);
     return targetVersion;
+  }
+
+  private stackUpdateLogPath(dataDir: string): string {
+    const logsDir = path.join(dataDir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    return path.join(logsDir, 'hub-stack-update.log');
   }
 
   async performUpdate(targetVersion?: string) {
@@ -103,40 +119,36 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const envFile = path.join(dataDir, '.env');
     const composeFile = this.resolveComposeFile(dataDir);
 
-    this.pinHubImageInEnv(envFile, pinned);
+    this.pinHubStackVersionInEnv(envFile, pinned);
+
+    const composeBase = ['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile] as const;
 
     try {
-      await this.runComposeCommand(['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'pull']);
-      this.logger.info('Successfully pulled new stack images');
+      await this.runComposeCommand([...composeBase, 'pull', 'ci-os-hub']);
+      this.logger.info(`Successfully pulled ci-os-hub:${pinned ?? 'latest'}`);
     } catch (error) {
-      this.logger.error('Failed to pull new images', error);
+      this.logger.error('Failed to pull new Hub image', error);
       throw error;
     }
 
+    const updateLogPath = this.stackUpdateLogPath(dataDir);
+    const logBanner = `\n[${new Date().toISOString()}] Hub stack update restart (target=${pinned ?? 'latest'})\n`;
+    fs.appendFileSync(updateLogPath, logBanner);
+
     setTimeout(() => {
-      this.logger.info('Restarting Hub stack with new images...');
-      const cmd = spawn(
-        'docker',
-        [
-          'compose',
-          '--env-file',
-          envFile,
-          '--project-name',
-          'ci-hub',
-          '-f',
-          composeFile,
-          'up',
-          '-d',
-          '--pull',
-          'always',
-          '--force-recreate',
-          '--remove-orphans',
-        ],
-        {
-          stdio: 'ignore',
-          detached: true,
-        },
-      );
+      this.logger.info(`Restarting Hub stack with new images (logging to ${updateLogPath})...`);
+      const logFd = fs.openSync(updateLogPath, 'a');
+      const cmd = spawn('docker', [...composeBase, 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'], {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+      });
+      cmd.on('spawn', () => {
+        try {
+          fs.closeSync(logFd);
+        } catch {
+          // Parent may exit before close; child already inherited the fd.
+        }
+      });
       cmd.unref();
     }, 3000);
 

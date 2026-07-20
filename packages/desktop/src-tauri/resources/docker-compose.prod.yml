@@ -77,7 +77,7 @@ services:
     # intentionally omitted. If a future feature needs a specific capability,
     # add a scoped `cap_add:` (as the tailscale sidecar does with NET_ADMIN /
     # SYS_MODULE) rather than reintroducing blanket privilege.
-    image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
+    image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-os-hub:latest}
     pull_policy: if_not_present
     depends_on:
       ci-hub-db:

@@ -12,7 +12,10 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use crate::hub_env::{default_ci_cloud_url, default_hub_image, default_public_domain};
+use crate::hub_env::{
+    default_ci_cloud_url, default_hub_image, default_public_domain, resolve_runtime_hub_image,
+    runtime_hub_version_for_image,
+};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -5789,9 +5792,8 @@ fn render_runtime_env_content(
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
-    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    // Always recompute from the current binary so upgrades pick up the new stack image tag.
-    let hub_image = default_hub_image().to_string();
+    let hub_image = resolve_runtime_hub_image(existing);
+    let hub_version = runtime_hub_version_for_image(&hub_image);
     let compose_file_host = docker_bind_mount_path(&data_dir.join(HUB_COMPOSE_FILENAME));
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
