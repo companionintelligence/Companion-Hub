@@ -1496,6 +1496,18 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
     });
 
+    it('dispatches the memory-connect cleanup off the response path — a slow sweep never blocks uninstall (#906)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]); // guard passes (provider, 0 consumers)
+      // Provider teardown re-arms every consumer by restarting containers; that sweep
+      // must not hold the HTTP response. A handleUninstall that never settles must
+      // still let uninstallApp resolve with a requestId (it would hang if awaited).
+      memoryConnect.handleUninstall.mockReturnValue(new Promise<void>(() => {}));
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+    });
+
     it('does not consult consumers when uninstalling a non-provider app', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...providerApp, appName: 'myapp' } as any);
 

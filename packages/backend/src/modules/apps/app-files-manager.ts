@@ -137,14 +137,16 @@ export class AppFilesManager {
     await this.filesystem.writeTextFile(dockerComposePath, composeFile);
   }
 
-  public async deleteAppFolder(appUrn: AppUrn) {
+  /** Returns whether the app's install folder was fully removed (false on a partial/failed delete). */
+  public async deleteAppFolder(appUrn: AppUrn): Promise<boolean> {
     const { appInstalledDir } = this.getAppPaths(appUrn);
-    await this.filesystem.removeDirectory(appInstalledDir);
+    return this.filesystem.removeDirectory(appInstalledDir);
   }
 
-  public async deleteAppDataDir(appUrn: AppUrn) {
+  /** Returns whether the app's data dir was fully removed (false on a partial/failed delete). */
+  public async deleteAppDataDir(appUrn: AppUrn): Promise<boolean> {
     const { appDataDir } = this.getAppPaths(appUrn);
-    await this.filesystem.removeDirectory(appDataDir);
+    return this.filesystem.removeDirectory(appDataDir);
   }
 
   public async createAppDataDir(appUrn: AppUrn) {

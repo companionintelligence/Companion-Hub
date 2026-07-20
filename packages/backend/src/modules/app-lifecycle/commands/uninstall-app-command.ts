@@ -93,10 +93,28 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to revoke managed MCP key for ${appUrn}: ${error}`);
       }
 
-      await appFilesManager.deleteAppFolder(appUrn);
+      const folderRemoved = await appFilesManager.deleteAppFolder(appUrn);
+      const dataRemoved = this.deleteAllData ? await appFilesManager.deleteAppDataDir(appUrn) : true;
 
-      if (this.deleteAllData) {
-        await appFilesManager.deleteAppDataDir(appUrn);
+      // A recursive delete can fail on a container-created root-owned path the Hub
+      // process can't remove (e.g. MinIO's `.minio.sys`). The app IS uninstalled —
+      // containers, images and networks are gone and the DB record will be dropped —
+      // but the on-disk wipe is only partial, so report success WITHOUT claiming a
+      // clean removal, and log loudly instead of swallowing it (#907).
+      if (!folderRemoved || !dataRemoved) {
+        const leftovers: string[] = [];
+        if (!folderRemoved) leftovers.push('app folder');
+        if (!dataRemoved) leftovers.push('app data');
+        const leftover = leftovers.join(' and ');
+
+        logger.warn(
+          `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed; a disk remnant may remain (see the filesystem error above — often a container-created root-owned path).`,
+        );
+
+        return {
+          success: true,
+          message: `App ${appUrn} uninstalled, but its ${leftover} could not be fully removed and may leave a remnant on disk.`,
+        };
       }
 
       return { success: true, message: `App ${appUrn} uninstalled successfully` };

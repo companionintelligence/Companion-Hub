@@ -1201,13 +1201,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     // Revoke any Companion Memory key minted for this app and drop its connection
     // state so access dies with the app. Best-effort — the app is going away
-    // regardless, so a resolution/cleanup failure is logged, not fatal.
-    try {
+    // regardless. Dispatched OFF the response path: when the app IS the memory
+    // provider this re-arms every connected consumer (a container-restart sweep
+    // that ran ~28s in a production incident), which must not hold the uninstall
+    // HTTP response open (#906). Failures are logged, never fatal.
+    this.fireAndForgetLifecycle('memory-connect-cleanup', appUrn, async () => {
       const memoryConnect = await this.getMemoryConnectService();
       await memoryConnect?.handleUninstall(appUrn);
-    } catch (err) {
-      this.logger.warn(`Memory-connect cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    });
 
     const installedInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
     const isPortExpose = isPortExposeApp(installedInfo) || isPortExposeApp(app.config);

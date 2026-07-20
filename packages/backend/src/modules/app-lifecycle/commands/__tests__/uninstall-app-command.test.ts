@@ -26,8 +26,8 @@ describe('UninstallAppCommand', () => {
   beforeEach(() => {
     logger = mockDeep<LoggerService>();
     appFilesManager = mock<AppFilesManager>();
-    appFilesManager.deleteAppFolder.mockResolvedValue();
-    appFilesManager.deleteAppDataDir.mockResolvedValue();
+    appFilesManager.deleteAppFolder.mockResolvedValue(true);
+    appFilesManager.deleteAppDataDir.mockResolvedValue(true);
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
@@ -95,6 +95,49 @@ describe('UninstallAppCommand', () => {
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
+  });
+
+  it('reports the remnant when app-data deletion partially fails (#907)', async () => {
+    appFilesManager.deleteAppDataDir.mockResolvedValue(false);
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({
+      success: true,
+      message: `App ${appUrn} uninstalled, but its app data could not be fully removed and may leave a remnant on disk.`,
+    });
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'));
+  });
+
+  it('reports the remnant when the app folder deletion fails (#907)', async () => {
+    appFilesManager.deleteAppFolder.mockResolvedValue(false);
+
+    const result = await command.execute(appUrn);
+
+    expect(result).toEqual({
+      success: true,
+      message: `App ${appUrn} uninstalled, but its app folder could not be fully removed and may leave a remnant on disk.`,
+    });
+  });
+
+  it('does not flag app data as a remnant when data deletion is skipped (deleteAllData=false)', async () => {
+    appFilesManager.deleteAppDataDir.mockResolvedValue(false); // would-be failure, but never called
+
+    const moduleRef = {
+      get: vi.fn((token: unknown) => {
+        if (token === LoggerService) return logger;
+        if (token === AppFilesManager) return appFilesManager;
+        if (token === DockerService) return dockerService;
+        if (token === PortManagerService) return portManager;
+        return null;
+      }),
+    } as unknown as ModuleRef;
+    const preserveDataCommand = new UninstallAppCommand(moduleRef, mock<Dockerode>(), false);
+
+    const result = await preserveDataCommand.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
   });
 

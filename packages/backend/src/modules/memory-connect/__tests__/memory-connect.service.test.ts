@@ -672,6 +672,25 @@ describe('MemoryConnectService side effects', () => {
     expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
   });
 
+  it('re-arms the remaining consumers even when one fails, and never rejects the sweep (#906)', async () => {
+    const { service, resolver, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(null);
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    // One consumer wedges while being cleared; it must not strand the other.
+    connections.clear.mockImplementation(async (urn: string) => {
+      if (urn === 'ci-openclaw:ci-marketplace') throw new Error('clear failed');
+    });
+
+    await expect(service.handleUninstall('ci-memory:ci-marketplace')).resolves.toBeUndefined();
+
+    // The healthy consumer is still cleared + restarted; the failed one never reached restart.
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
+  });
+
   it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {
     const { service, resolver, connections } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
