@@ -1213,9 +1213,91 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
-      // Backups are always removed on uninstall, even when app data/volumes are preserved.
-      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      // Backups follow the data choice: preserving app data/volumes preserves the backups too (#908).
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
+    });
+
+    // Each scenario is its own `it` so a regression in one reports independently —
+    // packed into a single test, an early failure hides whether the later rules still hold.
+    it('keeps backups when the user chose to keep the data (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the uninstall FAILED, even with deleteAllData (#908)', async () => {
+      // The app and all of its live data survive a failed uninstall, so the safety net
+      // has to survive with it. Deleting before the worker ran left the app installed
+      // but unrecoverable.
+      appEventsQueue.publish.mockResolvedValueOnce({ success: false, message: 'fail' } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the data wipe was only partial (#908)', async () => {
+      // A remnant means the app's data demonstrably survived on disk. Discarding its
+      // backups here is the same inversion at the other end: data kept, safety net gone.
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('discards backups on a clean delete-all-data uninstall (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('warns instead of claiming a clean removal when the backups could not be deleted (#908)', async () => {
+      // The user asked for every trace of the app to go. If the archives survive, saying
+      // "uninstalled successfully" is a lie — reuse the #907 remnant channel.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      // The detail must travel with the code: the client only renders an actionable
+      // manual-cleanup command when a path is present, and falls back to a generic
+      // "some files remain" toast without one. It must point at the BACKUP directory —
+      // this arm fires only when the app-data wipe already succeeded.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/hub/backups/store/app',
+        }),
+      );
+    });
+
+    it('still warns when the backups host path cannot be resolved, just without a command (#908)', async () => {
+      // A misconfigured (non-absolute) ROOT_FOLDER_HOST yields no path. Guidance is
+      // best-effort: the warning must survive, degrading to the generic toast.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce(undefined);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'uninstall_success', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: undefined }),
+      );
     });
 
     it('uninstallApp success: threads the command warningCode + warningDetail into the uninstall_success SSE (#907)', async () => {

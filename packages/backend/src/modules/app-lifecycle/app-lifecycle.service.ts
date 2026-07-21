@@ -1193,8 +1193,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // Guard the shared memory provider before any destructive side effect runs.
     await this.assertMemoryProviderNotInUse(appUrn, force);
 
-    // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
-    await this.backupManager.deleteAppBackupsByUrn(appUrn);
+    // NOTE: backups are deliberately NOT deleted here — see the uninstall-success
+    // arm below. Discarding them before the worker has run would destroy the safety
+    // net even when the uninstall subsequently FAILS and the app survives intact.
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
@@ -1244,6 +1245,38 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
           await this.appRepository.deleteAppById(app.id);
 
+          // Carry a non-fatal caveat (e.g. a disk remnant the delete could not
+          // remove, #907) so the client can warn instead of a plain success toast.
+          // warningDetail carries the host path so the client can show a manual
+          // cleanup command. The infra-failure arm of the publish result has neither.
+          let warningCode = 'warningCode' in result ? result.warningCode : undefined;
+          let warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+
+          // Backups follow the user's data choice, and are discarded only now that the
+          // app is definitively gone. THREE conditions must hold: the user asked for the
+          // live data to go (`deleteAllData`), the uninstall succeeded, and the data wipe
+          // was not itself partial. Deleting them before the worker ran destroyed the only
+          // means of recovery even when the uninstall then failed (#908) — and discarding
+          // them when the wipe demonstrably left data behind would be the same inversion
+          // at the other end: the app's data survives on disk while its backups do not.
+          if (deleteAllData && warningCode !== 'APP_UNINSTALL_PARTIAL_REMNANT') {
+            try {
+              await this.backupManager.deleteAppBackupsByUrn(appUrn);
+            } catch (err) {
+              // Never report a clean removal we did not achieve: the user asked for every
+              // trace of this app to go, so surface the leftover archives through the same
+              // channel #907 uses for disk remnants rather than a warn-level log they will
+              // never see. Non-fatal — the app itself IS uninstalled.
+              this.logger.warn(`Failed to delete backups for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+              warningCode = 'APP_UNINSTALL_PARTIAL_REMNANT';
+              // Point the manual-cleanup command at the BACKUP directory, not the app-data
+              // one: this arm fires only when the data wipe already succeeded, so the sole
+              // leftover is the archives. Without a detail the client falls back to a generic
+              // "some files remain" toast with no path, which is the one thing the user needs.
+              warningDetail = this.backupManager.getAppBackupsHostDir(appUrn);
+            }
+          }
+
           if (portExposeService) {
             await portExposeService.afterPortExposeUninstall().catch((err) => {
               this.logger.warn(`Port-expose route cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1259,12 +1292,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             this.logger.warn(`Post-uninstall Portal sync failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
           });
 
-          // Carry a non-fatal caveat (e.g. a disk remnant the delete could not
-          // remove, #907) so the client can warn instead of a plain success toast.
-          // warningDetail carries the host path so the client can show a manual
-          // cleanup command. The infra-failure arm of the publish result has neither.
-          const warningCode = 'warningCode' in result ? result.warningCode : undefined;
-          const warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+          // warningCode/warningDetail were resolved above, before the backup cleanup, so
+          // a failed backup delete can escalate the code it carries.
           this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing', warningCode, warningDetail });
         } else {
           this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -187,6 +188,29 @@ export class BackupManager implements OnApplicationShutdown {
   }
 
   /**
+   * The HOST path of an app's backup directory (`{ROOT_FOLDER_HOST}/backups/{store}/{app}`) —
+   * the path to show a user for a manual `rm`, never the in-container one.
+   *
+   * Deliberately NOT built on `getAppDataHostPath`: that resolves against an app-data base the
+   * operator can relocate (`CI_HUB_APP_DATA_PATH` / `appDataPath`), whereas backups always live
+   * under the hub's own data dir, which is bind-mounted straight from `ROOT_FOLDER_HOST`.
+   *
+   * Best-effort guidance only — returns undefined on a misconfigured (non-absolute)
+   * ROOT_FOLDER_HOST instead of throwing, so resolving a path for a warning message can never
+   * escalate into a failed uninstall.
+   */
+  public getAppBackupsHostDir(appUrn: AppUrn): string | undefined {
+    const rootFolderHost = this.config.get('rootFolderHost');
+
+    if (!rootFolderHost || !isAbsoluteHostPath(rootFolderHost)) {
+      return undefined;
+    }
+
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    return joinHostPath(rootFolderHost, 'backups', appStoreId, appName);
+  }
+
+  /**
    * Delete all backups for an app
    * @param appUrn - The app id
    */
@@ -301,7 +325,12 @@ export class BackupManager implements OnApplicationShutdown {
           const appStat = await this.filesystem.getStats(appBackupDir);
           if (!appStat.isDirectory()) continue;
 
-          const appUrn = `${storeId}:${appName}` as AppUrn;
+          // An app URN is `<appName>:<appStoreId>` (see extractAppUrn), but the backups
+          // tree is laid out `backups/<appStoreId>/<appName>`. Composing the URN in
+          // directory order inverted the halves, so every lookup below resolved to
+          // `backups/<appName>/<appStoreId>` — a path that never exists — and this whole
+          // retention sweep silently cleaned nothing.
+          const appUrn = `${appName}:${storeId}` as AppUrn;
           const backups = await this.listBackupsByAppId(appUrn);
 
           if (backups.length > globalMax) {
