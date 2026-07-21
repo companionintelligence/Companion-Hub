@@ -6148,11 +6148,7 @@ fn detect_windows_docker_host_style_via_daemon() -> WindowsDockerHostStyle {
 #[cfg(windows)]
 fn docker_server_os_and_kernel() -> Option<(String, String)> {
     let output = docker_command()
-        .args([
-            "info",
-            "--format",
-            "{{.OperatingSystem}}\t{{.KernelVersion}}",
-        ])
+        .args(["info", "--format", "{{.OperatingSystem}}\t{{.KernelVersion}}"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -6197,9 +6193,7 @@ fn docker_has_nvidia_runtime() -> bool {
     docker_command()
         .args(["info", "--format", "{{json .Runtimes}}"])
         .output()
-        .map(|output| {
-            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia")
-        })
+        .map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia"))
         .unwrap_or(false)
 }
 
@@ -7535,9 +7529,8 @@ exit 0
 /// root in the distro (no elevation prompt).
 #[cfg(target_os = "windows")]
 fn install_ollama_in_wsl_distro() -> Result<OllamaInstallResult, String> {
-    let distro = find_wsl_distro().ok_or_else(|| {
-        "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string()
-    })?;
+    let distro = find_wsl_distro()
+        .ok_or_else(|| "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string())?;
 
     // Download the installer to a file first (checking curl's exit) rather than
     // `curl | sh`: a POSIX `sh` pipeline reports only `sh`'s status, so a failed/partial
@@ -9947,10 +9940,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         ];
         let expectations = [
             (Drive, "/c/Users/hegem/AppData/Roaming/companion-hub/media"),
-            (
-                WslMnt,
-                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
-            ),
+            (WslMnt, "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"),
         ];
         for (style, expected) in expectations {
             for input in inputs {
@@ -9976,10 +9966,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             "/mnt/c/Users/x"
         );
         // Bare drive root.
-        assert_eq!(
-            super::normalize_windows_docker_host_path(r"C:\", Drive),
-            "/c"
-        );
+        assert_eq!(super::normalize_windows_docker_host_path(r"C:\", Drive), "/c");
         assert_eq!(
             super::normalize_windows_docker_host_path(r"C:\", WslMnt),
             "/mnt/c"
@@ -10018,12 +10005,8 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn rejects_placeholder_host_device_ids() {
         assert!(!super::is_usable_host_device_id("Not Specified"));
-        assert!(!super::is_usable_host_device_id(
-            "00000000-0000-0000-0000-000000000000"
-        ));
-        assert!(super::is_usable_host_device_id(
-            "06151E8B-A400-470C-B48C-67AE51D297A9"
-        ));
+        assert!(!super::is_usable_host_device_id("00000000-0000-0000-0000-000000000000"));
+        assert!(super::is_usable_host_device_id("06151E8B-A400-470C-B48C-67AE51D297A9"));
     }
 
     #[cfg(windows)]

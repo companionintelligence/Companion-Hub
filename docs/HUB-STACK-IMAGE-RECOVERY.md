@@ -13,17 +13,22 @@ Stack image pull failed (non-fatal, continuing): ... 403 Forbidden
 
 ## Who is affected
 
-Builds **0.2.42 – 0.2.44** pinned `ghcr.io/companionintelligence/ci-os-hub:<version>` — a
+**0.2.44 only.** That build pinned `ghcr.io/companionintelligence/ci-os-hub:<version>` — a
 private package that no workflow published version tags to, so anonymous Docker got `403`
-([#920](https://github.com/companionintelligence/CI-Hub/issues/920)). Builds from 0.2.45
+([#920](https://github.com/companionintelligence/CI-Hub/issues/920)).
+
+Builds **up to and including 0.2.43 are healthy** and need no action: they pinned the
+floating `ghcr.io/companionintelligence/ci-hub:latest`, which is public and still updated by
+every production run. Both the repo switch and the switch to a versioned pin landed together
+in 0.2.44, which is why the problem appeared with no release of its own. Builds from 0.2.45
 onward pin the public `ghcr.io/companionintelligence/ci-hub:<version>` and are unaffected.
 
-Check which reference a machine is using:
+Do not go by version number alone — check which reference a machine actually uses:
 
 ```bash
 # Linux:   ~/.local/share/companion-hub
-# macOS:   ~/Library/Application Support/computer.ci.app.hub
-# Windows: %APPDATA%\computer.ci.app.hub
+# macOS:   ~/Library/Application Support/companion-hub
+# Windows: %APPDATA%\companion-hub
 grep CI_HUB_IMAGE <data-dir>/.env.dev      # .env on Windows
 ```
 

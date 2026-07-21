@@ -48,8 +48,12 @@ jobs:
       contents: read
       deployments: write
       packages: write
+    # Same rule as the "Resolve image references" step: the explicit input wins, branch
+    # detection is only the push-event fallback. Keyed off inputs.environment rather than
+    # github.event_name because that reports the CALLER's event inside a reusable workflow,
+    # so the two would disagree the moment a non-dispatch caller is added.
     environment:
-      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || github.ref == 'refs/heads/dev' && 'dev' || 'dev' }}
+      name: ${{ inputs.environment || (github.ref == 'refs/heads/main' && 'production') || (github.ref == 'refs/heads/staging' && 'staging') || 'dev' }}
 
     steps:
       - name: Checkout repository
@@ -80,6 +84,9 @@ jobs:
       # the channel tag, whether a versioned tag is published, and the exact reference the
       # shipped desktop will pin (desktop_ref), which the verify job then proves is
       # anonymously pullable.
+      #
+      # Runs on the runner's preinstalled Node (setup-node comes later, and dependencies
+      # are never installed in this job) — hence the script is dependency-free CommonJS.
       - name: Resolve image references
         id: tags
         env:
@@ -281,17 +288,23 @@ jobs:
             fi
 
             DIGEST="$(crane digest "${REF}")"
-            AMD64="❌"; ARM64="❌"
-            echo "${MANIFEST}" | grep -q '"architecture": *"amd64"' && AMD64="✅"
-            echo "${MANIFEST}" | grep -q '"architecture": *"arm64"' && ARM64="✅"
+            # Decide on plain booleans and derive the display separately: tying the
+            # pass/fail branch to the emoji used in the summary table would let a cosmetic
+            # edit silently change what this gate accepts.
+            HAS_AMD64=0; HAS_ARM64=0
+            echo "${MANIFEST}" | grep -q '"architecture": *"amd64"' && HAS_AMD64=1
+            echo "${MANIFEST}" | grep -q '"architecture": *"arm64"' && HAS_ARM64=1
 
             # Both are required: Apple Silicon and ARM64 Linux desktops are shipped targets,
             # and an amd64-only image would leave them emulating or failing outright.
-            if [ "${AMD64}" != "✅" ] || [ "${ARM64}" != "✅" ]; then
-              echo "::error::${REF} is not multi-arch (amd64=${AMD64} arm64=${ARM64})." \
+            if [ "${HAS_AMD64}" -ne 1 ] || [ "${HAS_ARM64}" -ne 1 ]; then
+              echo "::error::${REF} is not multi-arch (amd64=${HAS_AMD64} arm64=${HAS_ARM64})." \
                    "Restore 'platforms: linux/amd64,linux/arm64' on the build step."
               FAILED=1
             fi
+
+            [ "${HAS_AMD64}" -eq 1 ] && AMD64="✅" || AMD64="❌"
+            [ "${HAS_ARM64}" -eq 1 ] && ARM64="✅" || ARM64="❌"
 
             echo "| \`${REF}\` | ✅ | ${AMD64} | ${ARM64} | \`${DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::${REF} verified (${DIGEST})"

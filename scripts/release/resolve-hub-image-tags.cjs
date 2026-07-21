@@ -42,6 +42,11 @@ const ENVIRONMENTS = {
  * Strict `major.minor.patch` with an optional pre-release/build suffix.
  * Anchored so partial values like `0.2` or `latest` are rejected rather than silently
  * producing a tag nothing can pull.
+ *
+ * Hand-rolled rather than using the workspace's `semver` dependency on purpose: this runs
+ * from build-container.yml on the runner's preinstalled Node, before (and without) any
+ * `pnpm install`, so the script must stay dependency-free. Do not "simplify" it to
+ * `require('semver')` — the workflow would fail with MODULE_NOT_FOUND.
  */
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
