@@ -841,7 +841,7 @@
   "ONBOARDING_AGENT_FRAMEWORK_DESC": "Elige uno o más marcos de agentes para potenciar tu sistema.",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES": "Hermes",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES_DESC": "Asistente de razonamiento avanzado para tus herramientas, memoria y notificaciones.",
-  "ONBOARDING_AGENT_COMPANION_APPS": "Aplicaciones complementarias:",
+  "ONBOARDING_AGENT_COMPANION_APPS": "También disponible en:",
   "ONBOARDING_AGENT_FRAMEWORK_OPENCLAW": "OpenClaw",
   "ONBOARDING_AGENT_FRAMEWORK_OPENCLAW_DESC": "Agente de codificación de código abierto y uso de computadora que se ejecuta en tu Hub.",
   "ONBOARDING_AGENT_FRAMEWORK_TITLE": "Marco de agentes",

@@ -70,7 +70,7 @@ export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrame
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             {FRAMEWORKS.map(({ key, companionApps }) => (
-              <div key={`${key}-clients`} className="flex flex-wrap items-center gap-1.5 px-1 text-xs text-muted-foreground">
+              <div key={`${key}-clients`} className="flex flex-wrap items-center gap-1.5 px-1 text-sm text-muted-foreground">
                 <span>{t('ONBOARDING_AGENT_COMPANION_APPS')}</span>
                 {companionApps.map((app) => (
                   <a

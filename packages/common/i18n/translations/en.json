@@ -916,7 +916,7 @@
   "ONBOARDING_AGENT_FRAMEWORK_OPENCLAW_DESC": "Open-source agent for coding and computer use. Installs and configures software, automates tasks, and controls apps on your Hub.",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES": "Hermes",
   "ONBOARDING_AGENT_FRAMEWORK_HERMES_DESC": "Advanced reasoning assistant for your tools, memory, and notifications. Best if you want deep integration with Companion Memory and proactive help.",
-  "ONBOARDING_AGENT_COMPANION_APPS": "Companion apps:",
+  "ONBOARDING_AGENT_COMPANION_APPS": "Also available on:",
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "No agent selected - you can add one later from the App Store.",
   "ONBOARDING_COMPANION_SECTION_TITLE": "Companion Memory",
   "ONBOARDING_COMPANION_SECTION_DESC": "Your personal knowledge base. Your AI can answer questions using your messages, email, documents, and notes, not just public knowledge.",
