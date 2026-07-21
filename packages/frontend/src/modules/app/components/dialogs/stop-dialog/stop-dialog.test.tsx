@@ -37,6 +37,7 @@ const app = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never
 
 describe('StopDialog', () => {
   beforeEach(() => {
+    h.opts = undefined;
     h.mutate.mockReset();
     h.invalidateAppQueries.mockReset();
     h.toastError.mockReset();

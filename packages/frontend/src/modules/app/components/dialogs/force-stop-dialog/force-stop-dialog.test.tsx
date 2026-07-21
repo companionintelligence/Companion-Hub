@@ -9,7 +9,6 @@ const h = vi.hoisted(() => ({
   opts: undefined as undefined | Record<string, (arg?: unknown) => void>,
   invalidateAppQueries: vi.fn(),
   toastError: vi.fn(),
-  post: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -20,8 +19,10 @@ vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({}),
 }));
 
+// The mutationFn never runs (useMutation is stubbed) — this mock only keeps the
+// module import side-effect-free.
 vi.mock('@/api-client/client.gen', () => ({
-  client: { post: (...args: unknown[]) => h.post(...args) },
+  client: { post: vi.fn() },
 }));
 
 vi.mock('@/modules/app/helpers/use-app-status', () => ({
@@ -38,6 +39,7 @@ const app = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never
 
 describe('ForceStopDialog', () => {
   beforeEach(() => {
+    h.opts = undefined;
     h.mutate.mockReset();
     h.invalidateAppQueries.mockReset();
     h.toastError.mockReset();

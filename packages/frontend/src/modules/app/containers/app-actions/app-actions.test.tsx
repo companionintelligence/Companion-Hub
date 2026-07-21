@@ -8,6 +8,10 @@ const hoisted = vi.hoisted(() => ({
   queryClient: {
     getQueryData: vi.fn(),
   },
+  // Options of the START mutation specifically (tagged via startAppMutation below),
+  // so its onError can be driven without depending on useMutation call order.
+  startOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
+  invalidateAppQueries: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
   tauriInvoke: null as null | (() => unknown),
@@ -24,10 +28,15 @@ vi.mock('@/lib/helpers/tauri-invoke', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (opts?: Record<string, unknown>) => {
+    if (opts?.__kind === 'start') {
+      hoisted.startOpts = opts as Record<string, (arg?: unknown) => void>;
+    }
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
   useQueryClient: () => hoisted.queryClient,
   useQuery: ({ initialData }: { initialData?: () => unknown }) => ({
     data: initialData ? initialData() : null,
@@ -36,9 +45,15 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   ignoreAppVersionMutation: () => ({}),
-  startAppMutation: () => ({}),
+  // Tagged so the useMutation mock above can pick this one out of several.
+  startAppMutation: () => ({ __kind: 'start' }),
   unignoreAppVersionMutation: () => ({}),
 }));
+
+vi.mock('@/modules/app/helpers/app-sse-cache', async () => {
+  const actual = await vi.importActual<typeof import('@/modules/app/helpers/app-sse-cache')>('@/modules/app/helpers/app-sse-cache');
+  return { ...actual, invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args) };
+});
 
 vi.mock('@/api-client/client.gen', () => ({
   client: {
@@ -185,6 +200,22 @@ describe('AppActions', () => {
   afterEach(() => {
     hoisted.tauriInvoke = null;
     hoisted.openPath.mockReset();
+    hoisted.startOpts = undefined;
+    hoisted.invalidateAppQueries.mockReset();
+  });
+
+  it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    render(<AppActions app={runningApp} metadata={metadata} info={info} appDataHostPath="/srv/hub/app-data/community/test-app" layout="hero" />);
+
+    // Start is the highest-traffic lifecycle action. A pre-flight rejection (starting
+    // an app that was already removed) throws before any status update, so no SSE
+    // event ever arrives to clear the optimistic 'starting' status.
+    expect(hoisted.startOpts?.onError).toBeTypeOf('function');
+    hoisted.startOpts?.onError?.({ message: 'APP_ERROR_APP_NOT_FOUND', intlParams: { id: 'test-app:community' } } as never);
+
+    expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), 'test-app:community');
   });
 
   it('hides the "Open data folder" button in the web client (no Tauri)', () => {
