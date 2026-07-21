@@ -33,9 +33,7 @@ export type AppUrlProbeStage = 'ready' | 'propagating' | 'error';
 export interface AppUrlProbeResult {
   available: boolean;
   appUrl?: string;
-  httpStatus?: number;
   stage?: AppUrlProbeStage;
-  reason?: string;
   detail?: string;
   errorCode?: string;
   resolvable?: boolean;
@@ -54,12 +52,14 @@ export type AppPublicUrlState = 'idle' | 'checking' | 'ready' | 'propagating' | 
 
 export interface AppUrlAvailability {
   state: AppPublicUrlState;
-  /** Resolved public URL, as soon as the backend can derive one (even while unavailable). */
+  /**
+   * Last URL the backend resolved for this app, kept even when a later probe
+   * omits it — it is what the "Open anyway" escape hatch links to, and losing
+   * it would strand a user whose app is in fact serving.
+   */
   appUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
-  /** Raw backend error code, kept for callers that branch on a specific failure. */
-  errorCode: string | null;
   /** The backend believes a `resolve` attempt could fix this. */
   resolvable: boolean;
   /** Early window in which a not-yet-available route is expected, not a fault. */
@@ -81,10 +81,15 @@ const GRACE_POLL_MS = 3_000;
 const NORMAL_POLL_MS = 10_000;
 /** Total probing budget. Past this an abandoned tab must not poll forever. */
 const MAX_POLL_MS = 5 * 60_000;
+/** Beat between a successful repair and the re-probe, so the write can take effect. */
+const RESOLVE_RECHECK_DELAY_MS = 3_000;
 
 /**
  * Backend error codes → i18n keys for the short, user-facing explanation. Codes
- * with no entry fall back to the backend's own English `detail` string.
+ * with no entry fall back to the backend's own English `detail` string, which is
+ * why `UNKNOWN` is mapped deliberately: its detail is a raw Node exception
+ * message ("read ECONNRESET"), which must never reach the user as an
+ * explanation. Keep in sync with `checkAppAvailability` in apps.service.ts.
  */
 const PROBE_MESSAGE_KEYS: Record<string, string> = {
   CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
@@ -95,9 +100,8 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
   CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
   CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
-  PROXY_UPSTREAM_ERROR: 'APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR',
-  APP_HTTP_ERROR: 'APP_ACTION_ERROR_APP_HTTP_ERROR',
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
+  UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 
 /**
@@ -128,11 +132,12 @@ export function nextProbeDelayMs(input: { available: boolean; graceElapsed: bool
 
 /**
  * Collapse the raw probe signals into one state. Precedence is load-bearing:
- * a disabled probe is `idle` (never a failure); no verdict yet is `checking`,
- * which is also where a failed *request* lands — a broken Hub call says nothing
- * about the app, so it must not read as "unreachable"; success wins over
- * everything else; and an exhausted budget is `unreachable` even if the last
- * verdict said "propagating", because we have stopped watching it come up.
+ * a disabled probe is `idle` (never a failure); a success wins over everything;
+ * an exhausted budget is `unreachable` — checked BEFORE `hasVerdict`, because a
+ * probe whose requests all failed has no verdict at all, and calling that "still
+ * checking" once polling has stopped strands the UI on a spinner nothing will
+ * ever update; only then does a missing verdict mean `checking`, which is also
+ * where a failed *request* lands (a broken Hub call says nothing about the app).
  * Exported for tests.
  */
 export function derivePublicUrlState(input: {
@@ -146,16 +151,16 @@ export function derivePublicUrlState(input: {
     return 'idle';
   }
 
-  if (!input.hasVerdict) {
-    return 'checking';
-  }
-
   if (input.available) {
     return 'ready';
   }
 
   if (input.pollingStopped) {
     return 'unreachable';
+  }
+
+  if (!input.hasVerdict) {
+    return 'checking';
   }
 
   if (input.stage === 'propagating') {
@@ -200,22 +205,19 @@ export function useAppUrlAvailability(input: {
   const [pollingStopped, setPollingStopped] = useState(false);
   // Bumping this re-arms the timers and re-runs the probe after reset().
   const [runId, setRunId] = useState(0);
-  // When the current run began. React Query keeps its cache entry across a
-  // disabled spell (an app stop/start) and across a remount within gcTime, so
-  // a verdict older than this belongs to a previous run and must not be
-  // trusted — a stale `available: true` would otherwise light up the Open
-  // button for a route that has not come back up yet.
-  const [runStartedAt, setRunStartedAt] = useState(() => Date.now());
 
   const queryOptions = useMemo(() => checkAvailabilityOptions({ path: { urn: appUrn } }), [appUrn]);
 
   const query = useQuery({
     ...queryOptions,
     enabled,
-    // The probe is a liveness question, not cacheable data: a stale "available"
-    // from a previous visit would light up an Open button for a route that has
-    // since gone away.
-    staleTime: 0,
+    // A verdict is only true of the run that fetched it. `gcTime: 0` drops the
+    // entry as soon as this page unmounts, and the effect below drops it when
+    // the probe stops applying (the app was stopped), so a revisit or a restart
+    // always starts from "checking" rather than resurrecting a pre-restart
+    // `available: true` and enabling Open against a route that is not back up.
+    // Both the UI and `refetchInterval` therefore read one and the same verdict.
+    gcTime: 0,
     // One request per tick. The generated options set `throwOnError`, so a
     // 401/5xx rejects; retrying here would triple the traffic for a probe that
     // is about to run again anyway.
@@ -234,30 +236,67 @@ export function useAppUrlAvailability(input: {
     refetchOnWindowFocus: false,
   });
 
-  // Only a verdict fetched during THIS run counts; see `runStartedAt`.
-  const probe = query.dataUpdatedAt >= runStartedAt ? ((query.data ?? null) as AppUrlProbeResult | null) : null;
+  const probe = (query.data ?? null) as AppUrlProbeResult | null;
+  const routeAvailable = Boolean(probe?.available);
 
   // Re-arm on every change of target or applicability: navigating between two
   // app-detail routes reuses this component, and a stop → start cycle must get a
   // fresh grace window rather than inherit the previous run's exhausted one.
+  // Nothing is armed once the route answers — there is no longer anything to
+  // wait for, and the timers would only fire pointless state updates.
   // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn and runId are deliberate re-arm triggers, not values the effect reads.
   useEffect(() => {
     setGraceElapsed(false);
     setPollingStopped(false);
-    setRunStartedAt(Date.now());
 
     if (!enabled) {
+      // The cache outlives a disabled spell (the observer stays subscribed), so
+      // evict it here or a restarted app would show its pre-stop verdict.
+      queryClient.removeQueries({ queryKey: queryOptions.queryKey });
+      return;
+    }
+
+    if (routeAvailable) {
       return;
     }
 
     const graceTimer = window.setTimeout(() => setGraceElapsed(true), GRACE_PERIOD_MS);
-    const giveUpTimer = window.setTimeout(() => setPollingStopped(true), MAX_POLL_MS);
+    const giveUpTimer = window.setTimeout(() => {
+      setPollingStopped(true);
+      // Read the verdict at fire time rather than closing over it, so the log
+      // says why we actually gave up — and so it can only ever fire for a run
+      // that really did exhaust its budget.
+      const latest = queryClient.getQueryData(queryOptions.queryKey) as AppUrlProbeResult | undefined;
+      console.warn(
+        '[app-url-availability] stopped probing %s after %dms (stage=%s, errorCode=%s)',
+        appUrn,
+        MAX_POLL_MS,
+        latest?.stage ?? 'unknown',
+        latest?.errorCode ?? 'none',
+      );
+    }, MAX_POLL_MS);
 
     return () => {
       window.clearTimeout(graceTimer);
       window.clearTimeout(giveUpTimer);
     };
-  }, [appUrn, enabled, runId]);
+  }, [appUrn, enabled, runId, routeAvailable, queryClient, queryOptions.queryKey]);
+
+  // Remember the last URL the backend resolved. Some verdicts carry no URL at
+  // all (a momentary registration or Tailscale blip), and letting the "Open
+  // anyway" link vanish under the user's cursor would remove their only way into
+  // an app that may well be serving. Reset per app, so one app's URL can never
+  // be offered for another.
+  const lastKnownAppUrlRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is the reset trigger, not a value the effect reads.
+  useEffect(() => {
+    lastKnownAppUrlRef.current = null;
+  }, [appUrn]);
+  useEffect(() => {
+    if (probe?.appUrl) {
+      lastKnownAppUrlRef.current = probe.appUrl;
+    }
+  }, [probe?.appUrl]);
 
   // A failed request is "no verdict", not "unavailable": the app may well be up
   // and the Hub call is what broke. Keep the UI neutral and let the next tick
@@ -282,28 +321,28 @@ export function useAppUrlAvailability(input: {
     console.warn('[app-url-availability] probe failed for %s:', appUrn, query.error);
   }, [query.error, appUrn]);
 
-  // Fires once when the budget runs out on a route that never came up (the
-  // timer also elapses for healthy apps — that is not worth a warning). The
-  // probe fields are context for that single line, not something to re-log on.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the probe fields are log context, not triggers.
-  useEffect(() => {
-    if (pollingStopped && enabled && !probe?.available) {
-      console.warn(
-        '[app-url-availability] stopped probing %s after %dms (stage=%s, errorCode=%s)',
-        appUrn,
-        MAX_POLL_MS,
-        probe?.stage ?? 'unknown',
-        probe?.errorCode ?? 'none',
-      );
-    }
-  }, [pollingStopped, enabled, appUrn]);
-
   const reset = useCallback(() => {
     // Drop the cached verdict as well as the local latches, so `hasVerdict`
     // falls back to false and the UI returns to a neutral "checking".
     void queryClient.resetQueries({ queryKey: queryOptions.queryKey });
     setRunId((current) => current + 1);
   }, [queryClient, queryOptions.queryKey]);
+
+  // The post-repair re-probe is deferred, so it has to be cancellable: left
+  // unmanaged it fires against whatever app this reused component is showing 3s
+  // later, and repeated Resolve clicks would stack timers that each re-arm the
+  // give-up budget.
+  const resolveRecheckTimerRef = useRef<number | null>(null);
+  const clearResolveRecheck = useCallback(() => {
+    if (resolveRecheckTimerRef.current !== null) {
+      window.clearTimeout(resolveRecheckTimerRef.current);
+      resolveRecheckTimerRef.current = null;
+    }
+  }, []);
+  // Cancels on unmount AND whenever the target app changes — a pending recheck
+  // for the app we just left must not land on the one we just opened.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is a deliberate cancel trigger, not a value the effect reads.
+  useEffect(() => clearResolveRecheck, [clearResolveRecheck, appUrn]);
 
   const resolveMutation = useMutation({
     ...resolveAvailabilityMutation(),
@@ -314,7 +353,11 @@ export function useAppUrlAvailability(input: {
         toast.success(result.detail || t('APP_ACTION_RESOLUTION_ATTEMPTED_RECHECKING'));
         // Give the backend's DNS/tunnel write a beat to take effect before the
         // first re-probe, otherwise we just re-read the broken state.
-        window.setTimeout(reset, 3_000);
+        clearResolveRecheck();
+        resolveRecheckTimerRef.current = window.setTimeout(() => {
+          resolveRecheckTimerRef.current = null;
+          reset();
+        }, RESOLVE_RECHECK_DELAY_MS);
         return;
       }
 
@@ -329,7 +372,7 @@ export function useAppUrlAvailability(input: {
   const state = derivePublicUrlState({
     enabled,
     hasVerdict: probe != null,
-    available: Boolean(probe?.available),
+    available: routeAvailable,
     stage: probe?.stage ?? null,
     pollingStopped,
   });
@@ -344,9 +387,8 @@ export function useAppUrlAvailability(input: {
 
   return {
     state,
-    appUrl: probe?.appUrl ?? null,
+    appUrl: probe?.appUrl ?? lastKnownAppUrlRef.current,
     statusMessage,
-    errorCode: probe?.errorCode ?? null,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
     pollingStopped,
@@ -366,7 +408,6 @@ export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   state: 'idle',
   appUrl: null,
   statusMessage: null,
-  errorCode: null,
   resolvable: false,
   withinGracePeriod: false,
   pollingStopped: false,

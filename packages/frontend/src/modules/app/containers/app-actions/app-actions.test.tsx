@@ -362,6 +362,32 @@ describe('AppActions', () => {
       expect(screen.queryByTestId('action-app_action_resolve')).not.toBeInTheDocument();
     });
 
+    it('still offers a retry after giving up on a verdict the Hub cannot repair', () => {
+      // Nothing is polling any more, so a spinner here would be a dead end.
+      renderExposed(
+        makeAvailability({ state: 'unreachable', statusMessage: 'APP_ACTION_APPLICATION_ERROR', resolvable: false, pollingStopped: true }),
+      );
+
+      expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+    });
+
+    it('shows the reason and the escape hatch for a propagating verdict that is not resolvable', () => {
+      // Past the grace window with resolvable falsy used to fall through every
+      // branch to a bare spinner, losing both the reason and "Open anyway".
+      renderExposed(
+        makeAvailability({
+          state: 'propagating',
+          statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+          withinGracePeriod: false,
+          resolvable: false,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
+    });
+
     it('enables Open as soon as the route is serving', async () => {
       renderExposed(makeAvailability({ state: 'ready', appUrl: 'https://app.example.com' }));
 

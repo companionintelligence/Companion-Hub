@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect, useRef } from 'react';
-import { client } from '@/api-client/client.gen';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -50,7 +49,8 @@ import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
-import type { AppUrlAvailability } from '../../helpers/use-app-url-availability';
+import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
+import { checkAvailability } from '@/api-client/sdk.gen';
 
 interface IProps {
   app?: AppDetails | null;
@@ -326,11 +326,6 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     />
   );
 
-  // Local-mode apps skip the availability probe entirely (their LAN address is
-  // reachable the moment the container binds), so this page fetches the URL on
-  // demand the first time Open is clicked and caches it here.
-  const [localAppUrl, setLocalAppUrl] = useState<string | null>(null);
-
   // Show install errors surfaced from SSE via query cache
   const queryClient = useQueryClient();
   const { data: installError } = useQuery({
@@ -349,7 +344,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   // this container only decides how to render it.
   const {
     state: publicUrlState,
-    appUrl: publicAppUrl,
+    appUrl,
     statusMessage,
     withinGracePeriod,
     pollingStopped,
@@ -358,40 +353,33 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     resolve: resolveRoute,
     reset: restartProbe,
   } = urlAvailability;
-  const appUrl = publicAppUrl ?? localAppUrl;
 
   // Build the Open button area for running apps with GUI
   const renderOpenButtonArea = () => {
     if (info.no_gui) return null;
 
-    // Local mode: always show enabled Open button immediately
+    // Local mode: always show enabled Open button immediately. The probe is
+    // skipped for local access (the LAN address serves as soon as the container
+    // binds), so resolve the URL on demand per click — deliberately NOT cached,
+    // since a port or exposure change would otherwise keep launching a dead
+    // address until the page is remounted.
     if (isLocal) {
       return (
         <ActionButton
           key="open-local"
           IconComponent={ExternalLink}
           onClick={() => {
-            // For local, construct URL from app data since backend returns it immediately
-            if (appUrl) {
-              openExternalUrl(appUrl);
-            } else {
-              // Fetch URL on-demand for local
-              client
-                .get({ url: `/api/apps/${info.urn}/check-availability` })
-                .then(({ data }) => {
-                  const result = (data || {}) as { appUrl?: string };
-                  if (result.appUrl) {
-                    setLocalAppUrl(result.appUrl);
-                    openExternalUrl(result.appUrl);
-                  }
-                })
-                .catch(() => {
-                  // A transient backend/tunnel failure (e.g. a Cloudflare 530
-                  // while the tunnel reconnects) must not become an unhandled
-                  // rejection surfaced as a generic error. Tell the user instead.
-                  toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
-                });
-            }
+            checkAvailability({ path: { urn: info.urn }, throwOnError: true })
+              .then(({ data }) => {
+                const result = (data ?? {}) as AppUrlProbeResult;
+                if (result.appUrl) openExternalUrl(result.appUrl);
+              })
+              .catch(() => {
+                // A transient backend/tunnel failure (e.g. a Cloudflare 530
+                // while the tunnel reconnects) must not become an unhandled
+                // rejection surfaced as a generic error. Tell the user instead.
+                toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
+              });
           }}
           title={t('APP_ACTION_OPEN')}
           variant="default"
@@ -440,8 +428,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
     // Taking longer than the grace window, but the backend thinks it can repair
     // the route (re-sync DNS / tunnel config) — offer that, or a plain retry
-    // once we've stopped probing on our own.
-    if ((publicUrlState === 'propagating' || publicUrlState === 'unreachable') && resolvable) {
+    // once we've stopped probing on our own. `pollingStopped` qualifies on its
+    // own: once we have given up there is nothing left to wait for, so a manual
+    // retry has to be reachable even for a verdict the backend can't repair
+    // (including no verdict at all, when every probe request failed).
+    if ((publicUrlState === 'propagating' || publicUrlState === 'unreachable') && (resolvable || pollingStopped)) {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
           {pollingStopped ? (
@@ -462,8 +453,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Settled failure with nothing the Hub can do about it.
-    if (publicUrlState === 'unreachable') {
+    // Any other not-serving verdict — a settled failure the Hub can't repair,
+    // or a propagating one past the grace window that arrived without the
+    // `resolvable` flag. Both must still show the reason and the escape hatch;
+    // falling through to the neutral spinner below would hide both.
+    if (publicUrlState === 'unreachable' || publicUrlState === 'propagating') {
       return (
         <div key="open-error" className="flex flex-col items-start gap-1">
           <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
@@ -473,9 +467,14 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Fallback: still checking. Same full-size footprint as the enabled Open
+    // Fallback: no verdict yet. Same full-size footprint as the enabled Open
     // button so the spinner state doesn't render smaller.
-    return <ActionButton key="open-checking" title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />;
+    return (
+      <div key="open-checking" className="flex flex-col items-start gap-1">
+        <ActionButton title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />
+        {openAnywayLink}
+      </div>
+    );
   };
 
   // If there was an install error for this app, show it under the open/action area

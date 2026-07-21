@@ -82,6 +82,9 @@ describe('derivePublicUrlState', () => {
     // Once we stop watching, "still propagating" is no longer honest.
     ['unreachable once probing is given up', { ...base, stage: 'propagating' as const, pollingStopped: true }, 'unreachable'],
     ['ready even after giving up, if the last probe succeeded', { ...base, available: true, pollingStopped: true }, 'ready'],
+    // Giving up outranks "no verdict": reporting a spinner after polling has
+    // stopped leaves a UI nothing will ever update.
+    ['unreachable when we gave up without ever getting a verdict', { ...base, hasVerdict: false, pollingStopped: true }, 'unreachable'],
   ])('resolves %s', (_label, input, expected) => {
     expect(derivePublicUrlState(input)).toBe(expected);
   });
@@ -209,6 +212,68 @@ describe('useAppUrlAvailability', () => {
 
     expect(result.current.state).not.toBe('ready');
     await waitFor(() => expect(result.current.state).toBe('propagating'));
+  });
+
+  it('keeps polling after a stale success is evicted, instead of reading it as still-available', async () => {
+    // Regression: refetchInterval used to read the raw cache while the UI read a
+    // run-gated copy, so a leftover `available: true` silently disarmed the poll
+    // loop and left the UI spinning forever.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    probe({ available: true, stage: 'ready', appUrl: 'https://app.example.com' });
+
+    const { result, rerender } = renderHook((props: { status: 'running' | 'stopped' }) => useAppUrlAvailability({ ...EXPOSED, ...props }), {
+      wrapper: wrapper(),
+      initialProps: { status: 'running' } as { status: 'running' | 'stopped' },
+    });
+
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+
+    rerender({ status: 'stopped' });
+    probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND' });
+    rerender({ status: 'running' });
+
+    await waitFor(() => expect(result.current.state).toBe('propagating'));
+
+    // The interval must still be armed — a stale verdict must not switch it off.
+    const callsAfterRestart = h.get.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(3_500);
+    });
+    expect(h.get.mock.calls.length).toBeGreaterThan(callsAfterRestart);
+  });
+
+  it('offers an unreachable verdict — not an endless spinner — when every probe request fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    h.get.mockRejectedValue(new Error('network down'));
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(h.get).toHaveBeenCalled());
+    expect(result.current.state).toBe('checking');
+
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60_000 + 1_000);
+    });
+
+    // Polling has stopped, so the UI must be told to stop waiting.
+    expect(result.current.pollingStopped).toBe(true);
+    expect(result.current.state).toBe('unreachable');
+  });
+
+  it('keeps the last resolved URL when a later probe returns none', async () => {
+    probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND', appUrl: 'https://app.example.com', resolvable: true });
+
+    const { result } = renderHook(() => useAppUrlAvailability(EXPOSED), { wrapper: wrapper() });
+
+    await waitFor(() => expect(result.current.appUrl).toBe('https://app.example.com'));
+
+    // A registration/Tailscale blip answers without a URL; the "Open anyway"
+    // escape hatch must not disappear under the user's cursor.
+    probe({ available: false, stage: 'error', errorCode: 'TAILSCALE_NOT_READY' });
+    act(() => result.current.reset());
+
+    await waitFor(() => expect(result.current.state).not.toBe('propagating'));
+    expect(result.current.appUrl).toBe('https://app.example.com');
   });
 
   it('re-arms the grace window when the target app changes', async () => {
