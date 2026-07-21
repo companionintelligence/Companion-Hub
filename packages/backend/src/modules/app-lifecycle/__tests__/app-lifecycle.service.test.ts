@@ -1213,9 +1213,22 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
-      // Backups are always removed on uninstall, even when app data/volumes are preserved.
-      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      // Backups follow the data choice: preserving app data/volumes preserves the backups too (#908).
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
+    });
+
+    it('keeps backups when uninstalling without deleting data, and only discards them with deleteAllData (#908)', async () => {
+      // A `deleteAllData: false` uninstall means the user chose to KEEP their data —
+      // destroying the only means of recovering it would be incoherent, and no UI
+      // ever surfaced that backups were being removed.
+      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await flushMicrotasks();
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
     });
 
     it('uninstallApp success: threads the command warningCode + warningDetail into the uninstall_success SSE (#907)', async () => {

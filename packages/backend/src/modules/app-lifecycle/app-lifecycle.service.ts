@@ -1193,8 +1193,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // Guard the shared memory provider before any destructive side effect runs.
     await this.assertMemoryProviderNotInUse(appUrn, force);
 
-    // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
-    await this.backupManager.deleteAppBackupsByUrn(appUrn);
+    // Backups follow the user's data choice: only discard the safety net when they
+    // actually asked for the live data to go too. Deleting backups on a
+    // `deleteAllData: false` uninstall is incoherent — the user explicitly chose to
+    // KEEP their data, yet the only means of recovering it would be destroyed with
+    // no UI ever surfacing that (#908).
+    if (deleteAllData) {
+      await this.backupManager.deleteAppBackupsByUrn(appUrn);
+    }
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
