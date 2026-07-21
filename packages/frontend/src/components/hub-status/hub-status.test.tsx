@@ -175,7 +175,7 @@ describe('getDockerDesktopGuideContent', () => {
         'Start Docker Desktop',
         'Come back here. The Hub will start automatically',
       ],
-      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening CI Hub.',
     });
   });
 
@@ -213,7 +213,7 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(screen.getByText(/Companion Hub needs Docker Desktop/)).toBeInTheDocument();
+    expect(screen.getByText(/CI Hub needs Docker Desktop/)).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
     expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
@@ -258,7 +258,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
-    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart Windows, then reopen CI Hub/)).toBeInTheDocument();
   });
 
   it('offers the Colima alternative on macOS and reports success', async () => {
@@ -343,7 +343,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -387,7 +387,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -528,7 +528,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     // No blocking screens should be shown
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
   });
 
   it('does not reload after a transient Starting blip once the hub is already running', async () => {
@@ -546,7 +546,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
@@ -561,7 +561,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     mockMacTauriWithStatus(['Starting']);
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
   });
 
   it('revalidates routes instead of reloading when the user refreshed while the hub was waking up', async () => {
@@ -575,7 +575,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     mockMacTauriWithStatus(['Starting', 'Starting']);
 
     await flushAsyncWork();
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);

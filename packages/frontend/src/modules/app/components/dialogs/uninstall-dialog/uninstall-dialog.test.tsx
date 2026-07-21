@@ -60,7 +60,7 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
-const providerApp = { id: 'ci-memory', name: 'Companion Memory', urn: 'ci-memory:ci-marketplace' } as never;
+const providerApp = { id: 'ci-memory', name: 'CI Memory', urn: 'ci-memory:ci-marketplace' } as never;
 
 describe('UninstallDialog', () => {
   beforeEach(() => {
@@ -75,7 +75,7 @@ describe('UninstallDialog', () => {
     const user = userEvent.setup();
     render(<UninstallDialog info={normalApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.queryByText(/connected to Companion Memory/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connected to CI Memory/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'plane:ci-marketplace' }, body: { deleteAllData: true, force: false } });
@@ -91,7 +91,7 @@ describe('UninstallDialog', () => {
     const user = userEvent.setup();
     render(<UninstallDialog info={providerApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.getByText(/still connected to Companion Memory/)).toBeInTheDocument();
+    expect(screen.getByText(/still connected to CI Memory/)).toBeInTheDocument();
     expect(screen.getByText('Hermes')).toBeInTheDocument();
 
     const submit = screen.getByRole('button', { name: 'Uninstall' });
@@ -123,7 +123,7 @@ describe('UninstallDialog', () => {
     const user = userEvent.setup();
     render(<UninstallDialog info={providerApp} isOpen onClose={vi.fn()} />);
 
-    expect(screen.queryByText(/connected to Companion Memory/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connected to CI Memory/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Uninstall' }));
     expect(h.mutate).toHaveBeenCalledWith({ path: { urn: 'ci-memory:ci-marketplace' }, body: { deleteAllData: true, force: false } });

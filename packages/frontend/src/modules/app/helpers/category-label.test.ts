@@ -15,11 +15,12 @@ describe('getCategoryLabel', () => {
 
   it('falls back to a humanized label for unknown categories', () => {
     const t = makeTranslator();
-    expect(getCategoryLabel(t, 'companion-intelligence')).toBe('Companion Intelligence');
+    expect(getCategoryLabel(t, 'some-unknown-category')).toBe('Some Unknown Category');
   });
 
   it('handles APP_CATEGORY_ prefixed values and hyphens', () => {
-    const t = makeTranslator();
-    expect(getCategoryLabel(t, 'APP_CATEGORY_COMPANION-INTELLIGENCE')).toBe('Companion Intelligence');
+    const t = makeTranslator({ APP_CATEGORY_COMPANION_INTELLIGENCE: 'CI' });
+    expect(getCategoryLabel(t, 'companion-intelligence')).toBe('CI');
+    expect(getCategoryLabel(t, 'APP_CATEGORY_COMPANION-INTELLIGENCE')).toBe('CI');
   });
 });

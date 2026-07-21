@@ -9,7 +9,7 @@ import { useMarketplaceCatalogApps } from '../../helpers/use-marketplace-catalog
 import { OnboardingAppIcon } from '../onboarding-app-icon';
 import { SelectIndicator, StepSection } from './primitives';
 
-/** Companion Intelligence apps pre-selected during onboarding. */
+/** First-party CI apps pre-selected during onboarding. */
 export const COMPANION_ONBOARDING_SLUGS = ['ci-memory', 'ci-import-tools'] as const;
 
 const COMPANION_DESCRIPTION_KEYS: Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string> = {
@@ -18,6 +18,7 @@ const COMPANION_DESCRIPTION_KEYS: Record<(typeof COMPANION_ONBOARDING_SLUGS)[num
 };
 
 const COMPANION_NAME_KEYS: Partial<Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string>> = {
+  'ci-memory': 'ONBOARDING_COMPANION_MEMORY_TITLE',
   'ci-import-tools': 'ONBOARDING_COMPANION_IMPORT_TOOLS_NAME',
 };
 

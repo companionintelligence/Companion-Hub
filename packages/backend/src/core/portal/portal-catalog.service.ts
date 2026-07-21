@@ -200,7 +200,7 @@ export class PortalCatalogService {
       id: slug,
       urn: appUrn,
       name,
-      author: typeof app.author === 'string' ? app.author : 'Companion Intelligence',
+      author: typeof app.author === 'string' ? app.author : 'CI',
       available: app.available !== false,
       deprecated: Boolean(app.deprecated),
       short_desc,

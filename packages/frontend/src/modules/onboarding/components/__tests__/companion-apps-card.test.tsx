@@ -11,7 +11,7 @@ const { mockCatalogState } = vi.hoisted(() => ({
     isRetryingEmptyCatalog: false,
     isCatalogSettled: true,
     apps: [
-      { id: 'ci-memory', name: 'Companion Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
+      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
       { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
     ] as Array<{ id: string; name: string; urn: string; short_desc: string }>,
   },
@@ -59,7 +59,7 @@ describe('CompanionAppsCard', () => {
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = true;
     mockCatalogState.apps = [
-      { id: 'ci-memory', name: 'Companion Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
+      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
       { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
     ];
   });
@@ -116,7 +116,7 @@ describe('CompanionAppsCard', () => {
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = true;
     mockCatalogState.apps = [
-      { id: 'ci-memory', name: 'Companion Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
+      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
       { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
     ];
     rerender(<Harness onEmit={onEmit} />);
@@ -131,7 +131,7 @@ describe('CompanionAppsCard', () => {
 
   it('matches companion apps by urn when portal entries omit id', async () => {
     mockCatalogState.apps = [
-      { name: 'Companion Memory', urn: 'ci-memory:ci-marketplace', short_desc: 'Memory server' },
+      { name: 'CI Memory', urn: 'ci-memory:ci-marketplace', short_desc: 'Memory server' },
       { name: 'Import Tools', urn: 'ci-import-tools:ci-marketplace', short_desc: 'Import data' },
     ] as typeof mockCatalogState.apps;
 

@@ -55,7 +55,7 @@ const PROPAGATION_POLL_MS = 2500;
  */
 const PROPAGATION_TIMEOUT_MS = 60_000;
 
-/** Trusted install URN of the first-party Companion Memory app (logo tile). */
+/** Trusted install URN of the first-party CI Memory app (logo tile). */
 const CI_MEMORY_URN = 'ci-memory:ci-marketplace';
 
 /**
@@ -394,7 +394,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
               <polyline points="12 6 18 12 12 18" />
             </svg>
           </span>
-          <AppLogo urn={CI_MEMORY_URN} size={56} alt="Companion Memory" />
+          <AppLogo urn={CI_MEMORY_URN} size={56} alt="CI Memory" />
         </div>
 
         <div className="mcf-status" role="status" aria-busy={phase === 'connecting' || phase === 'propagating'}>

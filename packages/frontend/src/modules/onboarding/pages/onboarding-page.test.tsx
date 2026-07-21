@@ -179,7 +179,7 @@ vi.mock('../components/ai-setup-step', () => ({
           onCompanionAppsChange?.([
             {
               appSlug: 'ci-memory',
-              name: 'Companion Memory',
+              name: 'CI Memory',
               icon: '',
               category: 'companion-intelligence',
               replacesNames: [],
@@ -215,7 +215,7 @@ vi.mock('../components/ai-setup/companion-apps-card', () => ({
           onChange?.([
             {
               appSlug: 'ci-memory',
-              name: 'Companion Memory',
+              name: 'CI Memory',
               icon: '',
               category: 'companion-intelligence',
               replacesNames: [],
