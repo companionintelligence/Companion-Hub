@@ -221,7 +221,8 @@ export const RecommendationsStep = ({
         return {
           slug: alt.appSlug as string,
           name: alt.name,
-          icon: alt.icon || storeApp?.icon || '',
+          // Prefer marketplace icon/URN over portal favicon URLs (often Google s2 links that 404).
+          icon: storeApp?.icon || alt.icon || '',
           urn: storeApp?.urn,
           replaces: rec.proprietary.join(', '),
           shortDesc: storeApp?.short_desc ?? '',

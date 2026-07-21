@@ -162,13 +162,13 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
               <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary" />
               <div className="flex-1 space-y-2">
                 <p className="text-sm font-medium">{t('ONBOARDING_TAILSCALE_READY')}</p>
-                <p className="text-xs text-muted-foreground">{t('ONBOARDING_TAILSCALE_READY_DESC')}</p>
+                <p className="text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_READY_DESC')}</p>
               </div>
             </div>
 
             {hasAttemptedConnection && (
               <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
-                <div className="text-xs text-yellow-800 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
+                <div className="text-sm text-yellow-800 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
               </div>
             )}
 
@@ -177,6 +177,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
               intent="primary"
               size="lg"
               className="w-full"
+              data-testid="tailscale-connect-btn"
               disabled={browserAuthMutation.isPending}
               onClick={() => browserAuthMutation.mutate()}
             >
@@ -193,8 +194,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
               )}
             </Button>
 
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <ExternalLink className="h-3 w-3" />
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <ExternalLink className="h-3.5 w-3.5" />
               <a href="https://tailscale.com" target="_blank" rel="noopener noreferrer" className="hover:underline">
                 {t('ONBOARDING_TAILSCALE_LEARN_MORE')}
               </a>
@@ -209,11 +210,34 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
             <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-400" />
             <div className="space-y-1">
               <p className="text-sm font-medium text-yellow-900 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE')}</p>
-              <p className="text-xs text-yellow-800/80 dark:text-yellow-200/80">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
+              <p className="text-sm text-yellow-800/80 dark:text-yellow-200/80">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
             </div>
           </div>
+          <p className="text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_THEN_CONNECT')}</p>
         </div>
       )}
+    </div>
+  );
+
+  const downloadLinks = (
+    <div className="flex flex-wrap gap-2">
+      {TAILSCALE_DOWNLOADS.map((p) => (
+        <a
+          key={p.label}
+          href={p.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={`tailscale-download-${p.label.toLowerCase()}`}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:border-primary/50 hover:bg-muted/50"
+        >
+          {p.brand ? (
+            <BrandLogo name={p.brand} className="h-3.5 w-3.5 text-foreground/80" />
+          ) : (
+            <Smartphone className="h-3.5 w-3.5 text-foreground/80" />
+          )}
+          <span>{p.label}</span>
+        </a>
+      ))}
     </div>
   );
 
@@ -228,26 +252,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           </li>
         </ul>
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_APP_DEVICES')}</p>
-          <div className="flex flex-wrap gap-2">
-            {TAILSCALE_DOWNLOADS.map((p) => (
-              <a
-                key={p.label}
-                href={p.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                data-testid={`tailscale-download-${p.label.toLowerCase()}`}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:border-primary/50 hover:bg-muted/50"
-              >
-                {p.brand ? (
-                  <BrandLogo name={p.brand} className="h-3.5 w-3.5 text-foreground/80" />
-                ) : (
-                  <Smartphone className="h-3.5 w-3.5 text-foreground/80" />
-                )}
-                <span>{p.label}</span>
-              </a>
-            ))}
-          </div>
+          <p className="text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_APP_DEVICES')}</p>
+          {downloadLinks}
         </div>
       </div>
     ) : null;

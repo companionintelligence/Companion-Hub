@@ -69,10 +69,9 @@ interface OllamaStatus {
   error?: string;
 }
 
-// Seed the multi-select remote-access with whatever transports are already configured.
-const defaultRemoteAccess = (cloudflareAvailable: boolean, tailscaleAvailable: boolean): RemoteAccessMode[] => {
-  const modes: RemoteAccessMode[] = [];
-  if (cloudflareAvailable) modes.push('cloudflare');
+// Web is the default path for every Hub. Also seed Private VPN when Tailscale is already connected.
+const defaultRemoteAccess = (_cloudflareAvailable: boolean, tailscaleAvailable: boolean): RemoteAccessMode[] => {
+  const modes: RemoteAccessMode[] = ['cloudflare'];
   if (tailscaleAvailable) modes.push('tailscale');
   return modes;
 };
@@ -344,8 +343,6 @@ export const AiSetupStep = ({
 
       {!isInsufficient && (
         <>
-          <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
-
           <AccessMethodsCard
             remoteAccess={remoteAccess}
             onToggleAccess={toggleAccess}
@@ -353,6 +350,8 @@ export const AiSetupStep = ({
             tailscaleAvailable={tailscaleAvailable}
             tailscaleSetup={showTailscaleSetup ? <TailscaleSetupStep embedded inline /> : undefined}
           />
+
+          <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
 
           <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
             <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />

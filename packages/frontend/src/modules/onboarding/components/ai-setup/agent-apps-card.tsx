@@ -44,13 +44,13 @@ const FRAMEWORKS: Array<{
 ];
 
 /**
- * Step 1 — Choose your AI agent. Pick one or more personal AI agents (OpenClaw, Hermes).
+ * Step 2 — Choose your AI agent. Pick one or more personal AI agents (OpenClaw, Hermes).
  */
 export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrameworkCardProps) => {
   const { t } = useTranslation();
 
   return (
-    <StepSection number={1} badge="recommended" title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
+    <StepSection number={2} badge="recommended" title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
       <div className="space-y-4" data-testid="agent-apps-card">
         <div className="space-y-2">
           <div className="grid items-stretch gap-4 sm:grid-cols-2">

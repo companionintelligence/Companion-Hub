@@ -400,8 +400,8 @@ describe('AiSetupStep', () => {
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
-      remoteAccess: [],
-      exposureMode: 'local',
+      remoteAccess: ['cloudflare'],
+      exposureMode: 'cloudflare',
       skipped: false,
       installedCatalogIds: ['phi-4-mini'],
       installBlocked: false,
@@ -462,8 +462,8 @@ describe('AiSetupStep', () => {
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
-      remoteAccess: [],
-      exposureMode: 'local',
+      remoteAccess: ['cloudflare'],
+      exposureMode: 'cloudflare',
       skipped: false,
       installedCatalogIds: ['phi-4-mini'],
       installBlocked: false,
@@ -645,23 +645,21 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [] }));
   });
 
-  it('lets the user choose Tailscale or Web remote access for their agent', async () => {
+  it('defaults to Web access and lets the user add Private VPN', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('access-this-computer')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('access-cloudflare'));
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
+    expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
   });
 
-  it('defaults agent remote access to Web when a Cloudflare tunnel is available', async () => {
+  it('keeps Web selected by default even when a Cloudflare tunnel is already available', async () => {
     renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);

@@ -10,17 +10,18 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AccessMethodsCard', () => {
-  it('highlights this-computer when no remote access is selected', () => {
-    render(<AccessMethodsCard remoteAccess={[]} onToggleAccess={vi.fn()} />);
-    expect(screen.getByTestId('access-this-computer')).toBeInTheDocument();
+  it('shows the local baseline note and unchecked remote options by default in the card props', () => {
+    render(<AccessMethodsCard remoteAccess={['cloudflare']} onToggleAccess={vi.fn()} />);
+    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();
   });
 
   it('toggles VPN and Web access options', async () => {
     const user = userEvent.setup();
     const onToggleAccess = vi.fn();
-    render(<AccessMethodsCard remoteAccess={[]} onToggleAccess={onToggleAccess} />);
+    render(<AccessMethodsCard remoteAccess={['cloudflare']} onToggleAccess={onToggleAccess} />);
 
     await user.click(screen.getByTestId('access-tailscale'));
     expect(onToggleAccess).toHaveBeenCalledWith('tailscale');
@@ -29,11 +30,16 @@ describe('AccessMethodsCard', () => {
   it('renders inline Tailscale setup when provided', () => {
     render(
       <AccessMethodsCard
-        remoteAccess={['tailscale']}
+        remoteAccess={['cloudflare', 'tailscale']}
         onToggleAccess={vi.fn()}
         tailscaleSetup={<div data-testid="tailscale-inline">Tailscale</div>}
       />,
     );
     expect(screen.getByTestId('tailscale-inline')).toBeInTheDocument();
+  });
+
+  it('shows local-only copy when no remote access is selected', () => {
+    render(<AccessMethodsCard remoteAccess={[]} onToggleAccess={vi.fn()} />);
+    expect(screen.getByText('ONBOARDING_ACCESS_LOCAL_ONLY_NOTE')).toBeInTheDocument();
   });
 });
