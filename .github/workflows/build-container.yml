@@ -16,17 +16,34 @@ on:
           - dev
           - staging
           - production
+      tag:
+        description: 'Release tag to publish as a versioned image (e.g. v0.2.45). Production only; ignored elsewhere.'
+        required: false
+        default: ''
+        type: string
   workflow_call:
     inputs:
       environment:
         description: 'Environment to deploy to'
         required: true
         type: string
+      tag:
+        description: 'Release tag to publish as a versioned image (e.g. v0.2.45). Production only; ignored elsewhere.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy
+    # Consumed by verify-anonymous-pull, which must check the exact reference this job
+    # published rather than recomputing it and risking a drift between the two.
+    outputs:
+      image_repo: ${{ steps.tags.outputs.image_repo }}
+      channel_tag: ${{ steps.tags.outputs.channel_tag }}
+      version: ${{ steps.tags.outputs.version }}
+      desktop_ref: ${{ steps.tags.outputs.desktop_ref }}
     permissions:
       contents: read
       deployments: write
@@ -58,50 +75,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine Docker tags
+      # Resolution rules live in a unit-tested script shared with the desktop binary, not
+      # inline here — see scripts/release/resolve-hub-image-tags.cjs. It decides the repo,
+      # the channel tag, whether a versioned tag is published, and the exact reference the
+      # shipped desktop will pin (desktop_ref), which the verify job then proves is
+      # anonymously pullable.
+      - name: Resolve image references
         id: tags
+        env:
+          # Both empty on push events; only dispatched/called runs supply them.
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ENV="${{ inputs.environment }}"
+          set -euo pipefail
+          # Prefer the explicit input over the trigger. `github.event_name` reports the
+          # CALLER's event inside a reusable workflow, so branching on it would ignore
+          # inputs.environment if Desktop Release were ever triggered by anything other
+          # than a dispatch. Branch detection is only the push-event fallback.
+          if [ -n "${INPUT_ENVIRONMENT:-}" ]; then
+            ENV="${INPUT_ENVIRONMENT}"
           elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
             ENV="production"
           elif [ "${{ github.ref }}" = "refs/heads/staging" ]; then
             ENV="staging"
-          elif [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            ENV="dev"
           else
             ENV="dev"
           fi
 
-          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
-
-          if [ "$ENV" = "production" ]; then
-            {
-              echo "docker_tag=latest"
-              echo "container_tag=ci-os-hub:latest"
-              echo "portal_registry=hub.ci.computer"
-            } >> "$GITHUB_OUTPUT"
-          elif [ "$ENV" = "staging" ]; then
-            {
-              echo "docker_tag=staging"
-              echo "container_tag=ci-os-hub:staging"
-              echo "portal_registry=portal.companionintel.com"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "docker_tag=dev"
-              echo "container_tag=ci-os-hub:dev"
-              echo "portal_registry=hub.companionintelligence.com"
-            } >> "$GITHUB_OUTPUT"
-          fi
+          echo "Resolving image references for environment=${ENV} tag=${RELEASE_TAG:-<none>}"
+          node scripts/release/resolve-hub-image-tags.cjs --environment "$ENV" --tag "${RELEASE_TAG:-}"
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.tags.outputs.image_repo }}
+          # Channel tag always; the versioned tag only when the resolver produced one
+          # (production releases). Tags are unprefixed by contract — hub_env.rs strips the
+          # `v` when composing its pin, so a `v`-prefixed tag would be unpullable.
           tags: |
-            type=raw,value=${{ steps.tags.outputs.docker_tag }}
+            type=raw,value=${{ steps.tags.outputs.channel_tag }}
+            type=raw,value=${{ steps.tags.outputs.version }},enable=${{ steps.tags.outputs.version != '' }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -140,6 +154,7 @@ jobs:
         uses: imjasonh/setup-crane@v0.4
 
       - name: Push to Portal registry
+        id: portal
         continue-on-error: true
         env:
           PORTAL_USER: ${{ secrets.PORTAL_REGISTRY_USERNAME }}
@@ -147,8 +162,9 @@ jobs:
         if: env.PORTAL_USER != ''
         run: |
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
-          TAG="${{ steps.tags.outputs.docker_tag }}"
-          GHCR_IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):${TAG}"
+          TAG="${{ steps.tags.outputs.channel_tag }}"
+          VERSION="${{ steps.tags.outputs.version }}"
+          GHCR_IMAGE="${{ steps.tags.outputs.image_repo }}:${TAG}"
 
           echo "Logging in to ${PORTAL}..."
           crane auth login "${PORTAL}" -u "${PORTAL_USER}" -p "${PORTAL_PASS}"
@@ -158,6 +174,24 @@ jobs:
 
           echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:latest"
           crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
+
+          # The Portal repo is what the backend LISTS for available updates
+          # (registry.service.ts filters to semver-valid tags). Without a versioned copy
+          # that listing is permanently empty and update discovery falls back to
+          # dl.ci.computer/latest.json — so publish the version here too.
+          if [ -n "${VERSION}" ]; then
+            echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:${VERSION}"
+            crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"
+          fi
+
+      # This step is intentionally non-fatal (Portal is a mirror, not the pull path), but a
+      # silent failure leaves update listing degraded with no signal — so say so loudly.
+      - name: Warn when the Portal mirror was not updated
+        if: always() && steps.portal.outcome == 'failure'
+        run: |
+          echo "::warning::Portal mirror copy failed. The image is published to GHCR and is still" \
+               "pullable, but ${{ steps.tags.outputs.portal_registry }}/ci-os-hub was not updated," \
+               "so in-app update listing will fall back to dl.ci.computer/latest.json."
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -169,3 +203,78 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy --env ${{ steps.tags.outputs.environment }}
+
+  # Prove the published image is usable by an ordinary user before any desktop bundle is
+  # built against it. Hub 0.2.44 shipped pinning an image that returned 403 to anonymous
+  # Docker; nothing in the pipeline noticed, because every CI step was authenticated (#920).
+  #
+  # This job therefore runs with NO registry login and an empty DOCKER_CONFIG, so ambient
+  # credentials cannot mask a private package. Desktop Release depends on this whole
+  # workflow, so a failure here blocks all six desktop builds before they start.
+  verify-anonymous-pull:
+    name: Verify image is publicly pullable
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Fresh runner: nothing is inherited from the deploy job, including crane.
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Verify anonymous pull and multi-arch manifest
+        env:
+          DESKTOP_REF: ${{ needs.deploy.outputs.desktop_ref }}
+          CHANNEL_REF: ${{ needs.deploy.outputs.image_repo }}:${{ needs.deploy.outputs.channel_tag }}
+        run: |
+          set -euo pipefail
+
+          # Isolate from any ambient credentials so this mirrors a first-time user.
+          DOCKER_CONFIG="$(mktemp -d)"
+          export DOCKER_CONFIG
+          echo '{}' > "${DOCKER_CONFIG}/config.json"
+
+          # Every reference a shipped build could resolve to. When a version is published,
+          # desktop_ref is that version; otherwise it is the channel tag and this dedupes.
+          REFS="${DESKTOP_REF}"
+          if [ "${CHANNEL_REF}" != "${DESKTOP_REF}" ]; then
+            REFS="${REFS} ${CHANNEL_REF}"
+          fi
+
+          FAILED=0
+          {
+            echo "### Hub stack image verification"
+            echo ""
+            echo "| reference | anonymous pull | linux/amd64 | linux/arm64 | digest |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for REF in ${REFS}; do
+            echo "Probing ${REF} anonymously…"
+            if ! MANIFEST="$(crane manifest "${REF}" 2>/tmp/crane-err)"; then
+              echo "::error::${REF} is NOT anonymously pullable: $(cat /tmp/crane-err)"
+              echo "::error::A shipped desktop build pins this exact reference and will fail with 403/404 at startup." \
+                   "Confirm the GHCR package is public and that this tag was published."
+              echo "| \`${REF}\` | ❌ | – | – | – |" >> "$GITHUB_STEP_SUMMARY"
+              FAILED=1
+              continue
+            fi
+
+            DIGEST="$(crane digest "${REF}")"
+            AMD64="❌"; ARM64="❌"
+            echo "${MANIFEST}" | grep -q '"architecture": *"amd64"' && AMD64="✅"
+            echo "${MANIFEST}" | grep -q '"architecture": *"arm64"' && ARM64="✅"
+
+            # Both are required: Apple Silicon and ARM64 Linux desktops are shipped targets,
+            # and an amd64-only image would leave them emulating or failing outright.
+            if [ "${AMD64}" != "✅" ] || [ "${ARM64}" != "✅" ]; then
+              echo "::error::${REF} is not multi-arch (amd64=${AMD64} arm64=${ARM64})." \
+                   "Restore 'platforms: linux/amd64,linux/arm64' on the build step."
+              FAILED=1
+            fi
+
+            echo "| \`${REF}\` | ✅ | ${AMD64} | ${ARM64} | \`${DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::${REF} verified (${DIGEST})"
+          done
+
+          exit "${FAILED}"
