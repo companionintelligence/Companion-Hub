@@ -78,3 +78,37 @@ describe('BackupManager.enforceRetentionAllApps', () => {
     expect(removed).toEqual(['plane-1000.tar.gz', 'plane-2000.tar.gz']);
   });
 });
+
+describe('BackupManager.getAppBackupsHostDir', () => {
+  const build = (rootFolderHost: unknown) => {
+    const config = mock<ConfigurationService>();
+    config.get.mockImplementation((key: string) => {
+      if (key === 'rootFolderHost') return rootFolderHost as never;
+      if (key === 'directories') return { dataDir: '/data' } as never;
+      return undefined as never;
+    });
+
+    const manager = new BackupManager(mock<ArchiveService>(), mock<LoggerService>(), config, mock<FilesystemService>(), mock<AppFilesManager>());
+    manager.onApplicationShutdown();
+    return manager;
+  };
+
+  it('maps the URN onto the host backups directory in directory order', () => {
+    // Host path, never the in-container /data one — it is pasted into a `sudo rm`.
+    // Backups deliberately hang off ROOT_FOLDER_HOST rather than the app-data base,
+    // which the operator can relocate independently via CI_HUB_APP_DATA_PATH.
+    expect(build('/srv/hub').getAppBackupsHostDir('plane:ci-marketplace')).toBe('/srv/hub/backups/ci-marketplace/plane');
+  });
+
+  it('keeps Windows separators consistent for a drive-letter host root', () => {
+    expect(build('C:\\hub').getAppBackupsHostDir('plane:ci-marketplace')).toBe('C:\\hub\\backups\\ci-marketplace\\plane');
+  });
+
+  it('returns undefined rather than throwing when the host root is unusable', () => {
+    // Best-effort guidance: a misconfigured root must degrade to a generic warning,
+    // never turn an otherwise-successful uninstall into a failure.
+    expect(build('relative/path').getAppBackupsHostDir('plane:ci-marketplace')).toBeUndefined();
+    expect(build('').getAppBackupsHostDir('plane:ci-marketplace')).toBeUndefined();
+    expect(build(undefined).getAppBackupsHostDir('plane:ci-marketplace')).toBeUndefined();
+  });
+});

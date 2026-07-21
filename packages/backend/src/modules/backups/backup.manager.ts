@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -184,6 +185,29 @@ export class BackupManager implements OnApplicationShutdown {
 
     await Promise.all(backupsToDelete.map((backup) => this.deleteBackup(appUrn, backup.id)));
     this.logger.info(`Cleanup completed for ${appUrn}`);
+  }
+
+  /**
+   * The HOST path of an app's backup directory (`{ROOT_FOLDER_HOST}/backups/{store}/{app}`) —
+   * the path to show a user for a manual `rm`, never the in-container one.
+   *
+   * Deliberately NOT built on `getAppDataHostPath`: that resolves against an app-data base the
+   * operator can relocate (`CI_HUB_APP_DATA_PATH` / `appDataPath`), whereas backups always live
+   * under the hub's own data dir, which is bind-mounted straight from `ROOT_FOLDER_HOST`.
+   *
+   * Best-effort guidance only — returns undefined on a misconfigured (non-absolute)
+   * ROOT_FOLDER_HOST instead of throwing, so resolving a path for a warning message can never
+   * escalate into a failed uninstall.
+   */
+  public getAppBackupsHostDir(appUrn: AppUrn): string | undefined {
+    const rootFolderHost = this.config.get('rootFolderHost');
+
+    if (!rootFolderHost || !isAbsoluteHostPath(rootFolderHost)) {
+      return undefined;
+    }
+
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    return joinHostPath(rootFolderHost, 'backups', appStoreId, appName);
   }
 
   /**

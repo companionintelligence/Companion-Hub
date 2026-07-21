@@ -1266,13 +1266,37 @@ describe('AppLifecycleService', () => {
       // The user asked for every trace of the app to go. If the archives survive, saying
       // "uninstalled successfully" is a lie — reuse the #907 remnant channel.
       backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      // The detail must travel with the code: the client only renders an actionable
+      // manual-cleanup command when a path is present, and falls back to a generic
+      // "some files remain" toast without one. It must point at the BACKUP directory —
+      // this arm fires only when the app-data wipe already succeeded.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/hub/backups/store/app',
+        }),
+      );
+    });
+
+    it('still warns when the backups host path cannot be resolved, just without a command (#908)', async () => {
+      // A misconfigured (non-absolute) ROOT_FOLDER_HOST yields no path. Guidance is
+      // best-effort: the warning must survive, degrading to the generic toast.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce(undefined);
 
       await service.uninstallApp({ appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
         'app',
-        expect.objectContaining({ event: 'uninstall_success', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT' }),
+        expect.objectContaining({ event: 'uninstall_success', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: undefined }),
       );
     });
 

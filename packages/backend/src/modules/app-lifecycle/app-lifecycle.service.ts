@@ -1250,7 +1250,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // warningDetail carries the host path so the client can show a manual
           // cleanup command. The infra-failure arm of the publish result has neither.
           let warningCode = 'warningCode' in result ? result.warningCode : undefined;
-          const warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
+          let warningDetail = 'warningDetail' in result ? result.warningDetail : undefined;
 
           // Backups follow the user's data choice, and are discarded only now that the
           // app is definitively gone. THREE conditions must hold: the user asked for the
@@ -1269,6 +1269,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               // never see. Non-fatal — the app itself IS uninstalled.
               this.logger.warn(`Failed to delete backups for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
               warningCode = 'APP_UNINSTALL_PARTIAL_REMNANT';
+              // Point the manual-cleanup command at the BACKUP directory, not the app-data
+              // one: this arm fires only when the data wipe already succeeded, so the sole
+              // leftover is the archives. Without a detail the client falls back to a generic
+              // "some files remain" toast with no path, which is the one thing the user needs.
+              warningDetail = this.backupManager.getAppBackupsHostDir(appUrn);
             }
           }
 
