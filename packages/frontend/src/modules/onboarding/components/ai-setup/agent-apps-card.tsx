@@ -124,7 +124,7 @@ export const AgentFrameworkCard = ({
                 <label
                   key={mode}
                   className={cn(
-                    'flex items-start gap-2 rounded-lg border p-2.5 transition-colors',
+                    'flex items-start gap-2 rounded-md border p-2.5 transition-colors',
                     disabled ? 'cursor-not-allowed opacity-70' : 'cursor-pointer',
                     isSelected && !disabled ? 'border-primary bg-primary/10 ring-1 ring-primary/30' : 'border-border hover:bg-muted/50',
                   )}
