@@ -28,7 +28,8 @@ main     →  production environment (ci-os-hub-production)
 
 The package must stay **public**: the desktop shells out to `docker compose` with no registry
 credentials. `build-container.yml`'s `verify-anonymous-pull` job proves this unauthenticated on
-every run, before any desktop bundle is built. See `docs/HUB-STACK-IMAGE-RECOVERY.md`.
+every run, before any desktop bundle is built. If that job goes red, the package visibility flipped
+or the versioned tag was never pushed — fix the release rather than shipping the bundles.
 
 ## GitHub Environments Setup
 
