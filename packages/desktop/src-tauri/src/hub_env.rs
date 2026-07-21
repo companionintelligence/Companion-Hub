@@ -51,21 +51,52 @@ pub(crate) fn default_ci_cloud_url() -> &'static str {
 /// (`ci-hub:0.2.45`). `scripts/release/resolve-hub-image-tags.cjs` mirrors this function to
 /// decide what CI publishes and verifies; keep the two in step.
 pub(crate) fn default_hub_image() -> String {
-    match option_env!("CI_HUB_ENVIRONMENT") {
-        Some("production") => {
-            if let Some(version) = option_env!("CI_HUB_BUILD_VERSION") {
-                format!(
-                    "{}:{}",
-                    HUB_STACK_IMAGE_REPO,
-                    version.trim_start_matches('v')
-                )
-            } else {
-                format!("{HUB_STACK_IMAGE_REPO}:latest")
-            }
-        }
+    hub_image_for(build_environment(), build_version())
+}
+
+/// Pure form of [`default_hub_image`], split out so every arm is reachable in tests.
+///
+/// `option_env!` is resolved at compile time, so a test binary always sees the same
+/// values; calling `default_hub_image()` directly would only ever exercise the `dev` arm
+/// and leave the production branch — the one that shipped #920 — unverified.
+fn hub_image_for(environment: Option<&str>, version: Option<&str>) -> String {
+    match environment {
+        // A blank version is normalized away here as well as in build_version(), so no
+        // caller can compose `ci-hub:` — an invalid reference that fails every compose call.
+        Some("production") => match version
+            .map(normalize_version_tag)
+            .filter(|version| !version.is_empty())
+        {
+            Some(version) => format!("{HUB_STACK_IMAGE_REPO}:{version}"),
+            None => format!("{HUB_STACK_IMAGE_REPO}:latest"),
+        },
         Some("staging") => format!("{HUB_STACK_IMAGE_REPO}:staging"),
         _ => format!("{HUB_STACK_IMAGE_REPO}:dev"),
     }
+}
+
+/// Build environment this binary was compiled for.
+fn build_environment() -> Option<&'static str> {
+    option_env!("CI_HUB_ENVIRONMENT").map(str::trim)
+}
+
+/// Release version this binary was compiled for, if one was supplied.
+///
+/// `option_env!` yields `Some("")` when the variable is set but empty, which the release
+/// workflow does whenever it is dispatched with a blank tag. Treating that as a version
+/// would compose `ci-hub:` — an invalid reference that fails every `docker compose` call —
+/// so an empty value is reported as absent and falls back to the channel tag.
+fn build_version() -> Option<&'static str> {
+    option_env!("CI_HUB_BUILD_VERSION").filter(|version| !version.trim().is_empty())
+}
+
+/// Strip the optional leading `v` from a release tag.
+///
+/// The pipeline publishes unprefixed tags (`ci-hub:0.2.45`), so any `v` spelling that
+/// reaches us — a legacy tag from the retired workflow, or a hand-edited `.env` — must be
+/// normalized before it is written back as an image reference, or the pull 404s.
+fn normalize_version_tag(version: &str) -> &str {
+    version.trim().trim_start_matches('v')
 }
 
 /// Preserve semver pins written by in-container stack updates (Settings → Update in a browser)
@@ -78,13 +109,30 @@ pub(crate) fn default_hub_image() -> String {
 /// `ci-hub` reference. The rewritten `.env` also makes `ensure_runtime_env_state` report a
 /// change, which forces a fresh pull — so a stranded install repairs itself on one start.
 pub(crate) fn resolve_runtime_hub_image(existing: &HashMap<String, String>) -> String {
-    let desktop_default = default_hub_image();
+    resolve_runtime_hub_image_for(
+        existing.get("CI_HUB_IMAGE").map(String::as_str),
+        build_environment(),
+        build_version(),
+    )
+}
 
-    let Some(existing_image) = existing.get("CI_HUB_IMAGE") else {
+/// Pure form of [`resolve_runtime_hub_image`], so both build-version branches are testable.
+///
+/// A shipped bundle always carries `CI_HUB_BUILD_VERSION`, so released binaries only ever
+/// take the `compare_semver` path; testing through `default_hub_image()` would exercise the
+/// other one exclusively.
+fn resolve_runtime_hub_image_for(
+    existing_image: Option<&str>,
+    environment: Option<&str>,
+    build_version: Option<&str>,
+) -> String {
+    let desktop_default = hub_image_for(environment, build_version);
+
+    let Some(existing_image) = existing_image.map(unquote_env_value) else {
         return desktop_default;
     };
 
-    let Some(tag) = image_tag(existing_image) else {
+    let Some((repository, tag)) = existing_image.rsplit_once(':') else {
         return desktop_default;
     };
 
@@ -96,23 +144,51 @@ pub(crate) fn resolve_runtime_hub_image(existing: &HashMap<String, String>) -> S
     // repo this build actually pulls from. Anything else (a foreign registry, or a stale
     // `ci-os-hub` reference from a pre-#920 desktop or backend) is discarded in favour of
     // the desktop default rather than carried forward into an unpullable start.
-    if image_repository(existing_image) != Some(HUB_STACK_IMAGE_REPO) {
+    if repository != HUB_STACK_IMAGE_REPO {
         return desktop_default;
     }
 
-    if let Some(desktop_version) = option_env!("CI_HUB_BUILD_VERSION") {
-        let desktop_version = desktop_version.trim_start_matches('v');
-        if compare_semver(tag, desktop_version) == Ordering::Greater {
-            return existing_image.clone();
+    if !is_version_image_tag(tag) {
+        return desktop_default;
+    }
+
+    // Rebuild the reference from the normalized tag rather than echoing the pin back
+    // verbatim: a `v`-prefixed tag is a spelling the pipeline never publishes, so handing
+    // it straight to compose would 404 — and would disagree with CI_HUB_VERSION, which
+    // runtime_hub_version_for_image derives from the same tag with the `v` stripped.
+    let pinned = format!("{HUB_STACK_IMAGE_REPO}:{}", normalize_version_tag(tag));
+
+    match build_version {
+        // Honour a stack update only while it is ahead of the bundle that shipped this
+        // binary; otherwise the desktop's own build wins.
+        Some(build_version) => {
+            if compare_semver(tag, build_version) == Ordering::Greater {
+                pinned
+            } else {
+                desktop_default
+            }
         }
-        return desktop_default;
+        None => pinned,
     }
+}
 
-    if is_version_image_tag(tag) {
-        return existing_image.clone();
-    }
-
-    desktop_default
+/// Strip surrounding quotes from a `.env` value.
+///
+/// `parse_env_file` only trims whitespace, but quoting a value is legal in an env file.
+/// Without this, a quoted `CI_HUB_IMAGE` fails the repository check, gets replaced on every
+/// single start, and — because the rewritten file counts as a config change — forces a full
+/// image pull and container recreate each launch.
+fn unquote_env_value(value: &str) -> &str {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|inner| inner.strip_suffix('\''))
+        })
+        .unwrap_or(trimmed)
 }
 
 pub(crate) fn runtime_hub_version_for_image(hub_image: &str) -> String {
@@ -177,10 +253,20 @@ fn compare_semver(left: &str, right: &str) -> Ordering {
     Ordering::Equal
 }
 
+/// Numeric `major.minor.patch` components of a version, ignoring any pre-release suffix.
+///
+/// The pre-release/build metadata is cut off BEFORE splitting on `.`. Splitting first and
+/// discarding unparseable components silently mis-reads `0.2.46-rc.1` as `[0, 2, 1]` — the
+/// `46-rc` component fails to parse and vanishes — which orders an rc build below the
+/// release it follows. Pre-release tags are publishable (the release pipeline accepts them
+/// and Desktop Release defaults to prerelease), so this path is live.
+///
+/// Ordering between two pre-releases of the same version is intentionally not modelled;
+/// callers only need "is this pin ahead of the running build".
 fn parse_semver_parts(version: &str) -> Vec<u32> {
-    version
-        .trim_start_matches('v')
-        .split('.')
+    let core = version.trim().trim_start_matches('v');
+    let core = core.split(['-', '+']).next().unwrap_or(core);
+    core.split('.')
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse().ok())
@@ -205,46 +291,127 @@ pub(crate) fn default_update_cdn_host() -> &'static str {
 mod tests {
     use super::*;
 
+    const PROD: Option<&str> = Some("production");
+
     #[test]
     fn default_public_domain_is_non_empty() {
         assert!(!default_public_domain().is_empty());
     }
 
-    /// Build a `CI_HUB_IMAGE`-only env map, the shape `resolve_runtime_hub_image` reads.
-    fn env_with_pin(image: &str) -> HashMap<String, String> {
-        HashMap::from([("CI_HUB_IMAGE".to_string(), image.to_string())])
+    #[test]
+    fn image_repo_is_the_public_ci_hub_package() {
+        // Pinned to a literal, not interpolated: every other assertion in this module
+        // derives from the constant, so only this one can catch it being repointed. The
+        // private ci-os-hub package is what stopped Hub 0.2.44 from starting (#920).
+        assert_eq!(HUB_STACK_IMAGE_REPO, "ghcr.io/companionintelligence/ci-hub");
     }
 
     #[test]
-    fn default_hub_image_uses_public_ci_hub_repo() {
-        let image = default_hub_image();
-        assert!(
-            image.starts_with(&format!("{HUB_STACK_IMAGE_REPO}:")),
-            "expected a {HUB_STACK_IMAGE_REPO} reference, got {image}"
+    fn production_pins_the_exact_release_version_unprefixed() {
+        // Exercised through the pure form because option_env! is compile-time: calling
+        // default_hub_image() in a test binary only ever reaches the `dev` arm, leaving
+        // the production branch — the one that shipped #920 — unverified.
+        assert_eq!(
+            hub_image_for(PROD, Some("v0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.45")
         );
-        // The private repo this was mistakenly pointed at in #916 must never come back.
-        assert!(
-            !image.contains("ci-os-hub"),
-            "regressed to ci-os-hub: {image}"
+        assert_eq!(
+            hub_image_for(PROD, Some("0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.45")
         );
     }
 
     #[test]
-    fn default_hub_image_tag_is_never_v_prefixed() {
-        // CI publishes the release tag unprefixed because this function strips the `v`
-        // and the backend interpolates the raw listed tag. A `v` here means a 404 pull.
-        let image = default_hub_image();
-        let tag = image_tag(&image).expect("image has a tag");
-        assert!(!tag.starts_with('v'), "tag must be unprefixed, got {tag}");
+    fn production_without_a_version_falls_back_to_latest() {
+        assert_eq!(
+            hub_image_for(PROD, None),
+            format!("{HUB_STACK_IMAGE_REPO}:latest")
+        );
+    }
+
+    #[test]
+    fn blank_build_version_is_treated_as_absent() {
+        // The release workflow writes CI_HUB_BUILD_VERSION unconditionally, so a blank
+        // tag would otherwise compose `ci-hub:` — an invalid reference that fails every
+        // docker compose call.
+        for blank in ["", "   "] {
+            assert_eq!(
+                hub_image_for(PROD, Some(blank)),
+                format!("{HUB_STACK_IMAGE_REPO}:latest"),
+                "blank version {blank:?} must not produce an empty tag"
+            );
+        }
+    }
+
+    #[test]
+    fn non_production_environments_use_their_channel_tag() {
+        assert_eq!(
+            hub_image_for(Some("staging"), Some("0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:staging")
+        );
+        assert_eq!(
+            hub_image_for(Some("dev"), Some("0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:dev")
+        );
+        assert_eq!(
+            hub_image_for(None, None),
+            format!("{HUB_STACK_IMAGE_REPO}:dev")
+        );
     }
 
     #[test]
     fn preserves_newer_stack_update_pin_over_desktop_default() {
         let pin = format!("{HUB_STACK_IMAGE_REPO}:99.0.0");
-        let resolved = resolve_runtime_hub_image(&env_with_pin(&pin));
         assert_eq!(
-            resolved, pin,
+            resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45")),
+            pin,
             "a newer same-repo pin must survive hub.start"
+        );
+    }
+
+    #[test]
+    fn discards_pin_that_is_not_ahead_of_this_build() {
+        // Shipped bundles always carry a build version, so this branch — not the
+        // is_version_image_tag one — is what released binaries actually execute.
+        let pin = format!("{HUB_STACK_IMAGE_REPO}:0.1.0");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45")),
+            hub_image_for(PROD, Some("0.2.45"))
+        );
+    }
+
+    #[test]
+    fn prerelease_build_is_not_ordered_below_the_release_it_follows() {
+        // parse_semver_parts once read "0.2.46-rc.1" as [0,2,1], so an rc bundle compared
+        // OLDER than 0.2.45 and kept the stale pin forever.
+        let pin = format!("{HUB_STACK_IMAGE_REPO}:0.2.45");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&pin), PROD, Some("v0.2.46-rc.1")),
+            hub_image_for(PROD, Some("v0.2.46-rc.1")),
+            "an rc build must supersede the release before it"
+        );
+        assert_eq!(compare_semver("0.2.46-rc.1", "0.2.45"), Ordering::Greater);
+        assert_eq!(compare_semver("0.2.46+ci.7", "0.2.45"), Ordering::Greater);
+    }
+
+    #[test]
+    fn normalizes_a_v_prefixed_pin_instead_of_echoing_it_back() {
+        // The pipeline never publishes a `v` spelling, so honouring one verbatim would
+        // write an unpullable CI_HUB_IMAGE that also contradicts CI_HUB_VERSION.
+        let pin = format!("{HUB_STACK_IMAGE_REPO}:v99.0.0");
+        let resolved = resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45"));
+        assert_eq!(resolved, format!("{HUB_STACK_IMAGE_REPO}:99.0.0"));
+        assert_eq!(runtime_hub_version_for_image(&resolved), "99.0.0");
+    }
+
+    #[test]
+    fn honours_a_quoted_pin() {
+        // parse_env_file only trims whitespace, so a quoted value would otherwise fail the
+        // repo check and be rewritten on every start — forcing a pull and recreate each launch.
+        let quoted = format!("\"{HUB_STACK_IMAGE_REPO}:99.0.0\"");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&quoted), PROD, Some("0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:99.0.0")
         );
     }
 
@@ -254,29 +421,35 @@ mod tests {
         // private ci-os-hub repo, which anonymous Docker cannot pull. Even though 99.0.0
         // is "newer" than any desktop build, the reference is unusable and must be
         // replaced by the desktop default rather than carried forward.
-        let resolved = resolve_runtime_hub_image(&env_with_pin(
-            "ghcr.io/companionintelligence/ci-os-hub:99.0.0",
-        ));
-        assert_eq!(resolved, default_hub_image());
+        let resolved = resolve_runtime_hub_image_for(
+            Some("ghcr.io/companionintelligence/ci-os-hub:99.0.0"),
+            PROD,
+            Some("0.2.45"),
+        );
+        assert_eq!(resolved, hub_image_for(PROD, Some("0.2.45")));
         assert!(!resolved.contains("ci-os-hub"));
     }
 
     #[test]
     fn discards_pin_from_a_foreign_registry() {
-        let resolved =
-            resolve_runtime_hub_image(&env_with_pin("registry.example.com/ci-hub:99.0.0"));
-        assert_eq!(resolved, default_hub_image());
+        assert_eq!(
+            resolve_runtime_hub_image_for(
+                Some("registry.example.com/ci-hub:99.0.0"),
+                PROD,
+                Some("0.2.45")
+            ),
+            hub_image_for(PROD, Some("0.2.45"))
+        );
     }
 
     #[test]
-    fn discards_floating_pin_in_favour_of_desktop_default() {
-        for tag in ["latest", "staging", "dev"] {
-            let resolved =
-                resolve_runtime_hub_image(&env_with_pin(&format!("{HUB_STACK_IMAGE_REPO}:{tag}")));
+    fn discards_a_non_version_pin() {
+        for tag in ["latest", "staging", "dev", "nightly", "garbage"] {
+            let pin = format!("{HUB_STACK_IMAGE_REPO}:{tag}");
             assert_eq!(
-                resolved,
-                default_hub_image(),
-                "floating tag {tag} must not pin"
+                resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45")),
+                hub_image_for(PROD, Some("0.2.45")),
+                "tag {tag} must not be honoured as a version pin"
             );
         }
     }
@@ -284,23 +457,32 @@ mod tests {
     #[test]
     fn falls_back_to_desktop_default_without_a_pin() {
         assert_eq!(
+            resolve_runtime_hub_image_for(None, PROD, Some("0.2.45")),
+            hub_image_for(PROD, Some("0.2.45"))
+        );
+        assert_eq!(
             resolve_runtime_hub_image(&HashMap::new()),
             default_hub_image()
         );
     }
 
     #[test]
-    fn image_repository_splits_on_the_same_boundary_as_image_tag() {
-        let reference = format!("{HUB_STACK_IMAGE_REPO}:1.2.3");
-        assert_eq!(image_repository(&reference), Some(HUB_STACK_IMAGE_REPO));
-        assert_eq!(image_tag(&reference), Some("1.2.3"));
-        assert_eq!(image_repository("no-tag-here"), None);
+    fn honours_a_version_pin_when_no_build_version_is_compiled_in() {
+        let pin = format!("{HUB_STACK_IMAGE_REPO}:1.2.3");
+        assert_eq!(resolve_runtime_hub_image_for(Some(&pin), PROD, None), pin);
     }
 
     #[test]
     fn semver_compare_orders_patch_versions() {
         assert_eq!(compare_semver("0.2.43", "0.2.41"), Ordering::Greater);
         assert_eq!(compare_semver("0.2.41", "0.2.43"), Ordering::Less);
+    }
+
+    #[test]
+    fn parse_semver_parts_ignores_prerelease_and_build_metadata() {
+        assert_eq!(parse_semver_parts("0.2.46-rc.1"), vec![0, 2, 46]);
+        assert_eq!(parse_semver_parts("v0.2.46+ci.7"), vec![0, 2, 46]);
+        assert_eq!(parse_semver_parts("0.2.46"), vec![0, 2, 46]);
     }
 
     #[test]

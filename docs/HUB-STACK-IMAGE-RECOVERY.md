@@ -48,11 +48,20 @@ Run the bundled CLI:
 
 | Platform | Command |
 |---|---|
-| Linux | `companion-hub update` |
+| Linux (deb/rpm) | `companion-hub update` |
 | macOS | `"/Applications/Companion Hub.app/Contents/MacOS/companion-hub" update` |
-| Windows | `"C:\Program Files\Companion Hub\companion-hub.exe" update` |
+| Windows (MSI, per-machine) | `"C:\Program Files\Companion Hub\companion-hub.exe" update` |
+| Windows (`-setup.exe`, Scoop, WinGet) | `"%LOCALAPPDATA%\Companion Hub\companion-hub.exe" update` |
 
-Add `--check` to test without installing (exit code `1` means an update is available).
+The NSIS installer (`-setup.exe`, and the Scoop/WinGet packages built from it) installs
+per-user, so it is under `%LOCALAPPDATA%`, not `Program Files`. If neither path exists,
+locate the binary with `where /R %USERPROFILE% companion-hub.exe` on Windows or
+`which companion-hub` on Linux. An AppImage install has no `companion-hub` on `PATH` —
+reinstall instead.
+
+`--check` reports without installing, but its exit code is ambiguous: `1` means *either*
+an update is available *or* the check itself failed (CDN unreachable, unreadable
+manifest). Read the printed output rather than branching on the code alone.
 
 Or reinstall over the top from <https://dl.ci.computer> or the GitHub Releases page. Hub
 data and settings live in the data directory and are preserved.

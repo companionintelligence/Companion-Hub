@@ -168,37 +168,50 @@ jobs:
           PORTAL_PASS: ${{ secrets.PORTAL_REGISTRY_PASSWORD }}
         if: env.PORTAL_USER != ''
         run: |
+          # Without -e the step's status is just the LAST command's, so a trailing
+          # conditional would mask a failed login or copy and report success.
+          set -euo pipefail
+
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
           TAG="${{ steps.tags.outputs.channel_tag }}"
           VERSION="${{ steps.tags.outputs.version }}"
-          GHCR_IMAGE="${{ steps.tags.outputs.image_repo }}:${TAG}"
+          CHANNEL_IMAGE="${{ steps.tags.outputs.image_repo }}:${TAG}"
 
           echo "Logging in to ${PORTAL}..."
           crane auth login "${PORTAL}" -u "${PORTAL_USER}" -p "${PORTAL_PASS}"
 
-          echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:${TAG}"
-          crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:${TAG}"
+          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-os-hub:${TAG}"
+          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-os-hub:${TAG}"
 
-          echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:latest"
-          crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
+          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-os-hub:latest"
+          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-os-hub:latest"
 
           # The Portal repo is what the backend LISTS for available updates
           # (registry.service.ts filters to semver-valid tags). Without a versioned copy
           # that listing is permanently empty and update discovery falls back to
           # dl.ci.computer/latest.json — so publish the version here too.
+          #
+          # Sourced from the VERSIONED GHCR reference, not the channel tag: this workflow
+          # also runs on pushes to main, so :latest can move between the build above and
+          # this copy, which would publish a different digest under the version's name.
           if [ -n "${VERSION}" ]; then
-            echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:${VERSION}"
-            crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"
+            VERSIONED_IMAGE="${{ steps.tags.outputs.image_repo }}:${VERSION}"
+            echo "Copying ${VERSIONED_IMAGE} → ${PORTAL}/ci-os-hub:${VERSION}"
+            crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"
           fi
 
       # This step is intentionally non-fatal (Portal is a mirror, not the pull path), but a
       # silent failure leaves update listing degraded with no signal — so say so loudly.
+      # Keyed on "not success" rather than "failure": the most common degraded path is the
+      # mirror step being SKIPPED because no Portal credentials are configured, which is
+      # exactly the silence this warning exists to break.
       - name: Warn when the Portal mirror was not updated
-        if: always() && steps.portal.outcome == 'failure'
+        if: ${{ !cancelled() && steps.portal.outcome != 'success' }}
         run: |
-          echo "::warning::Portal mirror copy failed. The image is published to GHCR and is still" \
-               "pullable, but ${{ steps.tags.outputs.portal_registry }}/ci-os-hub was not updated," \
-               "so in-app update listing will fall back to dl.ci.computer/latest.json."
+          echo "::warning::Portal mirror was not updated (outcome: ${{ steps.portal.outcome }})." \
+               "The image is published to GHCR and is still pullable, but" \
+               "${{ steps.tags.outputs.portal_registry }}/ci-os-hub did not receive it, so in-app" \
+               "update listing will fall back to dl.ci.computer/latest.json."
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -233,6 +246,7 @@ jobs:
         env:
           DESKTOP_REF: ${{ needs.deploy.outputs.desktop_ref }}
           CHANNEL_REF: ${{ needs.deploy.outputs.image_repo }}:${{ needs.deploy.outputs.channel_tag }}
+          IMAGE_REPO: ${{ needs.deploy.outputs.image_repo }}
           VERSION: ${{ needs.deploy.outputs.version }}
         run: |
           set -euo pipefail
@@ -250,7 +264,7 @@ jobs:
           # When a version was published, the reference under test must be that version.
           # Otherwise a drift between what is published and what is verified would let the
           # gate pass on :latest while the pinned version tag is missing.
-          if [ -n "${VERSION}" ] && [ "${DESKTOP_REF}" != "${CHANNEL_REF%:*}:${VERSION}" ]; then
+          if [ -n "${VERSION}" ] && [ "${DESKTOP_REF}" != "${IMAGE_REPO}:${VERSION}" ]; then
             echo "::error::Published version '${VERSION}' does not match the verified reference '${DESKTOP_REF}'."
             echo "::error::The resolver and the workflow disagree; desktop builds would pin an unverified image."
             exit 1
@@ -287,13 +301,21 @@ jobs:
               continue
             fi
 
-            DIGEST="$(crane digest "${REF}")"
+            # Tolerate a flaky digest lookup: it is metadata for the summary table, and
+            # failing the release over a transient 5xx here would abort the loop before
+            # the remaining references are probed.
+            DIGEST="$(crane digest "${REF}" 2>/dev/null || echo 'unavailable')"
+
             # Decide on plain booleans and derive the display separately: tying the
             # pass/fail branch to the emoji used in the summary table would let a cosmetic
             # edit silently change what this gate accepts.
+            #
+            # Matched from a here-string rather than `echo | grep`: under `pipefail`,
+            # `grep -q` exits on first match and can SIGPIPE the producer, making the
+            # pipeline report failure on a manifest that DID contain the architecture.
             HAS_AMD64=0; HAS_ARM64=0
-            echo "${MANIFEST}" | grep -q '"architecture": *"amd64"' && HAS_AMD64=1
-            echo "${MANIFEST}" | grep -q '"architecture": *"arm64"' && HAS_ARM64=1
+            grep -q '"architecture": *"amd64"' <<< "${MANIFEST}" && HAS_AMD64=1
+            grep -q '"architecture": *"arm64"' <<< "${MANIFEST}" && HAS_ARM64=1
 
             # Both are required: Apple Silicon and ARM64 Linux desktops are shipped targets,
             # and an amd64-only image would leave them emulating or failing outright.

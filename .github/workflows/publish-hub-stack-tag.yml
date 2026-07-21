@@ -39,6 +39,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The Portal credentials are environment-scoped (build-container.yml reads them from
+    # inside an environment-bound job, and the Portal host differs per environment).
+    # Without this binding they resolve empty and the mirror silently no-ops.
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -51,6 +55,16 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+
+          # The resolver treats an empty tag as the legitimate "no version" case, which
+          # build-container needs on push events. Here it would silently degrade into
+          # copying :latest onto :latest and reporting success while minting nothing, so
+          # require a version explicitly. `required: true` does not reject an empty string.
+          if [ -z "${RELEASE_TAG// /}" ]; then
+            echo "::error::A version tag is required (e.g. 0.2.45); refusing to run with an empty tag."
+            exit 1
+          fi
+
           node scripts/release/resolve-hub-image-tags.cjs --environment production --tag "$RELEASE_TAG"
 
       - name: Install crane

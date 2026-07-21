@@ -4,6 +4,7 @@
  * ships bundles pinning an image nobody published — the Hub 0.2.44 outage (#920).
  */
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -30,7 +31,25 @@ function runCli(args: string[]) {
 describe('resolve-hub-image-tags', () => {
   it('publishes to the public ci-hub package, never the private ci-os-hub one', () => {
     expect(IMAGE_REPO).toBe('ghcr.io/companionintelligence/ci-hub');
-    expect(IMAGE_REPO).not.toContain('ci-os-hub');
+  });
+
+  // The repo string is duplicated across four independently-maintained files, and each of
+  // the other suites only compares its own copy to its own literal — so a rename that
+  // updated three of four would leave every suite green while CI published to one repo and
+  // the shipped desktop pinned another. That is the exact shape of #920.
+  describe('the repo constant agrees across every copy', () => {
+    const sources: Array<[string, RegExp]> = [
+      ['packages/desktop/src-tauri/src/hub_env.rs', /HUB_STACK_IMAGE_REPO: &str = "([^"]+)"/],
+      ['packages/backend/src/common/constants.ts', /HUB_STACK_IMAGE_REPO = '([^']+)'/],
+      ['scripts/sync-docker-compose-prod.cjs', /CI_HUB_IMAGE:-([^:]+):latest/],
+    ];
+
+    it.each(sources)('%s names the same repo as the resolver', (file, pattern) => {
+      const contents = fs.readFileSync(path.join(repoRoot, file), 'utf-8');
+      const found = contents.match(pattern)?.[1];
+      expect(found, `could not find the image repo in ${file}`).toBeDefined();
+      expect(found).toBe(IMAGE_REPO);
+    });
   });
 
   describe('normalizeVersion', () => {
@@ -53,7 +72,13 @@ describe('resolve-hub-image-tags', () => {
 
     // Silently skipping a malformed tag is how a release ships with no versioned image.
     it.each(['0.2', 'latest', 'v1.x', 'nightly', 'v'])('rejects the unusable tag %s', (tag) => {
-      expect(() => normalizeVersion(tag)).toThrow(/not valid semver/);
+      expect(() => normalizeVersion(tag)).toThrow(/not a publishable version/);
+    });
+
+    it('rejects build metadata, which is not a legal Docker tag character', () => {
+      // `+` is outside [A-Za-z0-9._-], so publishing it would fail with "invalid reference
+      // format" at push time and again at every docker compose pull.
+      expect(() => normalizeVersion('v0.2.45+ci.7')).toThrow(/not a publishable version/);
     });
   });
 
@@ -95,7 +120,7 @@ describe('resolve-hub-image-tags', () => {
     });
 
     it('still rejects a malformed tag rather than deferring the failure to release day', () => {
-      expect(() => resolveHubImageTags({ environment: 'dev', tag: '0.2' })).toThrow(/not valid semver/);
+      expect(() => resolveHubImageTags({ environment: 'dev', tag: '0.2' })).toThrow(/not a publishable version/);
     });
   });
 
@@ -105,6 +130,14 @@ describe('resolve-hub-image-tags', () => {
 
   it('rejects an unknown environment', () => {
     expect(() => resolveHubImageTags({ environment: 'prod' })).toThrow(/Unknown environment/);
+  });
+
+  it('rejects inherited Object.prototype keys as environments', () => {
+    // A plain object literal would return a truthy entry for these, yielding
+    // channel_tag=undefined and publishing a literal `:undefined` tag.
+    for (const key of ['constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      expect(() => resolveHubImageTags({ environment: key })).toThrow(/Unknown environment/);
+    }
   });
 
   it('maps each environment to its Portal mirror', () => {
@@ -128,6 +161,11 @@ describe('resolve-hub-image-tags', () => {
 
     it('exits non-zero on a malformed tag so the release fails loudly', () => {
       expect(() => runCli(['--environment', 'production', '--tag', '0.2'])).toThrow();
+    });
+
+    it('rejects an unknown flag rather than silently resolving to the dev default', () => {
+      // A typo'd `--enviroment` that is ignored would publish no versioned image at all.
+      expect(() => runCli(['--enviroment', 'production', '--tag', 'v0.2.45'])).toThrow();
     });
   });
 });

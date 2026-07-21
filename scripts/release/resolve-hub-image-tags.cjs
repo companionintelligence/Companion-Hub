@@ -20,6 +20,7 @@
  */
 
 const fs = require('node:fs');
+const { parseArgs: nodeParseArgs } = require('node:util');
 
 /**
  * GHCR repo the desktop pulls from. Must match `HUB_STACK_IMAGE_REPO` in
@@ -32,11 +33,14 @@ const fs = require('node:fs');
 const IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 /** Per-environment floating tag and Portal mirror, unchanged from the original workflow. */
-const ENVIRONMENTS = {
+// Null-prototype so inherited keys ('constructor', 'toString', ...) cannot pass the
+// lookup guard below and yield an entry whose fields are undefined — which would publish
+// a literal `:undefined` tag.
+const ENVIRONMENTS = Object.assign(Object.create(null), {
   production: { channelTag: 'latest', portalRegistry: 'hub.ci.computer' },
   staging: { channelTag: 'staging', portalRegistry: 'portal.companionintel.com' },
   dev: { channelTag: 'dev', portalRegistry: 'hub.companionintelligence.com' },
-};
+});
 
 /**
  * Strict `major.minor.patch` with an optional pre-release/build suffix.
@@ -48,7 +52,10 @@ const ENVIRONMENTS = {
  * `pnpm install`, so the script must stay dependency-free. Do not "simplify" it to
  * `require('semver')` — the workflow would fail with MODULE_NOT_FOUND.
  */
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// Build metadata (`+ci.7`) is deliberately NOT accepted: `+` is illegal in a Docker tag
+// ([A-Za-z0-9_][A-Za-z0-9._-]{0,127}), so allowing it would emit a reference that fails
+// with "invalid reference format" at push time and again at every `docker compose pull`.
+const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 /**
  * Normalise a release tag into the tag CI must publish.
@@ -72,8 +79,9 @@ function normalizeVersion(tag) {
   const withoutPrefix = trimmed.replace(/^v/, '');
   if (!SEMVER_PATTERN.test(withoutPrefix)) {
     throw new Error(
-      `Release tag "${trimmed}" is not valid semver (expected e.g. v0.2.45 or 0.2.45). ` +
-        'Refusing to publish, because an unparseable tag yields a release with no versioned image.',
+      `Release tag "${trimmed}" is not a publishable version (expected e.g. v0.2.45, 0.2.45, ` +
+        'or 0.2.45-rc.1; build metadata like +ci.7 is not a legal Docker tag). ' +
+        'Refusing to publish, because an unusable tag yields a release with no versioned image.',
     );
   }
 
@@ -119,23 +127,23 @@ function resolveHubImageTags({ environment, tag } = {}) {
   };
 }
 
-/** Minimal `--flag value` parser; avoids a dependency for two arguments. */
+/**
+ * Parse `--environment <value> --tag <value>`.
+ *
+ * Uses Node's built-in parser (stdlib, so the dependency-free constraint holds) with
+ * `strict`, so a typo'd flag is a hard error. A silently ignored `--enviroment` would fall
+ * back to the dev default and publish no versioned image — the #920 failure mode.
+ */
 function parseArgs(argv) {
-  const args = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const current = argv[i];
-    if (current.startsWith('--')) {
-      const key = current.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) {
-        args[key] = '';
-      } else {
-        args[key] = next;
-        i += 1;
-      }
-    }
-  }
-  return args;
+  const { values } = nodeParseArgs({
+    args: argv,
+    options: {
+      environment: { type: 'string' },
+      tag: { type: 'string' },
+    },
+    strict: true,
+  });
+  return values;
 }
 
 function main() {
@@ -175,8 +183,11 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
+    // Set exitCode rather than calling process.exit(): writes to a pipe (which Actions
+    // always attaches) are async, and exiting immediately can truncate the one message
+    // that explains the failure.
     console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 

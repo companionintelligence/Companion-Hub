@@ -20,6 +20,21 @@ function readWorkflow(name: string) {
 const buildContainer = readWorkflow('build-container.yml');
 const desktopRelease = readWorkflow('desktop-release.yml');
 
+const GATE_JOB = 'verify-anonymous-pull:';
+
+/**
+ * Source of the pull-gate job.
+ *
+ * Asserts the marker exists first: `indexOf` returns -1 when the job is renamed, and
+ * `slice(-1)` would then yield a single character on which every `not.toContain`
+ * assertion passes vacuously.
+ */
+function gateSource() {
+  const start = buildContainer.indexOf(GATE_JOB);
+  expect(start, `${GATE_JOB} job not found in build-container.yml`).toBeGreaterThan(-1);
+  return buildContainer.slice(start);
+}
+
 describe('desktop-release.yml', () => {
   it('threads the release tag into the container build', () => {
     // Without this the container build never learns the version the bundles compile in,
@@ -60,13 +75,37 @@ describe('build-container.yml', () => {
     expect(buildContainer).not.toContain('prefix=v');
   });
 
-  it('keeps multi-arch builds', () => {
-    // Apple Silicon and ARM64 Linux are shipped desktop targets.
-    expect(buildContainer).toContain('platforms: linux/amd64,linux/arm64');
+  it('keeps multi-arch builds on the build step itself', () => {
+    // Apple Silicon and ARM64 Linux are shipped desktop targets. Asserted as an indented
+    // YAML key, not a bare substring: the same text also appears inside the gate's error
+    // message, so a plain `toContain` stays green even if the real `platforms:` key is
+    // deleted.
+    expect(buildContainer).toMatch(/^ +platforms: linux\/amd64,linux\/arm64$/m);
   });
 
   it('mirrors the versioned tag to Portal so update listing sees semver tags', () => {
     expect(buildContainer).toContain('${PORTAL}/ci-os-hub:${VERSION}');
+  });
+
+  it('sources the Portal versioned mirror from the versioned image, not the channel tag', () => {
+    // This workflow also runs on pushes to main, so :latest can move between the build and
+    // the mirror; copying from the channel tag would publish a different digest under the
+    // version's name and desync Portal listing from what Docker actually pulls.
+    expect(buildContainer).toContain('VERSIONED_IMAGE="${{ steps.tags.outputs.image_repo }}:${VERSION}"');
+    expect(buildContainer).toContain('crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"');
+  });
+
+  it('fails the Portal mirror step on a failed copy instead of masking it', () => {
+    // The step has a trailing conditional; without `set -e` its exit status would be that
+    // conditional's, hiding an earlier login/copy failure and making the warn step dead.
+    const portalStep = buildContainer.slice(buildContainer.indexOf('- name: Push to Portal registry'));
+    expect(portalStep).toContain('set -euo pipefail');
+  });
+
+  it('warns whenever the Portal mirror did not succeed, including when skipped', () => {
+    // Missing credentials skip the step (outcome 'skipped'), which is exactly the silent
+    // degradation the warning exists to surface.
+    expect(buildContainer).toContain("steps.portal.outcome != 'success'");
   });
 
   it('gates the release on an anonymous pull check that depends on the build', () => {
@@ -77,14 +116,14 @@ describe('build-container.yml', () => {
   it('runs the gate without registry credentials', () => {
     // Every step in the original pipeline was authenticated, which is exactly why a private
     // package went unnoticed. The gate must look like a first-time user.
-    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
+    const gate = gateSource();
     expect(gate).toContain('DOCKER_CONFIG');
     expect(gate).not.toContain('docker/login-action');
     expect(gate).toContain('crane manifest');
   });
 
   it('asserts both shipped architectures are present', () => {
-    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
+    const gate = gateSource();
     expect(gate).toContain('amd64');
     expect(gate).toContain('arm64');
   });
@@ -93,16 +132,17 @@ describe('build-container.yml', () => {
     // The verification loop iterates over the resolved references. If desktop_ref were
     // ever empty the loop would simply not run and the job would go green having proved
     // nothing — the same silent-pass failure mode that let #920 ship.
-    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
-    expect(gate).toContain('if [ -z "${DESKTOP_REF}" ]; then');
+    const gate = gateSource();
+    expect(gate).toContain('DESKTOP_REF');
+    expect(gate).toMatch(/-z\s+"\$\{DESKTOP_REF\}"/);
   });
 
   it('refuses to pass when the published version and the verified reference disagree', () => {
     // Otherwise a drift between resolver and workflow could verify :latest while the
     // pinned version tag is absent.
-    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
-    expect(gate).toContain('if [ -n "${VERSION}" ]');
-    expect(gate).toContain('${CHANNEL_REF%:*}:${VERSION}');
+    const gate = gateSource();
+    expect(gate).toMatch(/-n\s+"\$\{VERSION\}"/);
+    expect(gate).toContain('${IMAGE_REPO}:${VERSION}');
   });
 });
 
