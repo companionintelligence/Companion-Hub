@@ -98,10 +98,22 @@ interface OptionCardProps {
   hint?: string;
   onSelect?: () => void;
   testId?: string;
+  className?: string;
 }
 
 /** A large, icon-led selectable card used for the Agent Framework and Inference Backend steps. */
-export function OptionCard({ title, description, icon, selected = false, disabled = false, badge, hint, onSelect, testId }: OptionCardProps) {
+export function OptionCard({
+  title,
+  description,
+  icon,
+  selected = false,
+  disabled = false,
+  badge,
+  hint,
+  onSelect,
+  testId,
+  className,
+}: OptionCardProps) {
   return (
     <button
       type="button"
@@ -115,6 +127,7 @@ export function OptionCard({ title, description, icon, selected = false, disable
           ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20'
           : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-foreground/[0.03]',
         disabled && 'cursor-not-allowed opacity-45 hover:border-border hover:bg-foreground/[0.015]',
+        className,
       )}
     >
       <span className={cn('mt-0.5 flex-shrink-0 [&>*]:size-9', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>

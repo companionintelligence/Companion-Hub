@@ -46,8 +46,8 @@ export function computeSelectionBudget(
   if (modelsAlreadyInstalled.length > 0 && modelsNeedingDownload.length === 0) {
     memoryNote =
       modelsAlreadyInstalled.length === 1
-        ? 'This model is already in Ollama — nothing new to download.'
-        : `${modelsAlreadyInstalled.length} selected models are already in Ollama — nothing new to download.`;
+        ? 'This model is already in Ollama. Nothing new to download.'
+        : `${modelsAlreadyInstalled.length} selected models are already in Ollama. Nothing new to download.`;
   } else if (installedMemoryMb > 0) {
     const installedCount = modelsAlreadyInstalled.length;
     memoryNote =
@@ -63,7 +63,7 @@ export function computeSelectionBudget(
 
   let memoryWarning: string | undefined;
   if (overMemory) {
-    memoryWarning = `New model selections may need ${formatSizeMb(newMemoryMb)} inference memory at runtime, but only ${formatSizeMb(availableMemoryMb)} is currently free. You can continue — Hub will attempt best-effort downloads, but some models may not load until memory is freed.`;
+    memoryWarning = `New model selections may need ${formatSizeMb(newMemoryMb)} inference memory at runtime, but only ${formatSizeMb(availableMemoryMb)} is currently free. You can continue. Hub will attempt best-effort downloads, but some models may not load until memory is freed.`;
   }
 
   return {

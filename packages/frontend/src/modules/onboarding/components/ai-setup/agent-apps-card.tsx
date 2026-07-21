@@ -52,10 +52,11 @@ export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrame
   return (
     <StepSection number={1} badge="recommended" title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
       <div className="space-y-4" data-testid="agent-apps-card">
-        <div className="grid gap-4 sm:grid-cols-2">
-          {FRAMEWORKS.map(({ key, nameKey, Icon, descriptionKey, companionApps }) => (
-            <div key={key}>
+        <div className="space-y-2">
+          <div className="grid items-stretch gap-4 sm:grid-cols-2">
+            {FRAMEWORKS.map(({ key, nameKey, Icon, descriptionKey }) => (
               <OptionCard
+                key={key}
                 testId={`agent-${key}`}
                 title={t(nameKey)}
                 description={t(descriptionKey)}
@@ -63,8 +64,13 @@ export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrame
                 selected={frameworks.includes(key)}
                 badge={undefined}
                 onSelect={() => onToggleFramework(key)}
+                className="h-full"
               />
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1 text-xs text-muted-foreground">
+            ))}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {FRAMEWORKS.map(({ key, companionApps }) => (
+              <div key={`${key}-clients`} className="flex flex-wrap items-center gap-1.5 px-1 text-xs text-muted-foreground">
                 <span>{t('ONBOARDING_AGENT_COMPANION_APPS')}</span>
                 {companionApps.map((app) => (
                   <a
@@ -80,8 +86,8 @@ export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrame
                   </a>
                 ))}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
         {frameworks.length === 0 && (
