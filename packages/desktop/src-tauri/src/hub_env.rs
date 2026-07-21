@@ -209,20 +209,21 @@ fn image_tag(image: &str) -> Option<&str> {
     image.rsplit_once(':').map(|(_, tag)| tag)
 }
 
-/// Repository portion of a `repo:tag` reference.
-///
-/// Splits on the same boundary as [`image_tag`] so the repo and tag checks can never
-/// disagree about where the reference divides. An untagged reference yields `None`,
-/// which callers treat as "not a pin we recognise".
-fn image_repository(image: &str) -> Option<&str> {
-    image.rsplit_once(':').map(|(repo, _)| repo)
-}
-
 fn is_floating_image_tag(tag: &str) -> bool {
     matches!(tag, "latest" | "staging" | "dev")
 }
 
-/// Whether a tag looks like a version pin (`0.2.43` or `v0.2.43`).
+/// Whether a tag looks like a version pin (`0.2.43`, `v0.2.43`, `0.2.45-rc.1`).
+///
+/// Requires a fully numeric `major.minor.patch` core, not merely a leading digit. The
+/// caller *preserves* any pin this accepts, so a lax check carries junk like `1.x` or
+/// `2026-07-21` straight into `docker compose` as an unpullable reference — the exact
+/// failure mode #920 was. Everything rejected here falls back to the desktop's own build
+/// default, which is always publishable and pullable, so erring strict is the safe side.
+///
+/// Each component is validated with the same `u32` parse [`parse_semver_parts`] uses, so
+/// the two can never disagree about whether a tag is comparable: a tag accepted here is
+/// guaranteed to yield at least three ordered components there.
 ///
 /// The leading `v` is optional because both spellings have been published over this
 /// repo's history: the retired tag-triggered workflow emitted `v`-prefixed tags, while
@@ -230,10 +231,19 @@ fn is_floating_image_tag(tag: &str) -> bool {
 /// prefix before parsing, so accepting it here keeps a `v`-tagged pin from silently
 /// falling through to the build-time fallback version.
 fn is_version_image_tag(tag: &str) -> bool {
-    tag.trim_start_matches('v')
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit())
+    let core = normalize_version_tag(tag);
+    // Cut the pre-release/build suffix on the same boundary parse_semver_parts uses.
+    let core = core.split(['-', '+']).next().unwrap_or(core);
+
+    let mut components = 0usize;
+    for component in core.split('.') {
+        if component.parse::<u32>().is_err() {
+            return false;
+        }
+        components += 1;
+    }
+
+    components >= 3
 }
 
 fn compare_semver(left: &str, right: &str) -> Ordering {
@@ -413,6 +423,38 @@ mod tests {
             resolve_runtime_hub_image_for(Some(&quoted), PROD, Some("0.2.45")),
             format!("{HUB_STACK_IMAGE_REPO}:99.0.0")
         );
+    }
+
+    #[test]
+    fn discards_a_pin_whose_tag_is_not_a_full_version() {
+        // A leading-digit check accepts junk like `1.x`, and because a pin this guard
+        // accepts is preserved verbatim, the Hub would then be told to pull a tag that
+        // does not exist — reproducing #920 from a different direction. `1.x` also
+        // out-compares any real build under compare_semver ([1] vs [0, 2, 45]), so the
+        // lax form failed exactly when it mattered most.
+        for tag in ["1.x", "v1.x", "0.2", "2026-07-21", "1.2.beta"] {
+            let pin = format!("{HUB_STACK_IMAGE_REPO}:{tag}");
+            assert_eq!(
+                resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45")),
+                hub_image_for(PROD, Some("0.2.45")),
+                "expected the desktop default to win over the unpullable pin {pin}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_every_shape_the_release_pipeline_publishes() {
+        // The strict check must not reject the tags CI actually mints, or a legitimate
+        // stack update would be discarded on every start.
+        for tag in ["99.0.0", "v99.0.0", "99.0.0-rc.1"] {
+            assert!(
+                is_version_image_tag(tag),
+                "{tag} is a published tag shape and must be honoured as a version pin"
+            );
+        }
+        for tag in ["1.x", "0.2", "latest", "nightly", "2026-07-21", ""] {
+            assert!(!is_version_image_tag(tag), "{tag} is not a version pin");
+        }
     }
 
     #[test]
