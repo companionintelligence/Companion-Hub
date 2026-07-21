@@ -327,6 +327,8 @@
   "APP_STATUS_RUNNING": "Running",
   "APP_STATUS_STARTING": "Starting",
   "APP_STATUS_INITIALIZING": "Initializing",
+  "APP_STATUS_RUNNING_PROPAGATING": "Running (DNS propagating...)",
+  "APP_STATUS_RUNNING_PROPAGATING_DETAIL": "The app is running. Its public web address is still coming up.",
   "APP_STATUS_STOPPED": "Stopped",
   "APP_STATUS_DEGRADED": "Needs attention",
   "APP_STATUS_STOPPING": "Stopping",
