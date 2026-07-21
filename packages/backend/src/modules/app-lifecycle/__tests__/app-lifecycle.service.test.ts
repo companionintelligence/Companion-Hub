@@ -1218,14 +1218,22 @@ describe('AppLifecycleService', () => {
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });
 
-    it('keeps backups when uninstalling without deleting data, and only discards them with deleteAllData (#908)', async () => {
-      // A `deleteAllData: false` uninstall means the user chose to KEEP their data —
-      // destroying the only means of recovering it would be incoherent, and no UI
-      // ever surfaced that backups were being removed.
+    it('discards backups only when the data was deleted AND the uninstall actually succeeded (#908)', async () => {
+      // 1. Keeping the data keeps the backups: the user explicitly chose to KEEP their
+      //    data, so destroying the only means of recovering it would be incoherent.
       await service.uninstallApp({ appUrn, deleteAllData: false });
       await flushMicrotasks();
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
 
+      // 2. A FAILED uninstall keeps them even with deleteAllData — the app and all of
+      //    its live data survive, so the safety net has to survive with it. Deleting
+      //    before the worker ran would leave the app installed but unrecoverable.
+      appEventsQueue.publish.mockResolvedValueOnce({ success: false, message: 'fail' } as any);
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+
+      // 3. Only a successful delete-all-data uninstall discards them.
       await service.uninstallApp({ appUrn, deleteAllData: true });
       await flushMicrotasks();
       expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);

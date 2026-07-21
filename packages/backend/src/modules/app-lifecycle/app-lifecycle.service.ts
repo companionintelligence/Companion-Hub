@@ -1193,14 +1193,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // Guard the shared memory provider before any destructive side effect runs.
     await this.assertMemoryProviderNotInUse(appUrn, force);
 
-    // Backups follow the user's data choice: only discard the safety net when they
-    // actually asked for the live data to go too. Deleting backups on a
-    // `deleteAllData: false` uninstall is incoherent — the user explicitly chose to
-    // KEEP their data, yet the only means of recovering it would be destroyed with
-    // no UI ever surfacing that (#908).
-    if (deleteAllData) {
-      await this.backupManager.deleteAppBackupsByUrn(appUrn);
-    }
+    // NOTE: backups are deliberately NOT deleted here — see the uninstall-success
+    // arm below. Discarding them before the worker has run would destroy the safety
+    // net even when the uninstall subsequently FAILS and the app survives intact.
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
@@ -1249,6 +1244,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.logger.info(`App ${appUrn} uninstalled successfully`);
 
           await this.appRepository.deleteAppById(app.id);
+
+          // Backups follow the user's data choice, and are discarded only now that the
+          // app is definitively gone. Two conditions must BOTH hold: the user asked for
+          // the live data to go (`deleteAllData`), and the uninstall actually succeeded.
+          // Deleting them earlier destroyed the only means of recovery even when the
+          // uninstall then failed and left the app fully installed (#908). Best-effort:
+          // a backup-cleanup miss must not abort the remaining success path.
+          if (deleteAllData) {
+            try {
+              await this.backupManager.deleteAppBackupsByUrn(appUrn);
+            } catch (err) {
+              this.logger.warn(`Failed to delete backups for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
 
           if (portExposeService) {
             await portExposeService.afterPortExposeUninstall().catch((err) => {
