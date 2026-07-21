@@ -63,20 +63,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <div className="w-full max-w-[82.94rem]">
-        <div className="mb-6 flex items-center gap-3">
+        <div className="mb-10 flex items-start gap-4">
           <img
             alt={t('APP_NAME_LOGO_ALT')}
             src={getLogo(true)}
             height={48}
             width={48}
-            className="flex-shrink-0"
+            className="mt-0.5 flex-shrink-0"
             style={{ maxWidth: '100%', height: 'auto' }}
           />
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
-            <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
-            <p className="text-xs text-muted-foreground/80">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION_HINT')}</p>
-            <p className="mt-1 text-xs text-muted-foreground/70">{t('ONBOARDING_HUB_INTRO_POSITIONING')}</p>
+          <div className="min-w-0 space-y-2">
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
+            <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
         </div>
         {children}

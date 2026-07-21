@@ -3,18 +3,18 @@ import { catalogAppSlug, findCatalogAppBySlug } from '@/lib/marketplace-app-slug
 import { cn } from '@/lib/utils';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
-import { LayoutGrid } from 'lucide-react';
+import { LayoutGrid, Plus } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { resolveOnboardingRecommendations } from '../helpers/alternatives';
-import { ONBOARDING_CURATED_PICKS } from '../helpers/onboarding-curated-picks';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import { SelectIndicator } from './ai-setup/primitives';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
+
+const RECOMMENDATIONS_PAGE_SIZE = 4;
 
 interface RecommendationsStepProps {
   detectedServices: DetectedService[];
@@ -80,6 +80,7 @@ export const RecommendationsStep = ({
   );
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set(pinnedSlugs.filter((slug) => findCatalogAppBySlug(storeApps, slug) != null)));
+  const [visibleCount, setVisibleCount] = useState(RECOMMENDATIONS_PAGE_SIZE);
 
   const prevAgentSlugs = useRef<string[]>([]);
   // Keep recommended-apps selection aligned with the agent harness toggles.
@@ -243,6 +244,8 @@ export const RecommendationsStep = ({
     ...flatAppsFromAlts,
   ];
 
+  const visibleApps = flatApps.slice(0, visibleCount);
+  const hasMoreRecommendations = visibleCount < flatApps.length;
   const showCatalogLoading = recommendationsLoading;
 
   const content = (
@@ -268,29 +271,29 @@ export const RecommendationsStep = ({
       {detectedServices.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
           {detectedServices.map((s) => (
-            <span key={s.friendlyName} className="rounded-full border border-border bg-foreground/[0.03] px-2 py-1 text-xs text-muted-foreground">
+            <span key={s.friendlyName} className="rounded-full border border-border bg-foreground/[0.03] px-2.5 py-1 text-sm text-muted-foreground">
               {s.friendlyName}
             </span>
           ))}
         </div>
       )}
 
-      <div className="max-h-[420px] overflow-y-auto pr-1">
+      <div className="max-h-[520px] overflow-y-auto pr-1">
         {showCatalogLoading && (
           <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
-            {Array.from({ length: ONBOARDING_CURATED_PICKS.length }).map((_, i) => (
+            {Array.from({ length: RECOMMENDATIONS_PAGE_SIZE }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
-              <div key={i} className="h-16 animate-pulse rounded-md bg-muted/50" />
+              <div key={i} className="h-20 animate-pulse rounded-md bg-muted/50" />
             ))}
           </div>
         )}
         {showCatalogLoading && <p className="py-2 text-sm text-muted-foreground">{t('ONBOARDING_RECOMMENDATIONS_LOADING')}</p>}
         {!showCatalogLoading && !isCatalogError && !isAltsError && flatApps.length === 0 && isCatalogSettled && !isAltsLoading && (
-          <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
+          <p className="py-4 text-base text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
         )}
         {!showCatalogLoading && flatApps.length > 0 && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {flatApps.map((app) => {
+            {visibleApps.map((app) => {
               const isSelected = selected.has(app.slug);
               const isLocked = 'locked' in app && app.locked === true;
               const description = app.shortDesc || (app.replaces ? t('ONBOARDING_OPEN_SOURCE_ALTERNATIVE_TO', { replaces: app.replaces }) : '');
@@ -319,7 +322,7 @@ export const RecommendationsStep = ({
                       {!isLocked && (
                         <span
                           className={cn(
-                            'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                            'rounded-full px-2 py-0.5 text-xs font-medium',
                             isCompanionFirstParty(app.slug) ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground',
                           )}
                         >
@@ -335,17 +338,25 @@ export const RecommendationsStep = ({
                 </button>
               );
             })}
+            {hasMoreRecommendations && (
+              <button
+                type="button"
+                data-testid="show-more-recommendations"
+                onClick={() => setVisibleCount((count) => count + RECOMMENDATIONS_PAGE_SIZE)}
+                className="flex min-h-[5.5rem] items-center gap-3 rounded-md border border-dashed border-border bg-foreground/[0.015] p-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/[0.04]"
+              >
+                <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground">
+                  <Plus className="h-5 w-5" aria-hidden />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-base font-medium text-foreground">{t('ONBOARDING_SHOW_MORE_APPS')}</span>
+                  <span className="mt-0.5 block text-sm text-muted-foreground">{t('ONBOARDING_SHOW_MORE_APPS_HINT')}</span>
+                </span>
+              </button>
+            )}
           </div>
         )}
       </div>
-
-      {!showCatalogLoading && (
-        <div className="mt-4 flex justify-end">
-          <Button variant="outline" size="sm" asChild data-testid="see-app-store-link">
-            <Link to="/store">{t('ONBOARDING_SEE_APP_STORE')}</Link>
-          </Button>
-        </div>
-      )}
 
       {!embedded && (
         <WizardNav>

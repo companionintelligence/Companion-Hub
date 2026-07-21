@@ -139,8 +139,30 @@ describe('RecommendationsStep (embedded emit)', () => {
     expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
   });
 
-  it('shows a link to browse more apps in the App Store', async () => {
+  it('shows a load-more card when more recommendations are available', async () => {
+    mockCatalogState.apps = [
+      { id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' },
+      { id: 'mattermost', name: 'Mattermost', urn: 'urn:store:mattermost', short_desc: 'Chat' },
+      { id: 'nextcloud', name: 'Nextcloud', urn: 'urn:store:nextcloud', short_desc: 'Files' },
+      { id: 'gitea', name: 'Gitea', urn: 'urn:store:gitea', short_desc: 'Git' },
+      { id: 'n8n', name: 'n8n', urn: 'urn:store:n8n', short_desc: 'Automation' },
+    ];
+
+    const user = userEvent.setup();
     renderWithRouter(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
-    expect(await screen.findByTestId('see-app-store-link')).toHaveAttribute('href', '/store');
+
+    expect(screen.getAllByTestId('recommended-app')).toHaveLength(4);
+    const loadMore = await screen.findByTestId('show-more-recommendations');
+    await user.click(loadMore);
+
+    expect(screen.getAllByTestId('recommended-app').length).toBeGreaterThan(4);
+    expect(screen.queryByTestId('show-more-recommendations')).not.toBeInTheDocument();
+  });
+
+  it('hides the load-more card when every recommendation is already visible', () => {
+    renderWithRouter(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
+
+    expect(screen.getAllByTestId('recommended-app')).toHaveLength(1);
+    expect(screen.queryByTestId('show-more-recommendations')).not.toBeInTheDocument();
   });
 });
