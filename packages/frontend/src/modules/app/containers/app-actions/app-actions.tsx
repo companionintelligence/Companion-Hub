@@ -16,8 +16,7 @@ import {
   Trash,
 } from 'lucide-react';
 import type React from 'react';
-import { createElement, useState, useEffect, useCallback, useRef } from 'react';
-import { client } from '@/api-client/client.gen';
+import { createElement, useState, useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -50,6 +49,8 @@ import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
+import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
+import { checkAvailability } from '@/api-client/sdk.gen';
 
 interface IProps {
   app?: AppDetails | null;
@@ -60,6 +61,12 @@ interface IProps {
   localDomain?: string;
   sslPort?: number;
   runtimeHealth?: AppRuntimeHealth;
+  /**
+   * Public-route readiness, owned by the app-detail page (like `runtimeHealth`)
+   * and shared with the status pill. Required rather than fetched here so the
+   * two surfaces can never disagree about whether the app is reachable.
+   */
+  urlAvailability: AppUrlAvailability;
   layout?: 'default' | 'hero';
 }
 
@@ -107,26 +114,6 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
   </Button>
 );
 
-const ERROR_MESSAGE_KEYS: Record<string, string> = {
-  CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
-  CF_UPSTREAM_ERROR: 'APP_ACTION_ERROR_CF_UPSTREAM_ERROR',
-  CF_ORIGIN_DOWN: 'APP_ACTION_ERROR_CF_ORIGIN_DOWN',
-  CF_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
-  CF_UNKNOWN: 'APP_ACTION_ERROR_CF_UNKNOWN',
-  DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
-  CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
-  CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
-  PROXY_UPSTREAM_ERROR: 'APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR',
-  APP_HTTP_ERROR: 'APP_ACTION_ERROR_APP_HTTP_ERROR',
-  NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
-};
-
-// Polling phases
-const GRACE_PERIOD_MS = 60_000;
-const GRACE_POLL_MS = 3_000;
-const NORMAL_POLL_MS = 10_000;
-const MAX_POLL_MS = 5 * 60_000;
-
 const INSTALL_FINALIZING_PROGRESS = 99;
 
 // In-progress statuses that render the LoadingButton, mapped to their status label key.
@@ -142,7 +129,7 @@ const LOADING_STATUS_LABEL_KEYS: Partial<Record<AppStatus, string>> = {
   restoring: 'APP_STATUS_RESTORING',
 };
 
-export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, layout = 'default' }: IProps) => {
+export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth, urlAvailability, layout = 'default' }: IProps) => {
   const installDisclosure = useDisclosure();
   const cancelInstallDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -346,19 +333,6 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     />
   );
 
-  // Availability check state
-  const [checkError, setCheckError] = useState<string | null>(null);
-  const [checkErrorCode, setCheckErrorCode] = useState<string | null>(null);
-  const [errorResolvable, setErrorResolvable] = useState(false);
-  const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
-  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
-  const [isResolving, setIsResolving] = useState(false);
-  const [appUrl, setAppUrl] = useState<string | null>(null);
-  const [stage, setStage] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const [pollingStopped, setPollingStopped] = useState(false);
-  const pollStartRef = useRef<number>(0);
-
   // Show install errors surfaced from SSE via query cache
   const { data: installError } = useQuery({
     queryKey: ['app-install-error', info.urn],
@@ -367,177 +341,51 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     staleTime: Number.POSITIVE_INFINITY,
   });
 
-  const exposureMode = ((app as Record<string, unknown> | null)?.exposureMode as string) || 'local';
+  // `||`, not `??`: an empty/unset mode means a pre-exposureMode install, which
+  // is treated as local access — the same fallback the backend applies.
+  const exposureMode = app?.exposureMode || 'local';
   const isLocal = exposureMode === 'local';
 
-  const resetPolling = useCallback(() => {
-    setUrlAvailable(null);
-    setCheckError(null);
-    setCheckErrorCode(null);
-    setErrorResolvable(false);
-    setIsCheckingUrl(true);
-    setStage(null);
-    setAttempt(0);
-    setPollingStopped(false);
-    pollStartRef.current = Date.now();
-  }, []);
-
-  const handleResolve = async () => {
-    setIsResolving(true);
-    try {
-      const { data } = await client.post({ url: `/api/apps/${info.urn}/resolve-availability` });
-      const result = (data || {}) as { success: boolean; detail: string };
-      if (result.success) {
-        toast.success(result.detail || t('APP_ACTION_RESOLUTION_ATTEMPTED_RECHECKING'));
-        setTimeout(resetPolling, 3000);
-      } else {
-        toast.error(result.detail || t('APP_ACTION_RESOLUTION_FAILED'));
-      }
-    } catch (e) {
-      toast.error(t('APP_ACTION_FAILED_TO_RESOLVE', { error: e instanceof Error ? e.message : t('COMMON_UNKNOWN_ERROR') }));
-    } finally {
-      setIsResolving(false);
-    }
-  };
-
-  useEffect(() => {
-    // Only check if app is running, has a GUI, and is NOT local mode (local is instant)
-    if (app?.status !== 'running' || info.no_gui || isLocal) {
-      setUrlAvailable(null);
-      setIsCheckingUrl(false);
-      setCheckError(null);
-      setCheckErrorCode(null);
-      setErrorResolvable(false);
-      setStage(null);
-      setAttempt(0);
-      setPollingStopped(false);
-      return;
-    }
-
-    setIsCheckingUrl(true);
-    setUrlAvailable(null);
-    pollStartRef.current = Date.now();
-
-    let isMounted = true;
-    let isAvailableRef = false;
-    let pollTimeout: ReturnType<typeof setTimeout> | null = null;
-    let attemptCount = 0;
-
-    const checkUrl = async () => {
-      if (!isMounted || isAvailableRef) return;
-
-      attemptCount++;
-      if (isMounted) setAttempt(attemptCount);
-
-      try {
-        const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-        const {
-          available,
-          appUrl: resolvedUrl,
-          detail,
-          resolvable,
-          errorCode,
-          stage: responseStage,
-        } = (data || {}) as {
-          available: boolean;
-          appUrl?: string;
-          httpStatus?: number;
-          stage?: string;
-          reason?: string;
-          detail?: string;
-          errorCode?: string;
-          resolvable?: boolean;
-        };
-
-        if (!isMounted) return;
-
-        if (resolvedUrl) setAppUrl(resolvedUrl);
-        setStage(responseStage || null);
-        setUrlAvailable(available);
-
-        if (available) {
-          setIsCheckingUrl(false);
-          setCheckError(null);
-          setCheckErrorCode(null);
-          setErrorResolvable(false);
-          isAvailableRef = true;
-          return; // Stop polling
-        }
-
-        setIsCheckingUrl(false);
-        setCheckError(detail || t('APP_ACTION_APPLICATION_ERROR'));
-        setCheckErrorCode(errorCode || null);
-        setErrorResolvable(resolvable ?? false);
-      } catch (error) {
-        if (!isMounted) return;
-        setUrlAvailable(null);
-        setIsCheckingUrl(true);
-        setCheckError(error instanceof Error ? error.message : t('COMMON_UNKNOWN_ERROR'));
-        setCheckErrorCode(null);
-        setErrorResolvable(false);
-      }
-
-      // Schedule next poll with backoff
-      if (!isMounted || isAvailableRef) return;
-
-      const elapsed = Date.now() - pollStartRef.current;
-      if (elapsed >= MAX_POLL_MS) {
-        if (isMounted) setPollingStopped(true);
-        return; // Stop polling after 5 minutes
-      }
-
-      const interval = elapsed < GRACE_PERIOD_MS ? GRACE_POLL_MS : NORMAL_POLL_MS;
-      pollTimeout = setTimeout(checkUrl, interval);
-    };
-
-    // Initial check after short delay
-    const initialTimeout = setTimeout(checkUrl, 1000);
-
-    return () => {
-      isMounted = false;
-      clearTimeout(initialTimeout);
-      if (pollTimeout) clearTimeout(pollTimeout);
-    };
-  }, [app?.status, info.no_gui, info.urn, isLocal, t]);
-
-  // Determine UI state for the Open button area
-  const elapsed = pollStartRef.current ? Date.now() - pollStartRef.current : 0;
-  const withinGracePeriod = elapsed < GRACE_PERIOD_MS && !pollingStopped;
-  const statusMessage = (() => {
-    if (!checkErrorCode) return checkError;
-    const translationKey = ERROR_MESSAGE_KEYS[checkErrorCode];
-    return translationKey ? t(translationKey) : checkError;
-  })();
+  // Public-route readiness comes from the page (shared with the status pill);
+  // this container only decides how to render it.
+  const {
+    state: publicUrlState,
+    appUrl,
+    statusMessage,
+    withinGracePeriod,
+    pollingStopped,
+    resolvable,
+    isResolving,
+    resolve: resolveRoute,
+    reset: restartProbe,
+  } = urlAvailability;
 
   // Build the Open button area for running apps with GUI
   const renderOpenButtonArea = () => {
     if (info.no_gui) return null;
 
-    // Local mode: always show enabled Open button immediately
+    // Local mode: always show enabled Open button immediately. The probe is
+    // skipped for local access (the LAN address serves as soon as the container
+    // binds), so resolve the URL on demand per click — deliberately NOT cached,
+    // since a port or exposure change would otherwise keep launching a dead
+    // address until the page is remounted.
     if (isLocal) {
       return (
         <ActionButton
           key="open-local"
           IconComponent={ExternalLink}
           onClick={() => {
-            // For local, construct URL from app data since backend returns it immediately
-            if (appUrl) {
-              openExternalUrl(appUrl);
-            } else {
-              // Fetch URL on-demand for local
-              client
-                .get({ url: `/api/apps/${info.urn}/check-availability` })
-                .then(({ data }) => {
-                  const result = (data || {}) as { appUrl?: string };
-                  if (result.appUrl) openExternalUrl(result.appUrl);
-                })
-                .catch(() => {
-                  // A transient backend/tunnel failure (e.g. a Cloudflare 530
-                  // while the tunnel reconnects) must not become an unhandled
-                  // rejection surfaced as a generic error. Tell the user instead.
-                  toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
-                });
-            }
+            checkAvailability({ path: { urn: info.urn }, throwOnError: true })
+              .then(({ data }) => {
+                const result = (data ?? {}) as AppUrlProbeResult;
+                if (result.appUrl) openExternalUrl(result.appUrl);
+              })
+              .catch(() => {
+                // A transient backend/tunnel failure (e.g. a Cloudflare 530
+                // while the tunnel reconnects) must not become an unhandled
+                // rejection surfaced as a generic error. Tell the user instead.
+                toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
+              });
           }}
           title={t('APP_ACTION_OPEN')}
           variant="default"
@@ -547,15 +395,16 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Brief loading spinner for first few attempts. Match the enabled Open
-    // button's footprint (size="lg" + launch-action-button) so the button does
-    // not shrink while loading, nor jump size when it flips to enabled.
-    if (isCheckingUrl && attempt < 3) {
-      return <ActionButton key="open-loading" title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />;
-    }
+    // Escape hatch offered alongside every not-yet-available state: the probe
+    // can be wrong (or merely pessimistic), so never trap the user behind it.
+    const openAnywayLink = appUrl ? (
+      <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
+        {t('APP_ACTION_OPEN_ANYWAY')}
+      </button>
+    ) : null;
 
     // Available — show enabled Open button
-    if (urlAvailable) {
+    if (publicUrlState === 'ready') {
       return (
         <ActionButton
           key="open"
@@ -570,65 +419,68 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    // Not available, within grace period — show "Starting..." with spinner
-    if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
+    // The public route is still coming up. No "Starting…" label and no reason
+    // text here: the app HAS started, and the status pill already carries the
+    // "Running (DNS propagating...)" explanation — two surfaces saying
+    // different things about one concept is what this state used to look like.
+    if (publicUrlState === 'propagating' && withinGracePeriod) {
       return (
         <div key="open-propagating" className="flex flex-col items-start gap-1">
-          <ActionButton title={t('COMMON_STARTING')} disabled loading size="lg" className="launch-action-button" />
-          {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
-          {appUrl && (
-            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              {t('APP_ACTION_OPEN_ANYWAY')}
-            </button>
-          )}
+          <ActionButton title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />
+          {openAnywayLink}
         </div>
       );
     }
 
-    // Not available, past grace / polling stopped, resolvable
-    if (!urlAvailable && urlAvailable !== null && errorResolvable) {
+    // Taking longer than the grace window, but the backend thinks it can repair
+    // the route (re-sync DNS / tunnel config) — offer that, or a plain retry
+    // once we've stopped probing on our own. `pollingStopped` qualifies on its
+    // own: once we have given up there is nothing left to wait for, so a manual
+    // retry has to be reachable even for a verdict the backend can't repair
+    // (including no verdict at all, when every probe request failed).
+    if ((publicUrlState === 'propagating' || publicUrlState === 'unreachable') && (resolvable || pollingStopped)) {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
           {pollingStopped ? (
-            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={resetPolling} />
+            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={restartProbe} />
           ) : (
             <ActionButton
               IconComponent={RotateCw}
               title={t('APP_ACTION_RESOLVE')}
               intent="warning"
-              onClick={handleResolve}
+              onClick={resolveRoute}
               loading={isResolving}
               disabled={isResolving}
             />
           )}
           {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
-          {appUrl && (
-            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              {t('APP_ACTION_OPEN_ANYWAY')}
-            </button>
-          )}
+          {openAnywayLink}
         </div>
       );
     }
 
-    // Not available, not resolvable
-    if (!urlAvailable && urlAvailable !== null) {
+    // Any other not-serving verdict — a settled failure the Hub can't repair,
+    // or a propagating one past the grace window that arrived without the
+    // `resolvable` flag. Both must still show the reason and the escape hatch;
+    // falling through to the neutral spinner below would hide both.
+    if (publicUrlState === 'unreachable' || publicUrlState === 'propagating') {
       return (
         <div key="open-error" className="flex flex-col items-start gap-1">
           <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
-          {appUrl && (
-            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              {t('APP_ACTION_OPEN_ANYWAY')}
-            </button>
-          )}
+          {openAnywayLink}
         </div>
       );
     }
 
-    // Fallback: still checking. Same full-size footprint as the enabled Open
+    // Fallback: no verdict yet. Same full-size footprint as the enabled Open
     // button so the spinner state doesn't render smaller.
-    return <ActionButton key="open-checking" title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />;
+    return (
+      <div key="open-checking" className="flex flex-col items-start gap-1">
+        <ActionButton title={t('APP_ACTION_OPEN')} disabled loading size="lg" className="launch-action-button" />
+        {openAnywayLink}
+      </div>
+    );
   };
 
   // If there was an install error for this app, show it under the open/action area
