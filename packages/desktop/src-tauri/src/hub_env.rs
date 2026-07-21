@@ -258,28 +258,45 @@ fn is_version_image_tag(tag: &str) -> bool {
         None => (core, None),
     };
 
-    // SEMVER_PATTERN's `(?:-[0-9A-Za-z.-]+)?` requires at least one character after the
-    // hyphen. Without this, `0.2.46-` would be honoured here but refused by CI, and it
-    // would reach compare_prerelease as a single empty identifier.
-    if let Some(prerelease) = prerelease {
-        if prerelease.is_empty()
-            || !prerelease
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
-        {
-            return false;
-        }
+    if core.split('.').count() != 3 || !core.split('.').all(is_numeric_identifier) {
+        return false;
     }
 
-    let mut components = 0usize;
-    for component in core.split('.') {
-        if component.parse::<u32>().is_err() {
-            return false;
+    // An empty segment (`0.2.46-`) or an empty identifier (`rc..1`) is refused by CI and
+    // would otherwise reach compare_prerelease as an empty identifier.
+    match prerelease {
+        None => true,
+        Some(prerelease) => {
+            !prerelease.is_empty() && prerelease.split('.').all(is_prerelease_identifier)
         }
-        components += 1;
+    }
+}
+
+/// A semver numeric identifier: digits only, with no leading zero unless the value *is* zero.
+///
+/// Leading zeros matter beyond pedantry. `semver.valid("01.2.45")` is null, and the backend's
+/// `getTagsSince` bails to an empty list as soon as the *running* version fails that check —
+/// so a Hub installed from such a tag would pull fine and then never see another update.
+fn is_numeric_identifier(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier.bytes().all(|byte| byte.is_ascii_digit())
+        && (identifier == "0" || !identifier.starts_with('0'))
+}
+
+/// A semver pre-release identifier: alphanumerics and hyphens, with purely numeric ones
+/// held to the numeric-identifier rule so `rc.01` is rejected alongside `01.2.45`.
+fn is_prerelease_identifier(identifier: &str) -> bool {
+    if identifier.is_empty() {
+        return false;
     }
 
-    components == 3
+    if identifier.bytes().all(|byte| byte.is_ascii_digit()) {
+        return is_numeric_identifier(identifier);
+    }
+
+    identifier
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// Semver precedence between two version tags.
@@ -658,10 +675,24 @@ mod tests {
             "1.2.3.4",
             "99.0.0.",
             "99.0.0-",
+            // Invalid semver, so `semver.valid` in the backend rejects these — and
+            // getTagsSince bails to [] on an invalid *running* version, which would blind
+            // a Hub installed from such a tag to every future update.
+            "01.2.45",
+            "99.0.0-rc..1",
+            "99.0.0-rc.01",
         ] {
             assert!(
                 !is_version_image_tag(tag),
                 "{tag} is not a shape the release pipeline publishes"
+            );
+        }
+
+        // ...while every shape semver considers valid (bar build metadata) still passes.
+        for tag in ["0.0.0", "1.0.0-0.3.7", "0.2.46-rc.1", "0.2.46-alpha-1"] {
+            assert!(
+                is_version_image_tag(tag),
+                "{tag} is valid semver and must be honoured as a version pin"
             );
         }
     }

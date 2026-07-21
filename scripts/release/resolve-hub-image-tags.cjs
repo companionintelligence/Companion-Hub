@@ -43,19 +43,33 @@ const ENVIRONMENTS = Object.assign(Object.create(null), {
 });
 
 /**
- * Strict `major.minor.patch` with an optional pre-release/build suffix.
+ * Strict `major.minor.patch` with an optional pre-release suffix.
  * Anchored so partial values like `0.2` or `latest` are rejected rather than silently
  * producing a tag nothing can pull.
+ *
+ * This is the semver.org reference grammar minus build metadata, so it accepts exactly what
+ * `semver.valid()` does apart from `+`. That parity is load-bearing: the backend filters the
+ * tag listing with `semver.valid(tag)` and, worse, `getTagsSince()` bails to `[]` the moment
+ * the *running* version fails `semver.valid`. Publishing a looser tag like `01.2.45` would
+ * therefore install and pull fine while permanently blinding that cohort to every future
+ * update — the same silent, slow-to-diagnose shape as #920. Hence no leading zeros
+ * (`01.2.3`) and no empty or zero-padded pre-release identifiers (`rc..1`, `rc.01`).
  *
  * Hand-rolled rather than using the workspace's `semver` dependency on purpose: this runs
  * from build-container.yml on the runner's preinstalled Node, before (and without) any
  * `pnpm install`, so the script must stay dependency-free. Do not "simplify" it to
  * `require('semver')` — the workflow would fail with MODULE_NOT_FOUND.
  */
-// Build metadata (`+ci.7`) is deliberately NOT accepted: `+` is illegal in a Docker tag
-// ([A-Za-z0-9_][A-Za-z0-9._-]{0,127}), so allowing it would emit a reference that fails
-// with "invalid reference format" at push time and again at every `docker compose pull`.
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+// Build metadata (`+ci.7`) is deliberately NOT accepted even though semver allows it: `+` is
+// illegal in a Docker tag ([A-Za-z0-9_][A-Za-z0-9._-]{0,127}), so allowing it would emit a
+// reference that fails with "invalid reference format" at push time and again at every
+// `docker compose pull`.
+const NUMERIC_IDENTIFIER = String.raw`0|[1-9]\d*`;
+const PRERELEASE_IDENTIFIER = String.raw`0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*`;
+const SEMVER_PATTERN = new RegExp(
+  `^(?:${NUMERIC_IDENTIFIER})\\.(?:${NUMERIC_IDENTIFIER})\\.(?:${NUMERIC_IDENTIFIER})` +
+    `(?:-(?:${PRERELEASE_IDENTIFIER})(?:\\.(?:${PRERELEASE_IDENTIFIER}))*)?$`,
+);
 
 /**
  * Normalise a release tag into the tag CI must publish.

@@ -80,6 +80,24 @@ describe('resolve-hub-image-tags', () => {
       // format" at push time and again at every docker compose pull.
       expect(() => normalizeVersion('v0.2.45+ci.7')).toThrow(/not a publishable version/);
     });
+
+    // The pattern must agree with `semver.valid()` (bar build metadata), because the
+    // backend filters its tag listing with it AND `getTagsSince()` returns [] outright when
+    // the *running* version fails that check. A tag we accept but semver rejects would
+    // install and pull fine, then blind that Hub to every future update — silent and slow
+    // to diagnose, exactly like #920.
+    //
+    // Asserted as literals rather than by importing `semver`: this script is deliberately
+    // dependency-free so it can run on the runner's preinstalled Node before `pnpm install`,
+    // and `semver` is not a dependency of this workspace. Each expectation below was checked
+    // against the real `semver.valid()` when written.
+    it.each(['01.2.45', '0.2.45-rc..1', '0.2.45-rc.01'])('rejects %s, which semver.valid() returns null for', (tag) => {
+      expect(() => normalizeVersion(tag)).toThrow(/not a publishable version/);
+    });
+
+    it.each(['0.0.0', '1.0.0-0.3.7', '0.2.45-alpha-1', '0.2.46-rc.10'])('accepts %s, which semver.valid() accepts', (tag) => {
+      expect(normalizeVersion(tag)).toBe(tag);
+    });
   });
 
   describe('production', () => {
