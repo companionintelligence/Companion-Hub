@@ -5799,12 +5799,22 @@ fn render_runtime_env_content(
     // are migrated to the public `ci-hub` repo on the next start.
     if let Some(previous_image) = existing.get("CI_HUB_IMAGE") {
         if previous_image != &hub_image {
+            // Name which of the two outcomes happened, because they mean opposite things
+            // when reading back a failed start: falling back to the build default means
+            // the pin was rejected as unusable (foreign repo, stale ci-os-hub, or a tag
+            // that is not a full version), whereas a normalized pin means the update was
+            // honoured and only its spelling changed. Labelling both as the default sends
+            // whoever is debugging looking for a discarded pin that never existed.
+            let reason = if hub_image == default_hub_image() {
+                "desktop build default"
+            } else {
+                "normalized pin"
+            };
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
                 &format!(
-                    "Superseding pinned stack image {} with {} (desktop build default).",
-                    previous_image, hub_image
+                    "Superseding pinned stack image {previous_image} with {hub_image} ({reason})."
                 ),
             );
         }

@@ -221,9 +221,15 @@ fn is_floating_image_tag(tag: &str) -> bool {
 /// failure mode #920 was. Everything rejected here falls back to the desktop's own build
 /// default, which is always publishable and pullable, so erring strict is the safe side.
 ///
+/// Accepts exactly the shape `SEMVER_PATTERN` in `scripts/release/resolve-hub-image-tags.cjs`
+/// publishes. The two guards bracket one contract — CI decides what may be published, this
+/// decides what may be pinned — so any tag this honours must be one CI would mint. Letting
+/// them drift is how a reference the pipeline refuses to publish becomes one the desktop
+/// writes into `.env`.
+///
 /// Each component is validated with the same `u32` parse [`parse_semver_parts`] uses, so
 /// the two can never disagree about whether a tag is comparable: a tag accepted here is
-/// guaranteed to yield at least three ordered components there.
+/// guaranteed to yield three ordered components there.
 ///
 /// The leading `v` is optional because both spellings have been published over this
 /// repo's history: the retired tag-triggered workflow emitted `v`-prefixed tags, while
@@ -232,8 +238,17 @@ fn is_floating_image_tag(tag: &str) -> bool {
 /// falling through to the build-time fallback version.
 fn is_version_image_tag(tag: &str) -> bool {
     let core = normalize_version_tag(tag);
-    // Cut the pre-release/build suffix on the same boundary parse_semver_parts uses.
-    let core = core.split(['-', '+']).next().unwrap_or(core);
+
+    // `+` is outside the legal Docker tag alphabet, so build metadata can never be pulled.
+    // Rejecting beats trimming: the caller rebuilds the pin from the *un-cut* tag, so
+    // accepting `0.2.45+ci.7` would write `repo:0.2.45+ci.7` into .env, which compose
+    // refuses with "invalid reference format" before it ever reaches the registry.
+    if core.contains('+') {
+        return false;
+    }
+
+    // A pre-release suffix is legal and published — Desktop Release defaults to prerelease.
+    let core = core.split('-').next().unwrap_or(core);
 
     let mut components = 0usize;
     for component in core.split('.') {
@@ -243,7 +258,7 @@ fn is_version_image_tag(tag: &str) -> bool {
         components += 1;
     }
 
-    components >= 3
+    components == 3
 }
 
 fn compare_semver(left: &str, right: &str) -> Ordering {
@@ -432,7 +447,14 @@ mod tests {
         // does not exist — reproducing #920 from a different direction. `1.x` also
         // out-compares any real build under compare_semver ([1] vs [0, 2, 45]), so the
         // lax form failed exactly when it mattered most.
-        for tag in ["1.x", "v1.x", "0.2", "2026-07-21", "1.2.beta"] {
+        for tag in [
+            "1.x",
+            "v1.x",
+            "0.2",
+            "2026-07-21",
+            "1.2.beta",
+            "99.0.0+ci.7",
+        ] {
             let pin = format!("{HUB_STACK_IMAGE_REPO}:{tag}");
             assert_eq!(
                 resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.45")),
@@ -454,6 +476,23 @@ mod tests {
         }
         for tag in ["1.x", "0.2", "latest", "nightly", "2026-07-21", ""] {
             assert!(!is_version_image_tag(tag), "{tag} is not a version pin");
+        }
+    }
+
+    #[test]
+    fn rejects_tags_the_release_pipeline_would_refuse_to_publish() {
+        // This guard and SEMVER_PATTERN in resolve-hub-image-tags.cjs bracket one
+        // contract, so a shape CI rejects must not be a shape the desktop pins.
+        //
+        // `+` matters most: it is outside the legal Docker tag alphabet, and because the
+        // caller rebuilds the pin from the un-cut tag, accepting it would write
+        // `repo:99.0.0+ci.7` into .env — rejected by compose as an invalid reference
+        // before any registry is contacted, so the Hub never starts.
+        for tag in ["99.0.0+ci.7", "v99.0.0+build.1", "1.2.3.4", "99.0.0."] {
+            assert!(
+                !is_version_image_tag(tag),
+                "{tag} is not a shape the release pipeline publishes"
+            );
         }
     }
 
