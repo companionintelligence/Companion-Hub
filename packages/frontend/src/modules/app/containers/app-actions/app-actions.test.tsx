@@ -9,6 +9,10 @@ const hoisted = vi.hoisted(() => ({
   queryClient: {
     getQueryData: vi.fn(),
   },
+  // Options of the START mutation specifically (tagged via startAppMutation below),
+  // so its onError can be driven without depending on useMutation call order.
+  startOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
+  invalidateAppQueries: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
   tauriInvoke: null as null | (() => unknown),
@@ -26,10 +30,15 @@ vi.mock('@/lib/helpers/tauri-invoke', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (opts?: Record<string, unknown>) => {
+    if (opts?.__kind === 'start') {
+      hoisted.startOpts = opts as Record<string, (arg?: unknown) => void>;
+    }
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
   useQueryClient: () => hoisted.queryClient,
   useQuery: ({ initialData }: { initialData?: () => unknown }) => ({
     data: initialData ? initialData() : null,
@@ -38,8 +47,18 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   ignoreAppVersionMutation: () => ({}),
-  startAppMutation: () => ({}),
+  // Tagged so the useMutation mock above can pick this one out of several.
+  startAppMutation: () => ({ __kind: 'start' }),
   unignoreAppVersionMutation: () => ({}),
+}));
+
+// AppActions consumes exactly one VALUE from this module; everything else it imports is
+// `import type` and erased. Spreading importActual would link the real module against the
+// partial api-client mock above (no getAppQueryKey etc.), so any future test that reaches
+// another export fails with an opaque "No export is defined on the mock" instead of a
+// normal assertion. Mock just what is used, matching the sibling dialog tests.
+vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
+  invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -199,6 +218,38 @@ describe('AppActions', () => {
     hoisted.tauriInvoke = null;
     hoisted.openPath.mockReset();
     hoisted.openExternal.mockReset();
+    hoisted.startOpts = undefined;
+    hoisted.invalidateAppQueries.mockReset();
+    // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
+    // is not configured with clearMocks/mockReset, so a leftover value silently leaks
+    // into whichever test runs next and makes assertions depend on declaration order.
+    hoisted.queryClient.getQueryData.mockReset();
+    hoisted.navigate.mockReset();
+  });
+
+  it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    render(
+      <AppActions
+        app={runningApp}
+        metadata={metadata}
+        info={info}
+        appDataHostPath="/srv/hub/app-data/community/test-app"
+        urlAvailability={idleAvailability}
+        layout="hero"
+      />,
+    );
+
+    // Start is the highest-traffic lifecycle action. A pre-flight rejection (starting
+    // an app that was already removed) throws before any status update, so no SSE
+    // event ever arrives to clear the optimistic 'starting' status.
+    expect(hoisted.startOpts?.onError).toBeTypeOf('function');
+    hoisted.startOpts?.onError?.({ message: 'APP_ERROR_APP_NOT_FOUND', intlParams: { id: 'test-app:community' } } as never);
+
+    // Assert the client itself, not expect.anything(): the latter accepts any non-null
+    // value, so dropping the useQueryClient() argument entirely would still pass.
+    expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'test-app:community');
   });
 
   it('hides the "Open data folder" button in the web client (no Tauri)', () => {

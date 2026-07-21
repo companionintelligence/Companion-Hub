@@ -914,7 +914,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
@@ -1047,7 +1047,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });

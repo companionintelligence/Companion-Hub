@@ -41,7 +41,7 @@ import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
 import { useMemoryConnection } from '../../helpers/use-memory-connection';
 import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
-import type { AppInstallErrorCache } from '../../helpers/app-sse-cache';
+import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
 import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
@@ -145,6 +145,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const [isCancellingInstall, setIsCancellingInstall] = useState(false);
 
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
@@ -232,6 +233,12 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     ...startAppMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+      // A pre-flight rejection (e.g. starting an app that was already removed, which
+      // throws APP_ERROR_APP_NOT_FOUND before any status update) emits no lifecycle
+      // SSE event, and the app-detail query has a 30s staleTime with no refetch
+      // interval — so without this the optimistic 'starting' status would spin until
+      // a manual reload. Re-sync from the server to clear it (#909).
+      invalidateAppQueries(queryClient, info.urn);
     },
     onMutate: () => {
       setOptimisticStatus('starting', info.urn);
@@ -327,7 +334,6 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   );
 
   // Show install errors surfaced from SSE via query cache
-  const queryClient = useQueryClient();
   const { data: installError } = useQuery({
     queryKey: ['app-install-error', info.urn],
     queryFn: () => queryClient.getQueryData<AppInstallErrorCache | null>(['app-install-error', info.urn]) ?? null,
