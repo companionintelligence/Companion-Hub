@@ -9,6 +9,10 @@ const h = vi.hoisted(() => ({
   opts: undefined as undefined | Record<string, (arg?: unknown) => void>,
   invalidateAppQueries: vi.fn(),
   toastError: vi.fn(),
+  // Stable sentinel: lets the assertion prove the hook's client was forwarded.
+  // Distinguishing property: toHaveBeenCalledWith is a DEEP compare, so an empty
+  // sentinel would match any empty object and could not detect a wrong client.
+  queryClient: { __isQueryClientFromHook: true },
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -16,7 +20,7 @@ vi.mock('@tanstack/react-query', () => ({
     h.opts = opts;
     return { mutate: h.mutate, isPending: false };
   },
-  useQueryClient: () => ({}),
+  useQueryClient: () => h.queryClient,
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -59,6 +63,6 @@ describe('StopDialog', () => {
     h.opts?.onError?.({ message: 'APP_ERROR_APP_NOT_FOUND', intlParams: { id: 'plane' } } as never);
 
     expect(h.toastError).toHaveBeenCalledTimes(1);
-    expect(h.invalidateAppQueries).toHaveBeenCalledWith(expect.anything(), 'plane:ci-marketplace');
+    expect(h.invalidateAppQueries).toHaveBeenCalledWith(h.queryClient, 'plane:ci-marketplace');
   });
 });

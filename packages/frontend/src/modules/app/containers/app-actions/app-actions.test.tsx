@@ -50,10 +50,14 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   unignoreAppVersionMutation: () => ({}),
 }));
 
-vi.mock('@/modules/app/helpers/app-sse-cache', async () => {
-  const actual = await vi.importActual<typeof import('@/modules/app/helpers/app-sse-cache')>('@/modules/app/helpers/app-sse-cache');
-  return { ...actual, invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args) };
-});
+// AppActions consumes exactly one VALUE from this module; everything else it imports is
+// `import type` and erased. Spreading importActual would link the real module against the
+// partial api-client mock above (no getAppQueryKey etc.), so any future test that reaches
+// another export fails with an opaque "No export is defined on the mock" instead of a
+// normal assertion. Mock just what is used, matching the sibling dialog tests.
+vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
+  invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args),
+}));
 
 vi.mock('@/api-client/client.gen', () => ({
   client: {
@@ -202,6 +206,11 @@ describe('AppActions', () => {
     hoisted.openPath.mockReset();
     hoisted.startOpts = undefined;
     hoisted.invalidateAppQueries.mockReset();
+    // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
+    // is not configured with clearMocks/mockReset, so a leftover value silently leaks
+    // into whichever test runs next and makes assertions depend on declaration order.
+    hoisted.queryClient.getQueryData.mockReset();
+    hoisted.navigate.mockReset();
   });
 
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
