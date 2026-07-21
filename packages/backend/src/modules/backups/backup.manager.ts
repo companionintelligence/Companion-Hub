@@ -301,7 +301,12 @@ export class BackupManager implements OnApplicationShutdown {
           const appStat = await this.filesystem.getStats(appBackupDir);
           if (!appStat.isDirectory()) continue;
 
-          const appUrn = `${storeId}:${appName}` as AppUrn;
+          // An app URN is `<appName>:<appStoreId>` (see extractAppUrn), but the backups
+          // tree is laid out `backups/<appStoreId>/<appName>`. Composing the URN in
+          // directory order inverted the halves, so every lookup below resolved to
+          // `backups/<appName>/<appStoreId>` — a path that never exists — and this whole
+          // retention sweep silently cleaned nothing.
+          const appUrn = `${appName}:${storeId}` as AppUrn;
           const backups = await this.listBackupsByAppId(appUrn);
 
           if (backups.length > globalMax) {
