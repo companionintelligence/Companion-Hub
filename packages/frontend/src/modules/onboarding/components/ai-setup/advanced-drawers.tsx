@@ -18,11 +18,7 @@ export const AdvancedDrawers = ({ providers, onUpdateProviders, insufficientHard
   const { t } = useTranslation();
 
   return (
-    <StepSection
-      number={5}
-      title={t('COMMON_ADVANCED')}
-      action={<span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{t('ONBOARDING_OPTIONAL')}</span>}
-    >
+    <StepSection number={7} badge="optional" title={t('COMMON_ADVANCED')}>
       <div className="mb-3 flex items-center gap-2">
         <Cloud className="h-5 w-5 text-primary" />
         <p className="text-sm font-semibold">{t('ONBOARDING_CLOUD_API_KEYS')}</p>

@@ -12,6 +12,9 @@ import {
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
+import { AccessMethodsCard } from './ai-setup/access-methods-card';
+import { CompanionAppsCard } from './ai-setup/companion-apps-card';
+import { StepSection } from './ai-setup/primitives';
 // Inference backend selection hidden — Ollama is the only option, so no choice is needed.
 // import { BackendCard } from './ai-setup/backend-selection-card';
 import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selection-card';
@@ -49,10 +52,11 @@ interface AiSetupStepProps {
    */
   embedded?: boolean;
   onConfigChange?: (config: AiSetupConfig) => void;
-  /** Extra sections rendered between VPN (step 3) and Advanced (step 5) — used for step 4 on the one-page form. */
+  /** Extra sections rendered after Companion Memory (step 5) — e.g. Recommended Apps on the one-page form. */
   children?: React.ReactNode;
-  /** Rendered immediately below the agent harness card (step 1). */
-  afterHarness?: React.ReactNode;
+  /** Public exposure mode for Companion Memory apps. */
+  publicExposureMode?: ExposureMode;
+  onCompanionAppsChange?: (apps: import('../helpers/types').OnboardingApp[]) => void;
 }
 
 interface OllamaStatus {
@@ -86,7 +90,8 @@ export const AiSetupStep = ({
   embedded = false,
   onConfigChange,
   children,
-  afterHarness,
+  publicExposureMode = 'local',
+  onCompanionAppsChange,
 }: AiSetupStepProps) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -204,15 +209,7 @@ export const AiSetupStep = ({
 
   // Agent frameworks are multi-select; deselecting all is allowed (run no agent, add one later).
   const toggleFramework = (framework: AgentFramework) => {
-    setAgentFrameworks((prev) => {
-      const next = prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework];
-      if (next.length === 0) {
-        setRemoteAccess([]);
-      } else if (prev.length === 0 && next.length > 0) {
-        setRemoteAccess(defaultRemoteAccess(cloudflareAvailable, tailscaleAvailable));
-      }
-      return next;
-    });
+    setAgentFrameworks((prev) => (prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework]));
   };
 
   // Remote access is multi-select and optional (empty = local-only).
@@ -332,6 +329,7 @@ export const AiSetupStep = ({
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
+  const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
@@ -346,20 +344,20 @@ export const AiSetupStep = ({
 
       {!isInsufficient && (
         <>
-          <AgentFrameworkCard
-            frameworks={agentFrameworks}
-            onToggleFramework={toggleFramework}
+          <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
+
+          <AccessMethodsCard
             remoteAccess={remoteAccess}
             onToggleAccess={toggleAccess}
             cloudflareAvailable={cloudflareAvailable}
             tailscaleAvailable={tailscaleAvailable}
+            tailscaleSetup={showTailscaleSetup ? <TailscaleSetupStep embedded inline /> : undefined}
           />
 
-          {afterHarness}
+          <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
+            <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+          </StepSection>
 
-          {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
-
-          {/* Disk-available summary sits above the model selection so the budget is visible first. */}
           <ResourceSummaryBar
             selectedModels={selectedModels}
             installedCatalogIds={installedCatalogIds}
@@ -376,7 +374,6 @@ export const AiSetupStep = ({
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
           >
-            {/* Other Models lives at the bottom of the model-selection section (always visible). */}
             <OtherModelsSection
               recommendedModels={backendRecommendedModels}
               availableModels={backendAvailableModels}
@@ -386,13 +383,11 @@ export const AiSetupStep = ({
               preferredModelId={preferredModelId}
             />
           </RecommendedModels>
+
+          <CompanionAppsCard publicExposureMode={publicExposureMode} onChange={onCompanionAppsChange} />
         </>
       )}
 
-      {/* Step 3 — Private VPN. Rendered inline in the single-page form; the standalone wizard shows it as its own step. */}
-      {embedded && <TailscaleSetupStep embedded />}
-
-      {/* Step 4 slot — injected by the parent (e.g. Recommended Apps on the one-page FTUE form). */}
       {embedded && children}
 
       <AdvancedDrawers providers={cloudProviders} onUpdateProviders={setCloudProviders} insufficientHardware={isInsufficient} />

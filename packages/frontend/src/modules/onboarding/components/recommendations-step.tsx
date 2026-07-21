@@ -5,6 +5,7 @@ import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { resolveOnboardingRecommendations } from '../helpers/alternatives';
 import { ONBOARDING_CURATED_PICKS } from '../helpers/onboarding-curated-picks';
@@ -27,6 +28,10 @@ interface RecommendationsStepProps {
   pinnedSlugs?: string[];
   /** Agent app slugs selected in the harness — kept in sync with this step's selection. */
   agentSlugs?: string[];
+}
+
+function isCompanionFirstParty(slug: string): boolean {
+  return slug.startsWith('ci-');
 }
 
 export const RecommendationsStep = ({
@@ -309,7 +314,19 @@ export const RecommendationsStep = ({
                 >
                   <OnboardingAppIcon app={{ appSlug: app.slug, name: app.name, icon: app.icon, urn: app.urn }} size={40} />
                   <span className="min-w-0 flex-1 pr-5">
-                    <span className="block truncate text-base font-medium">{app.name}</span>
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className="block truncate text-base font-medium">{app.name}</span>
+                      {!isLocked && (
+                        <span
+                          className={cn(
+                            'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                            isCompanionFirstParty(app.slug) ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground',
+                          )}
+                        >
+                          {isCompanionFirstParty(app.slug) ? t('ONBOARDING_BUILT_BY_COMPANION') : t('ONBOARDING_THIRD_PARTY')}
+                        </span>
+                      )}
+                    </span>
                     {description && <span className="mt-0.5 block text-sm leading-snug text-muted-foreground line-clamp-2">{description}</span>}
                   </span>
                   <span className="absolute right-1.5 top-1.5">
@@ -321,6 +338,14 @@ export const RecommendationsStep = ({
           </div>
         )}
       </div>
+
+      {!showCatalogLoading && (
+        <div className="mt-4 flex justify-end">
+          <Button variant="outline" size="sm" asChild data-testid="see-app-store-link">
+            <Link to="/store">{t('ONBOARDING_SEE_APP_STORE')}</Link>
+          </Button>
+        </div>
+      )}
 
       {!embedded && (
         <WizardNav>

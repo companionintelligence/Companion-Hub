@@ -25,6 +25,41 @@ vi.mock('@/lib/helpers/open-external', () => ({
   openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
+vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
+    apps: [],
+    isLoading: false,
+    isRetryingEmptyCatalog: false,
+    isCatalogSettled: true,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}));
+
+const mockUseQuery = vi.fn();
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-query')>();
+  return {
+    ...actual,
+    useQuery: (...args: unknown[]) => mockUseQuery(...args),
+    useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useQueryClient: () => ({ invalidateQueries: vi.fn(), getQueryData: vi.fn() }),
+  };
+});
+
+vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getStatus4Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getStatus4QueryKey: () => ['tailscale-status'],
+}));
+
+vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
+  useTailscaleReadinessSync: vi.fn(),
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: { error: vi.fn(), success: vi.fn() },
+}));
+
 // Onboarding pins inference to Ollama, so catalog fixtures use the Ollama backend.
 const highTierProfile: HardwareProfileResponse = {
   hardware: {
@@ -165,6 +200,12 @@ describe('AiSetupStep', () => {
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
+    });
+
+    mockUseQuery.mockReturnValue({
+      data: { installed: true, connected: false, ip: null, hostname: null, backendState: 'Stopped' },
+      isLoading: false,
+      isError: false,
     });
   });
 
@@ -609,12 +650,12 @@ describe('AiSetupStep', () => {
     const { onComplete } = renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect((screen.getByTestId('agent-access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('agent-access-hint')).toBeInTheDocument();
+    expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('access-this-computer')).toBeInTheDocument();
 
-    await user.click(screen.getByTestId('agent-access-cloudflare'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByTestId('access-cloudflare'));
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
@@ -623,36 +664,42 @@ describe('AiSetupStep', () => {
   it('defaults agent remote access to Web when a Cloudflare tunnel is available', async () => {
     renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
-    expect(screen.queryByTestId('agent-access-hint')).not.toBeInTheDocument();
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
   });
 
-  it('clears remote access when all agent harnesses are deselected', async () => {
+  it('shows Tailscale setup inline when Private VPN is selected', async () => {
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('tailscale-setup-inline')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('access-tailscale'));
+    expect(screen.getByTestId('tailscale-setup-inline')).toBeInTheDocument();
+  });
+
+  it('does not clear remote access when all agent harnesses are deselected', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [], exposureMode: 'local' }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [], exposureMode: 'cloudflare' }));
   });
 
-  it('restores default remote access when re-selecting a harness from zero', async () => {
+  it('allows local-only access when remote options are deselected', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
-
-    await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByTestId('access-cloudflare'));
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'cloudflare' }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'local' }));
   });
 
   it('does not restore remote access when re-selecting a harness while another remains selected', async () => {
@@ -661,12 +708,12 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
     await user.click(screen.getByTestId('agent-hermes'));
-    await user.click(screen.getByTestId('agent-access-cloudflare'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    await user.click(screen.getByTestId('access-cloudflare'));
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
 
     await user.click(screen.getByTestId('agent-openclaw'));
     await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
     expect(screen.getByTestId('agent-hermes')).toHaveAttribute('aria-pressed', 'true');
   });
 

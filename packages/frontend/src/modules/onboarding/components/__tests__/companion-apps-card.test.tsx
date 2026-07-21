@@ -151,4 +151,10 @@ describe('CompanionAppsCard', () => {
     render(<CompanionAppsCard publicExposureMode="cloudflare" onChange={vi.fn()} />);
     expect(screen.getAllByTestId('companion-app-skeleton')).toHaveLength(2);
   });
+
+  it('shows the privacy callout', () => {
+    render(<CompanionAppsCard publicExposureMode="cloudflare" onChange={vi.fn()} />);
+    expect(screen.getByTestId('companion-privacy-callout')).toBeInTheDocument();
+    expect(screen.getByText('ONBOARDING_COMPANION_PRIVACY_CALLOUT')).toBeInTheDocument();
+  });
 });

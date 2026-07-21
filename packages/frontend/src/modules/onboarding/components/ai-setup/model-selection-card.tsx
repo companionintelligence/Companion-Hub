@@ -107,7 +107,9 @@ export const RecommendedModels = ({
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
   return (
-    <StepSection number={2} title={t('COMMON_RECOMMENDED_MODELS')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+    <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+      <p className="mb-3 text-sm text-muted-foreground">{t('ONBOARDING_MODELS_CALLOUT')}</p>
+      <p className="mb-4 text-xs text-muted-foreground">{t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD')}</p>
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (

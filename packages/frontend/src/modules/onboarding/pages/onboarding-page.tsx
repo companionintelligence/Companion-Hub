@@ -17,7 +17,6 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
-import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
@@ -77,6 +76,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
             <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
             <p className="text-xs text-muted-foreground/80">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION_HINT')}</p>
+            <p className="mt-1 text-xs text-muted-foreground/70">{t('ONBOARDING_HUB_INTRO_POSITIONING')}</p>
           </div>
         </div>
         {children}
@@ -219,9 +219,10 @@ function OnboardingWizard() {
           onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
           cloudflareAvailable={cloudflareAvailable}
           tailscaleAvailable={tailscaleAvailable}
-          afterHarness={<CompanionAppsCard publicExposureMode={publicExposureMode} onChange={setCompanionApps} />}
+          publicExposureMode={publicExposureMode}
+          onCompanionAppsChange={setCompanionApps}
         >
-          <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
+          <StepSection number={6} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
             <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
