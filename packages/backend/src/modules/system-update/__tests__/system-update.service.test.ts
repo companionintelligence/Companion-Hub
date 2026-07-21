@@ -128,4 +128,23 @@ describe('SystemUpdateService', () => {
       expect(service.getHostUpdateListenerToken()).toBeNull();
     });
   });
+
+  // Asserted against literals, not the constants themselves: the other tests interpolate
+  // HUB_STACK_IMAGE_REPO and so would follow a bad edit silently. Pinning this image at the
+  // private ci-os-hub package is what stopped Hub 0.2.44 from starting (#920), and it must
+  // stay in step with HUB_STACK_IMAGE_REPO in the desktop's hub_env.rs.
+  describe('Hub stack repo contract', () => {
+    it('pulls from the public ci-hub GHCR package', () => {
+      expect(HUB_STACK_IMAGE_REPO).toBe('ghcr.io/companionintelligence/ci-hub');
+      expect(HUB_STACK_IMAGE_REPO).not.toContain('ci-os-hub');
+    });
+
+    it('lists versions from the Portal ci-os-hub path, which is a different registry', () => {
+      // Deliberately NOT the same name as the GHCR repo: this is the path the Portal mirror
+      // is copied to, used only for tag listing. Versions correspond because both come from
+      // the same build.
+      expect(HUB_STACK_REGISTRY_REPO).toBe('ci-os-hub');
+      expect(HUB_STACK_REGISTRY_REPO).not.toContain('ghcr.io');
+    });
+  });
 });

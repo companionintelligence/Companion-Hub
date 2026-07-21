@@ -5793,6 +5793,32 @@ fn render_runtime_env_content(
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
     let hub_image = resolve_runtime_hub_image(existing);
+    // Make pin supersession observable in desktop.log. Most starts resolve to the same
+    // reference already on disk and log nothing; a line here means a pin was dropped —
+    // notably the stale, unpullable `ci-os-hub` references left by pre-#920 builds, which
+    // are migrated to the public `ci-hub` repo on the next start.
+    if let Some(previous_image) = existing.get("CI_HUB_IMAGE") {
+        if previous_image != &hub_image {
+            // Name which of the two outcomes happened, because they mean opposite things
+            // when reading back a failed start: falling back to the build default means
+            // the pin was rejected as unusable (foreign repo, stale ci-os-hub, or a tag
+            // that is not a full version), whereas a normalized pin means the update was
+            // honoured and only its spelling changed. Labelling both as the default sends
+            // whoever is debugging looking for a discarded pin that never existed.
+            let reason = if hub_image == default_hub_image() {
+                "desktop build default"
+            } else {
+                "normalized pin"
+            };
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Superseding pinned stack image {previous_image} with {hub_image} ({reason})."
+                ),
+            );
+        }
+    }
     let hub_version = runtime_hub_version_for_image(&hub_image);
     let compose_file_host = docker_bind_mount_path(&data_dir.join(HUB_COMPOSE_FILENAME));
     let docker_platform = if cfg!(target_arch = "aarch64") {
