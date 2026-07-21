@@ -684,11 +684,27 @@ GitHub Actions workflow per branch:
 
 | Branch | Environment | Image Tag | Protection |
 |--------|-------------|-----------|------------|
-| `dev` | dev | `ghcr.io/companionintelligence/ci-os-hub:dev` | None (auto) |
-| `staging` | staging | `ghcr.io/companionintelligence/ci-os-hub:staging` | Optional approval |
-| `main` | production | `ghcr.io/companionintelligence/ci-os-hub:latest` | Required approval |
+| `dev` | dev | `ghcr.io/companionintelligence/ci-hub:dev` | None (auto) |
+| `staging` | staging | `ghcr.io/companionintelligence/ci-hub:staging` | Optional approval |
+| `main` | production | `ghcr.io/companionintelligence/ci-hub:latest` | Required approval |
 
-Images are pushed to **GitHub Container Registry** (ghcr.io). Each environment has its own Cloudflare API token and account ID as GitHub secrets.
+A **Desktop Release** run additionally publishes an unprefixed version tag
+(`ghcr.io/companionintelligence/ci-hub:0.2.45`) for `production` only — that is the exact
+reference a shipped desktop bundle pins via `CI_HUB_BUILD_VERSION`. Non-production runs
+publish their channel tag alone, because they compile a different `CI_CLOUD_URL` and must
+never claim a production version tag.
+
+The repo name is `ci-hub`. Note that `ci-os-hub` appearing throughout the compose files and
+backend is the **service/container name** (`container_name: ci-os-hub`, `ci-os-hub_network`,
+`ci-os-hub.managed` labels) and the Portal mirror path — not the image repo. Pointing the
+image at the private `ci-os-hub` package is what broke Hub 0.2.44 (#920).
+
+Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
+**public**: the desktop shells out to `docker compose` with no registry credentials, so any
+image it pins has to be anonymously pullable. `build-container.yml`'s
+`verify-anonymous-pull` job enforces this on every run, unauthenticated, before any desktop
+bundle is built. Each environment has its own Cloudflare API token and account ID as GitHub
+secrets.
 
 A **Cloudflare Workers** deployment (`wrangler.toml`) defines a Durable Object (`AppContainer`) for future container orchestration at the edge, with separate Workers environments for dev, staging, and production.
 

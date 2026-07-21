@@ -30,8 +30,19 @@ describe('docker-compose.prod.yml sync', () => {
     expect(root).toContain('build:');
     expect(root).toContain('dockerfile: Dockerfile');
     expect(desktop).not.toContain('dockerfile: Dockerfile');
-    expect(desktop).toContain('image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-os-hub:latest}');
+    expect(desktop).toContain('image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}');
     expect(desktop).toContain('pull_policy: if_not_present');
+  });
+
+  // The bundled fallback must name the public GHCR package. Pointing it at the private
+  // ci-os-hub package is what made a missing CI_HUB_IMAGE fail with 403 instead of
+  // starting (#920). The `ci-os-hub` service/container name is unaffected and must remain.
+  it('desktop compose falls back to the public ci-hub image, never ci-os-hub', () => {
+    execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
+    const desktop = readCompose(desktopCompose);
+
+    expect(desktop).not.toMatch(/image:.*ci-os-hub/);
+    expect(desktop).toContain('  ci-os-hub:');
   });
 
   it('inference URLs default to host.docker.internal', () => {

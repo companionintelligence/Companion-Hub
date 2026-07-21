@@ -36,6 +36,11 @@ jobs:
     uses: ./.github/workflows/build-container.yml
     with:
       environment: ${{ inputs.environment }}
+      # Thread the release tag so a production release publishes a versioned image at the
+      # exact reference these desktop bundles compile in via CI_HUB_BUILD_VERSION. Without
+      # this the bundles pinned a tag no workflow ever pushed and could not start (#920).
+      # build-container publishes a versioned tag for production only.
+      tag: ${{ inputs.tag }}
     secrets: inherit
 
   build:
