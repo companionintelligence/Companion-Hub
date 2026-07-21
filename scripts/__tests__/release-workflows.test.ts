@@ -88,6 +88,22 @@ describe('build-container.yml', () => {
     expect(gate).toContain('amd64');
     expect(gate).toContain('arm64');
   });
+
+  it('refuses to pass when there is no reference to verify', () => {
+    // The verification loop iterates over the resolved references. If desktop_ref were
+    // ever empty the loop would simply not run and the job would go green having proved
+    // nothing — the same silent-pass failure mode that let #920 ship.
+    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
+    expect(gate).toContain('if [ -z "${DESKTOP_REF}" ]; then');
+  });
+
+  it('refuses to pass when the published version and the verified reference disagree', () => {
+    // Otherwise a drift between resolver and workflow could verify :latest while the
+    // pinned version tag is absent.
+    const gate = buildContainer.slice(buildContainer.indexOf('verify-anonymous-pull:'));
+    expect(gate).toContain('if [ -n "${VERSION}" ]');
+    expect(gate).toContain('${CHANNEL_REF%:*}:${VERSION}');
+  });
 });
 
 describe('no workflow publishes to the private ci-os-hub package', () => {

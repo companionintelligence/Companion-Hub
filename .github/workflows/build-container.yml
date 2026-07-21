@@ -226,8 +226,28 @@ jobs:
         env:
           DESKTOP_REF: ${{ needs.deploy.outputs.desktop_ref }}
           CHANNEL_REF: ${{ needs.deploy.outputs.image_repo }}:${{ needs.deploy.outputs.channel_tag }}
+          VERSION: ${{ needs.deploy.outputs.version }}
         run: |
           set -euo pipefail
+
+          # A verification that checks nothing must never report success. If the deploy job
+          # stopped emitting desktop_ref (renamed output, dropped mapping), the loop below
+          # would simply not execute and this job would go green having proved nothing —
+          # the same silent-pass class of failure that let #920 ship.
+          if [ -z "${DESKTOP_REF}" ]; then
+            echo "::error::deploy did not report a desktop_ref, so there is nothing to verify."
+            echo "::error::Refusing to pass. Check the 'Resolve image references' step and the job outputs mapping."
+            exit 1
+          fi
+
+          # When a version was published, the reference under test must be that version.
+          # Otherwise a drift between what is published and what is verified would let the
+          # gate pass on :latest while the pinned version tag is missing.
+          if [ -n "${VERSION}" ] && [ "${DESKTOP_REF}" != "${CHANNEL_REF%:*}:${VERSION}" ]; then
+            echo "::error::Published version '${VERSION}' does not match the verified reference '${DESKTOP_REF}'."
+            echo "::error::The resolver and the workflow disagree; desktop builds would pin an unverified image."
+            exit 1
+          fi
 
           # Isolate from any ambient credentials so this mirrors a first-time user.
           DOCKER_CONFIG="$(mktemp -d)"
