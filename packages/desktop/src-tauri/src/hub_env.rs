@@ -61,11 +61,16 @@ pub(crate) fn default_hub_image() -> String {
 /// and leave the production branch — the one that shipped #920 — unverified.
 fn hub_image_for(environment: Option<&str>, version: Option<&str>) -> String {
     match environment {
-        // A blank version is normalized away here as well as in build_version(), so no
-        // caller can compose `ci-hub:` — an invalid reference that fails every compose call.
+        // The compiled version must be a shape the pipeline actually publishes. A blank
+        // value would compose `ci-hub:`, and a malformed one like `0.2.45+ci.7` composes a
+        // reference Docker rejects outright — either way every install of that build is
+        // dead on arrival, which is #920. `verify-anonymous-pull` cannot catch this: it
+        // checks the reference the *resolver* computed, not the one compiled into the
+        // binary, so the two only agree while the release wiring stays correct. Falling
+        // back to the floating channel tag keeps a mis-wired build startable instead.
         Some("production") => match version
             .map(normalize_version_tag)
-            .filter(|version| !version.is_empty())
+            .filter(|version| is_version_image_tag(version))
         {
             Some(version) => format!("{HUB_STACK_IMAGE_REPO}:{version}"),
             None => format!("{HUB_STACK_IMAGE_REPO}:latest"),
@@ -439,6 +444,33 @@ mod tests {
                 "blank version {blank:?} must not produce an empty tag"
             );
         }
+    }
+
+    #[test]
+    fn malformed_build_version_falls_back_to_the_channel_tag() {
+        // desktop-release.yml sets CI_HUB_BUILD_VERSION from the raw dispatch input, so a
+        // mis-typed tag compiles straight into the binary. `0.2.45+ci.7` would compose a
+        // reference Docker refuses outright, bricking every install of that build — and
+        // the anonymous-pull gate would not notice, because it verifies the reference the
+        // resolver computed rather than the one the binary carries. The floating channel
+        // tag is public and current, so degrading to it keeps the build startable.
+        for malformed in ["0.2", "0.2.45+ci.7", "latest", "1.x"] {
+            assert_eq!(
+                hub_image_for(PROD, Some(malformed)),
+                format!("{HUB_STACK_IMAGE_REPO}:latest"),
+                "version {malformed:?} is not publishable and must not be pinned"
+            );
+        }
+
+        // A well-formed version, prefixed or not, is still pinned exactly.
+        assert_eq!(
+            hub_image_for(PROD, Some("v0.2.45")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.45")
+        );
+        assert_eq!(
+            hub_image_for(PROD, Some("0.2.46-rc.1")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.46-rc.1")
+        );
     }
 
     #[test]
