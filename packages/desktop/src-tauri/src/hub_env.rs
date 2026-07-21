@@ -248,7 +248,23 @@ fn is_version_image_tag(tag: &str) -> bool {
     }
 
     // A pre-release suffix is legal and published — Desktop Release defaults to prerelease.
-    let core = core.split('-').next().unwrap_or(core);
+    let (core, prerelease) = match core.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (core, None),
+    };
+
+    // SEMVER_PATTERN's `(?:-[0-9A-Za-z.-]+)?` requires at least one character after the
+    // hyphen. Without this, `0.2.46-` would be honoured here but refused by CI, and it
+    // would reach compare_prerelease as a single empty identifier.
+    if let Some(prerelease) = prerelease {
+        if prerelease.is_empty()
+            || !prerelease
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+        {
+            return false;
+        }
+    }
 
     let mut components = 0usize;
     for component in core.split('.') {
@@ -261,6 +277,13 @@ fn is_version_image_tag(tag: &str) -> bool {
     components == 3
 }
 
+/// Semver precedence between two version tags.
+///
+/// Pre-release ordering is modelled, not just the numeric core. Desktop Release defaults
+/// to prerelease, so RC bundles are real, and the backend's updater uses `semver.gt` — it
+/// will happily pin `0.2.46-rc.2` over an `0.2.46-rc.1` build. Comparing cores alone
+/// called those equal, so the caller discarded the pin and reverted the upgrade on the
+/// next start: exactly the desktop-versus-updater fight this file exists to end.
 fn compare_semver(left: &str, right: &str) -> Ordering {
     let left_parts = parse_semver_parts(left);
     let right_parts = parse_semver_parts(right);
@@ -275,7 +298,57 @@ fn compare_semver(left: &str, right: &str) -> Ordering {
         }
     }
 
-    Ordering::Equal
+    // Same numeric core, so semver precedence turns on the pre-release segment: a release
+    // outranks every pre-release of the same version.
+    match (prerelease_segment(left), prerelease_segment(right)) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left_prerelease), Some(right_prerelease)) => {
+            compare_prerelease(left_prerelease, right_prerelease)
+        }
+    }
+}
+
+/// Pre-release segment of a version tag (`0.2.46-rc.1` → `rc.1`), or `None` for a release.
+///
+/// Build metadata is not handled because it cannot get here: [`is_version_image_tag`]
+/// rejects `+` outright, since it is not a legal Docker tag character.
+fn prerelease_segment(version: &str) -> Option<&str> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split_once('-')
+        .map(|(_, prerelease)| prerelease)
+}
+
+/// Compare two pre-release segments by semver precedence rules.
+///
+/// Identifiers are compared left to right: numeric ones numerically, so `rc.10` outranks
+/// `rc.2` where a plain string compare would invert them; alphanumeric ones lexically in
+/// ASCII order; a numeric identifier always ranks below an alphanumeric one; and when all
+/// preceding identifiers match, the longer set wins (`rc.1.1` > `rc.1`).
+fn compare_prerelease(left: &str, right: &str) -> Ordering {
+    let mut left_identifiers = left.split('.');
+    let mut right_identifiers = right.split('.');
+
+    loop {
+        let ordering = match (left_identifiers.next(), right_identifiers.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(left), Some(right)) => match (left.parse::<u32>(), right.parse::<u32>()) {
+                (Ok(left), Ok(right)) => left.cmp(&right),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => left.cmp(right),
+            },
+        };
+
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
 }
 
 /// Numeric `major.minor.patch` components of a version, ignoring any pre-release suffix.
@@ -286,8 +359,8 @@ fn compare_semver(left: &str, right: &str) -> Ordering {
 /// release it follows. Pre-release tags are publishable (the release pipeline accepts them
 /// and Desktop Release defaults to prerelease), so this path is live.
 ///
-/// Ordering between two pre-releases of the same version is intentionally not modelled;
-/// callers only need "is this pin ahead of the running build".
+/// This yields only the numeric core; precedence *between* pre-releases of the same core
+/// is [`compare_prerelease`]'s job, and [`compare_semver`] applies it once the cores tie.
 fn parse_semver_parts(version: &str) -> Vec<u32> {
     let core = version.trim().trim_start_matches('v');
     let core = core.split(['-', '+']).next().unwrap_or(core);
@@ -480,6 +553,65 @@ mod tests {
     }
 
     #[test]
+    fn orders_pre_releases_by_semver_precedence() {
+        // Numeric identifiers compare numerically: a lexical compare would put rc.10
+        // below rc.2 and silently strand every release past the ninth candidate.
+        assert_eq!(
+            compare_semver("0.2.46-rc.10", "0.2.46-rc.2"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_semver("0.2.46-rc.2", "0.2.46-rc.1"),
+            Ordering::Greater
+        );
+        // A release outranks every pre-release of the same core, and vice versa.
+        assert_eq!(compare_semver("0.2.46", "0.2.46-rc.1"), Ordering::Greater);
+        assert_eq!(compare_semver("0.2.46-rc.1", "0.2.46"), Ordering::Less);
+        // Alphanumeric identifiers compare lexically; longer sets win ties.
+        assert_eq!(
+            compare_semver("0.2.46-rc", "0.2.46-beta"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_semver("0.2.46-rc.1.1", "0.2.46-rc.1"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_semver("0.2.46-rc.1", "0.2.46-rc.1"),
+            Ordering::Equal
+        );
+        // The numeric core still dominates the pre-release segment.
+        assert_eq!(compare_semver("0.2.47-rc.1", "0.2.46"), Ordering::Greater);
+    }
+
+    #[test]
+    fn preserves_a_newer_pre_release_pin_over_a_pre_release_build() {
+        // Desktop Release defaults to prerelease, and the backend updater pins with
+        // semver.gt — so it will pin rc.2 onto an rc.1 build. Treating the two as equal
+        // made the desktop discard that pin and revert the upgrade on the very next
+        // start, which is the desktop-versus-updater fight this resolver exists to end.
+        let pin = format!("{HUB_STACK_IMAGE_REPO}:0.2.46-rc.2");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&pin), PROD, Some("0.2.46-rc.1")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.46-rc.2")
+        );
+
+        // The final release must also win over the rc bundle that preceded it.
+        let release_pin = format!("{HUB_STACK_IMAGE_REPO}:0.2.46");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&release_pin), PROD, Some("0.2.46-rc.1")),
+            format!("{HUB_STACK_IMAGE_REPO}:0.2.46")
+        );
+
+        // ...but an older rc pin must not displace the shipped release.
+        let stale_pin = format!("{HUB_STACK_IMAGE_REPO}:0.2.46-rc.1");
+        assert_eq!(
+            resolve_runtime_hub_image_for(Some(&stale_pin), PROD, Some("0.2.46")),
+            hub_image_for(PROD, Some("0.2.46"))
+        );
+    }
+
+    #[test]
     fn rejects_tags_the_release_pipeline_would_refuse_to_publish() {
         // This guard and SEMVER_PATTERN in resolve-hub-image-tags.cjs bracket one
         // contract, so a shape CI rejects must not be a shape the desktop pins.
@@ -488,7 +620,13 @@ mod tests {
         // caller rebuilds the pin from the un-cut tag, accepting it would write
         // `repo:99.0.0+ci.7` into .env — rejected by compose as an invalid reference
         // before any registry is contacted, so the Hub never starts.
-        for tag in ["99.0.0+ci.7", "v99.0.0+build.1", "1.2.3.4", "99.0.0."] {
+        for tag in [
+            "99.0.0+ci.7",
+            "v99.0.0+build.1",
+            "1.2.3.4",
+            "99.0.0.",
+            "99.0.0-",
+        ] {
             assert!(
                 !is_version_image_tag(tag),
                 "{tag} is not a shape the release pipeline publishes"
