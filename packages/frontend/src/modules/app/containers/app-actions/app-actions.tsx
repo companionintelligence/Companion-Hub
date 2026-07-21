@@ -347,8 +347,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   // Public-route readiness comes from the page (shared with the status pill);
   // this container only decides how to render it.
-  const { state: publicUrlState, statusMessage, withinGracePeriod, pollingStopped, resolvable, isResolving } = urlAvailability;
-  const appUrl = urlAvailability.appUrl ?? localAppUrl;
+  const {
+    state: publicUrlState,
+    appUrl: publicAppUrl,
+    statusMessage,
+    withinGracePeriod,
+    pollingStopped,
+    resolvable,
+    isResolving,
+    resolve: resolveRoute,
+    reset: restartProbe,
+  } = urlAvailability;
+  const appUrl = publicAppUrl ?? localAppUrl;
 
   // Build the Open button area for running apps with GUI
   const renderOpenButtonArea = () => {
@@ -435,13 +445,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
           {pollingStopped ? (
-            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={urlAvailability.reset} />
+            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={restartProbe} />
           ) : (
             <ActionButton
               IconComponent={RotateCw}
               title={t('APP_ACTION_RESOLVE')}
               intent="warning"
-              onClick={urlAvailability.resolve}
+              onClick={resolveRoute}
               loading={isResolving}
               disabled={isResolving}
             />

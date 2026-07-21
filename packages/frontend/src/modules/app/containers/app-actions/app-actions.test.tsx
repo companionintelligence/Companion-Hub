@@ -13,6 +13,7 @@ const hoisted = vi.hoisted(() => ({
   // null => web client (no Tauri); a function => running inside the desktop app.
   tauriInvoke: null as null | (() => unknown),
   openPath: vi.fn(),
+  openExternal: vi.fn(),
 }));
 
 vi.mock('@/lib/helpers/open-folder', () => ({
@@ -94,7 +95,7 @@ vi.mock('react-router', async () => {
 });
 
 vi.mock('@/lib/helpers/open-external', () => ({
-  openExternal: vi.fn(),
+  openExternal: (...args: unknown[]) => hoisted.openExternal(...args),
 }));
 
 vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
@@ -197,6 +198,7 @@ describe('AppActions', () => {
   afterEach(() => {
     hoisted.tauriInvoke = null;
     hoisted.openPath.mockReset();
+    hoisted.openExternal.mockReset();
   });
 
   it('hides the "Open data folder" button in the web client (no Tauri)', () => {
@@ -366,9 +368,8 @@ describe('AppActions', () => {
       const open = screen.getByTestId('action-app_action_open');
       expect(open).toBeEnabled();
 
-      const { openExternal } = await import('@/lib/helpers/open-external');
       await userEvent.click(open);
-      expect(openExternal).toHaveBeenCalledWith('https://app.example.com');
+      expect(hoisted.openExternal).toHaveBeenCalledWith('https://app.example.com');
     });
   });
 });

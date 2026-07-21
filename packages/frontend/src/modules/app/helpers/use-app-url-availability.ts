@@ -1,7 +1,7 @@
 import { checkAvailabilityOptions, resolveAvailabilityMutation } from '@/api-client/@tanstack/react-query.gen';
 import type { AppStatus } from '@/types/app.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -200,12 +200,14 @@ export function useAppUrlAvailability(input: {
   const [pollingStopped, setPollingStopped] = useState(false);
   // Bumping this re-arms the timers and re-runs the probe after reset().
   const [runId, setRunId] = useState(0);
+  // When the current run began. React Query keeps its cache entry across a
+  // disabled spell (an app stop/start) and across a remount within gcTime, so
+  // a verdict older than this belongs to a previous run and must not be
+  // trusted — a stale `available: true` would otherwise light up the Open
+  // button for a route that has not come back up yet.
+  const [runStartedAt, setRunStartedAt] = useState(() => Date.now());
 
-  const queryOptions = checkAvailabilityOptions({ path: { urn: appUrn } });
-  // `checkAvailabilityOptions` builds a fresh key object per render; pin it so
-  // `reset` stays referentially stable for the consumers that pass it around.
-  const queryKeyRef = useRef(queryOptions.queryKey);
-  queryKeyRef.current = queryOptions.queryKey;
+  const queryOptions = useMemo(() => checkAvailabilityOptions({ path: { urn: appUrn } }), [appUrn]);
 
   const query = useQuery({
     ...queryOptions,
@@ -232,7 +234,8 @@ export function useAppUrlAvailability(input: {
     refetchOnWindowFocus: false,
   });
 
-  const probe = (query.data ?? null) as AppUrlProbeResult | null;
+  // Only a verdict fetched during THIS run counts; see `runStartedAt`.
+  const probe = query.dataUpdatedAt >= runStartedAt ? ((query.data ?? null) as AppUrlProbeResult | null) : null;
 
   // Re-arm on every change of target or applicability: navigating between two
   // app-detail routes reuses this component, and a stop → start cycle must get a
@@ -241,6 +244,7 @@ export function useAppUrlAvailability(input: {
   useEffect(() => {
     setGraceElapsed(false);
     setPollingStopped(false);
+    setRunStartedAt(Date.now());
 
     if (!enabled) {
       return;
@@ -258,10 +262,24 @@ export function useAppUrlAvailability(input: {
   // A failed request is "no verdict", not "unavailable": the app may well be up
   // and the Hub call is what broke. Keep the UI neutral and let the next tick
   // decide — the same fail-soft stance the old inline catch took.
+  //
+  // Log once per distinct failure, not once per poll: a probe that keeps
+  // failing (an expired session, say) ticks every 3-10s for five minutes, and
+  // ~45 identical lines would bury everything else in the console.
+  const loggedProbeFailureRef = useRef<string | null>(null);
   useEffect(() => {
-    if (query.error) {
-      console.warn('[app-url-availability] probe failed for %s:', appUrn, query.error);
+    if (!query.error) {
+      loggedProbeFailureRef.current = null;
+      return;
     }
+
+    const signature = `${appUrn}:${query.error.message}`;
+    if (loggedProbeFailureRef.current === signature) {
+      return;
+    }
+
+    loggedProbeFailureRef.current = signature;
+    console.warn('[app-url-availability] probe failed for %s:', appUrn, query.error);
   }, [query.error, appUrn]);
 
   // Fires once when the budget runs out on a route that never came up (the
@@ -283,9 +301,9 @@ export function useAppUrlAvailability(input: {
   const reset = useCallback(() => {
     // Drop the cached verdict as well as the local latches, so `hasVerdict`
     // falls back to false and the UI returns to a neutral "checking".
-    void queryClient.resetQueries({ queryKey: queryKeyRef.current });
+    void queryClient.resetQueries({ queryKey: queryOptions.queryKey });
     setRunId((current) => current + 1);
-  }, [queryClient]);
+  }, [queryClient, queryOptions.queryKey]);
 
   const resolveMutation = useMutation({
     ...resolveAvailabilityMutation(),

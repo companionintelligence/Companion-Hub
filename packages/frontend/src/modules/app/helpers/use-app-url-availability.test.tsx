@@ -186,6 +186,31 @@ describe('useAppUrlAvailability', () => {
     expect(result.current.state).toBe('unreachable');
   });
 
+  it('does not trust a cached verdict from before the app was restarted', async () => {
+    // React Query keeps the cache entry while the probe is disabled, so without
+    // a run boundary the old "available" would enable Open against a route that
+    // has not come back up.
+    probe({ available: true, stage: 'ready', appUrl: 'https://app.example.com' });
+
+    const { result, rerender } = renderHook((props: { status: 'running' | 'stopped' }) => useAppUrlAvailability({ ...EXPOSED, ...props }), {
+      wrapper: wrapper(),
+      initialProps: { status: 'running' } as { status: 'running' | 'stopped' },
+    });
+
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+
+    rerender({ status: 'stopped' });
+    expect(result.current.state).toBe('idle');
+
+    // Restarted: the route is propagating again, but the stale cached verdict
+    // is still in the cache when the probe re-enables.
+    probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND' });
+    rerender({ status: 'running' });
+
+    expect(result.current.state).not.toBe('ready');
+    await waitFor(() => expect(result.current.state).toBe('propagating'));
+  });
+
   it('re-arms the grace window when the target app changes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     probe({ available: false, stage: 'propagating', errorCode: 'DNS_NOT_FOUND' });

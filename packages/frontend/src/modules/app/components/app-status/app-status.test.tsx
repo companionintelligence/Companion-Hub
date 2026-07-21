@@ -1,5 +1,6 @@
 import { render, screen } from '@/tests/test-utils';
 import { describe, expect, it, vi } from 'vitest';
+import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { AppStatus, getAppStatusPresentation, isCompletedOneShotContainer, isConcerningContainer } from './app-status';
 
 vi.mock('react-i18next', () => ({
@@ -21,7 +22,7 @@ const runningContainer = {
 };
 
 /** A fully healthy snapshot — the baseline the public-route cases build on. */
-function healthyRuntime(overrides: Partial<Parameters<typeof getAppStatusPresentation>[1] & object> = {}) {
+function healthyRuntime(overrides: Partial<AppRuntimeHealth> = {}): AppRuntimeHealth {
   return {
     appUrn: 'test-app:community',
     appName: 'test-app',
