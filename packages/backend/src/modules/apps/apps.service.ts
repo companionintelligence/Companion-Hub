@@ -20,7 +20,11 @@ import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
-import { TunnelHealthService } from '../cloudflare/tunnel-health.service';
+// Type-only: a value import here closes a require cycle
+// (tunnel-health -> docker -> apps -> tunnel-health) that leaves the DI token
+// undefined at decoration time and stops the whole backend booting. The class is
+// pulled in dynamically at the one place it is used, as with AppLifecycleService.
+import type { TunnelHealthService as TunnelHealthServiceType } from '../cloudflare/tunnel-health.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
@@ -589,12 +593,18 @@ export class AppsService {
           // re-evaluate immediately instead of serving up to a minute of stale
           // pessimism and needlessly offering the LAN fallback.
           //
+          // Imported dynamically, like AppLifecycleService above: a static import
+          // would close a require cycle through docker.service and leave this
+          // module's DI tokens undefined at decoration time.
+          //
           // Guarded: ModuleRef.get THROWS when a provider cannot be resolved (it
           // does not return undefined), and this is a best-effort cache hint — an
           // unresolvable TunnelHealthService must not abort the repair actions
           // that follow, nor turn a successful re-sync into an error verdict.
           try {
-            this.moduleRef.get(TunnelHealthService, { strict: false }).invalidate();
+            const { TunnelHealthService } = await import('../cloudflare/tunnel-health.service');
+
+            this.moduleRef.get<TunnelHealthServiceType>(TunnelHealthService, { strict: false }).invalidate();
           } catch (e) {
             this.logger.debug(`Could not invalidate the tunnel health cache after re-sync: ${e instanceof Error ? e.message : String(e)}`);
           }
