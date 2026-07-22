@@ -313,7 +313,7 @@ describe('MarketplaceService', () => {
         minHubVersion: null,
         appRepoDir: '/repo',
       });
-      portalCatalog.getUpdateInfoForUrn.mockResolvedValue({
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
         latestVersion: 42,
         latestDockerVersion: '2026.7.17.1',
         minHubVersion: null,
@@ -337,7 +337,7 @@ describe('MarketplaceService', () => {
         latestDockerVersion: '2026.7.17.1',
         minHubVersion: null,
       });
-      portalCatalog.getUpdateInfoForUrn.mockResolvedValue({
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
         latestVersion: 10,
         latestDockerVersion: '2026.7.17',
         minHubVersion: null,

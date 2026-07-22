@@ -300,7 +300,8 @@ export class MarketplaceService {
       return localInfo;
     }
 
-    const portalInfo = await this.portalCatalog.getUpdateInfoForUrn(appUrn);
+    // Cache-only read (never a blocking network call) — see PortalCatalogService.getUpdateInfoForUrn.
+    const portalInfo = this.portalCatalog.getUpdateInfoForUrn(appUrn);
     if (!portalInfo) {
       return localInfo;
     }
