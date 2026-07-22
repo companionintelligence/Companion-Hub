@@ -226,6 +226,30 @@ export class ReposHelpers {
     }
   }
 
+  /**
+   * True when the locally synced config.json already reflects the published
+   * catalog entry (same app version and availability), meaning the periodic
+   * sync can skip re-downloading this app's description and icon.
+   */
+  private async isCiCloudAppUpToDate(appDir: string, app: { [key: string]: unknown }): Promise<boolean> {
+    try {
+      const raw = await fs.promises.readFile(path.join(appDir, 'config.json'), 'utf-8');
+      const existing = JSON.parse(raw) as { cihub_app_version?: unknown; version?: unknown; available?: unknown };
+
+      const incomingAppVersion =
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1;
+      const incomingDockerVersion = typeof app.version === 'string' ? app.version : '0.0.1';
+      const incomingAvailable = typeof app.available === 'boolean' ? app.available : true;
+
+      return (
+        existing.cihub_app_version === incomingAppVersion && existing.version === incomingDockerVersion && existing.available === incomingAvailable
+      );
+    } catch {
+      // Missing or unreadable local config — do a full sync for this app.
+      return false;
+    }
+  }
+
   private async fetchCiCloudRepo(url: string, _id: string, repoPath: string) {
     try {
       this.logger.debug(`Fetching CI Cloud Repo from ${url} to ${repoPath}`);
@@ -251,6 +275,14 @@ export class ReposHelpers {
           limit(async () => {
             const appSlug = app.slug || app.id;
             const appDir = path.join(appsPath, appSlug);
+
+            // Incremental sync: this runs on a 15-minute cron, so skip apps whose
+            // local config already matches the published version instead of
+            // re-downloading every description and icon on each pass.
+            if (await this.isCiCloudAppUpToDate(appDir, app)) {
+              return;
+            }
+
             await this.ensureDirectoryWithPermissions(appDir);
 
             let markdownDescription: string | null = null;

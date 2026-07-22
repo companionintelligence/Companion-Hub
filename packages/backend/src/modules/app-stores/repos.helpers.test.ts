@@ -208,6 +208,40 @@ describe('ReposHelpers', () => {
       expect(JSON.parse(configCall[1]).description).toBe('Config fallback description');
     });
 
+    it('skips re-downloading apps whose local config matches the published version', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', version: '1.0.0', cihub_app_version: 3 }],
+      });
+      (fs.promises.readFile as any).mockResolvedValue(JSON.stringify({ cihub_app_version: 3, version: '1.0.0', available: true }));
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(true);
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      expect(calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')))).toBeUndefined();
+      // No description/icon fetches for an unchanged app
+      expect(axiosMock.get).not.toHaveBeenCalled();
+    });
+
+    it('re-syncs an app when the published version differs from the local config', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [{ id: 'app1', slug: 'app1', name: 'App 1', version: '2.0.0', cihub_app_version: 4 }],
+      });
+      (fs.promises.readFile as any).mockResolvedValue(JSON.stringify({ cihub_app_version: 3, version: '1.0.0', available: true }));
+      axiosMock.get.mockResolvedValue({ status: 404, statusText: 'Not Found', headers: {}, data: '' });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
+      expect(configCall).toBeDefined();
+      expect(JSON.parse(configCall[1]).cihub_app_version).toBe(4);
+    });
+
     it('retries transient CI Cloud HTTP failures before succeeding', async () => {
       axiosMock.request
         .mockResolvedValueOnce({ status: 503, statusText: 'Service Unavailable', data: {} })
