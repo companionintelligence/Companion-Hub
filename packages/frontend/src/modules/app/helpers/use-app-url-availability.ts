@@ -202,21 +202,25 @@ function isProbeApplicable(input: { status?: AppStatus | null; noGui?: boolean; 
  * runs after commit, so on the first render after `resetKey` changes the ref
  * would still hold the previous key's value — long enough to hand one app's LAN
  * URL to another app's Open button. Comparing the key inline closes that window.
+ *
+ * The latch and its owning key live in ONE ref and the return is guarded by that
+ * key, so even under concurrent rendering — where a discarded render may write a
+ * ref it never commits — a latch stamped with a different key can never be handed
+ * back: a stale write is re-derived away on the next render and, until then, the
+ * key guard withholds it.
  */
 function useLastKnownUrl(value: string | undefined, resetKey: string): string | null {
-  const ref = useRef<string | null>(null);
-  const keyRef = useRef(resetKey);
+  const ref = useRef<{ key: string; url: string | null }>({ key: resetKey, url: null });
 
-  if (keyRef.current !== resetKey) {
-    keyRef.current = resetKey;
-    ref.current = null;
+  if (ref.current.key !== resetKey) {
+    ref.current = { key: resetKey, url: null };
   }
 
   if (value) {
-    ref.current = value;
+    ref.current = { key: resetKey, url: value };
   }
 
-  return ref.current;
+  return ref.current.key === resetKey ? ref.current.url : null;
 }
 
 /**

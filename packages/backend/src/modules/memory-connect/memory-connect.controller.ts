@@ -138,8 +138,12 @@ export class MemoryConnectController {
    */
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Get('apps/:urn/state')
-  async state(@Param('urn') urn: string, @Query('clientHost') clientHost: string | undefined, @Req() req: Request) {
-    const origin = clientHost ? { host: clientHost } : this.requestOrigin(req);
+  async state(@Param('urn') urn: string, @Query('clientHost') clientHost: string | string[] | undefined, @Req() req: Request) {
+    // A repeated `?clientHost=` surfaces as string[] under Express, so collapse to
+    // the first entry: `host` is a single origin, and letting an array through
+    // would smuggle a non-string into RequestOriginContext.host.
+    const host = Array.isArray(clientHost) ? clientHost[0] : clientHost;
+    const origin = host ? { host } : this.requestOrigin(req);
 
     return this.service.getStatus(this.decodeUrn(urn), origin);
   }

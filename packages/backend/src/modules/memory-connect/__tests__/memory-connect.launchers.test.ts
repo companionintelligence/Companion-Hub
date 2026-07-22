@@ -72,7 +72,7 @@ describe('launcher selection — healthy public route', () => {
   it('offers the public launcher to a remote caller', async () => {
     const { service } = makeService();
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
     expect(status.connectable).toBe(true);
@@ -93,7 +93,7 @@ describe('launcher selection — healthy public route', () => {
   it('withholds the local launcher from a remote caller who could not route to it', async () => {
     const { service } = makeService();
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     expect(status.connectUrlLocal).toBeNull();
   });
@@ -101,7 +101,7 @@ describe('launcher selection — healthy public route', () => {
   it('treats an unknown (cold) tunnel reading as usable rather than suppressing', async () => {
     const { service } = makeService({ tunnelHealth: 'unknown' });
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     // A Hub that has not finished its first probe must behave exactly as before.
     expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
@@ -123,7 +123,7 @@ describe('launcher selection — public route down', () => {
   it('reports hub_unreachable to a remote caller instead of a dead public launcher', async () => {
     const { service } = makeService({ tunnelHealth: 'down' });
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     // The whole point of #75: never hand out a URL that lands on a Cloudflare
     // error page with no way back.
@@ -277,7 +277,7 @@ describe('launcher selection — provider reachability (Problem 2)', () => {
   it('blocks a remote caller when ci-memory is exposed on the LAN only', async () => {
     const { service, logger } = makeService({ providerLocalOnly: true });
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     // No Hub launcher can rescue this caller — the consent hop itself lands on a
     // private address, which used to just hang on an unroutable IP.
@@ -316,7 +316,7 @@ describe('opposite fail directions for the two endpoints', () => {
   it('/state hands the wrapper null URLs so a blocking gate stands down', async () => {
     const { service } = makeService({ tunnelHealth: 'down' });
 
-    const status = await service.getStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getStatus(APP, { host: PUBLIC_HOST });
 
     expect(status.connectUrl).toBeNull();
     expect(status.connectUrlLocal).toBeNull();
@@ -325,7 +325,7 @@ describe('opposite fail directions for the two endpoints', () => {
   it('/status still reports applicable + a reason so the Hub button can explain itself', async () => {
     const { service } = makeService({ tunnelHealth: 'down' });
 
-    const status = await service.getUiStatus(APP, { host: PUBLIC_HOST, secure: true });
+    const status = await service.getUiStatus(APP, { host: PUBLIC_HOST });
 
     // Non-blocking surface: keep showing the action, disabled, with a reason —
     // rather than hiding it and making the feature look absent.
