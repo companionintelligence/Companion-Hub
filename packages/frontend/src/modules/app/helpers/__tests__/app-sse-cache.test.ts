@@ -120,4 +120,28 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
   });
+
+  it('ignores transient stopped status_change while the app is restarting', () => {
+    queryClient.setQueryData.mockImplementation((key, updater) => {
+      if (key[0] === 'getApp') {
+        const current = {
+          app: {
+            urn: 'plane:ci-marketplace',
+            status: 'restarting',
+          },
+        };
+        if (typeof updater === 'function') {
+          updater(current);
+        }
+      }
+    });
+
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'status_change',
+      appUrn: 'plane:ci-marketplace',
+      appStatus: 'stopped',
+    });
+
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+  });
 });

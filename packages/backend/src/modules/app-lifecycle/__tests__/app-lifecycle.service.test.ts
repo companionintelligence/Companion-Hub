@@ -25,6 +25,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
@@ -50,6 +53,8 @@ describe('AppLifecycleService', () => {
   let mutex: any;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
+  let agentNotifyService: MockProxy<AgentNotifyService>;
+  let errorReportingService: MockProxy<ErrorReportingService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -79,6 +84,8 @@ describe('AppLifecycleService', () => {
     };
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(logger);
+    agentNotifyService = mock<AgentNotifyService>();
+    errorReportingService = mock<ErrorReportingService>();
     appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -106,6 +113,8 @@ describe('AppLifecycleService', () => {
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: AppOperationRegistry, useValue: operationRegistry },
+        { provide: AgentNotifyService, useValue: agentNotifyService },
+        { provide: ErrorReportingService, useValue: errorReportingService },
         { provide: ModuleRef, useValue: { get: vi.fn() } },
       ],
     }).compile();
@@ -1204,9 +1213,113 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
-      // Backups are always removed on uninstall, even when app data/volumes are preserved.
-      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      // Backups follow the data choice: preserving app data/volumes preserves the backups too (#908).
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
+    });
+
+    // Each scenario is its own `it` so a regression in one reports independently —
+    // packed into a single test, an early failure hides whether the later rules still hold.
+    it('keeps backups when the user chose to keep the data (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the uninstall FAILED, even with deleteAllData (#908)', async () => {
+      // The app and all of its live data survive a failed uninstall, so the safety net
+      // has to survive with it. Deleting before the worker ran left the app installed
+      // but unrecoverable.
+      appEventsQueue.publish.mockResolvedValueOnce({ success: false, message: 'fail' } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the data wipe was only partial (#908)', async () => {
+      // A remnant means the app's data demonstrably survived on disk. Discarding its
+      // backups here is the same inversion at the other end: data kept, safety net gone.
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('discards backups on a clean delete-all-data uninstall (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('warns instead of claiming a clean removal when the backups could not be deleted (#908)', async () => {
+      // The user asked for every trace of the app to go. If the archives survive, saying
+      // "uninstalled successfully" is a lie — reuse the #907 remnant channel.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      // The detail must travel with the code: the client only renders an actionable
+      // manual-cleanup command when a path is present, and falls back to a generic
+      // "some files remain" toast without one. It must point at the BACKUP directory —
+      // this arm fires only when the app-data wipe already succeeded.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/hub/backups/store/app',
+        }),
+      );
+    });
+
+    it('still warns when the backups host path cannot be resolved, just without a command (#908)', async () => {
+      // A misconfigured (non-absolute) ROOT_FOLDER_HOST yields no path. Guidance is
+      // best-effort: the warning must survive, degrading to the generic toast.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce(undefined);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'uninstall_success', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: undefined }),
+      );
+    });
+
+    it('uninstallApp success: threads the command warningCode + warningDetail into the uninstall_success SSE (#907)', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          appUrn,
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/app-data/store/app',
+        }),
+      );
     });
 
     // ── resetApp ─────────────────────────────────────────────────────────
@@ -1412,6 +1525,27 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp downloads fresh app files for ci_cloud_api stores before queueing (#915)', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(reposHelpers.downloadAppFiles).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'myapp');
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', appUrn }));
+    });
+
+    it('updateApp fails fast when the ci_cloud_api file download fails', async () => {
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: false, message: 'boom' } as any);
+
+      await expect(service.updateApp({ appUrn, performBackup: false })).rejects.toThrow();
+      expect(appEventsQueue.publish).not.toHaveBeenCalledWith(expect.objectContaining({ command: 'update' }));
+    });
+
     // ── exposure sync uses committed state ───────────────────────────────
     it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
@@ -1485,6 +1619,22 @@ describe('AppLifecycleService', () => {
 
       await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('dispatches the memory-connect cleanup off the response path — a slow sweep never blocks uninstall (#906)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]); // guard passes (provider, 0 consumers)
+      // Provider teardown re-arms every consumer by restarting containers; that sweep
+      // must not hold the HTTP response. A handleUninstall that never settles must
+      // still let uninstallApp resolve with a requestId (it would hang if awaited).
+      memoryConnect.handleUninstall.mockReturnValue(new Promise<void>(() => {}));
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      // ...but the cleanup IS dispatched (just not awaited) — guard against a
+      // regression that silently drops the sweep from the uninstall path.
+      await vi.waitFor(() => expect(memoryConnect.handleUninstall).toHaveBeenCalledWith(providerUrn));
     });
 
     it('does not consult consumers when uninstalling a non-provider app', async () => {
@@ -1602,7 +1752,7 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
       expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
-      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared in finally
+      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared after worker-side cancel finalization
     });
 
     it('finalizes a cancelled result returned by the command (in-flight abort)', async () => {
@@ -1652,6 +1802,81 @@ describe('AppLifecycleService', () => {
       // Status guard: already install_failed → no second status write / SSE.
       expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+    });
+  });
+
+  describe('command-identity completion claims (#903)', () => {
+    const appUrn = 'myapp:ci-marketplace' as AppUrn;
+    const fakeApp = {
+      id: 42,
+      appName: 'myapp',
+      appStoreSlug: 'ci-marketplace',
+      status: 'running',
+      config: {},
+      exposedLocal: false,
+      exposureMode: 'local',
+    };
+
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    /** Resolve publish callbacks only after every command in the test has registered. */
+    function deferPublishResults(...results: Array<{ success: boolean; message: string }>) {
+      const resolvers: Array<(value: { success: boolean; message: string }) => void> = [];
+      appEventsQueue.publish.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+      return () => {
+        for (const [index, result] of results.entries()) {
+          resolvers[index]?.(result);
+        }
+      };
+    }
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockResolvedValue(fakeApp as any);
+      appEventsQueue.publish.mockReset();
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
+
+      await service.restartApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', appUrn, appStatus: 'stopped' }));
+    });
+
+    it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
+
+      await service.stopApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+    });
+
+    it('superseded restart failure does not fire phantom failure alerts', async () => {
+      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
+
+      await service.restartApp({ appUrn });
+      await service.stopApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
+      expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
     });
   });
 });

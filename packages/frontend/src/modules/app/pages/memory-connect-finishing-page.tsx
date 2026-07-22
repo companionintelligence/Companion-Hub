@@ -1,4 +1,4 @@
-import { appContextOptions, getAppOptions, getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
+import { appContextOptions, checkAvailabilityOptions, getAppOptions, getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { useUserContext } from '@/context/user-context';
@@ -7,7 +7,7 @@ import type { AppStatus } from '@/types/app.types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
 import './memory-connect-finishing-page.css';
 
@@ -25,6 +25,15 @@ import './memory-connect-finishing-page.css';
  * data is read through a page-local query (not AppContextProvider) so a failed
  * fetch can retry on an interval instead of parking the flow, and so this cold
  * page doesn't trigger the provider's dashboard prefetches.
+ *
+ * "Running" is necessary but not sufficient for the hop: a freshly (re)installed
+ * app's public hostname can lag its container (Cloudflare DNS / tunnel-route
+ * propagation), and navigating then dumps the user on a Cloudflare error page
+ * for the 5–10s the route needs. So when the target leaves the Hub's origin,
+ * the page also polls the backend's check-availability probe (the same one the
+ * dashboard's Open button uses — server-side, so a CF 530/1033 error page is
+ * actually detectable, which a browser-side opaque no-cors fetch can't do) and
+ * holds on a "preparing the app's web address" state until the URL answers.
  */
 
 const POLL_INTERVAL_MS = 2000;
@@ -37,8 +46,16 @@ const OPEN_APP_GRACE_MS = 1500;
 const POLL_TIMEOUT_MS = 180_000;
 /** Retry cadence for the app-context query while it has no data (initial blip). */
 const CONTEXT_RETRY_INTERVAL_MS = 5000;
+/** Poll cadence for the public-URL probe while the app's address propagates. */
+const PROPAGATION_POLL_MS = 2500;
+/**
+ * Give up holding the hop after this long in the propagating state and show the
+ * timeout card (with "Open anyway") instead — its own window, not a slice of
+ * POLL_TIMEOUT_MS, so a slow restart can't eat the propagation budget.
+ */
+const PROPAGATION_TIMEOUT_MS = 60_000;
 
-/** Trusted install URN of the first-party Companion Memory app (logo tile). */
+/** Trusted install URN of the first-party CI Memory app (logo tile). */
 const CI_MEMORY_URN = 'ci-memory:ci-marketplace';
 
 /**
@@ -75,7 +92,38 @@ export function isPollSettled(data: AppSnapshot | undefined): boolean {
   return data.app.status === 'running';
 }
 
-export type Phase = 'connecting' | 'ready' | 'error' | 'timeout';
+export type Phase = 'connecting' | 'propagating' | 'ready' | 'error' | 'timeout';
+
+/**
+ * Whether the check-availability probe reports the app's public URL is serving.
+ * The generated client types the response `unknown`, so read the one field we
+ * need here with a single strict-boolean check — used by BOTH the refetch-stop
+ * condition and the reachability gate so they can never disagree on a truthy
+ * non-`true` value. Exported for tests.
+ */
+export function isProbeAvailable(payload: unknown): boolean {
+  return (payload as { available?: unknown } | undefined)?.available === true;
+}
+
+/**
+ * Whether the hop target leaves the Hub's own origin — only then is the
+ * public-URL probe worth gating on. A same-origin `next` (e.g. back to the
+ * app-detail page the user connected from) is served by the very origin the
+ * user is already browsing, so there is nothing to wait for. Unparseable
+ * targets don't gate either: resolveSafeTarget already rejected anything
+ * that isn't a hub/app http(s) URL. Exported for tests.
+ */
+export function isCrossOriginTarget(target: string | null, currentOrigin: string): boolean {
+  if (!target) {
+    return false;
+  }
+
+  try {
+    return new URL(target, currentOrigin).origin !== currentOrigin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Precedence is load-bearing: `ready` wins over everything (a late recovery
@@ -152,6 +200,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [timedOut, setTimedOut] = useState(false);
+  const [propagationTimedOut, setPropagationTimedOut] = useState(false);
 
   const appQuery = useQuery({
     ...getAppOptions({ path: { urn: appUrn } }),
@@ -230,13 +279,60 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
     return resolveSafeTarget(rawNext, accessPoints, window.location.origin);
   }, [ctx, app, info, rawNext, tailscaleServedPorts]);
 
-  const phase = derivePhase(data, timedOut);
+  const restartPhase = derivePhase(data, timedOut);
+
+  // Public-URL probe: only once the restart is done AND the hop actually leaves
+  // this origin. Server-side (the backend fetches the URL itself), so a
+  // Cloudflare 530/1033 interstitial — invisible to a browser-side opaque
+  // fetch — reads as "not available yet".
+  const gateOnReachability = isCrossOriginTarget(target, window.location.origin);
+  const availabilityQuery = useQuery({
+    ...checkAvailabilityOptions({ path: { urn: appUrn } }),
+    enabled: restartPhase === 'ready' && gateOnReachability,
+    // Even after the propagation window lapses into the timeout card, keep
+    // probing at the slow cadence — a late DNS/tunnel success still flips the
+    // page to ready and forwards the user (mirrors the status poll's design).
+    refetchInterval: (query) => {
+      if (isProbeAvailable(query.state.data)) {
+        return false;
+      }
+
+      return propagationTimedOut ? SLOW_POLL_INTERVAL_MS : PROPAGATION_POLL_MS;
+    },
+    refetchIntervalInBackground: true,
+    retry: 2,
+  });
+
+  // Fail OPEN on a broken probe (query error after retries): the probe is a
+  // UX nicety; a Hub-side hiccup in it must not strand a user whose app is in
+  // fact up. Worst case they briefly see the Cloudflare page — today's behavior.
+  const targetReachable = !gateOnReachability || isProbeAvailable(availabilityQuery.data) || availabilityQuery.isError;
+
+  // Layered on top of derivePhase so its exported contract (and tests) stay
+  // intact. Precedence mirrors the status phases: a late probe success wins
+  // over the propagation timeout, so the card self-resolves.
+  const phase: Phase = restartPhase === 'ready' && !targetReachable ? (propagationTimedOut ? 'timeout' : 'propagating') : restartPhase;
+  // The timeout card doubles for both failure modes; pick the accurate copy.
+  const timedOutWhilePropagating = phase === 'timeout' && restartPhase === 'ready';
 
   useEffect(() => {
     const id = window.setTimeout(() => setTimedOut(true), POLL_TIMEOUT_MS);
 
     return () => window.clearTimeout(id);
   }, []);
+
+  // Separate window for the propagating hold (StrictMode-safe, like the grace
+  // timer below). Latches: once true it stays true, so the card can't flap back
+  // to the spinner — only a real probe success moves the page forward.
+  useEffect(() => {
+    if (phase !== 'propagating') {
+      return;
+    }
+
+    const id = window.setTimeout(() => setPropagationTimedOut(true), PROPAGATION_TIMEOUT_MS);
+
+    return () => window.clearTimeout(id);
+  }, [phase]);
 
   // Timer-with-cleanup (StrictMode-safe): the double mount clears and
   // reschedules; navigation fires once, after the grace beat. `replace`, not
@@ -255,9 +351,18 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
   const failed = phase === 'error' || phase === 'timeout';
 
   // Interpolate the name only when the server confirmed it; otherwise use the
-  // nameless copy variant.
-  const named = (key: string, genericKey: string) => (appName ? t(key, { name: appName }) : t(genericKey));
+  // nameless copy variant. The named strings wrap {{name}} in <strong> so the
+  // app name stands out against the dimmed body copy — rendered through <Trans>
+  // (not t()) so that markup becomes a real element, never literal text.
+  const named = (key: string, genericKey: string) =>
+    appName ? <Trans t={t} i18nKey={key} values={{ name: appName }} components={{ strong: <strong className="mcf-app" /> }} /> : t(genericKey);
 
+  // In-place SPA navigation on purpose — never window.open/a new tab. When the
+  // connect flow was started from the Tauri desktop app, this page is running
+  // inside its webview (at the Hub's public origin, where no Tauri APIs are
+  // injected to even detect the shell): an in-place navigate keeps the user in
+  // that same window, whereas a popup would be blocked or orphan a chromeless
+  // webview. In a regular browser it is simply the dashboard route.
   const dashboardButton = (
     <button type="button" className="mcf-btn mcf-btn-secondary" onClick={() => navigate('/home')}>
       {t('MEMORY_CONNECT_FINISHING_BACK_TO_DASHBOARD')}
@@ -266,7 +371,11 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
 
   return (
     <div className="mcf-page">
-      <main className="mcf-card">
+      {/* A <div>, not a <main>: the app shell already renders <main id="root">,
+          so a nested <main> would be an invalid second landmark — and it would
+          inherit app.css's global `main { height: 100% }`, filling this box and
+          defeating the centering. */}
+      <div className="mcf-card">
         <div className="mcf-brand">
           <AppLogo urn={appUrn} size={56} alt={appName} />
           <span className="mcf-brand-link" aria-hidden="true">
@@ -285,10 +394,10 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
               <polyline points="12 6 18 12 12 18" />
             </svg>
           </span>
-          <AppLogo urn={CI_MEMORY_URN} size={56} alt="Companion Memory" />
+          <AppLogo urn={CI_MEMORY_URN} size={56} alt="CI Memory" />
         </div>
 
-        <div className="mcf-status" role="status" aria-busy={phase === 'connecting'}>
+        <div className="mcf-status" role="status" aria-busy={phase === 'connecting' || phase === 'propagating'}>
           {phase === 'ready' ? (
             <CheckCircle2 className="mcf-check" size={34} aria-hidden="true" />
           ) : failed ? null : (
@@ -303,12 +412,20 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
             </h1>
             {!target && <div className="mcf-actions">{dashboardButton}</div>}
           </>
+        ) : phase === 'propagating' ? (
+          <>
+            <h1 className="mcf-title">{named('MEMORY_CONNECT_FINISHING_PROPAGATING_TITLE', 'MEMORY_CONNECT_FINISHING_PROPAGATING_TITLE_GENERIC')}</h1>
+            <p className="mcf-desc">{named('MEMORY_CONNECT_FINISHING_PROPAGATING_DESC', 'MEMORY_CONNECT_FINISHING_PROPAGATING_DESC_GENERIC')}</p>
+            <div className="mcf-actions">{dashboardButton}</div>
+          </>
         ) : failed ? (
           <>
             <h1 className="mcf-title">{t('MEMORY_CONNECT_FINISHING_ERROR_TITLE')}</h1>
             <p className="mcf-desc">
               {phase === 'timeout'
-                ? named('MEMORY_CONNECT_FINISHING_TIMEOUT_DESC', 'MEMORY_CONNECT_FINISHING_TIMEOUT_DESC_GENERIC')
+                ? timedOutWhilePropagating
+                  ? named('MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC', 'MEMORY_CONNECT_FINISHING_PROPAGATING_TIMEOUT_DESC_GENERIC')
+                  : named('MEMORY_CONNECT_FINISHING_TIMEOUT_DESC', 'MEMORY_CONNECT_FINISHING_TIMEOUT_DESC_GENERIC')
                 : named('MEMORY_CONNECT_FINISHING_ERROR_DESC', 'MEMORY_CONNECT_FINISHING_ERROR_DESC_GENERIC')}
             </p>
             <div className="mcf-actions">
@@ -326,7 +443,7 @@ const FinishingContent = ({ appUrn, rawNext }: { appUrn: string; rawNext: string
             <p className="mcf-desc">{named('MEMORY_CONNECT_FINISHING_DESC', 'MEMORY_CONNECT_FINISHING_DESC_GENERIC')}</p>
           </>
         )}
-      </main>
+      </div>
     </div>
   );
 };

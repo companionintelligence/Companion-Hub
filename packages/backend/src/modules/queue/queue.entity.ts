@@ -64,9 +64,11 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
           }
         },
       );
+      this.activeConsumer.on('error', (err) => {
+        this.logger.warn(`Consumer error on ${this.queueName} (will retry): ${err.message}`);
+      });
     } catch (error) {
-      this.logger.error(`Failed to create consumer for queue ${this.queueName}:`, error);
-      throw error;
+      this.logger.warn(`Failed to create consumer for queue ${this.queueName} (will retry on reconnect):`, error);
     }
   }
 

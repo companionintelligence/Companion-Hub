@@ -53,9 +53,30 @@ function humanizeStatus(status: string) {
     .join(' ');
 }
 
+/**
+ * Public-route readiness, folded into the pill so it can't contradict the
+ * launch action. Container health and route availability are different facts —
+ * an app can be fully "Running" while Cloudflare is still publishing its
+ * hostname — and showing them as two independent signals read as "up and not-up
+ * at once". Supplied by `useAppUrlAvailability` on the app-detail pages.
+ */
+export interface AppPublicUrlStatus {
+  /** Containers are up, but the public address is still coming up. */
+  propagating: boolean;
+  /** Already-translated tooltip detail (e.g. "DNS propagating..."). */
+  detail: string | null;
+}
+
+/**
+ * Map an app's status (plus what we know about its containers and its public
+ * route) onto a single pill presentation: label key, tone, pulse and tooltip
+ * detail. Kept pure and translation-free — callers translate `labelKey` and
+ * pass in already-translated details — so it can be unit-tested directly.
+ */
 export function getAppStatusPresentation(
   status: AppStatusType,
   runtimeHealth?: AppRuntimeHealth | null,
+  publicUrl?: AppPublicUrlStatus | null,
 ): {
   labelKey: string;
   fallbackLabel: string;
@@ -91,6 +112,20 @@ export function getAppStatusPresentation(
         animate: true,
         detail:
           monitoredContainers.length > 0 ? `${runningContainers}/${monitoredContainers.length} containers ready` : 'Containers are still starting.',
+      };
+    }
+
+    // Containers are all up and healthy, but the public address isn't serving
+    // yet. Deliberately checked last: container-level truth outranks
+    // route-level truth, so a degraded or still-initializing app keeps its more
+    // urgent pill rather than being described as a DNS delay.
+    if (publicUrl?.propagating) {
+      return {
+        labelKey: 'APP_STATUS_RUNNING_PROPAGATING',
+        fallbackLabel: 'Running (DNS propagating...)',
+        tone: 'warning',
+        animate: true,
+        detail: publicUrl.detail ?? 'The app is running. Its public web address is still coming up.',
       };
     }
   }
@@ -134,17 +169,19 @@ export function getAppStatusPresentation(
   };
 }
 
-export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType; runtimeHealth?: AppRuntimeHealth | null; variant?: AppStatusVariant }> = ({
-  status,
-  lite,
-  runtimeHealth,
-  variant = 'inline',
-}) => {
+export const AppStatus: React.FC<{
+  lite?: boolean;
+  status: AppStatusType;
+  runtimeHealth?: AppRuntimeHealth | null;
+  /** Only the app-detail pill knows about the public route; list tiles omit it. */
+  publicUrl?: AppPublicUrlStatus | null;
+  variant?: AppStatusVariant;
+}> = ({ status, lite, runtimeHealth, publicUrl, variant = 'inline' }) => {
   const { t } = useTranslation();
 
   if (status === 'missing') return null;
 
-  const presentation = getAppStatusPresentation(status, runtimeHealth);
+  const presentation = getAppStatusPresentation(status, runtimeHealth, publicUrl);
   const formattedStatus = t(presentation.labelKey, presentation.fallbackLabel);
   const dotClasses = cn(
     'inline-block h-2 w-2 rounded-full',
@@ -158,6 +195,11 @@ export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType; runtim
   if (variant === 'pill') {
     return (
       <div
+        data-testid="app-status-pill"
+        // The label changes underneath the user (e.g. Running → "Running (DNS
+        // propagating...)" → Running); announce it instead of silently swapping text.
+        role="status"
+        aria-live="polite"
         className={cn(
           'inline-flex min-h-12 items-center gap-3 rounded-md border px-4 py-2 shadow-sm',
           presentation.tone === 'success' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-500',

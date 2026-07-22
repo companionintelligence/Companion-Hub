@@ -298,4 +298,55 @@ describe('MarketplaceService', () => {
       expect(result).toEqual({ image: 'local-buffer', etag: 'local', contentType: 'image/png' });
     });
   });
+
+  describe('getAppUpdateInfo', () => {
+    it('prefers portal catalog version when newer than local repo config', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      spies.getAppUpdateInfo.mockResolvedValue({
+        latestVersion: 10,
+        latestDockerVersion: '2026.7.17',
+        minHubVersion: null,
+        appRepoDir: '/repo',
+      });
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
+        latestVersion: 42,
+        latestDockerVersion: '2026.7.17.1',
+        minHubVersion: null,
+      });
+
+      await expect(service.getAppUpdateInfo('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
+        latestVersion: 42,
+        latestDockerVersion: '2026.7.17.1',
+      });
+    });
+
+    it('keeps local repo version when portal catalog is not newer', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      spies.getAppUpdateInfo.mockResolvedValue({
+        latestVersion: 42,
+        latestDockerVersion: '2026.7.17.1',
+        minHubVersion: null,
+      });
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
+        latestVersion: 10,
+        latestDockerVersion: '2026.7.17',
+        minHubVersion: null,
+      });
+
+      await expect(service.getAppUpdateInfo('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
+        latestVersion: 42,
+        latestDockerVersion: '2026.7.17.1',
+      });
+    });
+  });
 });

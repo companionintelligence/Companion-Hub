@@ -93,17 +93,24 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
     return (
       <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
         <CardContent className="p-4">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
-              <div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <div className="min-w-0">
                 <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_OLLAMA_DETECTED')}</div>
                 <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
                 {status.hint && <div className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{status.hint}</div>}
               </div>
             </div>
-            <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} aria-label={t('ONBOARDING_OLLAMA_RECHECK')} className="shrink-0">
-              <RefreshCw className="h-3.5 w-3.5" />
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={onRecheck}
+              loading={checking}
+              aria-label={t('ONBOARDING_OLLAMA_RECHECK')}
+              className="shrink-0"
+            >
+              {!checking && <RefreshCw className="h-3.5 w-3.5" />}
             </Button>
           </div>
         </CardContent>

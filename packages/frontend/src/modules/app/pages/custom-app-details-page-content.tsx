@@ -15,6 +15,7 @@ import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
+import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 
 interface Props {
   appId: string;
@@ -52,6 +53,15 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
     enabled: runtimeHealthEnabled,
   });
 
+  // Single owner for public-route readiness, shared with both the status pill
+  // and the launch action so they can't report contradictory states.
+  const urlAvailability = useAppUrlAvailability({
+    appUrn: `${appId}:_user`,
+    status: app?.status,
+    noGui: info?.no_gui,
+    exposureMode: app?.exposureMode,
+  });
+
   const handleImageUpload = (file: File) => {
     uploadImage.mutate({
       path: { urn: `${appId}:_user` },
@@ -83,7 +93,12 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>
             <div data-testid="app-header-actions-row" className="flex w-full flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <AppStatus status={app?.status ?? 'missing'} runtimeHealth={runtimeHealth.data} variant="pill" />
+                <AppStatus
+                  status={app?.status ?? 'missing'}
+                  runtimeHealth={runtimeHealth.data}
+                  publicUrl={{ propagating: urlAvailability.state === 'propagating', detail: urlAvailability.statusMessage }}
+                  variant="pill"
+                />
               </div>
               <div className="min-w-0 md:flex-1">
                 <AppActions
@@ -93,6 +108,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}
+                  urlAvailability={urlAvailability}
                   layout="hero"
                 />
               </div>

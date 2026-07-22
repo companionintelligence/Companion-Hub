@@ -273,7 +273,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
   const [apiReady, setApiReady] = useState(() => !isTauriRelease);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
@@ -301,7 +301,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 

@@ -12,7 +12,10 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use crate::hub_env::{default_ci_cloud_url, default_hub_image, default_public_domain};
+use crate::hub_env::{
+    default_ci_cloud_url, default_hub_image, default_public_domain, resolve_runtime_hub_image,
+    runtime_hub_version_for_image,
+};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -5591,6 +5594,167 @@ pub fn host_data_dir_from_env_path(env_path: &Path) -> Option<PathBuf> {
         .map(|value| host_path_from_docker_path(&value))
 }
 
+const INVALID_HOST_DEVICE_IDS: &[&str] = &[
+    "not specified",
+    "to be filled by o.e.m.",
+    "default string",
+    "system serial number",
+    "chassis serial number",
+    "none",
+    "na",
+    "n/a",
+    "0",
+];
+
+fn is_usable_host_device_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if INVALID_HOST_DEVICE_IDS.contains(&lower.as_str()) {
+        return false;
+    }
+    lower != "00000000-0000-0000-0000-000000000000"
+}
+
+fn extract_ioreg_platform_uuid(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if !line.contains("IOPlatformUUID") {
+            continue;
+        }
+        let Some(idx) = line.find("IOPlatformUUID") else {
+            continue;
+        };
+        let rest = &line[idx + "IOPlatformUUID".len()..];
+        let Some(eq_idx) = rest.find('=') else {
+            continue;
+        };
+        let after_eq = rest[eq_idx + 1..].trim();
+        let Some(after_quote) = after_eq.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = after_quote.find('"') else {
+            continue;
+        };
+        let uuid = after_quote[..end].trim();
+        if is_usable_host_device_id(uuid) {
+            return Some(uuid.to_string());
+        }
+    }
+    None
+}
+
+fn extract_system_profiler_serial(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let rest = line
+            .split("Serial Number (system):")
+            .nth(1)
+            .or_else(|| line.split("Serial Number:").nth(1));
+        if let Some(rest) = rest {
+            let serial = rest.trim();
+            if is_usable_host_device_id(serial) {
+                return Some(serial.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn read_host_device_id_impl() -> Option<String> {
+    if let Ok(output) = Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+    {
+        if output.status.success() {
+            if let Some(uuid) =
+                extract_ioreg_platform_uuid(&String::from_utf8_lossy(&output.stdout))
+            {
+                return Some(uuid);
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("system_profiler")
+        .args(["SPHardwareDataType"])
+        .output()
+    {
+        if output.status.success() {
+            return extract_system_profiler_serial(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_host_device_id_impl() -> Option<String> {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .and_then(|id| {
+            let id = id.trim().to_string();
+            if is_usable_host_device_id(&id) {
+                Some(id)
+            } else {
+                None
+            }
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn read_host_device_id_impl() -> Option<String> {
+    if let Ok(output) = Command::new("wmic")
+        .args(["csproduct", "get", "uuid", "/value"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(uuid) = line.strip_prefix("UUID=") {
+                    let uuid = uuid.trim();
+                    if is_usable_host_device_id(uuid) {
+                        return Some(uuid.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if line.contains("MachineGuid") {
+                    let guid = line.split_whitespace().last()?.trim();
+                    if is_usable_host_device_id(guid) {
+                        return Some(guid.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn read_host_device_id_impl() -> Option<String> {
+    None
+}
+
+fn read_host_device_id() -> Option<String> {
+    read_host_device_id_impl()
+}
+
 fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
@@ -5620,26 +5784,42 @@ fn render_runtime_env_content(
         format!("COMPOSE_PROFILES={compose_profiles}\n")
     };
 
-    // Inject a stable device ID from the host's /etc/machine-id so the backend
-    // container always uses the same host-level identity regardless of container
-    // restarts or recreation (container machine-id differs from host machine-id).
-    let device_id_line = match std::fs::read_to_string("/etc/machine-id") {
-        Ok(id) => {
-            let id = id.trim();
-            if id.is_empty() {
-                String::new()
-            } else {
-                format!("DEVICE_ID={id}\n")
-            }
-        }
-        Err(_) => String::new(),
-    };
+    // Inject a stable device ID from the host so the backend container always uses
+    // the same host-level identity regardless of container restarts or recreation.
+    let device_id_line = read_host_device_id()
+        .map(|id| format!("DEVICE_ID={id}\n"))
+        .unwrap_or_default();
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
-    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    // Always recompute from the current binary so upgrades pick up the new stack image tag.
-    let hub_image = default_hub_image().to_string();
+    let hub_image = resolve_runtime_hub_image(existing);
+    // Make pin supersession observable in desktop.log. Most starts resolve to the same
+    // reference already on disk and log nothing; a line here means a pin was dropped —
+    // notably the stale, unpullable `ci-os-hub` references left by pre-#920 builds, which
+    // are migrated to the public `ci-hub` repo on the next start.
+    if let Some(previous_image) = existing.get("CI_HUB_IMAGE") {
+        if previous_image != &hub_image {
+            // Name which of the two outcomes happened, because they mean opposite things
+            // when reading back a failed start: falling back to the build default means
+            // the pin was rejected as unusable (foreign repo, stale ci-os-hub, or a tag
+            // that is not a full version), whereas a normalized pin means the update was
+            // honoured and only its spelling changed. Labelling both as the default sends
+            // whoever is debugging looking for a discarded pin that never existed.
+            let reason = if hub_image == default_hub_image() {
+                "desktop build default"
+            } else {
+                "normalized pin"
+            };
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Superseding pinned stack image {previous_image} with {hub_image} ({reason})."
+                ),
+            );
+        }
+    }
+    let hub_version = runtime_hub_version_for_image(&hub_image);
     let compose_file_host = docker_bind_mount_path(&data_dir.join(HUB_COMPOSE_FILENAME));
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
@@ -9812,6 +9992,31 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
                 "//./pipe/docker_engine"
             );
         }
+    }
+
+    #[test]
+    fn extract_ioreg_platform_uuid_parses_macos_output() {
+        let sample = r#""IOPlatformUUID" = "06151E8B-A400-470C-B48C-67AE51D297A9""#;
+        assert_eq!(
+            super::extract_ioreg_platform_uuid(sample),
+            Some("06151E8B-A400-470C-B48C-67AE51D297A9".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_system_profiler_serial_parses_hardware_output() {
+        let sample = "      Serial Number (system): C02XYZ123456";
+        assert_eq!(
+            super::extract_system_profiler_serial(sample),
+            Some("C02XYZ123456".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_host_device_ids() {
+        assert!(!super::is_usable_host_device_id("Not Specified"));
+        assert!(!super::is_usable_host_device_id("00000000-0000-0000-0000-000000000000"));
+        assert!(super::is_usable_host_device_id("06151E8B-A400-470C-B48C-67AE51D297A9"));
     }
 
     #[cfg(windows)]

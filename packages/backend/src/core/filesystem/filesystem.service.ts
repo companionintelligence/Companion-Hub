@@ -178,12 +178,24 @@ export class FilesystemService {
   }
 
   async removeDirectory(dirPath: string): Promise<boolean> {
+    return (await this.removeDirectoryDetailed(dirPath)).removed;
+  }
+
+  /**
+   * Like {@link removeDirectory}, but tells the caller WHY a delete failed so it can
+   * escalate. `permissionDenied` (EACCES/EPERM/EBUSY) is the signature of a path a
+   * container created as root that the non-root Hub process cannot remove (e.g.
+   * MinIO's `.minio.sys`); the uninstall path uses it to fall back to a privileged
+   * cleanup. `force: true` means a missing dir is still a success (`removed: true`).
+   */
+  async removeDirectoryDetailed(dirPath: string): Promise<{ removed: boolean; permissionDenied: boolean }> {
     try {
       await fs.promises.rm(this.getSafeFilePath(dirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      return true;
+      return { removed: true, permissionDenied: false };
     } catch (error) {
       this.logger.error(`Error removing directory ${dirPath}:`, error);
-      return false;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      return { removed: false, permissionDenied: code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' };
     }
   }
 

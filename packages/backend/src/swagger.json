@@ -2118,6 +2118,51 @@
         ]
       }
     },
+    "/api/auth/browser-handoff/mint": {
+      "post": {
+        "operationId": "mintBrowserHandoff",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserHandoffMintBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserHandoffMintDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/browser-handoff": {
+      "get": {
+        "operationId": "consumeBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/start": {
       "get": {
         "operationId": "startPortalLogin",
@@ -4640,6 +4685,14 @@
         "properties": {}
       },
       "SessionRefreshDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "BrowserHandoffMintBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "BrowserHandoffMintDto": {
         "type": "object",
         "properties": {}
       },

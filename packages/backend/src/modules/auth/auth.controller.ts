@@ -11,8 +11,11 @@ import { AuthService } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { SessionManager } from './session.manager';
 import {
+  BrowserHandoffMintBody,
+  BrowserHandoffMintDto,
   ChangePasswordBody,
   ChangeUsernameBody,
   CheckResetPasswordRequestDto,
@@ -63,6 +66,7 @@ export class AuthController {
     private readonly userRepository: UserRepository,
     private readonly sessionManager: SessionManager,
     private readonly registrationService: RegistrationService,
+    private readonly deviceRegistration: DeviceRegistrationRepository,
   ) {}
 
   private async setSessionCookie(res: Response, sessionId: string, req: Request) {
@@ -86,6 +90,69 @@ export class AuthController {
         domain,
       });
     }
+  }
+
+  /**
+   * The Hub's browser-reachable origin (`https://<hubSubdomain>.<domain>`) together
+   * with this appliance's org slug, or null when it isn't registered / provisioned
+   * yet. The desktop session handoff opens this exact host so the planted cookie is
+   * scoped to where the Hub's routes (memory-connect, forward-auth) actually live,
+   * and the org slug bounds which sibling app hosts are an acceptable redirect target.
+   */
+  private async resolvePublicHub(): Promise<{ origin: string; orgSlug: string } | null> {
+    const org = await this.deviceRegistration.getFirstDeviceRegistration();
+    const domain = this.config.getConfig().domain;
+
+    if (!org?.hubSubdomain || !domain || domain === 'example.com') {
+      return null;
+    }
+
+    return { origin: `https://${org.hubSubdomain}.${domain}`, orgSlug: org.slug ?? '' };
+  }
+
+  /**
+   * Whether `next` is a permitted post-handoff redirect target: the Hub's own
+   * origin, or an https sibling that belongs to THIS appliance — a marketplace app
+   * host under the appliance's public/local domain root whose subdomain ends at this
+   * org's `-<orgSlug>` label boundary (every app host is `<app>-<…>-<orgSlug>` and
+   * the Hub is `hub-<…>-<orgSlug>`). Scoping to the org slug keeps a co-tenant host
+   * on the same shared registrable domain — a *different* org's `-<slug>` — out of
+   * the allowlist. The Set-Cookie is scoped to the Hub host regardless, so this only
+   * governs where the browser lands after the cookie is planted — closing the
+   * open-redirect the raw `next` would otherwise allow.
+   */
+  private isSafeHandoffNext(next: string, hubOrigin: string, orgSlug: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(next);
+    } catch {
+      return false;
+    }
+
+    if (url.origin === hubOrigin) {
+      return true;
+    }
+
+    if (url.protocol !== 'https:' || !orgSlug) {
+      return false;
+    }
+
+    const { domain, localDomain } = this.config.getConfig();
+    const host = url.hostname.toLowerCase();
+    const slugLabel = `-${orgSlug.toLowerCase()}`;
+
+    return [domain, localDomain]
+      .filter((root): root is string => Boolean(root) && root !== 'example.com')
+      .some((root) => {
+        const suffix = `.${root.toLowerCase()}`;
+        if (host === root.toLowerCase() || !host.endsWith(suffix)) {
+          return false;
+        }
+        // The subdomain must be one of this org's hosts: `<app>-<…>-<orgSlug>`, which
+        // requires at least one label before the `-<orgSlug>` boundary.
+        const label = host.slice(0, -suffix.length);
+        return label.length > slugLabel.length && label.endsWith(slugLabel);
+      });
   }
 
   @Post('/login')
@@ -165,6 +232,109 @@ export class AuthController {
     await this.setSessionCookie(res, nextSessionId, req);
 
     return SessionRefreshDto.parse({ sessionId: nextSessionId, issuedAt: Date.now() }, { reportOnly: true });
+  }
+
+  /**
+   * Desktop session handoff — step 1 (mint).
+   *
+   * The Tauri desktop app authenticates with a localStorage/header session that
+   * can't ride a top-level browser navigation, and the system browser holds no
+   * `ci-hub-sid` cookie — so when the desktop hands a flow to the system browser
+   * (opening a forward-auth'd app, or the memory-connect consent round-trip), every
+   * Hub hop bounces to a second /login. This mints a single-use, 60s ticket bound to
+   * the caller's current session. The desktop app then opens the returned Hub URL in
+   * the system browser, which plants the cookie (step 2) before continuing to `next`.
+   *
+   * Returns `{ url: null }` when no public Hub origin is known yet, so the caller
+   * fails open to a plain external open rather than dead-ending.
+   */
+  @Post('/browser-handoff/mint')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: BrowserHandoffMintDto })
+  async mintBrowserHandoff(@Body() body: BrowserHandoffMintBody, @Req() req: Request) {
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    if (!sessionId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const hub = await this.resolvePublicHub();
+    if (!hub) {
+      return BrowserHandoffMintDto.parse({ url: null }, { reportOnly: true });
+    }
+
+    if (!this.isSafeHandoffNext(body.next, hub.origin, hub.orgSlug)) {
+      throw new BadRequestException('Unsupported handoff target');
+    }
+
+    const ticket = crypto.randomUUID();
+    // The target is stored server-side (never placed in a URL), so the consume
+    // endpoint carries no open-redirect surface and the ticket alone re-materializes
+    // the session as a browser cookie.
+    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), 60);
+
+    return BrowserHandoffMintDto.parse({ url: `${hub.origin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
+  }
+
+  /**
+   * Desktop session handoff — step 2 (consume). No AuthGuard: the single-use ticket
+   * IS the credential. Reached as a top-level navigation in the system browser, it
+   * plants the Hub session cookie for the public Hub host (so the subsequent
+   * memory-connect / forward-auth hops authenticate), then redirects to the
+   * server-stored `next`. A missing, expired, or replayed ticket lands on `/`
+   * without setting anything.
+   *
+   * Login-CSRF hardening: because this plants a session cookie, an actor who can
+   * mint a ticket (any authenticated Hub session) could otherwise lure a victim to
+   * this URL and plant THEIR session into the victim's browser. The legitimate flow
+   * only ever arrives as a fresh, user-initiated navigation opened by the desktop
+   * app (`Sec-Fetch-Site: none`), so this ALLOW-lists only `none` (and an absent
+   * header, for browsers that don't send Fetch Metadata) and rejects every
+   * page-initiated navigation — `cross-site` (attacker page), `same-site`
+   * (compromised sibling app), `same-origin`, or a spoofed multi-valued header —
+   * before the ticket is touched. The reject path is intentionally silent: this
+   * endpoint is unauthenticated, so a per-request log write would be a flood
+   * amplifier (same reason the ticket-miss path below no longer deletes).
+   */
+  @Get('/browser-handoff')
+  async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const fetchSite = req.get('sec-fetch-site');
+    if (fetchSite !== undefined && fetchSite !== 'none') {
+      return res.redirect('/');
+    }
+
+    if (!ticket) {
+      return res.redirect('/');
+    }
+
+    const cacheKey = `browser_handoff:${ticket}`;
+    const cached = this.cache.get(cacheKey);
+    if (!cached) {
+      // Unknown/expired ticket. Return without deleting: this endpoint is
+      // unauthenticated, so deleting on every miss would let a ticket flood force a
+      // synchronous SQLite write (event-loop pressure) per bogus request.
+      return res.redirect('/');
+    }
+    this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+
+    let sessionId: string;
+    let next: string;
+    try {
+      const parsed = JSON.parse(cached) as { sessionId: string; next: string };
+      sessionId = parsed.sessionId;
+      next = parsed.next;
+    } catch {
+      return res.redirect('/');
+    }
+
+    // Defense in depth: re-validate the stored target against the current public Hub
+    // origin before trusting it, in case registration changed since the mint.
+    const hub = await this.resolvePublicHub();
+    if (!sessionId || !next || !hub || !this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
+      return res.redirect('/');
+    }
+
+    await this.setSessionCookie(res, sessionId, req);
+    return res.redirect(next);
   }
 
   /**

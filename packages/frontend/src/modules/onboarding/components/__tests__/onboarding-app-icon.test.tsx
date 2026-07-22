@@ -24,4 +24,20 @@ describe('OnboardingAppIcon', () => {
 
     expect(screen.getByTestId('app-logo')).toHaveTextContent('Immich');
   });
+
+  it('prefers marketplace AppLogo over stale portal favicon URLs when a urn exists', () => {
+    render(
+      <OnboardingAppIcon
+        app={{
+          appSlug: 'mattermost',
+          name: 'Mattermost',
+          icon: 'https://www.google.com/s2/favicons?sz=32&domain_url=https://mattermost.com',
+          urn: 'mattermost:ci-marketplace',
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('app-logo')).toHaveTextContent('Mattermost');
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
 });

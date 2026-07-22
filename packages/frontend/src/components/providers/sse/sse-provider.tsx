@@ -48,7 +48,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, warningCode, warningDetail } = payload;
 
       if (error) {
         console.error(error);
@@ -126,7 +126,37 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_STOP_TOAST', appName));
           break;
         case 'uninstall_success':
-          toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          // The app is gone, but the delete may have left a remnant it couldn't
+          // remove even via a privileged cleanup (e.g. a container-created root-owned
+          // path, #907) — warn instead of claiming a clean removal. Branch on the
+          // code's VALUE (like errorCode above): a future, unrecognized warningCode
+          // must fall through to the plain success toast, not mislabel itself.
+          if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
+            if (warningDetail) {
+              // Actionable: show the exact host path + command the operator can run.
+              // Single-quote the path (escaping any embedded quote) and add `--`: an
+              // operator-configured root can contain spaces or shell metacharacters, so
+              // an unquoted path could be mis-split or read as an option on paste.
+              const quotedPath = `'${warningDetail.replace(/'/g, "'\\''")}'`;
+              const command = `sudo rm -rf -- ${quotedPath}`;
+              toast(
+                () => (
+                  <span className="text-sm">
+                    <Trans
+                      i18nKey="APP_UNINSTALL_PARTIAL_REMNANT_MANUAL"
+                      values={{ id: appName, command }}
+                      components={{ cmd: <code className="font-mono text-xs break-all" /> }}
+                    />
+                  </span>
+                ),
+                { icon: '⚠️', duration: 20000 },
+              );
+            } else {
+              toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
+            }
+          } else {
+            toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          }
           break;
         case 'uninstall_error':
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName));

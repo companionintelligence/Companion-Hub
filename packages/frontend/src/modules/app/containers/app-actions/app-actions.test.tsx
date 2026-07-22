@@ -3,15 +3,21 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { AppActions } from './app-actions';
+import { IDLE_APP_URL_AVAILABILITY, type AppUrlAvailability } from '../../helpers/use-app-url-availability';
 
 const hoisted = vi.hoisted(() => ({
   queryClient: {
     getQueryData: vi.fn(),
   },
+  // Options of the START mutation specifically (tagged via startAppMutation below),
+  // so its onError can be driven without depending on useMutation call order.
+  startOpts: undefined as undefined | Record<string, (arg?: unknown) => void>,
+  invalidateAppQueries: vi.fn(),
   navigate: vi.fn(),
   // null => web client (no Tauri); a function => running inside the desktop app.
   tauriInvoke: null as null | (() => unknown),
   openPath: vi.fn(),
+  openExternal: vi.fn(),
 }));
 
 vi.mock('@/lib/helpers/open-folder', () => ({
@@ -24,10 +30,15 @@ vi.mock('@/lib/helpers/tauri-invoke', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (opts?: Record<string, unknown>) => {
+    if (opts?.__kind === 'start') {
+      hoisted.startOpts = opts as Record<string, (arg?: unknown) => void>;
+    }
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
   useQueryClient: () => hoisted.queryClient,
   useQuery: ({ initialData }: { initialData?: () => unknown }) => ({
     data: initialData ? initialData() : null,
@@ -36,8 +47,18 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   ignoreAppVersionMutation: () => ({}),
-  startAppMutation: () => ({}),
+  // Tagged so the useMutation mock above can pick this one out of several.
+  startAppMutation: () => ({ __kind: 'start' }),
   unignoreAppVersionMutation: () => ({}),
+}));
+
+// AppActions consumes exactly one VALUE from this module; everything else it imports is
+// `import type` and erased. Spreading importActual would link the real module against the
+// partial api-client mock above (no getAppQueryKey etc.), so any future test that reaches
+// another export fails with an opaque "No export is defined on the mock" instead of a
+// normal assertion. Mock just what is used, matching the sibling dialog tests.
+vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
+  invalidateAppQueries: (...args: unknown[]) => hoisted.invalidateAppQueries(...args),
 }));
 
 vi.mock('@/api-client/client.gen', () => ({
@@ -93,7 +114,7 @@ vi.mock('react-router', async () => {
 });
 
 vi.mock('@/lib/helpers/open-external', () => ({
-  openExternal: vi.fn(),
+  openExternal: (...args: unknown[]) => hoisted.openExternal(...args),
 }));
 
 vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
@@ -170,7 +191,16 @@ function makeApp(overrides: Partial<AppDetails> = {}): AppDetails {
   };
 }
 
+/** Public-route readiness is a prop now (the page owns the probe), so tests inject it directly. */
+function makeAvailability(overrides: Partial<AppUrlAvailability> = {}): AppUrlAvailability {
+  return { ...IDLE_APP_URL_AVAILABILITY, ...overrides };
+}
+
+const idleAvailability = makeAvailability();
+
 const info = makeInfo();
+/** A GUI app is what renders the Open button area; the default fixture is headless. */
+const guiInfo = makeInfo({ no_gui: false });
 
 const metadata: AppMetadata = {
   latestVersion: 1,
@@ -178,6 +208,8 @@ const metadata: AppMetadata = {
 };
 
 const runningApp = makeApp();
+/** Public-web exposure: the only mode that waits on the availability probe. */
+const exposedApp = makeApp({ exposureMode: 'cloudflare' });
 
 const OPEN_DATA_FOLDER_TESTID = 'icon-action-app_action_open_data_folder';
 
@@ -185,13 +217,55 @@ describe('AppActions', () => {
   afterEach(() => {
     hoisted.tauriInvoke = null;
     hoisted.openPath.mockReset();
+    hoisted.openExternal.mockReset();
+    hoisted.startOpts = undefined;
+    hoisted.invalidateAppQueries.mockReset();
+    // Reset EVERY hoisted spy: mockReturnValue is sticky for the whole file, and vitest
+    // is not configured with clearMocks/mockReset, so a leftover value silently leaks
+    // into whichever test runs next and makes assertions depend on declaration order.
+    hoisted.queryClient.getQueryData.mockReset();
+    hoisted.navigate.mockReset();
+  });
+
+  it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    render(
+      <AppActions
+        app={runningApp}
+        metadata={metadata}
+        info={info}
+        appDataHostPath="/srv/hub/app-data/community/test-app"
+        urlAvailability={idleAvailability}
+        layout="hero"
+      />,
+    );
+
+    // Start is the highest-traffic lifecycle action. A pre-flight rejection (starting
+    // an app that was already removed) throws before any status update, so no SSE
+    // event ever arrives to clear the optimistic 'starting' status.
+    expect(hoisted.startOpts?.onError).toBeTypeOf('function');
+    hoisted.startOpts?.onError?.({ message: 'APP_ERROR_APP_NOT_FOUND', intlParams: { id: 'test-app:community' } } as never);
+
+    // Assert the client itself, not expect.anything(): the latter accepts any non-null
+    // value, so dropping the useQueryClient() argument entirely would still pass.
+    expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'test-app:community');
   });
 
   it('hides the "Open data folder" button in the web client (no Tauri)', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = null;
 
-    render(<AppActions app={runningApp} metadata={metadata} info={info} appDataHostPath="/srv/hub/app-data/community/test-app" layout="hero" />);
+    render(
+      <AppActions
+        app={runningApp}
+        metadata={metadata}
+        info={info}
+        appDataHostPath="/srv/hub/app-data/community/test-app"
+        urlAvailability={idleAvailability}
+        layout="hero"
+      />,
+    );
 
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
   });
@@ -200,7 +274,16 @@ describe('AppActions', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = vi.fn();
 
-    render(<AppActions app={runningApp} metadata={metadata} info={info} appDataHostPath="/srv/hub/app-data/community/test-app" layout="hero" />);
+    render(
+      <AppActions
+        app={runningApp}
+        metadata={metadata}
+        info={info}
+        appDataHostPath="/srv/hub/app-data/community/test-app"
+        urlAvailability={idleAvailability}
+        layout="hero"
+      />,
+    );
 
     const button = screen.getByTestId(OPEN_DATA_FOLDER_TESTID);
     expect(button).toBeInTheDocument();
@@ -213,7 +296,7 @@ describe('AppActions', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = vi.fn();
 
-    render(<AppActions app={runningApp} metadata={metadata} info={info} layout="hero" />);
+    render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
   });
@@ -223,7 +306,7 @@ describe('AppActions', () => {
       message: 'Install completed with warnings and needs your attention before the app is fully usable.',
     });
 
-    const { container } = render(<AppActions app={runningApp} metadata={metadata} info={info} layout="hero" />);
+    const { container } = render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
     const alert = screen.getByRole('alert');
     expect(alert).toHaveClass('hero-inline-install-error');
@@ -234,7 +317,9 @@ describe('AppActions', () => {
   it('uses the taller amber retry install button styling for failed installs', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
 
-    render(<AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} layout="hero" />);
+    render(
+      <AppActions app={makeApp({ status: 'install_failed' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />,
+    );
 
     expect(screen.getByTestId('action-app_action_retry_install')).toHaveClass('retry-install-action-button');
   });
@@ -248,7 +333,7 @@ describe('AppActions', () => {
 
     render(
       <MemoryRouter>
-        <AppActions app={runningApp} metadata={metadata} info={info} layout="hero" />
+        <AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />
       </MemoryRouter>,
     );
 
@@ -262,7 +347,7 @@ describe('AppActions', () => {
 
     const { rerender } = render(
       <MemoryRouter>
-        <AppActions app={makeApp({ status: 'installing' })} metadata={metadata} info={info} />
+        <AppActions app={makeApp({ status: 'installing' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
       </MemoryRouter>,
     );
     // IconActionButton testid derives from the (mocked) label COMMON_CANCEL.
@@ -270,9 +355,98 @@ describe('AppActions', () => {
 
     rerender(
       <MemoryRouter>
-        <AppActions app={makeApp({ status: 'uninstalling' })} metadata={metadata} info={info} />
+        <AppActions app={makeApp({ status: 'uninstalling' })} metadata={metadata} info={info} urlAvailability={idleAvailability} />
       </MemoryRouter>,
     );
     expect(screen.queryByTestId('icon-action-common_cancel')).not.toBeInTheDocument();
+  });
+
+  describe('launch action while the public route is not ready', () => {
+    const renderExposed = (urlAvailability: AppUrlAvailability) => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+      return render(<AppActions app={exposedApp} metadata={metadata} info={guiInfo} urlAvailability={urlAvailability} layout="hero" />);
+    };
+
+    it('never says "Starting" while propagating — the app has already started', () => {
+      renderExposed(makeAvailability({ state: 'propagating', statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND', withinGracePeriod: true }));
+
+      // The contradiction this fixes: a green "Running" pill beside a "Starting…" button.
+      expect(screen.queryByText('COMMON_STARTING')).not.toBeInTheDocument();
+      expect(screen.getByTestId('action-button-loading')).toBeDisabled();
+    });
+
+    it('keeps the "Open anyway" escape hatch while propagating, without repeating the reason', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'propagating',
+          statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+          withinGracePeriod: true,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
+      // The status pill carries the explanation now; duplicating it here is noise.
+      expect(screen.queryByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).not.toBeInTheDocument();
+    });
+
+    it('offers Resolve with the reason once the grace window has passed', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'propagating',
+          statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+          withinGracePeriod: false,
+          resolvable: true,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByTestId('action-app_action_resolve')).toBeInTheDocument();
+      expect(screen.getByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
+    });
+
+    it('offers a plain retry once probing has been given up on', () => {
+      renderExposed(makeAvailability({ state: 'unreachable', statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN', resolvable: true, pollingStopped: true }));
+
+      expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+      expect(screen.queryByTestId('action-app_action_resolve')).not.toBeInTheDocument();
+    });
+
+    it('still offers a retry after giving up on a verdict the Hub cannot repair', () => {
+      // Nothing is polling any more, so a spinner here would be a dead end.
+      renderExposed(
+        makeAvailability({ state: 'unreachable', statusMessage: 'APP_ACTION_APPLICATION_ERROR', resolvable: false, pollingStopped: true }),
+      );
+
+      expect(screen.getByTestId('action-common_retry')).toBeInTheDocument();
+    });
+
+    it('shows the reason and the escape hatch for a propagating verdict that is not resolvable', () => {
+      // Past the grace window with resolvable falsy used to fall through every
+      // branch to a bare spinner, losing both the reason and "Open anyway".
+      renderExposed(
+        makeAvailability({
+          state: 'propagating',
+          statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+          withinGracePeriod: false,
+          resolvable: false,
+          appUrl: 'https://app.example.com',
+        }),
+      );
+
+      expect(screen.getByText('APP_ACTION_ERROR_DNS_NOT_FOUND')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
+    });
+
+    it('enables Open as soon as the route is serving', async () => {
+      renderExposed(makeAvailability({ state: 'ready', appUrl: 'https://app.example.com' }));
+
+      const open = screen.getByTestId('action-app_action_open');
+      expect(open).toBeEnabled();
+
+      await userEvent.click(open);
+      expect(hoisted.openExternal).toHaveBeenCalledWith('https://app.example.com');
+    });
   });
 });

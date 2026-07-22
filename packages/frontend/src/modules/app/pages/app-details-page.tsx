@@ -17,6 +17,7 @@ import { getCategoryLabel } from '../helpers/category-label';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
+import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -54,6 +55,17 @@ export default () => {
     queryFn: () => fetchAppRuntimeHealth(appUrn),
     refetchInterval: 15_000,
     enabled: runtimeHealthEnabled,
+  });
+
+  // Owned here (like runtimeHealth) and handed to BOTH the status pill and the
+  // launch action, so the two can never disagree about whether the app's public
+  // address is serving yet. Read through optionals because this must run before
+  // the loading/error early-returns below — hooks can't be conditional.
+  const urlAvailability = useAppUrlAvailability({
+    appUrn,
+    status: getApp.data?.app?.status,
+    noGui: getApp.data?.info?.no_gui,
+    exposureMode: getApp.data?.app?.exposureMode,
   });
 
   const { userSettings } = useAppContext();
@@ -158,7 +170,14 @@ export default () => {
             </div>
 
             <div data-testid="app-header-actions-row" className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              {app && app.status !== 'missing' ? <AppStatus status={app.status} runtimeHealth={runtimeHealth.data} variant="pill" /> : null}
+              {app && app.status !== 'missing' ? (
+                <AppStatus
+                  status={app.status}
+                  runtimeHealth={runtimeHealth.data}
+                  publicUrl={{ propagating: urlAvailability.state === 'propagating', detail: urlAvailability.statusMessage }}
+                  variant="pill"
+                />
+              ) : null}
               <div className="min-w-0 md:flex-1">
                 <AppActions
                   app={app}
@@ -168,6 +187,7 @@ export default () => {
                   localDomain={userSettings.localDomain}
                   sslPort={userSettings.sslPort}
                   runtimeHealth={runtimeHealth.data}
+                  urlAvailability={urlAvailability}
                   layout="hero"
                 />
               </div>

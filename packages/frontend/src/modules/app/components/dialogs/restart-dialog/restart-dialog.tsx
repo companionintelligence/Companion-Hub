@@ -1,10 +1,11 @@
 import { restartAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -16,12 +17,18 @@ interface IProps {
 }
 export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
 
   const restartMutation = useMutation({
     ...restartAppMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
+      // A pre-flight rejection (e.g. restarting an app that was just removed) fails
+      // synchronously and emits no lifecycle SSE event, and nothing polls the app
+      // detail — so without this the optimistic 'restarting' status would spin
+      // forever. Re-sync from the server to clear it (#909).
+      invalidateAppQueries(queryClient, info.urn);
     },
     onMutate: () => {
       setOptimisticStatus('restarting', info.urn);

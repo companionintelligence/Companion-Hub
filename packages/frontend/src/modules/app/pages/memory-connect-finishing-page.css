@@ -1,19 +1,19 @@
 /*
  * Scoped styles for the memory-connect finishing interstitial. Deliberately
- * mirrors the ci-memory consent page and the agent-app connect gates (navy
- * background, elevated card, teal brand-gradient pill) rather than the Hub
+ * mirrors ci-memory's post-approve hop page (navy background, borderless
+ * centered column, teal spinner, brand-gradient pill) rather than the Hub
  * SPA's theme tokens, so consent → finishing → app reads as one continuous
  * ceremony — including following prefers-color-scheme like those pages do.
+ * No card chrome: the hop page this echoes is a bare centered stack, and a
+ * bordered card here made the two halves of the same hop look unrelated.
  */
 .mcf-page {
   --mcf-bg: #041620;
-  --mcf-card: #0a222e;
   --mcf-border: #1f4a55;
   --mcf-fg: #f5f8fa;
   --mcf-fg-dim: #9bb2b7;
   --mcf-brand-grad: linear-gradient(135deg, #0b6e74 0%, #079d99 100%);
   --mcf-on-accent: #fff;
-  --mcf-shadow: 0 6px 24px rgba(4, 22, 32, 0.22);
   color-scheme: dark;
   min-height: calc(100vh - var(--titlebar-height, 0px));
   display: grid;
@@ -26,24 +26,19 @@
 @media (prefers-color-scheme: light) {
   .mcf-page {
     --mcf-bg: #f3f3f3;
-    --mcf-card: #f7f7f9;
     --mcf-border: #d3dddf;
     --mcf-fg: #010f16;
     --mcf-fg-dim: #4f6168;
-    --mcf-shadow: 0 6px 24px rgba(4, 22, 32, 0.12);
     color-scheme: light;
   }
 }
 
+/* Bare centered stack — mirrors ci-memory's hop page. Content-sized (a plain
+ * <div>, see the .tsx) so `.mcf-page`'s `place-items: center` centers it. */
 .mcf-card {
   width: 100%;
   max-width: 440px;
   text-align: center;
-  background: var(--mcf-card);
-  border: 1px solid var(--mcf-border);
-  border-radius: 14px;
-  padding: 36px 28px;
-  box-shadow: var(--mcf-shadow);
 }
 
 .mcf-brand {
@@ -102,6 +97,15 @@
   color: var(--mcf-fg-dim);
   font-size: 14px;
   margin: 0 0 24px;
+}
+
+/* The interpolated app name — full-strength color + bold so it reads as the
+ * subject of the sentence over the dimmed body copy. Weight matches .mcf-title
+ * (700) rather than 600: the same class is used inside the headings, where 600
+ * would render the name LIGHTER than the surrounding title text. */
+.mcf-app {
+  color: var(--mcf-fg);
+  font-weight: 700;
 }
 
 .mcf-actions {

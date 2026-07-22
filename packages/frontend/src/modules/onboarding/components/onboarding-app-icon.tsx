@@ -39,14 +39,18 @@ function RemoteIcon({ src, name, size, className }: { src: string; name: string;
   );
 }
 
-/** Renders the best available icon for an onboarding app (portal icon URL, store URN, remote URL, or initial fallback). */
+/**
+ * Renders the best available icon for an onboarding app.
+ * Marketplace URN images are preferred over portal/alternatives icon URLs, which are often
+ * third-party favicons (e.g. Google s2) that fail to load.
+ */
 export function OnboardingAppIcon({ app, size = 36, className }: OnboardingAppIconProps) {
-  if (app.icon) {
-    return <RemoteIcon src={app.icon} name={app.name} size={size} className={className} />;
-  }
-
   if (app.urn) {
     return <AppLogo urn={app.urn} alt={app.name} size={size} className={cn('shrink-0', className)} />;
+  }
+
+  if (app.icon) {
+    return <RemoteIcon src={app.icon} name={app.name} size={size} className={className} />;
   }
 
   return <InitialFallback name={app.name} size={size} className={className} />;

@@ -53,16 +53,20 @@ export class AppLifecycleTools implements OnModuleInit {
       name: 'hub_uninstall_app',
       destructive: true, // ISSUE-MCP-2: removes the app and (by default) deletes its data volumes.
       description:
-        'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId. Uninstalling the shared Companion Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
+        'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId. Uninstalling the shared CI Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
       inputSchema: {
         type: 'object',
         properties: {
           appUrn: urnProp,
-          deleteAllData: { type: 'boolean', description: 'Delete Docker volumes and app data (default true)' },
+          deleteAllData: {
+            type: 'boolean',
+            description:
+              "Delete Docker volumes, app data AND the app's stored backups (default true). With this set, a successful uninstall leaves nothing to restore from — pass false to keep the data and its backups.",
+          },
           force: {
             type: 'boolean',
             description:
-              'Required to uninstall the shared Companion Memory provider while other apps are still connected. Forcing disconnects every consumer and, with deleteAllData, irrecoverably deletes the shared memory store. Default false.',
+              'Required to uninstall the shared CI Memory provider while other apps are still connected. Forcing disconnects every consumer and, with deleteAllData, irrecoverably deletes the shared memory store. Default false.',
           },
         },
         required: ['appUrn'],
@@ -74,7 +78,7 @@ export class AppLifecycleTools implements OnModuleInit {
       name: 'hub_reset_app',
       destructive: true, // ISSUE-MCP-2: wipes all app data back to defaults.
       description:
-        'Reset an app to its default state, removing all data. Returns a requestId. Resetting the shared Companion Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
+        'Reset an app to its default state, removing all data. Returns a requestId. Resetting the shared CI Memory provider (ci-memory:ci-marketplace) is rejected with the list of still-connected apps unless force is true.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -82,7 +86,7 @@ export class AppLifecycleTools implements OnModuleInit {
           force: {
             type: 'boolean',
             description:
-              'Required to reset the shared Companion Memory provider while other apps are still connected. Forcing disconnects every consumer and irrecoverably erases the shared memory store. Default false.',
+              'Required to reset the shared CI Memory provider while other apps are still connected. Forcing disconnects every consumer and irrecoverably erases the shared memory store. Default false.',
           },
         },
         required: ['appUrn'],

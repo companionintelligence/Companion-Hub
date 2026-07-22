@@ -103,9 +103,25 @@ export const DEFAULT_ADVANCED_SETTINGS = 'false';
 export const DEFAULT_LOG_LEVEL = 'info';
 export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 
-// Hub stack container — CI Cloud OCI repo for tag listing and GHCR image pulls (keep aligned).
+// Hub stack container. These name the SAME artifact in two different registries, so the
+// repo names deliberately differ — do not "align" them:
+//
+// - HUB_STACK_REGISTRY_REPO is a path on the CI Cloud/Portal registry, used only to LIST
+//   available versions (`{ciCloudUrl}/v2/<repo>/tags/list`). Portal receives a crane copy
+//   of every production build under this name.
+// - HUB_STACK_IMAGE_REPO is the GHCR repo Docker actually PULLS from. It is the package
+//   `build-container.yml` publishes to, and it is public. It must match
+//   HUB_STACK_IMAGE_REPO in the desktop's `hub_env.rs`; when the two disagree, the desktop
+//   and this updater overwrite each other's CI_HUB_IMAGE on every start (see #920).
+//
+// Versions correspond across the two because both come from the same build.
+// Tags are UNPREFIXED (`0.2.45`, not `v0.2.45`): pinHubStackVersionInEnv interpolates the
+// raw listed tag into `<repo>:<tag>`, so a `v` would produce an unpullable reference. Note
+// GHCR still carries legacy `v`-prefixed tags from a retired workflow; they are inert only
+// because listing reads Portal, not GHCR. Repointing listing at GHCR would surface both
+// spellings in one list and reintroduce that hazard.
 export const HUB_STACK_REGISTRY_REPO = 'ci-os-hub';
-export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-os-hub';
+export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming
 export const DEFAULT_THEME_BASE = 'gray';

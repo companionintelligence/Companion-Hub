@@ -109,6 +109,15 @@ export class AppService implements OnApplicationShutdown {
       await this.marketplaceService.initialize();
       this.logger.info('Marketplace initialized');
 
+      // Refresh app store catalogs in the background so CI Marketplace and legacy
+      // git stores pick up newly published versions without waiting for the cron job.
+      void this.appStoreService
+        .pullRepositories()
+        .then(() => this.marketplaceService.initialize())
+        .catch((error) => {
+          this.logger.warn(`Background app store catalog sync failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+
       // Every 15 minutes, check for updates to the apps repo
       if (__prod__) {
         this.logger.info('Setting up repeatable repo update job...');

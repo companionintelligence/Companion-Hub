@@ -67,6 +67,13 @@ vi.mock('../components/app-status/app-status', () => ({
   AppStatus: () => <div data-testid="app-status" />,
 }));
 
+// The availability probe is a self-contained hook (useQuery + useMutation +
+// useQueryClient); this page test only cares about layout, so stub it rather
+// than widen the narrow react-query mock above.
+vi.mock('../helpers/use-app-url-availability', () => ({
+  useAppUrlAvailability: () => ({ state: 'idle', statusMessage: null }),
+}));
+
 vi.mock('../containers/app-actions/app-actions', () => ({
   AppActions: () => <div data-testid="app-actions" />,
 }));
