@@ -79,15 +79,14 @@ vi.mock('../components/ai-setup-step', () => ({
   AiSetupStep: ({
     onConfigChange,
     children,
-    afterHarness,
+    onCompanionAppsChange,
   }: {
     onConfigChange?: (c: unknown) => void;
     children?: ReactNode;
-    afterHarness?: ReactNode;
+    onCompanionAppsChange?: (apps: unknown[]) => void;
   }) => (
     <div data-testid="ai-setup-step">
       AI Setup
-      {afterHarness}
       {children}
       <button
         type="button"
@@ -174,6 +173,35 @@ vi.mock('../components/ai-setup-step', () => ({
       >
         emit-ai-config-both-agents
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onCompanionAppsChange?.([
+            {
+              appSlug: 'ci-memory',
+              name: 'CI Memory',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-memory',
+              localSubdomain: 'ci-memory',
+              exposureMode: 'tailscale',
+            },
+            {
+              appSlug: 'ci-import-tools',
+              name: 'Import Tools',
+              icon: '',
+              category: 'companion-intelligence',
+              replacesNames: [],
+              urn: 'urn:store:ci-import-tools',
+              localSubdomain: 'ci-import-tools',
+              exposureMode: 'tailscale',
+            },
+          ])
+        }
+      >
+        emit-companion-apps
+      </button>
     </div>
   ),
 }));
@@ -187,7 +215,7 @@ vi.mock('../components/ai-setup/companion-apps-card', () => ({
           onChange?.([
             {
               appSlug: 'ci-memory',
-              name: 'Companion Memory',
+              name: 'CI Memory',
               icon: '',
               category: 'companion-intelligence',
               replacesNames: [],
@@ -282,10 +310,7 @@ describe('OnboardingPage (single vertical form)', () => {
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
     renderPage();
-    // AiSetupStep owns steps 1-3 + 5 and renders children (step 4) inline.
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    expect(screen.getByTestId('companion-apps-card')).toBeInTheDocument();
-    // RecommendationsStep is now embedded as step 4 on the form page.
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
 

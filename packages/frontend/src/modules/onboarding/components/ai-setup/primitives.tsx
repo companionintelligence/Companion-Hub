@@ -13,14 +13,33 @@ interface StepSectionProps {
   description?: string;
   /** Optional short tooltip beside the step title. */
   titleHint?: string;
+  /** Section priority badge shown beside the title. */
+  badge?: 'required' | 'recommended' | 'optional';
   children: ReactNode;
   /** Optional content rendered on the right of the section header (e.g. a tier badge). */
   action?: ReactNode;
   className?: string;
 }
 
+const BADGE_KEYS = {
+  required: 'ONBOARDING_BADGE_REQUIRED',
+  recommended: 'ONBOARDING_BADGE_RECOMMENDED',
+  optional: 'ONBOARDING_BADGE_OPTIONAL',
+} as const;
+
+const BADGE_STYLES = {
+  required: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  recommended: 'border-primary/30 bg-primary/10 text-primary',
+  optional: 'border-border bg-muted text-muted-foreground',
+} as const;
+
+function StepSectionBadge({ badge }: { badge: 'required' | 'recommended' | 'optional' }) {
+  const { t } = useTranslation();
+  return <span className={cn('rounded-full border px-2.5 py-0.5 text-xs font-medium', BADGE_STYLES[badge])}>{t(BADGE_KEYS[badge])}</span>;
+}
+
 /** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
-export function StepSection({ number, title, description, titleHint, children, action, className }: StepSectionProps) {
+export function StepSection({ number, title, description, titleHint, badge, children, action, className }: StepSectionProps) {
   return (
     <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -29,15 +48,18 @@ export function StepSection({ number, title, description, titleHint, children, a
             {number}
           </span>
           <div>
-            <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
-              {titleHint ? (
-                <HintText id={`step-${number}-title`} hint={titleHint}>
-                  {title}
-                </HintText>
-              ) : (
-                title
-              )}
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                {titleHint ? (
+                  <HintText id={`step-${number}-title`} hint={titleHint}>
+                    {title}
+                  </HintText>
+                ) : (
+                  title
+                )}
+              </h2>
+              {badge && <StepSectionBadge badge={badge} />}
+            </div>
             {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
           </div>
         </div>
@@ -76,10 +98,22 @@ interface OptionCardProps {
   hint?: string;
   onSelect?: () => void;
   testId?: string;
+  className?: string;
 }
 
 /** A large, icon-led selectable card used for the Agent Framework and Inference Backend steps. */
-export function OptionCard({ title, description, icon, selected = false, disabled = false, badge, hint, onSelect, testId }: OptionCardProps) {
+export function OptionCard({
+  title,
+  description,
+  icon,
+  selected = false,
+  disabled = false,
+  badge,
+  hint,
+  onSelect,
+  testId,
+  className,
+}: OptionCardProps) {
   return (
     <button
       type="button"
@@ -93,6 +127,7 @@ export function OptionCard({ title, description, icon, selected = false, disable
           ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20'
           : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-foreground/[0.03]',
         disabled && 'cursor-not-allowed opacity-45 hover:border-border hover:bg-foreground/[0.015]',
+        className,
       )}
     >
       <span className={cn('mt-0.5 flex-shrink-0 [&>*]:size-9', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>

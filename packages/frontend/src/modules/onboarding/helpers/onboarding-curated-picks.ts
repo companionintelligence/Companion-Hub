@@ -13,5 +13,5 @@ export const ONBOARDING_CURATED_PICKS: readonly OnboardingCuratedPick[] = [
   { category: 'data', proprietaryLabel: 'Notion', preferredSlugs: ['appflowy', 'nocodb'] },
   { category: 'security', proprietaryLabel: '1Password', preferredSlugs: ['vaultwarden'] },
   { category: 'automation', proprietaryLabel: 'Zapier', preferredSlugs: ['n8n'] },
-  { category: 'ai', proprietaryLabel: 'ChatGPT', preferredSlugs: ['open-webui'] },
+  { category: 'ai', proprietaryLabel: 'cloud AI chat', preferredSlugs: ['open-webui'] },
 ] as const;

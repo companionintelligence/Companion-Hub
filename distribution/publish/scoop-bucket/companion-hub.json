@@ -33,7 +33,7 @@
       "}"
     ]
   },
-  "shortcuts": [["Companion Hub\\Companion Hub.exe", "Companion Hub"]],
+  "shortcuts": [["Companion Hub\\Companion Hub.exe", "CI Hub"]],
   "checkver": {
     "github": "https://github.com/companionintelligence/CI-Hub"
   },

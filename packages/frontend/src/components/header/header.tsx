@@ -63,16 +63,8 @@ export const Header = (props: HeaderProps) => {
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
         <Link to="/home" className="flex items-center">
-          <img
-            src="/2024_CI__Logo_Banner_Color_small.svg"
-            alt="Companion Intelligence Logo"
-            className="h-9 w-auto object-contain hidden dark:block"
-          />
-          <img
-            src="/2024_CI__Logo_Banner_Color_small-lightmode2.svg"
-            alt="Companion Intelligence Logo"
-            className="h-9 w-auto object-contain block dark:hidden"
-          />
+          <img src="/2024_CI__Logo_Banner_Color_small.svg" alt="CI Logo" className="h-9 w-auto object-contain hidden dark:block" />
+          <img src="/2024_CI__Logo_Banner_Color_small-lightmode2.svg" alt="CI Logo" className="h-9 w-auto object-contain block dark:hidden" />
         </Link>
       </div>
 

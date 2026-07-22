@@ -91,9 +91,9 @@ export interface MemoryConnectStatus {
 export interface MemoryConnectUiStatus extends MemoryConnectStatus {
   /** Whether this app is a memory consumer at all (else the UI shows nothing). */
   applicable: boolean;
-  /** Whether Companion Memory is installed (a row exists) — installing/stopped included. */
+  /** Whether CI Memory is installed (a row exists) — installing/stopped included. */
   memoryInstalled: boolean;
-  /** Whether Companion Memory is actually running, i.e. a connect can succeed right now. */
+  /** Whether CI Memory is actually running, i.e. a connect can succeed right now. */
   memoryReady: boolean;
   /** Coarse provider lifecycle, so the UI can say WHY it isn't ready (starting vs offline). */
   providerStatus: MemoryProviderRuntimeStatus;
@@ -186,7 +186,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       const provider = await this.resolver.findProvider();
 
       if (!provider) {
-        this.logger.warn('[MemoryConnect] rotation sweep skipped: Companion Memory not resolvable');
+        this.logger.warn('[MemoryConnect] rotation sweep skipped: CI Memory not resolvable');
 
         return;
       }
@@ -270,11 +270,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const provider = await this.resolver.findProvider({ withPublicUrl: true });
 
     if (!provider) {
-      throw new BadRequestException('Companion Memory is not installed');
+      throw new BadRequestException('CI Memory is not installed');
     }
 
     if (!provider.publicUrl) {
-      throw new BadRequestException('Companion Memory is not reachable yet; try again once it is running');
+      throw new BadRequestException('CI Memory is not reachable yet; try again once it is running');
     }
 
     const hubOrigin = await this.hubOrigin();
@@ -451,7 +451,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Wrapper-facing status: current state + the launcher URL to start connecting.
-   * `connectUrl` is null unless Companion Memory is actually running — otherwise a
+   * `connectUrl` is null unless CI Memory is actually running — otherwise a
    * wrapper would render a connect gate that dead-ends on startConnect's "not
    * installed" / "not reachable yet" 400. `getProviderRuntimeStatus` here is the
    * lightweight DB-only check, run in parallel with the other lookups.
@@ -474,7 +474,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Richer status for the Hub's app-detail UI: whether the app is even a memory
-   * consumer, whether Companion Memory is installed to connect to, the current
+   * consumer, whether CI Memory is installed to connect to, the current
    * state, and the launcher URL.
    */
   async getUiStatus(appUrn: AppUrn): Promise<MemoryConnectUiStatus> {
@@ -570,7 +570,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     if (provider) {
       const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
       if (!revoked) {
-        throw new ServiceUnavailableException('Could not revoke the memory key on Companion Memory; the app is still connected. Please try again.');
+        throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
       }
     }
 
@@ -579,7 +579,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * The installed apps that currently hold a live Companion Memory connection —
+   * The installed apps that currently hold a live CI Memory connection —
    * used to guard against removing the shared provider out from under them.
    * Excludes (a) the provider's own connection row (ci-memory holds one too) and
    * (b) stale rows whose app is no longer installed. Names are the app's display
@@ -641,7 +641,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     await this.connections.remove(appUrn);
 
-    // If Companion Memory ITSELF is being uninstalled, every consumer's stored key
+    // If CI Memory ITSELF is being uninstalled, every consumer's stored key
     // is now dead and no provider remains to lazily detect the staleness — so
     // clear each connected consumer and regenerate its env, making them re-prompt
     // instead of silently running with a 401ing credential.
@@ -651,7 +651,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Companion Memory was uninstalled: nothing remains to revoke against, so just
+   * CI Memory was uninstalled: nothing remains to revoke against, so just
    * drop every consumer's now-dead connection and regenerate its env so the
    * connect interstitial reappears. Best-effort per consumer.
    */
@@ -672,9 +672,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         try {
           await this.connections.clear(consumerUrn);
           await this.applyConnection(consumerUrn, 'await');
-          this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: Companion Memory was uninstalled`);
+          this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: CI Memory was uninstalled`);
         } catch (err) {
-          this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after Companion Memory uninstall`, err);
+          this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after CI Memory uninstall`, err);
         }
       }),
     );

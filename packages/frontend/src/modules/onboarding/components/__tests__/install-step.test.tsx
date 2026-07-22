@@ -425,7 +425,7 @@ describe('InstallStep', () => {
       sdkOk({
         installed: [
           {
-            info: { urn: 'ci-memory:store1', name: 'Companion Memory' },
+            info: { urn: 'ci-memory:store1', name: 'CI Memory' },
             app: { status: 'running' },
           },
         ],
@@ -433,7 +433,7 @@ describe('InstallStep', () => {
     );
 
     const app: OnboardingApp = {
-      ...makeApp('ci-memory', 'Companion Memory', 'ci-memory:store1'),
+      ...makeApp('ci-memory', 'CI Memory', 'ci-memory:store1'),
       exposureMode: 'cloudflare',
     };
 
