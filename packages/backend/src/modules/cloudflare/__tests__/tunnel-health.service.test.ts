@@ -217,12 +217,20 @@ describe('TunnelHealthService.invalidate', () => {
     expect(service.getHealth()).toBe('unknown');
   });
 
-  it('discards a probe that was already in flight when the cache was invalidated', async () => {
-    // The realistic ordering: a probe starts, the tunnel is repaired and
-    // invalidate() fires, then the pre-repair probe lands. Writing that reading
-    // back would re-poison the cache with `down` for a full TTL — precisely the
-    // staleness invalidate() was called to prevent.
-    const { service } = makeService();
+  it('discards an in-flight probe superseded by invalidate rather than writing its now-stale result', async () => {
+    // Seed a DEFINITE 'down' (cloudflared not running), then "repair" the tunnel
+    // and let a probe that resolves 'up' be in flight when invalidate() fires.
+    //
+    // The distinguishing move: the superseded probe resolves to a DIFFERENT verdict
+    // ('up') than the cache would otherwise settle on. If the generation guard is
+    // removed, that 'up' is written back and getHealth() returns 'up'; with the
+    // guard it is discarded and the cache stays cold ('unknown'). A single 530 —
+    // as an earlier version of this test used — could not distinguish the two,
+    // because one sub-threshold failure resolves to 'unknown' either way.
+    const { service, dockerService } = makeService({ containerRunning: false });
+    expect(await service.getHealthNow()).toBe('down');
+
+    dockerService.isContainerRunning.mockResolvedValue(true);
     let landProbe: (value: unknown) => void = () => {};
     axiosGet.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -233,9 +241,35 @@ describe('TunnelHealthService.invalidate', () => {
     const inFlight = service.getHealthNow();
 
     service.invalidate();
-    landProbe({ status: 530, data: '' });
+    landProbe({ status: 200, data: 'ok' });
     await inFlight;
 
+    // The superseded 'up' must NOT have landed.
     expect(service.getHealth()).toBe('unknown');
+  });
+
+  it('starts a FRESH probe on the next read after invalidate, not the detached one', async () => {
+    // invalidate() nulls inFlight so the next getHealth() does not collapse onto
+    // the doomed probe (which scheduleRefresh would otherwise return) and serve
+    // `unknown` until it times out. Driven through getHealth()/scheduleRefresh,
+    // which is the only path that actually populates inFlight.
+    const { service } = makeService();
+    let landFirst: (value: unknown) => void = () => {};
+    axiosGet.mockReturnValueOnce(
+      new Promise((resolve) => {
+        landFirst = resolve;
+      }),
+    );
+
+    service.getHealth(); // schedules background probe A (sets inFlight)
+    await vi.waitFor(() => expect(axiosGet).toHaveBeenCalledTimes(1)); // A is in flight
+
+    service.invalidate(); // must null inFlight so the next read re-probes
+
+    // Without the detach, this second read collapses onto A and never re-probes.
+    service.getHealth();
+    await vi.waitFor(() => expect(axiosGet).toHaveBeenCalledTimes(2)); // fresh probe B fired
+
+    landFirst({ status: 530, data: '' }); // A lands late; harmless
   });
 });

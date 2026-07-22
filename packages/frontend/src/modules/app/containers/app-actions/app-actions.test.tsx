@@ -500,6 +500,42 @@ describe('AppActions', () => {
       }
     });
 
+    // A public FQDN whose leading labels only LOOK like a private range must not
+    // be treated as LAN-reachable, or the dead button returns. The literal ranges
+    // apply only to actual IP literals.
+    it.each([
+      ['192.168.cdn.example.com', false],
+      ['10.foo.com', false],
+      ['fcbank.com', false],
+      ['fd-cdn.example.com', false],
+      ['192.168.1.9', true],
+      ['10.0.0.5', true],
+    ])('classifies page host %s as LAN-reachable=%s for the local button', (hostname, reachable) => {
+      const original = window.location;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { ...original, hostname, protocol: hostname.includes('.example.com') || hostname.endsWith('.com') ? 'https:' : 'http:' },
+      });
+      try {
+        renderExposed(
+          makeAvailability({
+            state: 'unreachable',
+            statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN',
+            appUrl: 'https://app.example.com',
+            localUrl: 'http://192.168.1.9:8080',
+          }),
+        );
+
+        if (reachable) {
+          expect(screen.getByTestId('action-app_action_open_locally')).toBeEnabled();
+        } else {
+          expect(screen.queryByTestId('action-app_action_open_locally')).not.toBeInTheDocument();
+        }
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: original });
+      }
+    });
+
     it('leads with the local route alongside Resolve, since it is the action most likely to work', () => {
       renderExposed(
         makeAvailability({

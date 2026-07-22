@@ -91,12 +91,16 @@ describe('resolveDirectLocalUrl', () => {
     });
   });
 
-  it('offers nothing when the internal IP is listen-all or unset', () => {
-    // A listen-all/unset IP would collapse to 127.0.0.1, which as a route to
-    // CLICK points a non-loopback browser at its own machine — the same dead
-    // button buildHubLocalOrigin refuses to produce for the Hub origin.
+  it('offers nothing when the internal IP is listen-all, unset, or loopback', () => {
+    // Any address that resolveBrowserHost maps to loopback yields no LAN URL: as a
+    // route to CLICK, http://127.0.0.1 points a non-loopback browser at its own
+    // machine — the same dead button buildHubLocalOrigin refuses to produce. This
+    // now also covers a genuine INTERNAL_IP of 127.0.0.1 / ::1, which the previous
+    // explicit-string guard let through.
     expect(makeService('0.0.0.0').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
     expect(makeService('::').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
     expect(makeService('').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
+    expect(makeService('127.0.0.1').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
+    expect(makeService('::1').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
   });
 });

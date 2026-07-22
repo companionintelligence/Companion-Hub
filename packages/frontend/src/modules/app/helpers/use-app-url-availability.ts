@@ -354,8 +354,11 @@ export function useAppUrlAvailability(input: {
   }, [query.error, appUrn]);
 
   const reset = useCallback(() => {
-    // Drop the cached verdict as well as the local latches, so `hasVerdict`
-    // falls back to false and the UI returns to a neutral "checking".
+    // Drop the cached verdict and re-arm the probe, so `hasVerdict` falls back to
+    // false and the UI returns to a neutral "checking". The last-known-URL latches
+    // are deliberately NOT cleared: reset() only fires for the same app (Resolve),
+    // so keeping them preserves the "Open anyway" / local-network escape hatch
+    // while the fresh probe runs. They clear only when appUrn changes.
     void queryClient.resetQueries({ queryKey: queryOptions.queryKey });
     setRunId((current) => current + 1);
   }, [queryClient, queryOptions.queryKey]);

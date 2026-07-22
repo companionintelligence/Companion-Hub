@@ -628,10 +628,16 @@ export class AppHelpers {
       // tunnel is down, or on an appliance that was never registered. Without the
       // LAN entry here, ci-memory rejects the callback and the local fallback
       // cannot work at all (CI-Engineering#75, Problem 4a).
+      // A loopback local origin is dropped: on a listen-all INTERNAL_IP,
+      // buildHubLocalOrigin collapses to `http://127.0.0.1`, and 127.0.0.1 inside
+      // the ci-memory container resolves to ci-memory itself, not the Hub — so it
+      // can never match a real callback and only bloats the allowlist. The LAN
+      // callback leg genuinely cannot work for a listen-all appliance (its real
+      // LAN IP is unknown), so there is nothing to preserve.
       const hubOrigins = [
         buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain }),
         buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port }),
-      ].filter((origin): origin is string => Boolean(origin));
+      ].filter((origin): origin is string => origin != null && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|\[::1\])(:|$)/.test(origin));
 
       if (hubOrigins.length > 0) {
         envMap.set('CI_HUB_ORIGINS', hubOrigins.join(','));

@@ -73,25 +73,39 @@ function currentPageCanReachLan(): boolean {
     .replace(/^\[|\]$/g, '');
   if (!host) return true;
 
+  // Named local hosts.
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (['.local', '.lan', '.internal', '.home', '.localdomain'].some((suffix) => host.endsWith(suffix))) return true;
 
-  // Private IPv4 (loopback / RFC1918 / link-local / CGNAT) and IPv6 (loopback /
-  // ULA / link-local) literals — the ranges a LAN browser is actually served from.
-  if (
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
-  ) {
-    return true;
+  // CRITICAL: the private-range checks below must ONLY apply to real IP literals.
+  // Applying them to any hostname (e.g. `/^192\.168\./` or `startsWith('fc')`)
+  // misclassifies public FQDNs like `192.168.cdn.example.com`, `fcbank.com` or
+  // `fd-cdn.example.com` as LAN-reachable, which re-shows the dead "Open on local
+  // network" button to a remote browser — the exact failure this gate removes.
+  // Kept deliberately in step with the backend's isPrivateHostname (hub-origin.ts):
+  // detect the literal first, then classify. See CI-Engineering#75.
+  const isIpv4Literal = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) && host.split('.').every((octet) => Number(octet) <= 255);
+  const isIpv6Literal = host.includes(':') && /^[0-9a-f:]+$/.test(host);
+
+  if (isIpv4Literal) {
+    // loopback / RFC1918 / link-local / CGNAT (100.64.0.0/10).
+    return (
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+    );
   }
-  if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
 
-  // A public FQDN or public IP: a LAN address is unreachable from here.
-  return false;
+  if (isIpv6Literal) {
+    // loopback / ULA (fc00::/7) / link-local (fe80::/10) — matching the backend's
+    // stricter regexes rather than a bare startsWith.
+    return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+  }
+
+  // A non-literal hostname: only the conventional private LAN suffixes qualify.
+  return ['.local', '.lan', '.internal', '.home', '.localdomain'].some((suffix) => host.endsWith(suffix));
 }
 
 interface IProps {

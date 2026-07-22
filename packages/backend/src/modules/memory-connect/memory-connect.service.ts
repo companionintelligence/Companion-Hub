@@ -515,11 +515,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Wrapper-facing status: current state + the launcher URL to start connecting.
-   * `connectUrl` is null unless CI Memory is actually running — otherwise a
+   * Wrapper-facing status: current state + the launcher URLs to start connecting.
+   * The launchers are null unless CI Memory is actually running — otherwise a
    * wrapper would render a connect gate that dead-ends on startConnect's "not
-   * installed" / "not reachable yet" 400. `getProviderRuntimeStatus` here is the
-   * lightweight DB-only check, run in parallel with the other lookups.
+   * installed" / "not reachable yet" 400. `getProviderRuntimeInfo` here is the
+   * lightweight DB-only check (status + local-only), run in parallel with the
+   * state lookup.
    */
   async getStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectStatus> {
     const [state, providerInfo] = await Promise.all([
