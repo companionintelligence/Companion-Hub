@@ -32,6 +32,7 @@ type PortalCatalogApp = {
   available?: boolean;
   cihub_app_version?: number;
   tipi_version?: number;
+  min_hub_version?: number | null;
   exposable?: boolean;
   dynamic_config?: boolean;
   form_fields?: unknown[];
@@ -50,6 +51,15 @@ export type PortalCatalogEntry = {
   deprecated: boolean;
   supported_architectures?: string[];
   available: boolean;
+  cihub_app_version: number;
+  version: string;
+  min_hub_version?: number | null;
+};
+
+export type PortalCatalogUpdateInfo = {
+  latestVersion: number;
+  latestDockerVersion: string;
+  minHubVersion: number | null;
 };
 
 @Injectable()
@@ -57,6 +67,7 @@ export class PortalCatalogService {
   private cache: PortalCatalogEntry[] | null = null;
   private cacheUpdatedAt = 0;
   private readonly cacheTtlMs = 1000 * 60 * 15;
+  private inflightFetch: Promise<PortalCatalogEntry[]> | null = null;
 
   constructor(
     private readonly portalClient: PortalClientService,
@@ -91,6 +102,10 @@ export class PortalCatalogService {
       deprecated: Boolean(app.deprecated),
       supported_architectures: app.supported_architectures,
       available: app.available !== false,
+      cihub_app_version:
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+      version: typeof app.version === 'string' ? app.version : '0.0.1',
+      min_hub_version: typeof app.min_hub_version === 'number' ? app.min_hub_version : null,
     };
   }
 
@@ -108,18 +123,30 @@ export class PortalCatalogService {
       return this.cache;
     }
 
-    try {
-      const raw = await this.portalClient.fetchStoreCatalog();
-      const list = Array.isArray(raw) ? raw : [];
-      const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-      this.cache = this.filterForArchitecture(mapped);
-      this.cacheUpdatedAt = Date.now();
-      return this.cache;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Portal catalog fetch failed: ${message}`);
-      return this.cache ?? [];
+    // Dedupe concurrent callers into a single Portal round-trip so hot paths
+    // (e.g. per-app fan-outs) never trigger a thundering herd of fetches.
+    if (this.inflightFetch) {
+      return this.inflightFetch;
     }
+
+    this.inflightFetch = (async () => {
+      try {
+        const raw = await this.portalClient.fetchStoreCatalog();
+        const list = Array.isArray(raw) ? raw : [];
+        const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
+        this.cache = this.filterForArchitecture(mapped);
+        this.cacheUpdatedAt = Date.now();
+        return this.cache;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Portal catalog fetch failed: ${message}`);
+        return this.cache ?? [];
+      } finally {
+        this.inflightFetch = null;
+      }
+    })();
+
+    return this.inflightFetch;
   }
 
   async searchCatalog(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
@@ -170,6 +197,32 @@ export class PortalCatalogService {
   isCiMarketplaceUrn(appUrn: AppUrn): boolean {
     const { appStoreId } = extractAppUrn(appUrn);
     return appStoreId === CI_MARKETPLACE_STORE_SLUG;
+  }
+
+  /**
+   * Resolve latest published version metadata from the Portal catalog cache.
+   *
+   * Non-blocking by design: this runs on hot paths (installed-apps list and
+   * dashboard fan out to it per app), so it only reads already-cached catalog
+   * data and triggers a background refresh when the cache is stale. Callers
+   * fall back to local store metadata when the cache is cold.
+   */
+  getUpdateInfoForUrn(appUrn: AppUrn): PortalCatalogUpdateInfo | null {
+    if (!this.isCiMarketplaceUrn(appUrn)) return null;
+
+    if (!this.cache || Date.now() - this.cacheUpdatedAt >= this.cacheTtlMs) {
+      void this.warmCacheInBackground();
+    }
+
+    const { appName } = extractAppUrn(appUrn);
+    const app = this.cache?.find((entry) => entry.id === appName);
+    if (!app) return null;
+
+    return {
+      latestVersion: app.cihub_app_version,
+      latestDockerVersion: app.version,
+      minHubVersion: app.min_hub_version ?? null,
+    };
   }
 
   private mapPortalCategories(app: PortalCatalogApp): string[] {

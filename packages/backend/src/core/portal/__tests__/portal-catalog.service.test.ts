@@ -121,4 +121,49 @@ describe('PortalCatalogService', () => {
       ],
     });
   });
+
+  it('returns update info from the warmed portal catalog cache', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'ci-memory',
+        name: 'CI Memory',
+        short_desc: 'Private memory server',
+        categories: ['ai'],
+        version: '2026.7.17.1',
+        cihub_app_version: 42,
+      },
+    ] as any);
+
+    await service.getCatalogEntries(true);
+
+    expect(service.getUpdateInfoForUrn('ci-memory:ci-marketplace' as any)).toEqual({
+      latestVersion: 42,
+      latestDockerVersion: '2026.7.17.1',
+      minHubVersion: null,
+    });
+  });
+
+  it('returns null update info on a cold cache without blocking on the network', () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+
+    // Must return synchronously (null) while the background warm is still pending.
+    expect(service.getUpdateInfoForUrn('ci-memory:ci-marketplace' as any)).toBeNull();
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+    resolveFetch([]);
+  });
+
+  it('dedupes concurrent catalog fetches into a single portal request', async () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+
+    const first = service.getCatalogEntries(true);
+    const second = service.getCatalogEntries(true);
+    resolveFetch([{ slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] }]);
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+  });
 });

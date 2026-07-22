@@ -58,10 +58,14 @@ describe('AppStoreService', () => {
     vi.restoreAllMocks();
   });
 
-  it('should pull repositories', async () => {
-    appStoreRepository.getEnabledAppStores.mockResolvedValue([{ id: 1, name: 'Main', url: 'http://test', slug: 'main', enabled: true } as any]);
+  it('should pull repositories including ci_cloud_api stores', async () => {
+    appStoreRepository.getEnabledAppStores.mockResolvedValue([
+      { id: 1, name: 'Main', url: 'http://test', slug: 'main', enabled: true, type: 'git' } as any,
+      { id: 2, name: 'CI Marketplace', url: 'http://portal/api', slug: 'ci-marketplace', enabled: true, type: 'ci_cloud_api' } as any,
+    ]);
     await service.pullRepositories();
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
+    expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'ci_cloud_api');
     expect(marketplaceService.invalidateCache).toHaveBeenCalled();
   });
 
@@ -93,14 +97,18 @@ describe('AppStoreService', () => {
     await expect(service.deleteAppStore('only-one')).rejects.toThrow('APP_STORE_DELETE_ERROR_LAST_STORE');
   });
 
-  it('should handle update_all queue event', async () => {
+  it('should handle update_all queue event for all enabled stores', async () => {
     const reply = vi.fn();
-    appStoreRepository.getEnabledAppStores.mockResolvedValue([{ id: 1, url: 'http://test', slug: 'main', enabled: true, type: 'git' } as any]);
+    appStoreRepository.getEnabledAppStores.mockResolvedValue([
+      { id: 1, url: 'http://test', slug: 'main', enabled: true, type: 'git' } as any,
+      { id: 2, url: 'http://portal/api', slug: 'ci-marketplace', enabled: true, type: 'ci_cloud_api' } as any,
+    ]);
     repoHelpers.pullRepo.mockResolvedValue({ success: true, message: '' });
 
     await capturedQueueCallback({ command: 'update_all' }, reply);
 
-    expect(repoHelpers.pullRepo).toHaveBeenCalled();
+    expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
+    expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'ci_cloud_api');
     expect(marketplaceService.invalidateCache).toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith({ success: true, message: 'All repos updated' });
   });

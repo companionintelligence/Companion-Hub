@@ -1525,6 +1525,27 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp downloads fresh app files for ci_cloud_api stores before queueing (#915)', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(reposHelpers.downloadAppFiles).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'myapp');
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', appUrn }));
+    });
+
+    it('updateApp fails fast when the ci_cloud_api file download fails', async () => {
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: false, message: 'boom' } as any);
+
+      await expect(service.updateApp({ appUrn, performBackup: false })).rejects.toThrow();
+      expect(appEventsQueue.publish).not.toHaveBeenCalledWith(expect.objectContaining({ command: 'update' }));
+    });
+
     // ── exposure sync uses committed state ───────────────────────────────
     it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
