@@ -192,6 +192,30 @@ function isProbeApplicable(input: { status?: AppStatus | null; noGui?: boolean; 
 }
 
 /**
+ * Latch the last non-empty `value`, clearing it whenever `resetKey` changes.
+ *
+ * A ref rather than state on purpose: this must not itself trigger a render. It
+ * only ever supplies a fallback for a value the current render already lacks, so
+ * the render that stores it has nothing new to show.
+ */
+function useLastKnownUrl(value: string | undefined, resetKey: string): string | null {
+  const ref = useRef<string | null>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the reset trigger, not a value the effect reads.
+  useEffect(() => {
+    ref.current = null;
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (value) {
+      ref.current = value;
+    }
+  }, [value]);
+
+  return ref.current;
+}
+
+/**
  * Poll an app's public URL and expose one coherent readiness state.
  *
  * Call this once per page and share the result; it owns the poll cadence, the
@@ -293,34 +317,14 @@ export function useAppUrlAvailability(input: {
     };
   }, [appUrn, enabled, runId, routeAvailable, queryClient, queryOptions.queryKey]);
 
-  // Remember the last URL the backend resolved. Some verdicts carry no URL at
-  // all (a momentary registration or Tailscale blip), and letting the "Open
-  // anyway" link vanish under the user's cursor would remove their only way into
-  // an app that may well be serving. Reset per app, so one app's URL can never
-  // be offered for another.
-  const lastKnownAppUrlRef = useRef<string | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is the reset trigger, not a value the effect reads.
-  useEffect(() => {
-    lastKnownAppUrlRef.current = null;
-  }, [appUrn]);
-  useEffect(() => {
-    if (probe?.appUrl) {
-      lastKnownAppUrlRef.current = probe.appUrl;
-    }
-  }, [probe?.appUrl]);
-
-  // Same latch for the LAN address: a verdict that arrives without it must not
-  // make the local-network escape hatch flicker out from under the user.
-  const lastKnownLocalUrlRef = useRef<string | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is the reset trigger, not a value the effect reads.
-  useEffect(() => {
-    lastKnownLocalUrlRef.current = null;
-  }, [appUrn]);
-  useEffect(() => {
-    if (probe?.localUrl) {
-      lastKnownLocalUrlRef.current = probe.localUrl;
-    }
-  }, [probe?.localUrl]);
+  // Remember the last URL the backend resolved, and the last LAN address. Some
+  // verdicts carry no URL at all (a momentary registration or Tailscale blip),
+  // and letting the "Open anyway" link — or the local-network escape hatch —
+  // vanish under the user's cursor would remove their only way into an app that
+  // may well be serving. Both reset per app, so one app's URL can never be
+  // offered for another.
+  const lastKnownAppUrl = useLastKnownUrl(probe?.appUrl, appUrn);
+  const lastKnownLocalUrl = useLastKnownUrl(probe?.localUrl, appUrn);
 
   // A failed request is "no verdict", not "unavailable": the app may well be up
   // and the Hub call is what broke. Keep the UI neutral and let the next tick
@@ -411,8 +415,8 @@ export function useAppUrlAvailability(input: {
 
   return {
     state,
-    appUrl: probe?.appUrl ?? lastKnownAppUrlRef.current,
-    localUrl: probe?.localUrl ?? lastKnownLocalUrlRef.current,
+    appUrl: probe?.appUrl ?? lastKnownAppUrl,
+    localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,

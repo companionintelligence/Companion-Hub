@@ -588,7 +588,16 @@ export class AppsService {
           // this app's. Drop the cached tunnel verdict so the connect surfaces
           // re-evaluate immediately instead of serving up to a minute of stale
           // pessimism and needlessly offering the LAN fallback.
-          this.moduleRef.get(TunnelHealthService, { strict: false })?.invalidate();
+          //
+          // Guarded: ModuleRef.get THROWS when a provider cannot be resolved (it
+          // does not return undefined), and this is a best-effort cache hint — an
+          // unresolvable TunnelHealthService must not abort the repair actions
+          // that follow, nor turn a successful re-sync into an error verdict.
+          try {
+            this.moduleRef.get(TunnelHealthService, { strict: false }).invalidate();
+          } catch (e) {
+            this.logger.debug(`Could not invalidate the tunnel health cache after re-sync: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
 

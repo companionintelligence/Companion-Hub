@@ -96,6 +96,14 @@ export class TunnelHealthService {
   private reading: HealthReading | null = null;
   /** In-flight refresh, so concurrent callers trigger at most one probe. */
   private inFlight: Promise<void> | null = null;
+  /**
+   * Bumped by {@link invalidate}. A refresh that started before the bump is
+   * describing the world as it was BEFORE the repair that triggered it, so its
+   * result is dropped rather than written back — otherwise an in-flight probe
+   * lands a stale `down` immediately after the cache was cleared, which is the
+   * exact staleness `invalidate` was called to prevent.
+   */
+  private generation = 0;
 
   constructor(
     private readonly cloudflareClient: CloudflareClientService,
@@ -130,9 +138,10 @@ export class TunnelHealthService {
   /**
    * Probe now and return the fresh reading, bypassing the cache.
    *
-   * For callers that are already off the hot path and want certainty — the
-   * app-detail status poll, and tests. Everything on a request path should use
-   * {@link getHealth}.
+   * Nothing on a request path may use this — every such caller wants
+   * {@link getHealth}, which never blocks. It exists for callers that are already
+   * off the hot path and want certainty, and it is the seam the unit tests drive
+   * the layered check through.
    */
   async getHealthNow(): Promise<TunnelHealth> {
     await this.refresh();
@@ -144,9 +153,12 @@ export class TunnelHealthService {
    * Drop the cached reading. Called after a tunnel repair (DNS re-sync,
    * cloudflared restart) so the next read reflects the change immediately
    * instead of serving up to {@link CACHE_TTL_MS} of stale pessimism.
+   *
+   * Also invalidates any refresh already in flight — see {@link generation}.
    */
   invalidate(): void {
     this.reading = null;
+    this.generation += 1;
   }
 
   /**
@@ -172,7 +184,17 @@ export class TunnelHealthService {
 
   /** Run the layered check and store the resulting reading. */
   private async refresh(): Promise<void> {
+    const startedAt = this.generation;
     const { health, definite } = await this.evaluate();
+
+    // Someone repaired the tunnel while this probe was in flight, so what it just
+    // measured is already history. Drop it and leave the cache cold; the next
+    // read schedules a probe against the world as it now is.
+    if (startedAt !== this.generation) {
+      this.logger.debug('Discarding a tunnel health reading that was superseded by an invalidate');
+
+      return;
+    }
 
     // Deterministic negatives (no tunnel token, cloudflared not running) are
     // local facts that cannot be flaky, so they take effect immediately. Only the

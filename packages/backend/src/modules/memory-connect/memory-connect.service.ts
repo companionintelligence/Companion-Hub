@@ -812,8 +812,10 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    *     host — a remote browser cannot route to `192.168.x.x`, so handing it that
    *     URL would swap one dead button for another.
    *  4. **The provider must be reachable by the same caller.** A locally-exposed
-   *     ci-memory publishes a private consent origin; an off-network caller
-   *     cannot complete the ceremony no matter which Hub launcher they start from.
+   *     ci-memory publishes a private consent origin, so a caller known to be
+   *     off-network cannot complete the ceremony whichever Hub launcher they
+   *     start from. Only a *confirmed* remote caller is blocked — see
+   *     {@link callerLocality} for why "cannot tell" has to mean "allow".
    *
    * `providerLocalOnly` comes from the provider's `exposureMode` (a DB read), not
    * from an availability probe — so a status poll stays cheap.
@@ -838,12 +840,20 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       );
     }
 
-    // 4. A LAN-only provider is unusable from off-network. Checked before we
-    //    bother resolving launchers: no Hub launcher can rescue this caller,
-    //    because the consent hop itself lands on a private address.
-    const callerIsLocal = this.callerIsOnLocalNetwork(input.origin?.host);
+    // 4. A LAN-only provider is unusable from off-network, so this is checked
+    //    before we bother resolving launchers: no Hub launcher can rescue such a
+    //    caller, because the consent hop itself lands on a private address.
+    //
+    //    Blocks only on a CONFIRMED remote caller. `unknown` must not block — it
+    //    is what a `.<localDomain>` host reports (see `callerLocality`), and that
+    //    is the ordinary way a LAN visitor reaches a locally-exposed app.
+    //    Refusing them here would break the one deployment where a LAN-only
+    //    provider is the normal configuration, in order to protect a remote
+    //    caller whose connect was already impossible either way.
+    const locality = this.callerLocality(input.origin?.host);
+    const callerIsLocal = locality === 'local';
 
-    if (input.providerLocalOnly && !callerIsLocal) {
+    if (input.providerLocalOnly && locality === 'remote') {
       this.logger.warn(
         `[MemoryConnect] ${input.appUrn}: CI Memory is exposed on the local network only; an off-network caller cannot reach its consent page`,
       );
@@ -891,32 +901,36 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Whether the caller that reached us on `callerHost` is genuinely on the
-   * appliance's own network — and can therefore use the LAN launcher.
+   * Where the caller that reached us on `callerHost` sits relative to the
+   * appliance's own network.
    *
-   * This is NOT simply "is the host private", because one private-looking host is
-   * actively misleading: the Cloudflare tunnel rewrites the `Host` header to
-   * `<app-fqdn>.<localDomain>` (`…​.ci.lan`) before handing the request to Traefik
-   * — see `buildOriginServerName` — so a REMOTE visitor arrives at the app, and
-   * therefore at this endpoint, carrying a `.ci.lan` host. Trusting that suffix
-   * would hand a remote browser a `http://192.168.x.x` launcher it cannot route
-   * to: precisely the dead link this whole change set exists to remove.
+   * Three answers, not two, because the two decisions that depend on this fail in
+   * opposite directions and a boolean would force one of them to be wrong:
    *
-   * So a host under the configured `localDomain` is treated as UNKNOWN rather
-   * than local. The asymmetry is deliberate — a genuinely-local visitor who
-   * reached the app through that name merely loses a fallback (they still get the
-   * public launcher whenever it works), whereas a remote visitor wrongly given
-   * the LAN launcher gets a link that cannot work at all.
+   *  - `local`   — offer the LAN launcher.
+   *  - `remote`  — a LAN-only ci-memory is genuinely unusable; block.
+   *  - `unknown` — withhold the LAN launcher (it may not route) but do NOT block
+   *                (it may well work).
+   *
+   * `unknown` is not a hedge; it is the honest answer for one specific host. The
+   * Cloudflare tunnel rewrites the `Host` header to `<app-fqdn>.<localDomain>`
+   * (`…​.ci.lan`) before handing the request to Traefik — see
+   * `buildOriginServerName` — so a REMOTE visitor arrives carrying a `.ci.lan`
+   * host. But so does a LAN visitor who browsed to the app's local subdomain
+   * directly. The header genuinely cannot distinguish them, and guessing either
+   * way strands somebody: called `local`, a remote browser gets a
+   * `http://192.168.x.x` launcher it cannot route to; called `remote`, a LAN user
+   * of a LAN-only ci-memory is refused a connect that would have worked.
    *
    * Private IP literals and loopback remain trustworthy: nothing rewrites a Host
    * into those, so they only appear when the browser really did address the
    * appliance directly.
    */
-  private callerIsOnLocalNetwork(callerHost: string | undefined): boolean {
+  private callerLocality(callerHost: string | undefined): 'local' | 'remote' | 'unknown' {
     const hostname = this.hostnameOf(callerHost);
 
     if (!hostname) {
-      return false;
+      return 'unknown';
     }
 
     // Read the override first, then the base value — the same precedence
@@ -927,17 +941,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const candidate = hostname.toLowerCase();
 
     if (localDomain && (candidate === localDomain || candidate.endsWith(`.${localDomain}`))) {
-      return false;
+      return 'unknown';
     }
 
-    return isPrivateHostname(hostname);
+    return isPrivateHostname(hostname) ? 'local' : 'remote';
   }
 
   /**
    * Whether `localOrigin` is actually routable by a caller that reached us on
    * `callerHost`.
    *
-   * Guards one specific trap: with `INTERNAL_IP` unset or listen-all,
+   * Guards one specific trap: with a listen-all `INTERNAL_IP` (`0.0.0.0` / `::`),
    * {@link buildHubLocalOrigin} collapses to `http://127.0.0.1`. Handing that to a
    * visitor who reached the appliance at `192.168.1.9` points them at their OWN
    * machine — swapping one dead link for another, which is precisely the failure
@@ -960,6 +974,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Hostname of a `Host` header or an absolute URL, without the port. Returns
    * null for anything unparseable, which every caller treats as "not private" —
    * failing toward withholding the LAN launcher rather than offering it blindly.
+   *
+   * IPv6 literals come back bare (`::1`), not in the bracketed form `URL.hostname`
+   * reports (`[::1]`). Without that normalisation an IPv6 loopback origin — which
+   * {@link buildHubLocalOrigin} does produce, via `resolveBrowserHost`'s bracketing
+   * — never matches the loopback comparisons in {@link localOriginReachableBy},
+   * silently defeating the very guard that method exists to provide.
    */
   private hostnameOf(hostOrUrl: string | null | undefined): string | null {
     const value = hostOrUrl?.trim();
@@ -970,7 +990,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     try {
       // A bare `Host` header has no scheme; give it one so URL can parse it.
-      return new URL(value.includes('://') ? value : `http://${value}`).hostname;
+      const hostname = new URL(value.includes('://') ? value : `http://${value}`).hostname;
+
+      return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
     } catch {
       return null;
     }

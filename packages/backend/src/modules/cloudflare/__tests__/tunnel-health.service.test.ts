@@ -193,4 +193,26 @@ describe('TunnelHealthService.invalidate', () => {
 
     expect(service.getHealth()).toBe('unknown');
   });
+
+  it('discards a probe that was already in flight when the cache was invalidated', async () => {
+    // The realistic ordering: a probe starts, the tunnel is repaired and
+    // invalidate() fires, then the pre-repair probe lands. Writing that reading
+    // back would re-poison the cache with `down` for a full TTL — precisely the
+    // staleness invalidate() was called to prevent.
+    const { service } = makeService();
+    let landProbe: (value: unknown) => void = () => {};
+    axiosGet.mockReturnValueOnce(
+      new Promise((resolve) => {
+        landProbe = resolve;
+      }),
+    );
+
+    const inFlight = service.getHealthNow();
+
+    service.invalidate();
+    landProbe({ status: 530, data: '' });
+    await inFlight;
+
+    expect(service.getHealth()).toBe('unknown');
+  });
 });

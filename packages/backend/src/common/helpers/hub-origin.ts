@@ -68,17 +68,23 @@ export function buildHubPublicOrigin(input: { hubSubdomain?: string | null; doma
  * matches what a browser reports for `http://192.168.1.5/` — an origin string
  * with a redundant `:80` would fail every `URL.origin` comparison it is used in.
  *
- * The host goes through {@link resolveBrowserHost}, so a listen-all `INTERNAL_IP`
- * (`0.0.0.0` / `::`) collapses to loopback rather than producing an address no
- * browser can connect to.
+ * An UNSET `internalIp` yields null rather than loopback. `resolveBrowserHost`
+ * would happily return `127.0.0.1`, but "the appliance never told us its LAN
+ * address" is not the same claim as "the appliance is at loopback": publishing
+ * the latter would put a meaningless `http://127.0.0.1` into every app's
+ * `CI_HUB_ORIGINS` allowlist and offer it as a launcher to browsers that are not
+ * on this machine.
+ *
+ * A listen-all `INTERNAL_IP` (`0.0.0.0` / `::`) DOES collapse to loopback via
+ * {@link resolveBrowserHost} — there the appliance did answer, just with an
+ * address no browser can dial. Callers gate that case on the caller's own host.
  */
 export function buildHubLocalOrigin(input: { internalIp?: string | null; port?: number | null }): string | null {
-  const host = resolveBrowserHost(input.internalIp);
-
-  if (!host) {
+  if (!input.internalIp?.trim()) {
     return null;
   }
 
+  const host = resolveBrowserHost(input.internalIp);
   const port = input.port ?? 80;
 
   return port === 80 ? `http://${host}` : `http://${host}:${port}`;

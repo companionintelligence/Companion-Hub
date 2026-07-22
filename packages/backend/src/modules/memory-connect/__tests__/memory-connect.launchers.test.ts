@@ -177,10 +177,26 @@ describe('caller locality — the tunnel rewrites Host to the local domain', () 
     expect(status.connectUrlLocal).toBeNull();
   });
 
-  it('blocks a local-domain caller from a LAN-only ci-memory', async () => {
+  it('does NOT block a local-domain caller from a LAN-only ci-memory', async () => {
+    // The mirror image of the two cases above, and the reason locality is
+    // tri-state. `.ci.lan` means "cannot tell", and the two decisions keyed off
+    // it fail in opposite directions: withholding the LAN launcher costs a remote
+    // visitor nothing, but blocking here would refuse the connect to every LAN
+    // user of a local-only appliance — the one deployment where a LAN-only
+    // ci-memory is the normal configuration.
     const { service } = makeService({ providerLocalOnly: true });
 
     const status = await service.getStatus(APP, { host: TUNNELLED_HOST });
+
+    expect(status.connectable).toBe(true);
+    expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
+    expect(status.reason).toBeNull();
+  });
+
+  it('still blocks a CONFIRMED remote caller from a LAN-only ci-memory', async () => {
+    const { service } = makeService({ providerLocalOnly: true });
+
+    const status = await service.getStatus(APP, { host: 'hub-core2-acme.companionintelligence.com' });
 
     expect(status.connectable).toBe(false);
     expect(status.reason).toBe('provider_local_only');
@@ -217,6 +233,17 @@ describe('launcher selection — loopback guard', () => {
 
     expect(status.connectUrlLocal).toBe('http://127.0.0.1/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace');
     expect(status.connectable).toBe(true);
+  });
+
+  it('catches an IPv6 loopback origin too, which URL.hostname reports bracketed', async () => {
+    // `new URL('http://[::1]').hostname` is '[::1]', never '::1'. Comparing the
+    // raw value silently defeats this guard for every IPv6 appliance.
+    const { service } = makeService({ tunnelHealth: 'down', internalIp: '::1' });
+
+    const status = await service.getStatus(APP, { host: LAN_HOST });
+
+    expect(status.connectUrlLocal).toBeNull();
+    expect(status.connectable).toBe(false);
   });
 });
 

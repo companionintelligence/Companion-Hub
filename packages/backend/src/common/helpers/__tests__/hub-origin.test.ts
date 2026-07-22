@@ -41,9 +41,19 @@ describe('buildHubLocalOrigin', () => {
   });
 
   it('collapses a listen-all internal IP to loopback', () => {
-    // 0.0.0.0 is not connectable from a browser.
+    // 0.0.0.0 is not connectable from a browser, but the appliance DID report an
+    // address — callers gate this on the caller's own host.
     expect(buildHubLocalOrigin({ internalIp: '0.0.0.0', port: 8080 })).toBe('http://127.0.0.1:8080');
-    expect(buildHubLocalOrigin({ internalIp: undefined, port: 8080 })).toBe('http://127.0.0.1:8080');
+    expect(buildHubLocalOrigin({ internalIp: '::', port: 8080 })).toBe('http://127.0.0.1:8080');
+  });
+
+  it('yields nothing at all when no internal IP is configured', () => {
+    // NOT loopback: "we were never told the LAN address" is a different claim
+    // from "the Hub is at 127.0.0.1". Publishing the latter would put a
+    // meaningless origin into every app's CI_HUB_ORIGINS allowlist and offer it
+    // as a launcher to browsers that are not on this machine.
+    expect(buildHubLocalOrigin({ internalIp: undefined, port: 8080 })).toBeNull();
+    expect(buildHubLocalOrigin({ internalIp: '   ', port: 8080 })).toBeNull();
   });
 
   it('brackets an IPv6 literal', () => {
