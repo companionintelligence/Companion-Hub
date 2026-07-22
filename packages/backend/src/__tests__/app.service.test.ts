@@ -68,6 +68,7 @@ describe('AppService', () => {
     cacheService.clear.mockReturnValue(undefined);
     cacheService.set.mockReturnValue(undefined);
     appStoreService.registerCloudAppStore.mockResolvedValue(undefined);
+    appStoreService.pullRepositories.mockResolvedValue({ success: true });
     marketplaceService.initialize.mockResolvedValue(undefined);
     appsRepository.getApps.mockResolvedValue([]);
     portManagerService.migrateExistingApp.mockResolvedValue(undefined as never);
@@ -160,6 +161,16 @@ describe('AppService', () => {
 
       await expect(appService.bootstrap()).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
+    });
+
+    it('schedules a background app store catalog sync after marketplace init', async () => {
+      marketplaceService.initialize.mockClear();
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(appStoreService.pullRepositories).toHaveBeenCalled();
+      expect(marketplaceService.initialize).toHaveBeenCalledTimes(2);
     });
   });
 });
