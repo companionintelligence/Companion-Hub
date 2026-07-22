@@ -1571,6 +1571,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    // For CI Marketplace (ci_cloud_api) apps, the periodic catalog sync only carries
+    // metadata (and compose for free apps). Download the full, freshly published app
+    // bundle before updating — mirrors installApp — so the update installs the new
+    // version rather than whatever is in the local repo copy.
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
+    if (store && store.type === 'ci_cloud_api') {
+      const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+      if (!result.success) {
+        const rawMessage = result.message ?? 'COMMON_AN_ERROR_OCCURRED';
+        const messageKey = (Object.hasOwn(messages, rawMessage) ? rawMessage : 'COMMON_AN_ERROR_OCCURRED') as keyof typeof messages;
+        throw new TranslatableError(messageKey, undefined, HttpStatus.BAD_GATEWAY);
+      }
+    }
+
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
 
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
