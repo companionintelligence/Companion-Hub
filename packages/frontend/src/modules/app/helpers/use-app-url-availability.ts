@@ -33,6 +33,8 @@ export type AppUrlProbeStage = 'ready' | 'propagating' | 'error';
 export interface AppUrlProbeResult {
   available: boolean;
   appUrl?: string;
+  /** Direct LAN address, present even on failure verdicts (see the backend's AppAvailabilityResult). */
+  localUrl?: string;
   stage?: AppUrlProbeStage;
   detail?: string;
   errorCode?: string;
@@ -58,6 +60,13 @@ export interface AppUrlAvailability {
    * it would strand a user whose app is in fact serving.
    */
   appUrl: string | null;
+  /**
+   * The app's direct LAN address, when it has one. Independent of `state`: a
+   * Cloudflare-exposed app whose tunnel is down is very often still serving on
+   * the local network, and this is what lets the Open button offer that route
+   * instead of a disabled button next to a working app.
+   */
+  localUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
   /** The backend believes a `resolve` attempt could fix this. */
@@ -101,6 +110,8 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
   CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
+  // Without this the user saw the backend's raw English detail string.
+  TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
   UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 
@@ -298,6 +309,19 @@ export function useAppUrlAvailability(input: {
     }
   }, [probe?.appUrl]);
 
+  // Same latch for the LAN address: a verdict that arrives without it must not
+  // make the local-network escape hatch flicker out from under the user.
+  const lastKnownLocalUrlRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is the reset trigger, not a value the effect reads.
+  useEffect(() => {
+    lastKnownLocalUrlRef.current = null;
+  }, [appUrn]);
+  useEffect(() => {
+    if (probe?.localUrl) {
+      lastKnownLocalUrlRef.current = probe.localUrl;
+    }
+  }, [probe?.localUrl]);
+
   // A failed request is "no verdict", not "unavailable": the app may well be up
   // and the Hub call is what broke. Keep the UI neutral and let the next tick
   // decide — the same fail-soft stance the old inline catch took.
@@ -388,6 +412,7 @@ export function useAppUrlAvailability(input: {
   return {
     state,
     appUrl: probe?.appUrl ?? lastKnownAppUrlRef.current,
+    localUrl: probe?.localUrl ?? lastKnownLocalUrlRef.current,
     statusMessage,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
@@ -407,6 +432,7 @@ export function useAppUrlAvailability(input: {
 export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   state: 'idle',
   appUrl: null,
+  localUrl: null,
   statusMessage: null,
   resolvable: false,
   withinGracePeriod: false,

@@ -18,6 +18,35 @@ const hoisted = vi.hoisted(() => ({
   tauriInvoke: null as null | (() => unknown),
   openPath: vi.fn(),
   openExternal: vi.fn(),
+  // Companion Memory connection state. Defaults to "not a memory consumer", which
+  // is what every non-memory test expects (no button rendered at all).
+  memory: {
+    applicable: false,
+    connected: false,
+    memoryInstalled: false,
+    memoryReady: false,
+    connectable: false,
+    blockedReasonKey: null as string | null,
+    providerStatus: 'absent',
+    connectUrl: null as string | null,
+    connectUrlLocal: null as string | null,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    isDisconnecting: false,
+    isLoading: false,
+  },
+}));
+
+vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
+  useMemoryConnection: () => hoisted.memory,
+  useMemoryProviderForceGate: () => ({
+    requiresForce: false,
+    consumers: [],
+    unableToVerify: false,
+    forceConfirmed: false,
+    setForceConfirmed: vi.fn(),
+    submitDisabled: false,
+  }),
 }));
 
 vi.mock('@/lib/helpers/open-folder', () => ({
@@ -225,6 +254,15 @@ describe('AppActions', () => {
     // into whichever test runs next and makes assertions depend on declaration order.
     hoisted.queryClient.getQueryData.mockReset();
     hoisted.navigate.mockReset();
+    Object.assign(hoisted.memory, {
+      applicable: false,
+      connected: false,
+      memoryInstalled: false,
+      memoryReady: false,
+      connectable: false,
+      blockedReasonKey: null,
+      providerStatus: 'absent',
+    });
   });
 
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
@@ -406,6 +444,51 @@ describe('AppActions', () => {
       expect(screen.getByRole('button', { name: 'APP_ACTION_OPEN_ANYWAY' })).toBeInTheDocument();
     });
 
+    it('offers the local network route as an enabled action when the public one is unreachable', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'unreachable',
+          statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN',
+          appUrl: 'https://app.example.com',
+          localUrl: 'http://192.168.1.9:8080',
+        }),
+      );
+
+      // The point of CI-Engineering#75: a broken tunnel says nothing about the
+      // local network, so this must be a real enabled action rather than the
+      // disabled red button that used to sit next to a perfectly healthy app.
+      const openLocally = screen.getByTestId('action-app_action_open_locally');
+      expect(openLocally).toBeInTheDocument();
+      expect(openLocally).toBeEnabled();
+      // The failure is still reported, so the user knows why the route changed.
+      expect(screen.getByText('APP_ACTION_ERROR_CF_UNKNOWN')).toBeInTheDocument();
+    });
+
+    it('falls back to the disabled error button when there is no local route to offer', () => {
+      renderExposed(
+        makeAvailability({ state: 'unreachable', statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN', appUrl: 'https://app.example.com', localUrl: null }),
+      );
+
+      expect(screen.queryByTestId('action-app_action_open_locally')).not.toBeInTheDocument();
+      expect(screen.getByTestId('action-app_action_open')).toBeDisabled();
+    });
+
+    it('leads with the local route alongside Resolve, since it is the action most likely to work', () => {
+      renderExposed(
+        makeAvailability({
+          state: 'propagating',
+          statusMessage: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+          withinGracePeriod: false,
+          resolvable: true,
+          appUrl: 'https://app.example.com',
+          localUrl: 'http://192.168.1.9:8080',
+        }),
+      );
+
+      expect(screen.getByTestId('action-app_action_open_locally')).toBeEnabled();
+      expect(screen.getByTestId('action-app_action_resolve')).toBeInTheDocument();
+    });
+
     it('offers a plain retry once probing has been given up on', () => {
       renderExposed(makeAvailability({ state: 'unreachable', statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN', resolvable: true, pollingStopped: true }));
 
@@ -447,6 +530,87 @@ describe('AppActions', () => {
 
       await userEvent.click(open);
       expect(hoisted.openExternal).toHaveBeenCalledWith('https://app.example.com');
+    });
+  });
+
+  describe('Companion Memory action', () => {
+    const renderRunning = () =>
+      render(
+        <MemoryRouter>
+          <AppActions app={runningApp} metadata={metadata} info={guiInfo} urlAvailability={idleAvailability} layout="hero" />
+        </MemoryRouter>,
+      );
+
+    it('renders nothing for an app that is not a memory consumer', () => {
+      renderRunning();
+
+      expect(screen.queryByTestId('action-memory_connect_action_connect_memory')).not.toBeInTheDocument();
+    });
+
+    it('offers an enabled Connect when a connect can actually be started', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true });
+
+      renderRunning();
+
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeEnabled();
+    });
+
+    it('keeps Connect visible but disabled — with the REASON — when this browser cannot start one', () => {
+      // The hole CI-Engineering#75 closes: ci-memory is up, so the old code fell
+      // into the enabled branch and rendered a dead button under the generic
+      // "what connecting does" tooltip, explaining the feature but not the block.
+      Object.assign(hoisted.memory, {
+        applicable: true,
+        memoryInstalled: true,
+        memoryReady: true,
+        connectable: false,
+        blockedReasonKey: 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
+      });
+
+      renderRunning();
+
+      const button = screen.getByTestId('action-memory_connect_action_connect_memory');
+      expect(button).toBeDisabled();
+      // The tooltip is anchored on the wrapper span: a disabled button has
+      // `pointer-events: none`, so hover would never reach it.
+      expect(button.closest('[data-tooltip-id="app-actions-tooltip"]')).toHaveAttribute(
+        'data-tooltip-content',
+        'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
+      );
+    });
+
+    it('falls back to the generic description when the backend sends no reason', () => {
+      Object.assign(hoisted.memory, {
+        applicable: true,
+        memoryInstalled: true,
+        memoryReady: true,
+        connectable: false,
+        blockedReasonKey: null,
+      });
+
+      renderRunning();
+
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory').closest('[data-tooltip-id="app-actions-tooltip"]')).toHaveAttribute(
+        'data-tooltip-content',
+        'MEMORY_CONNECT_DESC',
+      );
+    });
+
+    it('shows Disconnect once connected', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: true, connectable: true, connected: true });
+
+      renderRunning();
+
+      expect(screen.getByTestId('action-memory_connect_action_disconnect_memory')).toBeInTheDocument();
+      expect(screen.queryByTestId('action-memory_connect_action_connect_memory')).not.toBeInTheDocument();
+    });
+
+    it('disables the action while CI Memory is still starting', () => {
+      Object.assign(hoisted.memory, { applicable: true, memoryInstalled: true, memoryReady: false, providerStatus: 'starting' });
+
+      renderRunning();
+
+      expect(screen.getByTestId('action-memory_connect_action_connect_memory')).toBeDisabled();
     });
   });
 });

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
+import { buildHubLocalOrigin, buildHubPublicOrigin } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -618,11 +619,22 @@ export class AppHelpers {
         envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
         envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
       }
-      // The Hub's browser-reachable origin (its Traefik/tunnel route,
-      // `<hubSubdomain>.<domain>` — see traefik-config.service.writeHubRoute).
-      // This is the origin ci-memory allowlists as a valid connect return target.
-      if (org?.hubSubdomain && domain && domain !== 'example.com') {
-        envMap.set('CI_HUB_ORIGINS', `https://${org.hubSubdomain}.${domain}`);
+      // The Hub origins ci-memory allowlists as valid connect return targets.
+      //
+      // BOTH of the Hub's browser-reachable origins are listed, comma-separated
+      // (CI-Server splits and normalises the list — see ConnectService
+      // `allowedHubOrigins`). The public tunnel route is the usual one; the LAN
+      // origin is what lets the whole ceremony run on the local network when the
+      // tunnel is down, or on an appliance that was never registered. Without the
+      // LAN entry here, ci-memory rejects the callback and the local fallback
+      // cannot work at all (CI-Engineering#75, Problem 4a).
+      const hubOrigins = [
+        buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain }),
+        buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port }),
+      ].filter((origin): origin is string => Boolean(origin));
+
+      if (hubOrigins.length > 0) {
+        envMap.set('CI_HUB_ORIGINS', hubOrigins.join(','));
       }
     }
 

@@ -54,8 +54,11 @@ export class MemoryConnectController {
     // `next` is validated server-side in startConnect (origin-allowlisted against
     // the Hub + the connecting app), so an attacker can't use it as an open redirect.
     // Bind the flow to the initiating user so the callback must be the same user.
+    // The request origin keeps the whole ceremony on the origin the user arrived
+    // on — a LAN user must not be relocated to the public origin mid-flow, where
+    // their Hub session cookie does not exist.
     try {
-      const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req));
+      const consentUrl = await this.service.startConnect(app as AppUrn, next, this.currentUserId(req), this.requestOrigin(req));
       res.redirect(consentUrl);
     } catch (err) {
       // A connect that can't start (ci-memory not installed / not reachable yet /
@@ -90,9 +93,15 @@ export class MemoryConnectController {
     // The user denied consent on ci-memory (or an upstream error). Nothing was
     // minted; return them to the app they started from (where the interstitial
     // re-appears) rather than dead-ending on the Hub dashboard.
+    //
+    // `error` is CI-Server's own code — `login_required`, `server_error`, or (from
+    // CI-Server#1742) `csrf_failed` when the consent form's token could not be
+    // recovered on a second attempt. It is logged rather than swallowed: the gate
+    // simply reappearing with no trace is exactly the fail-silent behaviour
+    // CI-Engineering#75 set out to remove.
     if (error || !code || !state) {
       this.logger.warn(`[MemoryConnect] callback without a usable code (error=${error ?? 'none'})`);
-      res.redirect(this.service.abandonConnect(state, this.currentUserId(req)));
+      res.redirect(this.service.abandonConnect(state, this.currentUserId(req), error));
 
       return;
     }
@@ -114,16 +123,31 @@ export class MemoryConnectController {
     }
   }
 
+  /**
+   * Wrapper-facing state. `clientHost` is the `Host` the WRAPPER itself was
+   * reached on, forwarded by the app because this request is server-to-server:
+   * it arrives over the internal docker network, so `req.headers.host` here is
+   * `ci-os-hub:5002` and says nothing about where the user's browser is. Without
+   * it the Hub could never tell a LAN visitor from a remote one, and would never
+   * offer the LAN launcher to the callers that need it most.
+   *
+   * Untrusted but harmless: the caller is already authenticated by
+   * {@link ManagedAppKeyGuard}, and the only thing this influences is whether the
+   * response carries the Hub's own LAN address — which an installed app already
+   * holds as `HUB_URL`.
+   */
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Get('apps/:urn/state')
-  async state(@Param('urn') urn: string) {
-    return this.service.getStatus(this.decodeUrn(urn));
+  async state(@Param('urn') urn: string, @Query('clientHost') clientHost: string | undefined, @Req() req: Request) {
+    const origin = clientHost ? { host: clientHost, secure: false } : this.requestOrigin(req);
+
+    return this.service.getStatus(this.decodeUrn(urn), origin);
   }
 
   @UseGuards(AuthGuard)
   @Get('apps/:urn/status')
-  async status(@Param('urn') urn: string) {
-    return this.service.getUiStatus(this.decodeUrn(urn));
+  async status(@Param('urn') urn: string, @Req() req: Request) {
+    return this.service.getUiStatus(this.decodeUrn(urn), this.requestOrigin(req));
   }
 
   @UseGuards(AuthGuard)
@@ -174,6 +198,18 @@ export class MemoryConnectController {
     const id = (req as Request & { user?: { id?: number | string } }).user?.id;
 
     return String(id ?? '');
+  }
+
+  /**
+   * Where this request reached the Hub, so the service can answer "can THIS
+   * caller connect?" and keep the ceremony on one origin.
+   *
+   * Correct for the browser-facing routes (`/start`, `/status`), where the
+   * request really is the user's browser. The wrapper-facing `/state` route does
+   * NOT use this — see its own docstring.
+   */
+  private requestOrigin(req: Request): { host?: string; secure?: boolean } {
+    return { host: req.headers.host, secure: req.secure };
   }
 
   /**

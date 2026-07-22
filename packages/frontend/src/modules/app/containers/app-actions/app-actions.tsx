@@ -351,6 +351,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const {
     state: publicUrlState,
     appUrl,
+    localUrl,
     statusMessage,
     withinGracePeriod,
     pollingStopped,
@@ -403,6 +404,24 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       </button>
     ) : null;
 
+    // A real alternative route, not just an escape hatch. When the public route
+    // is unreachable but the app publishes a LAN port, it is very likely serving
+    // there right now — a broken tunnel says nothing about the local network. So
+    // offer that as an ENABLED primary action instead of the disabled button this
+    // used to show next to a perfectly healthy app (CI-Engineering#75).
+    const openLocallyButton = localUrl ? (
+      <ActionButton
+        IconComponent={ExternalLink}
+        onClick={() => openExternalUrl(localUrl)}
+        title={t('APP_ACTION_OPEN_LOCALLY')}
+        variant="default"
+        size="lg"
+        className="launch-action-button"
+        data-tooltip-id="app-actions-tooltip"
+        data-tooltip-content={t('APP_ACTION_OPEN_LOCALLY_DESC')}
+      />
+    ) : null;
+
     // Available — show enabled Open button
     if (publicUrlState === 'ready') {
       return (
@@ -441,6 +460,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if ((publicUrlState === 'propagating' || publicUrlState === 'unreachable') && (resolvable || pollingStopped)) {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
+          {/* The LAN route leads first when there is one: it is the action most
+              likely to actually work, whereas Resolve only attempts a repair. */}
+          {openLocallyButton}
           {pollingStopped ? (
             <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={restartProbe} />
           ) : (
@@ -466,7 +488,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if (publicUrlState === 'unreachable' || publicUrlState === 'propagating') {
       return (
         <div key="open-error" className="flex flex-col items-start gap-1">
-          <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
+          {/* Prefer the working route over a red disabled button. The failed
+              public route is still reported below, so the user knows the app is
+              only reachable locally rather than silently getting a different URL. */}
+          {openLocallyButton ?? <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />}
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
           {openAnywayLink}
         </div>
@@ -570,20 +595,46 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    if (memory.memoryReady) {
+    if (memory.memoryReady && memory.connectable) {
       return (
         <ActionButton
           key="memory-connect"
           IconComponent={BrainCircuit}
           title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
           onClick={memory.connect}
-          disabled={!memory.connectUrl}
           variant="outline"
           size="lg"
           className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
           data-tooltip-content={t('MEMORY_CONNECT_DESC')}
         />
+      );
+    }
+
+    // ci-memory is up, but this browser cannot start a connect — the Hub's public
+    // origin is down and we're not on its LAN, or ci-memory is LAN-only and we
+    // are not. Keep the affordance visible (this surface blocks nothing) but say
+    // WHY: this branch used to render the enabled button with `disabled` derived
+    // from a null URL and the generic "what connecting does" tooltip, so the user
+    // got a dead control with no explanation. Tooltip anchored on the wrapper
+    // span because a disabled button has `pointer-events: none`.
+    if (memory.memoryReady) {
+      return (
+        <span
+          key="memory-connect-blocked"
+          className="inline-flex"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t(memory.blockedReasonKey ?? 'MEMORY_CONNECT_DESC')}
+        >
+          <ActionButton
+            IconComponent={BrainCircuit}
+            title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
+            disabled
+            variant="outline"
+            size="lg"
+            className="launch-action-button memory-action-button"
+          />
+        </span>
       );
     }
 

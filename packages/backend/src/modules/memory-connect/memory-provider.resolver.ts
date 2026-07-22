@@ -83,12 +83,32 @@ export class MemoryProviderResolver {
    * post-connect redirect destination.
    */
   async getAppPublicUrl(appUrn: AppUrn): Promise<string | undefined> {
-    try {
-      return (await this.appsService.checkAppAvailability(appUrn)).appUrl;
-    } catch (err) {
-      this.logger.warn(`[MemoryConnect] could not resolve public URL for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+    return (await this.getAppAccessUrls(appUrn)).publicUrl;
+  }
 
-      return undefined;
+  /**
+   * Every browser-reachable URL for an installed app: its primary route
+   * (`publicUrl` — the public tunnel address, or the LAN address for a
+   * locally-exposed app) and its direct LAN address (`localUrl`) when one exists.
+   *
+   * Both are needed because the post-connect landing allowlist has to accept the
+   * origin the user actually started on. Allowlisting only the primary route is
+   * what silently relocated a LAN user of a Cloudflare-exposed app onto the public
+   * origin at the end of the flow (CI-Engineering#75, Problem 5).
+   *
+   * Fails soft: an unresolvable app yields empty fields rather than throwing, so a
+   * transient availability failure degrades the allowlist instead of breaking the
+   * connect flow outright.
+   */
+  async getAppAccessUrls(appUrn: AppUrn): Promise<{ publicUrl?: string; localUrl?: string; primaryAvailable?: boolean }> {
+    try {
+      const availability = await this.appsService.checkAppAvailability(appUrn);
+
+      return { publicUrl: availability.appUrl, localUrl: availability.localUrl, primaryAvailable: availability.available };
+    } catch (err) {
+      this.logger.warn(`[MemoryConnect] could not resolve access URLs for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+
+      return {};
     }
   }
 
@@ -144,19 +164,38 @@ export class MemoryProviderResolver {
    * (`<appName>:<appStoreSlug>`).
    */
   async getProviderRuntimeStatus(): Promise<MemoryProviderRuntimeStatus> {
+    return (await this.getProviderRuntimeInfo()).status;
+  }
+
+  /**
+   * {@link getProviderRuntimeStatus} plus whether ci-memory is reachable ONLY on
+   * the local network.
+   *
+   * A locally-exposed provider publishes a consent page at `http://<ip>:<port>`,
+   * so a browser that is not on the appliance's network cannot complete the
+   * ceremony no matter which Hub launcher it starts from. Read from the app row's
+   * `exposureMode` — the same DB-only listing the status check already loads, so
+   * this costs nothing extra and never triggers the heavy availability probe.
+   *
+   * Treats a missing/empty `exposureMode` as local, matching the fallback applied
+   * everywhere else for pre-`exposureMode` installs.
+   */
+  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
     const installed = await this.appsService.getInstalledAppsLite();
 
     const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
 
     if (!row) {
-      return 'absent';
+      return { status: 'absent', localOnly: false };
     }
+
+    const localOnly = (row.exposureMode || 'local') === 'local';
 
     if (row.status === 'running') {
-      return 'ready';
+      return { status: 'ready', localOnly };
     }
 
-    return PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline';
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
   }
 
   /**

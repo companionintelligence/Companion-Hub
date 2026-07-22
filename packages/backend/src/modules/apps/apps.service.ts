@@ -9,6 +9,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildPublicWebIdentity } from '@ci-hub/common/types';
 import axios from 'axios';
@@ -18,9 +20,33 @@ import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { TunnelHealthService } from '../cloudflare/tunnel-health.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 
 type AppList = Awaited<ReturnType<AppsRepository['getApps']>>;
+
+/**
+ * Verdict of an app-availability probe.
+ *
+ * `appUrl` is the app's PRIMARY route — the public tunnel address for an exposed
+ * app, the LAN address for a locally-exposed one — and is what `available`
+ * describes. `localUrl` is the app's direct LAN address when it has one, and is
+ * deliberately independent of the verdict: it is present on failures too, because
+ * a broken tunnel says nothing about whether the app answers on the local network.
+ * Consumers use it as the fallback route when the primary one is unreachable.
+ */
+export interface AppAvailabilityResult {
+  available: boolean;
+  appUrl?: string;
+  /** Direct LAN address, when the app publishes a reachable port. */
+  localUrl?: string;
+  httpStatus?: number;
+  stage?: 'ready' | 'propagating' | 'error';
+  reason?: string;
+  detail?: string;
+  errorCode?: string;
+  resolvable?: boolean;
+}
 
 function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, suffix = ''): string | null {
   const cleanNodeFqdn = nodeFqdn?.trim();
@@ -232,22 +258,76 @@ export class AppsService {
     return { app: app ?? null, info, metadata, allocatedPort, appDataHostPath };
   }
 
-  public async checkAppAvailability(appUrn: AppUrn): Promise<{
-    available: boolean;
-    appUrl?: string;
-    httpStatus?: number;
-    stage?: 'ready' | 'propagating' | 'error';
-    reason?: string;
-    detail?: string;
-    errorCode?: string;
-    resolvable?: boolean;
-  }> {
+  public async checkAppAvailability(appUrn: AppUrn): Promise<AppAvailabilityResult> {
     const { app, info } = await this.getApp(appUrn);
 
     if (!app || app.status !== 'running') {
       return { available: false, stage: 'error' };
     }
 
+    // Resolved once, up front, and merged into whatever the probe concludes —
+    // including its failure verdicts. A Cloudflare-exposed app whose tunnel is
+    // down is very often still reachable on the LAN, and withholding that address
+    // is what left the Open button disabled next to a working app
+    // (CI-Engineering#75). It also widens the post-connect landing allowlist so a
+    // LAN user is not relocated to the public origin.
+    const localUrl = this.resolveDirectLocalUrl(app, info);
+    const result = await this.probeAppAvailability(app, info);
+
+    return localUrl ? { ...result, localUrl } : result;
+  }
+
+  /**
+   * The app's direct LAN address (`http://<internalIp>:<port><url_suffix>`), or
+   * undefined when it has no directly reachable port.
+   *
+   * Deliberately mirrors `hasDirectLocalAccess` in the frontend's
+   * `app-access-points.tsx` rather than the looser test used by
+   * {@link probeAppAvailability} below, because this value is offered to the user
+   * as a route to click. The stricter rule is what keeps two cases from getting a
+   * dead "Open on local network" button:
+   *
+   *  - **Tailscale installs** may skip publishing a host port entirely unless
+   *    `openPort` was requested, so `exposedLocal` alone must not qualify.
+   *  - **Pre-`exposureMode` installs** with a dynamic config bind no fixed host
+   *    port, so they only qualify via `openPort` / `exposedLocal`.
+   *
+   * Offering an address that isn't served would reproduce the exact bug this
+   * whole change set exists to remove, so this errs toward returning nothing.
+   */
+  private resolveDirectLocalUrl(app: App, info: AppInfo): string | undefined {
+    if (!app.port) {
+      return undefined;
+    }
+
+    const mode = app.exposureMode;
+    let hasDirectLocalAccess: boolean;
+
+    if (mode === 'tailscale') {
+      hasDirectLocalAccess = Boolean(app.openPort);
+    } else if (mode === 'cloudflare' || mode === 'local') {
+      // Both bind the app port on the host, so the LAN address stays valid even
+      // when the tunnel in front of it is not.
+      hasDirectLocalAccess = true;
+    } else {
+      hasDirectLocalAccess = Boolean(app.openPort) || Boolean(app.exposedLocal) || !info.dynamic_config;
+    }
+
+    if (!hasDirectLocalAccess) {
+      return undefined;
+    }
+
+    const { userSettings } = this.configurationService.getConfig();
+
+    return `http://${resolveBrowserHost(userSettings.internalIp)}:${app.port}${info.url_suffix || ''}`;
+  }
+
+  /**
+   * Probe the app's primary route and classify the answer. Split out of
+   * {@link checkAppAvailability} so that method has a single exit point at which
+   * the local address can be merged into every verdict.
+   */
+  private async probeAppAvailability(app: App, info: AppInfo): Promise<AppAvailabilityResult> {
     const config = this.configurationService.getConfig();
     const userSettings = config.userSettings;
     const org = await this.registrationService.getDeviceRegistrationInfo();
@@ -503,6 +583,12 @@ export class AppsService {
           // Trigger a full Cloudflare + Tailscale sync
           await lifecycleService.syncExposurePublic();
           actions.push('Re-synced tunnel and DNS configuration with CI-Cloud');
+
+          // The sync may well have repaired the Hub's OWN public route, not just
+          // this app's. Drop the cached tunnel verdict so the connect surfaces
+          // re-evaluate immediately instead of serving up to a minute of stale
+          // pessimism and needlessly offering the LAN fallback.
+          this.moduleRef.get(TunnelHealthService, { strict: false })?.invalidate();
         }
       }
 

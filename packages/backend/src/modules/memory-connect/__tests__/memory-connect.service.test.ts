@@ -12,7 +12,11 @@ function makeService() {
     // Default to a running provider so the existing status/connect expectations
     // exercise the "ready" path; individual tests override for not-ready cases.
     getProviderRuntimeStatus: vi.fn().mockResolvedValue('ready'),
+    // Default: a publicly-exposed provider, so the provider_local_only guard is
+    // inert unless a test opts into it.
+    getProviderRuntimeInfo: vi.fn().mockResolvedValue({ status: 'ready', localOnly: false }),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
+    getAppAccessUrls: vi.fn().mockResolvedValue({ publicUrl: 'https://app.example.org', localUrl: 'http://192.168.1.9:8080' }),
     isConsumerApp: vi.fn().mockResolvedValue(true),
     getAppName: vi.fn().mockResolvedValue('OpenClaw'),
   };
@@ -35,7 +39,9 @@ function makeService() {
   };
   const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn(), recordOutcome: vi.fn() };
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
-  const config = { getConfig: vi.fn().mockReturnValue({ domain: 'example.org' }) };
+  const config = {
+    getConfig: vi.fn().mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '192.168.1.9', port: 80 } }),
+  };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const lifecycle = {
     restartApp: vi.fn().mockResolvedValue({ requestId: 'r-1' }),
@@ -47,6 +53,9 @@ function makeService() {
   // existing expectations exercise the restart path.
   const appsRepository = { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) };
   const moduleRef = { get: vi.fn().mockReturnValue(lifecycle) };
+  // Default to a healthy tunnel so the existing expectations exercise the public
+  // launcher path; the local-fallback cases override this per test.
+  const tunnelHealth = { getHealth: vi.fn().mockReturnValue('up'), getHealthNow: vi.fn().mockResolvedValue('up'), invalidate: vi.fn() };
 
   const service = new MemoryConnectService(
     resolver as never,
@@ -57,10 +66,11 @@ function makeService() {
     config as never,
     logger as never,
     appsRepository as never,
+    tunnelHealth as never,
     moduleRef as never,
   );
 
-  return { service, resolver, exchange, connections, pending, lifecycle, appsRepository, logger };
+  return { service, resolver, exchange, connections, pending, lifecycle, appsRepository, logger, tunnelHealth, deviceRegistration, config };
 }
 
 const PROVIDER = {
@@ -450,6 +460,11 @@ describe('MemoryConnectService side effects', () => {
       providerStatus: 'absent',
       state: 'unconfigured',
       connectUrl: null,
+      connectUrlLocal: null,
+      connectable: false,
+      // A non-consumer app is not "blocked" from connecting — it simply has no
+      // memory integration, so there is nothing to explain.
+      reason: null,
       keyExpiresAt: null,
     });
     expect(resolver.findProvider).not.toHaveBeenCalled();
@@ -457,7 +472,7 @@ describe('MemoryConnectService side effects', () => {
 
   it('getUiStatus reports the provider as installed-but-not-ready and withholds the connect URL while ci-memory is installing', async () => {
     const { service, resolver, connections } = makeService();
-    resolver.getProviderRuntimeStatus.mockResolvedValue('starting');
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'starting', localOnly: false });
     connections.getRow.mockResolvedValue({ state: 'unconfigured', keyExpiresAt: null });
 
     const status = await service.getUiStatus('ci-openclaw:local');
@@ -609,7 +624,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.getProviderRuntimeStatus.mockResolvedValue('ready');
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'ready', localOnly: false });
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -620,7 +635,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus withholds the connectUrl when Companion Memory is not installed (no dead-end gate)', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.getProviderRuntimeStatus.mockResolvedValue('absent');
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'absent', localOnly: false });
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -632,7 +647,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus withholds the connectUrl while Companion Memory is only installing (not reachable yet)', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.getProviderRuntimeStatus.mockResolvedValue('starting');
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'starting', localOnly: false });
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -644,7 +659,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus still returns state (connectUrl null) when the provider lookup fails', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.getProviderRuntimeStatus.mockRejectedValue(new Error('db blip'));
+    resolver.getProviderRuntimeInfo.mockRejectedValue(new Error('db blip'));
 
     const status = await service.getStatus('ci-openclaw:local');
 
