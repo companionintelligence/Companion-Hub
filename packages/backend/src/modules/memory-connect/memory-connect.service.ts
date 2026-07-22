@@ -1035,7 +1035,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // for the same reason — the flow may legitimately be running on either.
     const allowedOrigins = new Set<string>([hubOrigin]);
     const localHubOrigin = this.hubLocalOrigin();
-    if (localHubOrigin) {
+    // Only allowlist the LAN Hub origin when THIS caller could actually route to
+    // it. With a listen-all INTERNAL_IP it collapses to loopback (127.0.0.1 /
+    // [::1]); allowlisting that unconditionally would let an attacker-supplied
+    // `next` bounce any visitor to their own loopback — an open-redirect the same
+    // guard already prevents for the launcher path.
+    if (localHubOrigin && this.localOriginReachableBy(localHubOrigin, origin?.host)) {
       allowedOrigins.add(localHubOrigin);
     }
 

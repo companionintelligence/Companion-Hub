@@ -108,6 +108,33 @@ describe('MemoryConnectService.startConnect', () => {
     expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org', 'user-1');
   });
 
+  it('does not allowlist the loopback Hub origin for a non-loopback caller', async () => {
+    const { service, resolver, pending, config } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    // A listen-all INTERNAL_IP collapses the local Hub origin to loopback.
+    config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+
+    // A LAN visitor supplies a `next` pointing at the Hub's own loopback origin.
+    await service.startConnect('ci-openclaw:local', 'http://127.0.0.1/phish', 'user-1', { host: '192.168.1.9' });
+
+    // 127.0.0.1 is not routable from 192.168.x, so it must NOT be allowlisted —
+    // otherwise `next` becomes a loopback open-redirect. The next is discarded and
+    // the app's own URL is stored instead.
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org', 'user-1');
+  });
+
+  it('allowlists the loopback Hub origin only when the caller is itself on loopback', async () => {
+    const { service, resolver, pending, config } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+
+    // Same loopback `next`, but this caller reached the Hub on loopback too, so the
+    // origin is genuinely routable for them and the return path is honored.
+    await service.startConnect('ci-openclaw:local', 'http://127.0.0.1/finish', 'user-1', { host: '127.0.0.1' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'http://127.0.0.1/finish', 'user-1');
+  });
+
   it('throws when Companion Memory is not installed', async () => {
     const { service, resolver } = makeService();
     resolver.findProvider.mockResolvedValue(null);
