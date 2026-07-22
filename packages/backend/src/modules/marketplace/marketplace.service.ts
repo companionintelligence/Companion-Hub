@@ -293,7 +293,30 @@ export class MarketplaceService {
   public async getAppUpdateInfo(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
-    return store.getAppUpdateInfo(appUrn);
+
+    const localInfo = await store.getAppUpdateInfo(appUrn);
+
+    if (!this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+      return localInfo;
+    }
+
+    const portalInfo = await this.portalCatalog.getUpdateInfoForUrn(appUrn);
+    if (!portalInfo) {
+      return localInfo;
+    }
+
+    const localVersion = Number(localInfo.latestVersion ?? 0);
+    const portalVersion = Number(portalInfo.latestVersion ?? 0);
+    if (portalVersion <= localVersion) {
+      return localInfo;
+    }
+
+    return {
+      ...localInfo,
+      latestVersion: portalInfo.latestVersion,
+      latestDockerVersion: portalInfo.latestDockerVersion,
+      minHubVersion: portalInfo.minHubVersion ?? localInfo.minHubVersion,
+    };
   }
 
   public async copyAppFromRepoToInstalled(appUrn: AppUrn) {

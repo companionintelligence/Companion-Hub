@@ -32,6 +32,7 @@ type PortalCatalogApp = {
   available?: boolean;
   cihub_app_version?: number;
   tipi_version?: number;
+  min_hub_version?: number | null;
   exposable?: boolean;
   dynamic_config?: boolean;
   form_fields?: unknown[];
@@ -50,6 +51,15 @@ export type PortalCatalogEntry = {
   deprecated: boolean;
   supported_architectures?: string[];
   available: boolean;
+  cihub_app_version: number;
+  version: string;
+  min_hub_version?: number | null;
+};
+
+export type PortalCatalogUpdateInfo = {
+  latestVersion: number;
+  latestDockerVersion: string;
+  minHubVersion: number | null;
 };
 
 @Injectable()
@@ -91,6 +101,10 @@ export class PortalCatalogService {
       deprecated: Boolean(app.deprecated),
       supported_architectures: app.supported_architectures,
       available: app.available !== false,
+      cihub_app_version:
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+      version: typeof app.version === 'string' ? app.version : '0.0.1',
+      min_hub_version: typeof app.min_hub_version === 'number' ? app.min_hub_version : null,
     };
   }
 
@@ -170,6 +184,22 @@ export class PortalCatalogService {
   isCiMarketplaceUrn(appUrn: AppUrn): boolean {
     const { appStoreId } = extractAppUrn(appUrn);
     return appStoreId === CI_MARKETPLACE_STORE_SLUG;
+  }
+
+  /** Resolve latest published version metadata from the Portal catalog cache. */
+  async getUpdateInfoForUrn(appUrn: AppUrn): Promise<PortalCatalogUpdateInfo | null> {
+    if (!this.isCiMarketplaceUrn(appUrn)) return null;
+
+    const { appName } = extractAppUrn(appUrn);
+    const entries = await this.getCatalogEntries();
+    const app = entries.find((entry) => entry.id === appName);
+    if (!app) return null;
+
+    return {
+      latestVersion: app.cihub_app_version,
+      latestDockerVersion: app.version,
+      minHubVersion: app.min_hub_version ?? null,
+    };
   }
 
   private mapPortalCategories(app: PortalCatalogApp): string[] {

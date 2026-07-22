@@ -121,4 +121,23 @@ describe('PortalCatalogService', () => {
       ],
     });
   });
+
+  it('returns update info from portal catalog for marketplace apps', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'ci-memory',
+        name: 'CI Memory',
+        short_desc: 'Private memory server',
+        categories: ['ai'],
+        version: '2026.7.17.1',
+        cihub_app_version: 42,
+      },
+    ] as any);
+
+    await expect(service.getUpdateInfoForUrn('ci-memory:ci-marketplace' as any)).resolves.toEqual({
+      latestVersion: 42,
+      latestDockerVersion: '2026.7.17.1',
+      minHubVersion: null,
+    });
+  });
 });
