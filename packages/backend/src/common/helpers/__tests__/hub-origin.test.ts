@@ -74,6 +74,9 @@ describe('isPrivateHostname', () => {
     ['hub.local', true],
     ['core-2.lan', true],
     ['gateway.internal', true],
+    // `.localhost` is loopback by RFC 6761 and the local/E2E gateway suffix, so a
+    // caller there is on-machine and must be offered the LAN launcher.
+    ['hub-core2-acme.ci.localhost', true],
     ['::1', true],
     ['fd00::1', true],
     ['fe80::1', true],

@@ -35,8 +35,14 @@ const UNPROVISIONED_DOMAIN = 'example.com';
  */
 const LOCAL_DEV_DOMAIN = 'ci.localhost';
 
-/** Hostname suffixes that are private by construction (mDNS / split-horizon LAN names). */
-const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdomain'];
+/**
+ * Hostname suffixes that are private by construction (mDNS / split-horizon LAN
+ * names). `.localhost` is reserved to loopback by RFC 6761 and is the platform's
+ * local/E2E gateway suffix (`*.ci.localhost`), so a caller reaching the Hub there
+ * is on the same machine — matching {@link isLoopbackPortalHost}. Omitting it
+ * classified those callers as remote and withheld the LAN launcher in local dev.
+ */
+const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdomain', '.localhost'];
 
 /**
  * The Hub's public origin (`https://<hubSubdomain>.<domain>`), or null when this
