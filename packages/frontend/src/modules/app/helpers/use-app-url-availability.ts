@@ -197,20 +197,24 @@ function isProbeApplicable(input: { status?: AppStatus | null; noGui?: boolean; 
  * A ref rather than state on purpose: this must not itself trigger a render. It
  * only ever supplies a fallback for a value the current render already lacks, so
  * the render that stores it has nothing new to show.
+ *
+ * The reset and the latch both happen DURING render, not in effects. An effect
+ * runs after commit, so on the first render after `resetKey` changes the ref
+ * would still hold the previous key's value — long enough to hand one app's LAN
+ * URL to another app's Open button. Comparing the key inline closes that window.
  */
 function useLastKnownUrl(value: string | undefined, resetKey: string): string | null {
   const ref = useRef<string | null>(null);
+  const keyRef = useRef(resetKey);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the reset trigger, not a value the effect reads.
-  useEffect(() => {
+  if (keyRef.current !== resetKey) {
+    keyRef.current = resetKey;
     ref.current = null;
-  }, [resetKey]);
+  }
 
-  useEffect(() => {
-    if (value) {
-      ref.current = value;
-    }
-  }, [value]);
+  if (value) {
+    ref.current = value;
+  }
 
   return ref.current;
 }

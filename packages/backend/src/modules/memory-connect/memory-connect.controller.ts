@@ -139,7 +139,7 @@ export class MemoryConnectController {
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Get('apps/:urn/state')
   async state(@Param('urn') urn: string, @Query('clientHost') clientHost: string | undefined, @Req() req: Request) {
-    const origin = clientHost ? { host: clientHost, secure: false } : this.requestOrigin(req);
+    const origin = clientHost ? { host: clientHost } : this.requestOrigin(req);
 
     return this.service.getStatus(this.decodeUrn(urn), origin);
   }
@@ -208,8 +208,8 @@ export class MemoryConnectController {
    * request really is the user's browser. The wrapper-facing `/state` route does
    * NOT use this — see its own docstring.
    */
-  private requestOrigin(req: Request): { host?: string; secure?: boolean } {
-    return { host: req.headers.host, secure: req.secure };
+  private requestOrigin(req: Request): { host?: string } {
+    return { host: req.headers.host };
   }
 
   /**

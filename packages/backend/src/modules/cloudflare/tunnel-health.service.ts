@@ -158,11 +158,16 @@ export class TunnelHealthService {
    * cloudflared restart) so the next read reflects the change immediately
    * instead of serving up to {@link CACHE_TTL_MS} of stale pessimism.
    *
-   * Also invalidates any refresh already in flight — see {@link generation}.
+   * Also detaches any refresh already in flight. That probe was measuring the
+   * pre-repair world, so its result is dropped (via {@link generation}) AND its
+   * promise is cleared here — otherwise the next {@link getHealth} would collapse
+   * onto the doomed probe and keep serving `unknown` until it timed out, rather
+   * than starting a fresh probe against the repaired tunnel immediately.
    */
   invalidate(): void {
     this.reading = null;
     this.generation += 1;
+    this.inFlight = null;
   }
 
   /**
@@ -175,13 +180,21 @@ export class TunnelHealthService {
       return this.inFlight;
     }
 
-    this.inFlight = this.refresh()
+    // Capture the promise so the cleanup only clears `inFlight` if it is still
+    // THIS probe. Without the identity check, a probe detached by invalidate()
+    // (which nulls inFlight so a fresh probe can start) would, on landing, null
+    // out the newer probe that replaced it — collapsing the dedup.
+    const refresh = this.refresh()
       .catch((err) => {
         this.logger.warn(`Tunnel health refresh failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
-        this.inFlight = null;
+        if (this.inFlight === refresh) {
+          this.inFlight = null;
+        }
       });
+
+    this.inFlight = refresh;
 
     return this.inFlight;
   }

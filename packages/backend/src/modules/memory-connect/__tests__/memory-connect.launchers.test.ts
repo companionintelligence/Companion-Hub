@@ -247,6 +247,32 @@ describe('launcher selection — loopback guard', () => {
   });
 });
 
+describe('caller Host hardening — the Host is attacker-controlled', () => {
+  it('does not classify a userinfo-spoofed Host as local', async () => {
+    // `new URL('http://evil.com@192.168.1.9').hostname` is 192.168.1.9. Trusting
+    // that would let a remote caller forge a private host, bypass the remote
+    // block, and be handed (or told) the appliance's LAN launcher.
+    const { service } = makeService({ tunnelHealth: 'down' });
+
+    const status = await service.getStatus(APP, { host: 'evil.com@192.168.1.9' });
+
+    expect(status.connectUrlLocal).toBeNull();
+    expect(status.connectable).toBe(false);
+    expect(status.reason).toBe('hub_unreachable');
+  });
+
+  it('does not crash when a repeated query key makes the Host an array', async () => {
+    // Express yields string[] for `?clientHost=a&clientHost=b`; hostnameOf must
+    // reject it rather than throw an uncaught TypeError and 500 the /state poll.
+    const { service } = makeService({ tunnelHealth: 'down' });
+
+    const status = await service.getStatus(APP, { host: ['192.168.1.9', 'evil.com'] as unknown as string });
+
+    expect(status.connectable).toBe(false);
+    expect(status.connectUrlLocal).toBeNull();
+  });
+});
+
 describe('launcher selection — provider reachability (Problem 2)', () => {
   it('blocks a remote caller when ci-memory is exposed on the LAN only', async () => {
     const { service, logger } = makeService({ providerLocalOnly: true });
@@ -369,6 +395,42 @@ describe('post-connect landing allowlist (Problem 5)', () => {
     (service as unknown as { pending: typeof pending }).pending = pending;
 
     await service.startConnect(APP as never, 'https://evil.example.com/phish', 'user-1', { host: LAN_HOST });
+
+    expect(pending.create).toHaveBeenCalledWith(APP, 'https://app.example.org', 'user-1');
+  });
+});
+
+describe('post-connect landing — the LAN fallback is gated on caller locality', () => {
+  const downPrimary = { publicUrl: 'https://app.example.org', localUrl: 'http://192.168.1.9:8080', primaryAvailable: false };
+
+  function withProvider() {
+    const { service, resolver } = makeService();
+    resolver.findProvider.mockResolvedValue({
+      appUrn: 'ci-memory:ci-marketplace',
+      internalUrl: 'http://gateway:8642',
+      publicUrl: 'https://memory.example.org',
+    });
+    resolver.getAppAccessUrls.mockResolvedValue(downPrimary);
+    const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn(), recordOutcome: vi.fn() };
+    (service as unknown as { pending: typeof pending }).pending = pending;
+    return { service, pending };
+  }
+
+  it('lands a LOCAL caller on the app LAN address when the public route is down', async () => {
+    const { service, pending } = withProvider();
+
+    await service.startConnect(APP as never, undefined, 'user-1', { host: LAN_HOST });
+
+    expect(pending.create).toHaveBeenCalledWith(APP, 'http://192.168.1.9:8080', 'user-1');
+  });
+
+  it('lands a REMOTE caller on the public URL even when it is down — the LAN address is dead to them', async () => {
+    // Without the locality gate, a remote desktop user connecting while the app's
+    // DNS is merely propagating would be redirected to an unroutable 192.168.x
+    // address post-connect and stranded.
+    const { service, pending } = withProvider();
+
+    await service.startConnect(APP as never, undefined, 'user-1', { host: PUBLIC_HOST });
 
     expect(pending.create).toHaveBeenCalledWith(APP, 'https://app.example.org', 'user-1');
   });

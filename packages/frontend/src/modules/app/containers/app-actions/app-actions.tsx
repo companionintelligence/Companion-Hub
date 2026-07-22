@@ -52,6 +52,48 @@ import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAut
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
 
+/**
+ * Whether THIS browser can plausibly reach an app's LAN address
+ * (`http://<lan-ip>:<port>`). That address is only routable from the appliance's
+ * own network, and the availability probe reports it caller-independently, so the
+ * one locality signal available on the client is the origin this page was served
+ * from: a page on a private/loopback/local-domain host is on the LAN, one on a
+ * public tunnel origin is not. Desktop and any ambiguous origin err toward `true`
+ * — hiding a working route is worse than showing one a remote user can ignore.
+ */
+function currentPageCanReachLan(): boolean {
+  // A desktop webview origin (tauri://…) says nothing about the network, and the
+  // LAN address is opened through the Hub session handoff regardless.
+  if (getTauriInvoke()) return true;
+  if (typeof window === 'undefined') return true;
+
+  const host = window.location.hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  if (!host) return true;
+
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (['.local', '.lan', '.internal', '.home', '.localdomain'].some((suffix) => host.endsWith(suffix))) return true;
+
+  // Private IPv4 (loopback / RFC1918 / link-local / CGNAT) and IPv6 (loopback /
+  // ULA / link-local) literals — the ranges a LAN browser is actually served from.
+  if (
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+  ) {
+    return true;
+  }
+  if (host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:')) return true;
+
+  // A public FQDN or public IP: a LAN address is unreachable from here.
+  return false;
+}
+
 interface IProps {
   app?: AppDetails | null;
   info: AppInfo;
@@ -409,18 +451,26 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     // there right now — a broken tunnel says nothing about the local network. So
     // offer that as an ENABLED primary action instead of the disabled button this
     // used to show next to a perfectly healthy app (CI-Engineering#75).
-    const openLocallyButton = localUrl ? (
-      <ActionButton
-        IconComponent={ExternalLink}
-        onClick={() => openExternalUrl(localUrl)}
-        title={t('APP_ACTION_OPEN_LOCALLY')}
-        variant="default"
-        size="lg"
-        className="launch-action-button"
-        data-tooltip-id="app-actions-tooltip"
-        data-tooltip-content={t('APP_ACTION_OPEN_LOCALLY_DESC')}
-      />
-    ) : null;
+    //
+    // But `localUrl` is `http://<lan-ip>:<port>`, reachable only from the
+    // appliance's own network. `localUrl` itself is caller-independent (the
+    // backend attaches it to every verdict), so we gate on THIS page's origin: a
+    // dashboard loaded over the public tunnel is a remote browser that cannot
+    // reach a 192.168.x address, and offering it that link would just reinstate
+    // the dead button. Ambiguous origins err toward showing it.
+    const openLocallyButton =
+      localUrl && currentPageCanReachLan() ? (
+        <ActionButton
+          IconComponent={ExternalLink}
+          onClick={() => openExternalUrl(localUrl)}
+          title={t('APP_ACTION_OPEN_LOCALLY')}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t('APP_ACTION_OPEN_LOCALLY_DESC')}
+        />
+      ) : null;
 
     // Available — show enabled Open button
     if (publicUrlState === 'ready') {

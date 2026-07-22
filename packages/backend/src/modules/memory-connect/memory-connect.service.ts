@@ -134,8 +134,6 @@ export interface MemoryConnectStatus extends ConnectLaunchers {
 export interface RequestOriginContext {
   /** Host header of the incoming request (`192.168.1.5:80`, `hub-x.example.com`). */
   host?: string;
-  /** Whether the request arrived over TLS. */
-  secure?: boolean;
 }
 
 /** Richer status for the Hub app-detail UI. */
@@ -343,7 +341,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // Open-redirect guard: only ever land the browser back on the Hub or on the
     // connecting app's own public URL. An attacker-supplied `next` (e.g. a
     // phishing hand-off right after the consent ceremony) falls back to the app.
-    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin);
+    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin, origin);
 
     const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
@@ -982,7 +980,15 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * silently defeating the very guard that method exists to provide.
    */
   private hostnameOf(hostOrUrl: string | null | undefined): string | null {
-    const value = hostOrUrl?.trim();
+    // Untrusted and not always a string: Express hands us `string[]` for a
+    // repeated query key (`?clientHost=a&clientHost=b`). Reject anything but a
+    // single string rather than crashing on `.trim` — an array would otherwise
+    // throw a TypeError here, OUTSIDE the try below, and 500 the whole poll.
+    if (typeof hostOrUrl !== 'string') {
+      return null;
+    }
+
+    const value = hostOrUrl.trim();
 
     if (!value) {
       return null;
@@ -990,7 +996,17 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     try {
       // A bare `Host` header has no scheme; give it one so URL can parse it.
-      const hostname = new URL(value.includes('://') ? value : `http://${value}`).hostname;
+      const url = new URL(value.includes('://') ? value : `http://${value}`);
+
+      // Reject embedded userinfo. `evil.com@192.168.1.9` parses to hostname
+      // 192.168.1.9, so trusting it would let a remote caller forge a private
+      // host — being classified `local`, bypassing the provider_local_only block
+      // and getting handed (or told) the appliance's LAN launcher.
+      if (url.username || url.password) {
+        return null;
+      }
+
+      const hostname = url.hostname;
 
       return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
     } catch {
@@ -1004,7 +1020,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * (or an unparseable value) falls back to the app's public URL, then the Hub.
    * This closes the open-redirect the raw `next` param would otherwise allow.
    */
-  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string): Promise<string> {
+  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, origin?: RequestOriginContext): Promise<string> {
     const appAccessUrls = await this.resolver.getAppAccessUrls(appUrn);
     const appPublicUrl = appAccessUrls.publicUrl;
     // Only the Hub or the connecting app's own origins — NOT the memory
@@ -1048,7 +1064,15 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // primary route, but fall back to its LAN address when that route is not
     // actually serving — landing the user on a known-dead public URL is the same
     // mistake as offering a dead launcher.
-    if (appPublicUrl && appAccessUrls.primaryAvailable !== false) {
+    //
+    // The LAN fallback is only useful to a caller who can reach the LAN. A
+    // confirmed-remote caller is landed on the public URL even when it is
+    // currently down (it may recover; a `http://192.168.x.x` address never will
+    // for them) — otherwise this would strand the very off-network user the
+    // primary-down branch is meant to help.
+    const callerIsRemote = this.callerLocality(origin?.host) === 'remote';
+
+    if (appPublicUrl && (appAccessUrls.primaryAvailable !== false || callerIsRemote)) {
       return appPublicUrl;
     }
 

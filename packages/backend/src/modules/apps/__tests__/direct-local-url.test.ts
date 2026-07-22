@@ -91,9 +91,12 @@ describe('resolveDirectLocalUrl', () => {
     });
   });
 
-  it('collapses a listen-all internal IP to loopback rather than an unconnectable address', () => {
-    const service = makeService('0.0.0.0');
-
-    expect(service.resolveDirectLocalUrl(APP, INFO)).toBe('http://127.0.0.1:8080');
+  it('offers nothing when the internal IP is listen-all or unset', () => {
+    // A listen-all/unset IP would collapse to 127.0.0.1, which as a route to
+    // CLICK points a non-loopback browser at its own machine — the same dead
+    // button buildHubLocalOrigin refuses to produce for the Hub origin.
+    expect(makeService('0.0.0.0').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
+    expect(makeService('::').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
+    expect(makeService('').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
   });
 });

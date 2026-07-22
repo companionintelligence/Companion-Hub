@@ -30,9 +30,6 @@ function makeService(overrides: { tunnelToken?: string | null; domain?: string; 
   return { service, cloudflareClient, deviceRegistration, configService, dockerService };
 }
 
-/** Let the fire-and-forget background refresh settle. */
-const flush = () => new Promise((resolve) => setImmediate(resolve));
-
 beforeEach(() => {
   vi.clearAllMocks();
   axiosGet.mockResolvedValue({ status: 200, data: '<html>hub</html>' });
@@ -46,9 +43,11 @@ describe('TunnelHealthService.getHealth', () => {
     // every consumer app's navigation path and must never wait on a probe.
     expect(service.getHealth()).toBe('unknown');
 
-    await flush();
-
-    expect(service.getHealth()).toBe('up');
+    // Poll rather than a single setImmediate: the background refresh now awaits a
+    // cold `import('../docker/docker.service')` whose module subtree is not
+    // guaranteed to resolve within one macrotask, which would make a single flush
+    // flaky.
+    await vi.waitFor(() => expect(service.getHealth()).toBe('up'));
   });
 
   it('serves the cached verdict on subsequent reads without re-probing', async () => {
@@ -59,6 +58,30 @@ describe('TunnelHealthService.getHealth', () => {
 
     expect(service.getHealth()).toBe('up');
     expect(axiosGet).not.toHaveBeenCalled();
+  });
+
+  it('serves the stale verdict without blocking once past the TTL, then re-probes in the background', async () => {
+    // Fake only Date so the cache can be aged deterministically; real timers keep
+    // the background refresh and vi.waitFor working.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { service } = makeService();
+
+      await service.getHealthNow();
+      axiosGet.mockClear();
+
+      // Within the TTL: served from cache, no re-probe.
+      expect(service.getHealth()).toBe('up');
+      expect(axiosGet).not.toHaveBeenCalled();
+
+      // Past the TTL: the hot read still returns the cached value synchronously
+      // (it must never block /state), but now schedules a background refresh.
+      vi.setSystemTime(Date.now() + 60_001);
+      expect(service.getHealth()).toBe('up');
+      await vi.waitFor(() => expect(axiosGet).toHaveBeenCalled());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

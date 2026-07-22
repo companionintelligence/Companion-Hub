@@ -342,6 +342,30 @@ describe('MemoryConnectService.abandonConnect', () => {
     expect(service.abandonConnect(undefined, 'user-1')).toBe('/');
     expect(service.abandonConnect('gone', 'user-1')).toBe('/');
   });
+
+  it("carries the provider's error code onto the dashboard for an unknown state, so the toast can tell a failure from a decline", () => {
+    // The fail-silent behavior CI-Engineering#75 set out to remove: a
+    // csrf_failed / login_required consent failure must not land on a bare '/'
+    // indistinguishable from a user-initiated decline.
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue({ outcome: 'unknown' });
+
+    expect(service.abandonConnect(undefined, 'user-1', 'csrf_failed')).toBe('/?memoryConnect=csrf_failed');
+  });
+
+  it('logs (does not swallow) a provider error even when the state resolves to an app redirect', () => {
+    const { service, pending, logger } = makeService();
+    pending.consume.mockReturnValue({
+      outcome: 'consumed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: 'https://app.example.org/',
+    });
+
+    expect(service.abandonConnect('state-nonce', 'user-1', 'login_required')).toBe('https://app.example.org/');
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('login_required'));
+  });
 });
 
 describe('MemoryConnectService side effects', () => {

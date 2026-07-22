@@ -171,14 +171,18 @@ export class MemoryProviderResolver {
    * {@link getProviderRuntimeStatus} plus whether ci-memory is reachable ONLY on
    * the local network.
    *
-   * A locally-exposed provider publishes a consent page at `http://<ip>:<port>`,
-   * so a browser that is not on the appliance's network cannot complete the
-   * ceremony no matter which Hub launcher it starts from. Read from the app row's
-   * `exposureMode` — the same DB-only listing the status check already loads, so
-   * this costs nothing extra and never triggers the heavy availability probe.
+   * A provider that is not publicly tunnelled publishes its consent page at an
+   * address a public browser cannot reach — `http://<ip>:<port>` for a
+   * LAN-exposed provider, a tailnet-only MagicDNS name for a Tailscale one — so an
+   * off-network caller cannot complete the ceremony no matter which Hub launcher
+   * it starts from. Read from the app row's `exposureMode` — the same DB-only
+   * listing the status check already loads, so this costs nothing extra and never
+   * triggers the heavy availability probe.
    *
-   * Treats a missing/empty `exposureMode` as local, matching the fallback applied
-   * everywhere else for pre-`exposureMode` installs.
+   * "Local-only" is therefore anything that is NOT `cloudflare`: `local`,
+   * `tailscale`, and a missing/empty value (pre-`exposureMode` installs, treated
+   * as local to match the conservative fallback used everywhere else). Only a
+   * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
    */
   async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
     const installed = await this.appsService.getInstalledAppsLite();
@@ -189,7 +193,7 @@ export class MemoryProviderResolver {
       return { status: 'absent', localOnly: false };
     }
 
-    const localOnly = (row.exposureMode || 'local') === 'local';
+    const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
 
     if (row.status === 'running') {
       return { status: 'ready', localOnly };

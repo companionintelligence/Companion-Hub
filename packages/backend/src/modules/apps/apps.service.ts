@@ -323,7 +323,17 @@ export class AppsService {
 
     const { userSettings } = this.configurationService.getConfig();
 
-    return `http://${resolveBrowserHost(userSettings.internalIp)}:${app.port}${info.url_suffix || ''}`;
+    // No configured LAN address → no LAN URL, matching buildHubLocalOrigin's
+    // contract. `resolveBrowserHost` would collapse an unset/listen-all
+    // internalIp to `127.0.0.1`, and offering `http://127.0.0.1:<port>` as a
+    // route to click points any non-loopback browser at its own machine — the
+    // dead button this whole change set exists to remove.
+    const internalIp = userSettings.internalIp?.trim();
+    if (!internalIp || internalIp === '0.0.0.0' || internalIp === '::') {
+      return undefined;
+    }
+
+    return `http://${resolveBrowserHost(internalIp)}:${app.port}${info.url_suffix || ''}`;
   }
 
   /**

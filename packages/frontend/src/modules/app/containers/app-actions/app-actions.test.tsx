@@ -473,6 +473,33 @@ describe('AppActions', () => {
       expect(screen.getByTestId('action-app_action_open')).toBeDisabled();
     });
 
+    it('hides the local-network route for a remote browser that cannot reach a LAN address', () => {
+      // A dashboard loaded over the public tunnel origin is a remote browser; the
+      // app's http://192.168.x address is unroutable from there, so offering it
+      // would just reinstate the dead button #75 removes. `localUrl` is present
+      // (it is caller-independent), so only the page-origin gate suppresses it.
+      const original = window.location;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { ...original, hostname: 'hub-core2-acme.companionintelligence.com', protocol: 'https:' },
+      });
+      try {
+        renderExposed(
+          makeAvailability({
+            state: 'unreachable',
+            statusMessage: 'APP_ACTION_ERROR_CF_UNKNOWN',
+            appUrl: 'https://app.example.com',
+            localUrl: 'http://192.168.1.9:8080',
+          }),
+        );
+
+        expect(screen.queryByTestId('action-app_action_open_locally')).not.toBeInTheDocument();
+        expect(screen.getByTestId('action-app_action_open')).toBeDisabled();
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: original });
+      }
+    });
+
     it('leads with the local route alongside Resolve, since it is the action most likely to work', () => {
       renderExposed(
         makeAvailability({
