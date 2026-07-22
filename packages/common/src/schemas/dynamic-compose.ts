@@ -78,6 +78,8 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   'steam-headless': { privileged: true },
   coolify: { hostPaths: ['/root/.ssh', '/var/run/docker.sock'] },
   netdata: { hostPaths: ['/proc', '/sys', '/var/run/docker.sock'] },
+  // System-design lab that orchestrates sibling containers via dockerode.
+  torollo: { hostPaths: ['/var/run/docker.sock'] },
 };
 
 export interface ServiceSecurityViolation {
