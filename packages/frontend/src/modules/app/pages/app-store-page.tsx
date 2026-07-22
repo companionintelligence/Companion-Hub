@@ -1,5 +1,6 @@
 import { getEnabledAppStoresOptions, searchAppsOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
+import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
@@ -19,6 +20,7 @@ import { ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
+import toast from 'react-hot-toast';
 
 interface AltEntry {
   name: string;
@@ -84,12 +86,11 @@ export default () => {
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        predicate: (query) => {
-          const key = query.queryKey[0] as Record<string, unknown> | undefined;
-          return key?._id === 'searchApps' || key?._id === 'getEnabledAppStores';
-        },
-      });
+      invalidateStoreCatalogQueries(queryClient);
+      toast.success(t('APP_STORES_UPDATE_SUCCESS'));
+    },
+    onError: () => {
+      toast.error(t('APP_STORES_UPDATE_ERROR'));
     },
   });
 
