@@ -49,6 +49,39 @@ describe('ApiKeyService', () => {
       await service.create('multi', { scopes: ['app', 'app', 'mcp'] });
       expect(repo.insert.mock.calls[0][0].scopes).toEqual(['app', 'mcp']);
     });
+
+    it('refuses an empty scope set rather than minting a key that opens nothing', async () => {
+      // A scopeless key would be injected into an app's env and look provisioned, yet fail every
+      // validate()/resolve — reject at the source instead of shipping a dead credential.
+      await expect(service.create('void', { scopes: [] })).rejects.toThrow(/at least one scope/);
+      expect(repo.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isExpired (via validate)', () => {
+    it('treats an unparseable expiresAt as expired (fails closed, never valid-forever)', async () => {
+      // NaN < now is false, so a naive comparison would accept a malformed expiry indefinitely —
+      // the wrong direction for an expiry check.
+      repo.findByHash.mockResolvedValue(
+        rowFrom({ name: 'k', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: 'not-a-date' }),
+      );
+      expect(await service.validate('raw', 'mcp')).toBe(false);
+    });
+  });
+
+  describe('findManagedByApp', () => {
+    it("returns the app's managed key metadata (no hash/raw), or null when it has none", async () => {
+      repo.findManagedByOwnerAppUrn.mockResolvedValue(
+        rowFrom({ name: 'importer', prefix: 'abcd1234', hashedKey: sha256('raw'), managed: true, ownerAppUrn: 'importer:s', expiresAt: null }),
+      );
+      const info = await service.findManagedByApp('importer:s');
+      expect(info).toMatchObject({ prefix: 'abcd1234', ownerAppUrn: 'importer:s', managed: true });
+      expect(info).not.toHaveProperty('hashedKey');
+      expect(repo.findManagedByOwnerAppUrn).toHaveBeenCalledWith('importer:s');
+
+      repo.findManagedByOwnerAppUrn.mockResolvedValue(undefined);
+      expect(await service.findManagedByApp('none:s')).toBeNull();
+    });
   });
 
   describe('validate', () => {

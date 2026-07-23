@@ -11,7 +11,7 @@ import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
-import { AppHelpers } from '../app.helpers';
+import { AppHelpers, hubTrustMaterialScopes } from '../app.helpers';
 
 /**
  * Trust-material provisioning matrix (CI-Engineering#74): which apps receive the managed
@@ -161,5 +161,33 @@ describe('AppHelpers trust material (#74)', () => {
     // The provider declares no consumer/oidc integration → no callback key.
     expect(apiKeys.provisionManagedKey).not.toHaveBeenCalled();
     expect(envMap.has('HUB_APP_KEY')).toBe(false);
+  });
+});
+
+/**
+ * The single trust-material gate, unit-tested directly. generateEnvFile and HubAccessService both
+ * read what to grant / what to report from this one function, so its truth table is asserted here
+ * rather than only inferred through the injection matrix above.
+ */
+describe('hubTrustMaterialScopes', () => {
+  const info = (urn: string, hubIntegration: AppInfo['hub_integration']): Pick<AppInfo, 'urn' | 'hub_integration'> => ({
+    urn: urn as AppUrn,
+    hub_integration: hubIntegration,
+  });
+  const memory = { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } };
+
+  it("grants 'app' only to an official-store consumer, and nothing to the same manifest from a third-party store", () => {
+    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'ci-marketplace'), memory))).toEqual(['app']);
+    expect(hubTrustMaterialScopes(info(createAppUrn('importer', 'sketchy-store'), memory))).toEqual([]);
+  });
+
+  it("grants 'mcp' from ANY store (mcp_client is not provenance-gated) and both when both apply", () => {
+    expect(hubTrustMaterialScopes(info(createAppUrn('agent', 'sketchy-store'), { mcp_client: true }))).toEqual(['mcp']);
+    expect(hubTrustMaterialScopes(info(createAppUrn('hermes', 'ci-marketplace'), { mcp_client: true, ...memory }))).toEqual(['mcp', 'app']);
+  });
+
+  it('grants nothing to a plain app and never throws on a malformed URN', () => {
+    expect(hubTrustMaterialScopes(info(createAppUrn('plain', 'ci-marketplace'), undefined))).toEqual([]);
+    expect(hubTrustMaterialScopes(info('not-a-urn', memory))).toEqual([]);
   });
 });

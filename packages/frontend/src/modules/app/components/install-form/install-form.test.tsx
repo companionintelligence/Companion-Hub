@@ -954,6 +954,29 @@ describe('InstallForm', () => {
     });
   });
 
+  it('keeps a stored custom port when editing, rather than resetting to the manifest default', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    // Same init-effect hazard as enableAuth: the defaults run after initialValues are applied, so
+    // an operator who moved the app off its manifest port (3001 → 9000) must not have that reset on
+    // re-open. The Public URL field derives from the resolved port, so it reflects the stored value.
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo(3001)}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'local', port: '9000' }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('http://localhost:9000');
+    });
+  });
+
   it('keeps the enable-auth switch OFF when editing an app saved with auth disabled', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 

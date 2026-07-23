@@ -2,9 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { ApiKeyInfo } from '@/modules/api-keys/api-key.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
-import { ApiKeyAdminService } from '@/modules/api-keys/api-key-admin.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
@@ -33,7 +31,6 @@ export class McpAdminService {
     private readonly sessions: McpSessionRegistry,
     private readonly configuration: ConfigurationService,
     private readonly apiKeys: ApiKeyService,
-    private readonly apiKeyAdmin: ApiKeyAdminService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -98,23 +95,5 @@ export class McpAdminService {
     process.env.MCP_ALLOW_DESTRUCTIVE = allow ? 'true' : 'false';
     this.logger.info('MCP admin: destructive tools', allow ? 'enabled' : 'disabled');
     return { destructiveAllowed: allow };
-  }
-
-  /**
-   * Transitional delegates: key management moved to the hub-wide surface
-   * (`/api/api-keys`, {@link ApiKeyAdminService}) once keys grew beyond the MCP
-   * scope. These keep the old `/api/mcp-admin/keys` routes working for one
-   * release so a not-yet-refreshed frontend build doesn't lose key management.
-   */
-  async listKeys(): Promise<ApiKeyInfo[]> {
-    return this.apiKeyAdmin.listKeys();
-  }
-
-  async createKey(name: string): Promise<ApiKeyInfo & { key: string }> {
-    return this.apiKeyAdmin.createKey(name);
-  }
-
-  async revokeKey(id: number): Promise<{ revoked: boolean }> {
-    return this.apiKeyAdmin.revokeKey(id);
   }
 }

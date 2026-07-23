@@ -250,14 +250,17 @@ export const InstallForm: React.FC<IProps> = ({
       });
       setValue('exposureMode', defaultMode);
       setValue('exposedLocal', true); // backward compat
-      setValue('openPort', defaultMode === 'local');
-      // Enable authentication by default — but only when there is no stored operator
-      // choice to respect: unconditionally forcing ON here silently flipped an
-      // explicitly auth-OFF app back on whenever its settings dialog was saved.
+      // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
+      // unconditionally silently discarded the operator's stored choice every time the settings
+      // dialog was opened — auth flipped back on, a customised port reverted to the manifest's,
+      // and openPort was recomputed from the exposure mode. Only fill what was never decided.
+      if (initialValues?.openPort === undefined) {
+        setValue('openPort', defaultMode === 'local');
+      }
       if (initialValues?.enableAuth === undefined) {
         setValue('enableAuth', true);
       }
-      if (info.port) {
+      if (info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
       // Reset publicDomain when switching apps (appChanged) so stale values

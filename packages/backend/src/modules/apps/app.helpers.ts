@@ -84,6 +84,27 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
   return Boolean((memory?.url_env && memory?.token_env) || config.hub_integration?.oidc);
 }
 
+/**
+ * Whether this app is provisioned a Hub-managed key at all, and on which grounds:
+ * `mcp` for an MCP-tools consumer, `app` for a provenance-gated first-party consumer, both when
+ * both apply. The empty array means "no trust material".
+ *
+ * This is the single definition of the gate — generateEnvFile decides what to inject from it, and
+ * HubAccessService reports what an app holds from it. Restating the condition in either place
+ * would let a security-facing operator surface drift out of step with what is actually granted.
+ */
+export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
+  const scopes: ApiKeyScope[] = [];
+  if (config.hub_integration?.mcp_client) {
+    scopes.push('mcp');
+  }
+  // Provenance-gated: manifest fields are forgeable, the install URN's store slug is not.
+  if (isOfficialStoreApp(config) && needsHubAppKey(config)) {
+    scopes.push('app');
+  }
+  return scopes;
+}
+
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
   return new URL(withScheme);
@@ -473,9 +494,10 @@ export class AppHelpers {
     // The callback grant is provenance-gated on the install URN (isOfficialStoreApp):
     // manifest fields are forgeable, store slugs are not — a third-party-store app
     // receives no callback credential no matter what its manifest declares.
-    const isMcpClient = Boolean(config.hub_integration?.mcp_client);
-    const isFirstPartyConsumer = isOfficialStoreApp(config) && needsHubAppKey(config);
-    if (isMcpClient || isFirstPartyConsumer) {
+    const scopes = hubTrustMaterialScopes(config);
+    const isMcpClient = scopes.includes('mcp');
+    const isFirstPartyConsumer = scopes.includes('app');
+    if (scopes.length > 0) {
       const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
       const hubPort = process.env.API_PORT || '3000';
       const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
@@ -488,13 +510,6 @@ export class AppHelpers {
       // are reconciled — an app gaining a surface keeps the credential it already
       // holds. The key is auto-revoked on uninstall, and the Hub stores only its
       // hash — the raw is injected here into the app's env.
-      const scopes: ApiKeyScope[] = [];
-      if (isMcpClient) {
-        scopes.push('mcp');
-      }
-      if (isFirstPartyConsumer) {
-        scopes.push('app');
-      }
       const existingManagedKey = existingAppEnvMap.get('HUB_APP_KEY') || existingAppEnvMap.get('HUB_MCP_API_KEY');
       const managedKey = await this.apiKeys.provisionManagedKey({
         appUrn,

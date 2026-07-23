@@ -27,6 +27,17 @@ export interface ApiKeyInfo {
   createdAt: string;
 }
 
+/** The one definition of the list read — the initial load and every post-action refresh share it,
+ *  so the endpoint and response envelope live in a single place. Throws on a non-2xx; callers
+ *  decide whether that surfaces as an error state or just leaves the list stale. */
+const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
+  const res = await apiFetch('/api/api-keys');
+  if (!res.ok) {
+    throw new Error('api-keys request failed');
+  }
+  return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
+};
+
 /** Known scopes get a labelled badge; unknown ones fall back to the raw scope string. */
 const SCOPE_BADGE_KEYS: Record<string, string> = {
   mcp: 'API_KEYS_SCOPE_MCP',
@@ -48,9 +59,7 @@ export const ApiKeysContainer = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/api/api-keys');
-      if (!res.ok) throw new Error('load');
-      setKeys(((await res.json()) as { keys: ApiKeyInfo[] }).keys);
+      setKeys(await fetchApiKeys());
     } catch {
       setError(t('API_KEYS_LOAD_ERROR'));
     } finally {
@@ -66,9 +75,7 @@ export const ApiKeysContainer = () => {
   // misreported as that action failing — the list just stays stale until the next successful load.
   const refreshKeys = useCallback(async () => {
     try {
-      const res = await apiFetch('/api/api-keys');
-      if (!res.ok) return;
-      setKeys(((await res.json()) as { keys: ApiKeyInfo[] }).keys);
+      setKeys(await fetchApiKeys());
     } catch {
       // stale list until the next refresh
     }

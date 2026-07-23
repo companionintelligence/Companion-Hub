@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { apiKey } from '@/core/database/drizzle/schema';
 import type { ApiKeyScope } from './api-key.scopes';
@@ -51,6 +51,13 @@ export class ApiKeyRepository {
   async findByHash(hashedKey: string): Promise<ApiKeyRow | undefined> {
     return this.db.query.apiKey.findFirst({
       where: eq(apiKey.hashedKey, hashedKey),
+    }) as Promise<ApiKeyRow | undefined>;
+  }
+
+  /** The managed key owned by an app, if any — the owner-indexed read matching deleteByOwnerAppUrn. */
+  async findManagedByOwnerAppUrn(ownerAppUrn: string): Promise<ApiKeyRow | undefined> {
+    return this.db.query.apiKey.findFirst({
+      where: and(eq(apiKey.ownerAppUrn, ownerAppUrn), eq(apiKey.managed, true)),
     }) as Promise<ApiKeyRow | undefined>;
   }
 

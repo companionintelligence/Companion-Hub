@@ -39,7 +39,7 @@ describe('HubAccessService', () => {
       fromPartial({ urn, hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } } }),
     );
     appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=s3cret\nOTHER=1\n' });
-    apiKeys.list.mockResolvedValue([managedKey]);
+    apiKeys.findManagedByApp.mockResolvedValue(managedKey);
     appLifecycle.restartApp.mockResolvedValue({ requestId: 'req-1' });
   });
 
@@ -56,7 +56,7 @@ describe('HubAccessService', () => {
     });
 
     it('reports null key + no identity verification for an unprovisioned app', async () => {
-      apiKeys.list.mockResolvedValue([]);
+      apiKeys.findManagedByApp.mockResolvedValue(null);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' });
       appFilesManager.getInstalledAppInfo.mockResolvedValue(fromPartial({ urn, hub_integration: undefined }));
       const status = await service.getStatus(urn);
@@ -96,6 +96,14 @@ describe('HubAccessService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(null as never);
       await expect(service.rotate(urn)).rejects.toThrow(NotFoundException);
       expect(apiKeys.revokeManagedByApp).not.toHaveBeenCalled();
+    });
+
+    it('propagates a restart failure so the operator learns the app is left holding revoked credentials', async () => {
+      // Credentials are already gone by the time the restart is dispatched; a swallowed failure
+      // would report success while the app authenticates against nothing until a manual restart.
+      appLifecycle.restartApp.mockRejectedValue(new Error('queue offline'));
+      await expect(service.rotate(urn)).rejects.toThrow('queue offline');
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
     });
   });
 });

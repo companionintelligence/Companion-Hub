@@ -34,9 +34,17 @@ function toInfo(row: ApiKeyRow): ApiKeyInfo {
   };
 }
 
-/** Normalize a scope set for storage: deduped, stable order. Never empty at the call sites. */
+/**
+ * Normalize a scope set for storage: deduped, stable order. Rejects an empty set rather than
+ * storing one — a scopeless key satisfies no surface, so it would be injected into an app's env,
+ * look correctly provisioned in the UI, and fail every authentication with nothing to point at.
+ */
 function normalizeScopes(scopes: ApiKeyScope[]): ApiKeyScope[] {
-  return [...new Set(scopes)];
+  const normalized = [...new Set(scopes)];
+  if (normalized.length === 0) {
+    throw new Error('An API key must carry at least one scope');
+  }
+  return normalized;
 }
 
 /**
@@ -65,8 +73,15 @@ export class ApiKeyService {
     return createHash('sha256').update(rawKey).digest('hex');
   }
 
+  /** Fails closed on an unparseable timestamp: `NaN < now` is false, so a naive comparison would
+   *  turn a malformed expiry into a key that never expires — the wrong direction for an expiry
+   *  check. An expiry we cannot read is treated as reached. */
   private isExpired(row: ApiKeyRow): boolean {
-    return row.expiresAt !== null && new Date(row.expiresAt).getTime() < Date.now();
+    if (row.expiresAt === null) {
+      return false;
+    }
+    const expiresAtMs = new Date(row.expiresAt).getTime();
+    return Number.isNaN(expiresAtMs) || expiresAtMs < Date.now();
   }
 
   /** Create a key. Returns the info PLUS the raw key — the only time the raw value is ever exposed. */
@@ -126,6 +141,12 @@ export class ApiKeyService {
   /** All stored keys (every scope), for the hub-wide admin listing. */
   async list(): Promise<ApiKeyInfo[]> {
     return (await this.repo.list()).map(toInfo);
+  }
+
+  /** The managed key an app owns, if any — metadata only, never the hash or raw value. */
+  async findManagedByApp(appUrn: string): Promise<ApiKeyInfo | null> {
+    const row = await this.repo.findManagedByOwnerAppUrn(appUrn);
+    return row ? toInfo(row) : null;
   }
 
   /** Number of keys carrying a scope (e.g. the MCP settings status count). */
