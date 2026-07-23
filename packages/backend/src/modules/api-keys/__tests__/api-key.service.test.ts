@@ -12,7 +12,7 @@ function rowFrom(
   values: Partial<ApiKeyRow> & Pick<ApiKeyRow, 'name' | 'prefix' | 'hashedKey' | 'managed' | 'ownerAppUrn' | 'expiresAt'>,
   id = 1,
 ): ApiKeyRow {
-  return { id, audience: 'mcp', scopes: ['mcp'], lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
+  return { id, scopes: ['mcp'], lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
 }
 
 describe('ApiKeyService', () => {
@@ -43,14 +43,11 @@ describe('ApiKeyService', () => {
       expect(stored.prefix).toBe(res.key.slice(0, 8));
       expect(stored.managed).toBe(false);
       expect(stored.scopes).toEqual(['mcp']);
-      expect(stored.audience).toBe('mcp'); // transitional dual-write = scopes[0]
     });
 
-    it('dedupes scopes and dual-writes audience from the first scope', async () => {
+    it('dedupes scopes', async () => {
       await service.create('multi', { scopes: ['app', 'app', 'mcp'] });
-      const stored = repo.insert.mock.calls[0][0];
-      expect(stored.scopes).toEqual(['app', 'mcp']);
-      expect(stored.audience).toBe('app');
+      expect(repo.insert.mock.calls[0][0].scopes).toEqual(['app', 'mcp']);
     });
   });
 
@@ -87,29 +84,10 @@ describe('ApiKeyService', () => {
           ownerAppUrn: 'importer:s',
           expiresAt: null,
           scopes: ['app'],
-          audience: 'app',
         }),
       );
       expect(await service.validate('raw', 'mcp')).toBe(false);
       expect(await service.validate('raw', 'app')).toBe(true);
-    });
-
-    it('falls back to the audience column for a pre-migration row with empty scopes', async () => {
-      // A row written by an old Hub after a rollback (scopes backfill absent) must not lose access.
-      repo.findByHash.mockResolvedValue(
-        rowFrom({
-          name: 'legacy',
-          prefix: 'p',
-          hashedKey: sha256('raw'),
-          managed: false,
-          ownerAppUrn: null,
-          expiresAt: null,
-          scopes: [],
-          audience: 'mcp',
-        }),
-      );
-      expect(await service.validate('raw', 'mcp')).toBe(true);
-      expect(await service.validate('raw', 'app')).toBe(false);
     });
   });
 
@@ -179,7 +157,7 @@ describe('ApiKeyService', () => {
         scopes: ['mcp', 'app'],
       });
       expect(key).toBe('existing');
-      expect(repo.updateScopes).toHaveBeenCalledWith(7, ['mcp', 'app'], 'mcp');
+      expect(repo.updateScopes).toHaveBeenCalledWith(7, ['mcp', 'app']);
       expect(repo.insert).not.toHaveBeenCalled();
     });
 
@@ -213,7 +191,6 @@ describe('ApiKeyService', () => {
       const stored = repo.insertIfHashAbsent.mock.calls[0][0];
       expect(stored.name).toBe('Default');
       expect(stored.scopes).toEqual(['mcp']);
-      expect(stored.audience).toBe('mcp');
       expect(stored.hashedKey).toBe(sha256('legacy-key'));
     });
 

@@ -153,7 +153,8 @@ export const portAllocation = pgTable(
 );
 
 // SEC-MCP-8: locally-minted, hashed API keys. One table for ALL inbound key surfaces, discriminated
-// by `audience` ('mcp' today; 'rest' etc. later) so a new surface doesn't need a new table. Only the
+// by `scopes` ('mcp' tools, 'app' callbacks; 'rest' etc. later) so a new surface doesn't need a new
+// table — and so one key can open several at once without holding several secrets. Only the
 // SHA-256 hash is stored (never the raw key); the raw is shown once at creation. `managed` keys are
 // auto-provisioned by the Hub for companion apps (Hermes, OpenClaw, any hub_integration.mcp_client
 // app) and carry the owning app's URN — operators see them but never create/edit them by hand.
@@ -163,9 +164,6 @@ export const apiKey = pgTable(
   'api_key',
   {
     id: serial().primaryKey().notNull(),
-    // Transitional: single-valued predecessor of `scopes`, dual-written as scopes[0] for one
-    // release so a rolled-back Hub still reads the table correctly. Dropped in a follow-up.
-    audience: varchar({ length: 16 }).default('mcp').notNull(),
     // Which surfaces accept this key ('mcp' tools, 'app' callbacks). One key can open several, so
     // a companion app holds a single credential and scope grants never rotate its secret.
     scopes: text().array().default([]).notNull(),
@@ -178,12 +176,10 @@ export const apiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  // Unique per (audience, hash), inherited from when every lookup was audience-scoped. Lookups are
-  // now by hash alone (scope membership is checked on the resolved row), so the effective invariant
-  // is a globally unique hash — which 256-bit random keys give us regardless of the index. Narrowing
-  // the index to `hashed_key` belongs with the migration that drops `audience`; doing it here would
-  // break the rollback this column exists to preserve.
-  (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
+  // Uniqueness follows the lookup: a key resolves by hash alone (scope membership is then checked on
+  // the resolved row), so the hash must be globally unique — a second row sharing it would make
+  // resolution ambiguous.
+  (table) => [uniqueIndex('api_key_hashed_key_idx').on(table.hashedKey)],
 );
 
 export const deviceRegistration = pgTable('device_registration', {

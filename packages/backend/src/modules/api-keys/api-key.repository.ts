@@ -7,8 +7,6 @@ import type { ApiKeyScope } from './api-key.scopes';
 /** A stored API key row. Only the SHA-256 `hashedKey` is persisted — never the raw key. */
 export interface ApiKeyRow {
   id: number;
-  /** Transitional dual-write of `scopes[0]` kept for one release so a rolled-back Hub still works. */
-  audience: string;
   scopes: string[];
   name: string;
   prefix: string;
@@ -26,8 +24,7 @@ export type NewApiKeyRow = Omit<ApiKeyRow, 'id' | 'lastUsedAt' | 'createdAt'>;
 /**
  * Data access for the shared `api_key` table (SEC-MCP-8 lineage). One table serves every inbound
  * key surface; which surfaces accept a key is expressed by its `scopes` array, checked by
- * {@link ApiKeyService} after a hash lookup. The legacy single-valued `audience` column is still
- * dual-written (as `scopes[0]`) purely for rollback safety and is dropped in a follow-up release.
+ * {@link ApiKeyService} after a hash lookup.
  */
 @Injectable()
 export class ApiKeyRepository {
@@ -38,9 +35,9 @@ export class ApiKeyRepository {
     return result as ApiKeyRow;
   }
 
-  /** Insert unless the (audience, hashedKey) pair already exists — returns undefined when it does.
-   *  Makes bootstrap seeding idempotent under a double-start race (both would insert the same
-   *  derived key; the loser's plain insert would violate the unique index and kill its boot). */
+  /** Insert unless the hash already exists — returns undefined when it does. Makes bootstrap
+   *  seeding idempotent under a double-start race (both would insert the same derived key; the
+   *  loser's plain insert would violate the unique index and kill its boot). */
   async insertIfHashAbsent(row: NewApiKeyRow): Promise<ApiKeyRow | undefined> {
     const [result] = await this.db.insert(apiKey).values(row).onConflictDoNothing().returning().execute();
     return result as ApiKeyRow | undefined;
@@ -86,9 +83,9 @@ export class ApiKeyRepository {
     return result.length;
   }
 
-  /** Rewrite a key's scopes in place (same secret). `audience` is dual-written alongside. */
-  async updateScopes(id: number, scopes: string[], audience: string): Promise<void> {
-    await this.db.update(apiKey).set({ scopes, audience }).where(eq(apiKey.id, id)).execute();
+  /** Rewrite a key's scopes in place, leaving the secret untouched. */
+  async updateScopes(id: number, scopes: string[]): Promise<void> {
+    await this.db.update(apiKey).set({ scopes }).where(eq(apiKey.id, id)).execute();
   }
 
   async touchLastUsed(id: number, whenIso: string): Promise<void> {

@@ -49,6 +49,10 @@ function normalizeScopes(scopes: ApiKeyScope[]): ApiKeyScope[] {
  * app holds a single credential no matter how many Hub surfaces it consumes, and granting an
  * additional scope updates the row in place without rotating the secret the app already holds.
  * `managed` keys are auto-provisioned for companion apps and revoked on uninstall.
+ *
+ * Resolution is by hash alone; scope membership is then checked on the resolved row. A key minted
+ * for one surface therefore cannot authenticate another, and the surfaces a key opens can change
+ * without the key itself changing.
  */
 @Injectable()
 export class ApiKeyService {
@@ -73,7 +77,6 @@ export class ApiKeyService {
     const scopes = normalizeScopes(opts.scopes);
     const rawKey = randomBytes(KEY_BYTES).toString('hex');
     const row = await this.repo.insert({
-      audience: scopes[0] ?? MCP_SCOPE, // transitional dual-write; see ApiKeyRepository
       scopes,
       name,
       prefix: rawKey.slice(0, PREFIX_LEN),
@@ -84,13 +87,6 @@ export class ApiKeyService {
     });
     this.logger.info('API key created', row.id, `[${scopes.join(',')}]`, row.managed ? '(managed)' : '(operator)');
     return { ...toInfo(row), key: rawKey };
-  }
-
-  /** A row's effective scopes. Legacy rows written before the scopes column may have an empty
-   *  array if the backfill has not run (or was rolled past); fall back to the audience column so a
-   *  pre-migration key never silently loses access. */
-  private effectiveScopes(row: ApiKeyRow): string[] {
-    return row.scopes.length > 0 ? row.scopes : [row.audience];
   }
 
   /**
@@ -106,8 +102,7 @@ export class ApiKeyService {
     if (!row?.managed || this.isExpired(row)) {
       return null;
     }
-    const scopes = this.effectiveScopes(row);
-    if (!acceptedScopes.some((scope) => scopes.includes(scope))) {
+    if (!acceptedScopes.some((scope) => row.scopes.includes(scope))) {
       return null;
     }
     return row.ownerAppUrn;
@@ -120,7 +115,7 @@ export class ApiKeyService {
       return false;
     }
     const row = await this.repo.findByHash(this.hash(rawKey));
-    if (!row || this.isExpired(row) || !this.effectiveScopes(row).includes(requiredScope)) {
+    if (!row || this.isExpired(row) || !row.scopes.includes(requiredScope)) {
       return false;
     }
     // Fire-and-forget: never let a last-used write fail or slow an auth check.
@@ -159,9 +154,9 @@ export class ApiKeyService {
     if (existingRawKey) {
       const row = await this.repo.findByHash(this.hash(existingRawKey));
       if (row?.managed && row.ownerAppUrn === appUrn && !this.isExpired(row)) {
-        const current = this.effectiveScopes(row);
+        const current = row.scopes;
         if (current.length !== scopes.length || !scopes.every((scope) => current.includes(scope))) {
-          await this.repo.updateScopes(row.id, scopes, scopes[0] ?? row.audience);
+          await this.repo.updateScopes(row.id, scopes);
           this.logger.info('Managed key scopes updated', appUrn, `[${scopes.join(',')}]`);
         }
         return existingRawKey; // still valid — preserve it (no churn, no restart needed)
@@ -204,7 +199,6 @@ export class ApiKeyService {
     // Conflict-tolerant so a double-start race (two boots seeding the same derived key) is a no-op
     // for the loser instead of a unique-index violation that kills its bootstrap.
     const seeded = await this.repo.insertIfHashAbsent({
-      audience: MCP_SCOPE,
       scopes: [MCP_SCOPE],
       name: 'Default',
       prefix: envKey.slice(0, PREFIX_LEN),
