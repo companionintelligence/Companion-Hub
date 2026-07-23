@@ -231,6 +231,19 @@ export const ApiKeysContainer = () => {
               data-testid="api-key-new-name"
             />
           </div>
+          {/* The scope is fixed, so it's stated rather than chosen: an operator-created 'app' key
+              would have no owning app URN and could never pass the callback guard's identity
+              check, so offering the choice would only mint dead credentials. Shown with the same
+              badge the list rows use, so "MCP" reads identically in both places. */}
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{t('API_KEYS_CREATE_SCOPE_LABEL')}</span>
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" data-testid="api-key-create-scope">
+                {t('API_KEYS_SCOPE_MCP')}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">{t('API_KEYS_CREATE_SCOPE_HINT')}</p>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
               {t('COMMON_CANCEL')}

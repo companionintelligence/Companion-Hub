@@ -1307,6 +1307,8 @@
   "API_KEYS_CREATE_DESC": "Give the key a name so you can recognize it later. The key value is shown only once.",
   "API_KEYS_NAME_LABEL": "Name",
   "API_KEYS_NAME_PLACEHOLDER": "e.g. Laptop CLI, n8n",
+  "API_KEYS_CREATE_SCOPE_LABEL": "Scope",
+  "API_KEYS_CREATE_SCOPE_HINT": "Keys you create here carry the MCP scope, granting access to the Hub's MCP tools. App keys are issued by the Hub to installed apps and can't be created by hand.",
   "API_KEYS_CREATED": "API key created",
   "API_KEYS_CREATE_ERROR": "Failed to create API key",
   "API_KEYS_CREATED_ONCE": "Copy this key now. It won't be shown again.",

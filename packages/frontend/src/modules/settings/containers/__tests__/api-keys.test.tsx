@@ -133,18 +133,26 @@ describe('ApiKeysContainer', () => {
     expect(toast.success).toHaveBeenCalledWith('API_KEYS_CREATED');
   });
 
-  it('offers no scope selector when creating — new keys are MCP-scoped operator keys', async () => {
+  it('states the fixed MCP scope when creating, without offering a selector', async () => {
     const user = userEvent.setup();
     render(<ApiKeysContainer />);
     await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
 
     await user.click(screen.getByTestId('api-key-create'));
     const dialog = await screen.findByTestId('dialog');
-    // Only a name field — no scope controls of any kind.
+
+    // The scope is disclosed, so the operator knows what the key will open...
+    expect(within(dialog).getByTestId('api-key-create-scope').textContent).toContain('API_KEYS_SCOPE_MCP');
+    expect(within(dialog).getByText('API_KEYS_CREATE_SCOPE_HINT')).toBeTruthy();
+
+    // ...but it is not a choice: no 'app' option and no scope controls of any kind.
+    // An operator-created 'app' key would have no owning app URN and could never
+    // authenticate anything, so it must never be offered here.
     expect(within(dialog).getByTestId('api-key-new-name')).toBeTruthy();
-    expect(within(dialog).queryByText('API_KEYS_SCOPE_MCP')).toBeNull();
     expect(within(dialog).queryByText('API_KEYS_SCOPE_APP')).toBeNull();
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
+    expect(within(dialog).queryByRole('combobox')).toBeNull();
+    expect(within(dialog).queryByRole('radio')).toBeNull();
   });
 
   it('renders no create affordance inside managed rows (one global create button only)', async () => {
