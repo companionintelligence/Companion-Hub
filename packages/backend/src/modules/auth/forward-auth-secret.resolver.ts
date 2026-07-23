@@ -175,7 +175,14 @@ export class ForwardAuthSecretResolver {
         }
       } else {
         // Unknown host (Hub dashboard, not-an-app route) — expected constantly, debug only.
-        value = this.globalSecret();
+        // Deliberately NOT cached: resolving an unmatched host costs one Map lookup and no
+        // I/O, so a cache entry would buy nothing while adding a second staleness window on
+        // top of the host map's — a freshly installed app whose first request landed just
+        // after a rebuild would keep getting the global secret for a further full TTL, and
+        // its container (holding a per-app secret) would reject the signature the whole
+        // time. Skipping the write also keeps attacker-supplied junk hosts out of the cache
+        // entirely rather than relying on the size bound below to evict them.
+        return this.globalSecret();
       }
     } catch (err) {
       this.logger.warn(`[ForwardAuthSecretResolver] resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`);

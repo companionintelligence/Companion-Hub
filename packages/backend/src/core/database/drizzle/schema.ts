@@ -178,9 +178,11 @@ export const apiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  // Unique per (audience, hash), not globally: the same secret may legitimately exist under two
-  // surfaces (every lookup is audience-scoped), and a cross-surface collision must never abort an
-  // insert/seed for an unrelated surface.
+  // Unique per (audience, hash), inherited from when every lookup was audience-scoped. Lookups are
+  // now by hash alone (scope membership is checked on the resolved row), so the effective invariant
+  // is a globally unique hash — which 256-bit random keys give us regardless of the index. Narrowing
+  // the index to `hashed_key` belongs with the migration that drops `audience`; doing it here would
+  // break the rollback this column exists to preserve.
   (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
 );
 

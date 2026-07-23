@@ -112,6 +112,18 @@ describe('ForwardAuthSecretResolver', () => {
     expect(warns.length).toBeLessThanOrEqual(2);
   });
 
+  it('does not cache the unmatched-host fallback, so a newly installed app resolves at the next map rebuild', async () => {
+    const host = 'importer-ci-marketplace-dev-org.ci.lan';
+    appsRepository.getApps.mockResolvedValue([]); // app not installed yet
+    expect(await resolveVia(host)).toEqual({ secret: 'global-secret', source: 'global' });
+
+    // The app lands. Once the host map's TTL lapses the rebuild picks it up — the earlier
+    // global fallback must not be pinned for a second TTL on top of the map's.
+    appsRepository.getApps.mockResolvedValue([appRow()]);
+    vi.advanceTimersByTime(31_000);
+    expect(await resolveVia(host)).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
+  });
+
   it('caches resolutions for the TTL window (no repo re-query per request)', async () => {
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
     await resolveVia(host);
