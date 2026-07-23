@@ -150,13 +150,18 @@ describe('ForwardAuthSecretResolver', () => {
     expect(result.source).toBe('app-env');
   });
 
-  it('does NOT cache the matched-but-secretless fallback: the per-app secret is picked up the moment it lands', async () => {
+  it('caches the matched-but-secretless fallback only BRIEFLY, so a landing secret is picked up in seconds not a full TTL', async () => {
     const host = 'importer-ci-marketplace-dev-org.ci.lan';
-    appFilesManager.getAppEnv.mockResolvedValueOnce({ path: '/x', content: '' }); // secret not written yet
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: '' }); // secret not written yet
     expect((await resolveVia(host)).source).toBe('global');
+    // A burst within the short window is served from cache (one env read, not one per request).
+    expect((await resolveVia(host)).source).toBe('global');
+    expect(appFilesManager.getAppEnv).toHaveBeenCalledTimes(1);
 
-    // Secret lands mid-TTL. Because the fallback was not cached, the very next request reads it —
-    // no waiting out a 30s window while the app rejects every global-signed header.
+    // The secret lands. Past the short secretless TTL (2s) — but well before the 30s definitive TTL —
+    // the next request re-reads and resolves it. It is NOT pinned to the global fallback for 30s.
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=per-app-secret\n' });
+    vi.advanceTimersByTime(2_500);
     expect(await resolveVia(host)).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
   });
 

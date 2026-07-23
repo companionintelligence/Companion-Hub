@@ -18,6 +18,17 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 const CACHE_TTL_MS = 30_000;
 
 /**
+ * TTL for the matched-but-secretless fallback — an app that is in the host map but has no per-app
+ * secret in its env. This covers two populations at once: a legacy app that PERMANENTLY predates
+ * the per-app rollout (for which a fallback is the stable, correct answer and re-reading its env
+ * every request would be pure waste), and an app TRANSIENTLY secretless mid-install/mid-rotation
+ * (for which the fallback is wrong the moment its secret lands). A short TTL serves both — it
+ * absorbs a request burst into one env read for the legacy case, while bounding the wrong-secret
+ * window for the transient case to a couple of seconds instead of the full definitive-cache TTL.
+ */
+const SECRETLESS_CACHE_TTL_MS = 2_000;
+
+/**
  * Backoff after a failed host-map rebuild. Much shorter than the TTL so recovery is quick once the
  * dependency (apps repo / device registration) returns, but non-zero so a sustained outage does not
  * make every forward-auth subrequest re-attempt the failing reads.
@@ -201,15 +212,14 @@ export class ForwardAuthSecretResolver {
       return cached.value;
     }
 
-    // ONLY a definitive per-app secret read from app.env is cached. Every fallback to the global
-    // secret — unmatched host, matched-but-secretless app, or a transient read error — returns
-    // WITHOUT caching. Caching a fallback would pin the global secret for a full TTL over a state
-    // that is usually transient (an app mid-install, mid-rotation, or briefly unreadable), so the
-    // Hub would keep signing with the global secret for up to 30s after the app came back up
-    // holding its own per-app secret and began rejecting every global-signed header. The only cost
-    // of not caching is re-reading a secretless app's env per request, which is bounded (such apps
-    // are transitional) and cheap next to a sustained window of 401s.
+    // A definitive per-app secret is cached for the full TTL; a matched-but-secretless fallback is
+    // cached only briefly (SECRETLESS_CACHE_TTL_MS); a transient READ ERROR and an unmatched host
+    // are not cached at all. This is what stops the Hub from pinning the global secret over a state
+    // that is usually transient (an app mid-install/mid-rotation) and 401ing it for a full TTL once
+    // its own secret lands — while still absorbing a request burst to a permanently-legacy
+    // secretless app into one env read rather than one per request.
     let resolved: ResolvedForwardAuthSecret;
+    let ttlMs = CACHE_TTL_MS;
     try {
       await this.ensureHostMapFresh();
       const appUrn = this.hostToUrn.get(host);
@@ -219,27 +229,31 @@ export class ForwardAuthSecretResolver {
       }
       const appEnv = await this.appFilesManager.getAppEnv(appUrn);
       const secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
-      if (!secret) {
+      if (secret) {
+        resolved = { secret, appUrn, source: 'app-env' };
+      } else {
         // Matched app without a provisioned secret: legitimate for apps that predate the per-app
         // rollout (they verify nothing) and transiently true for one mid-install/mid-rotation.
-        // Sign with the global value they may hold, but do NOT cache it — the secret can land at
-        // any moment and a cached fallback would keep rejecting it until the TTL lapsed.
+        // Sign with the global value they may hold, cached only briefly so a secret that lands is
+        // picked up within a couple of seconds rather than a full TTL later.
         if (!this.warnedUrns.has(appUrn)) {
           this.warnedUrns.add(appUrn);
           this.logger.warn(`[ForwardAuthSecretResolver] ${appUrn} has no forward-auth secret in app.env; signing with the global secret`);
         }
-        return { ...this.globalSecret(), appUrn };
+        resolved = { ...this.globalSecret(), appUrn };
+        ttlMs = SECRETLESS_CACHE_TTL_MS;
       }
-      resolved = { secret, appUrn, source: 'app-env' };
     } catch (err) {
+      // A read error is truly transient (disk hiccup, env mid-write); never cache it — the very
+      // next request should re-read rather than serve a pinned global fallback.
       this.logger.warn(`[ForwardAuthSecretResolver] resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`);
       return this.globalSecret();
     }
 
-    this.secretCache.set(host, { value: resolved, expiresAt: Date.now() + CACHE_TTL_MS });
-    // Belt-and-suspenders bound. Only definitive per-app entries reach here, so the cache is
-    // already bounded by the installed-app count (~apps × hostnames); this guards against a
-    // pathological host-map explosion, not attacker junk (junk hosts never get this far).
+    this.secretCache.set(host, { value: resolved, expiresAt: Date.now() + ttlMs });
+    // Belt-and-suspenders bound. Only matched-app entries reach here, so the cache is already
+    // bounded by the installed-app count (~apps × hostnames); this guards against a pathological
+    // host-map explosion, not attacker junk (junk hosts never get this far).
     if (this.secretCache.size > 512) {
       this.secretCache.clear();
     }
