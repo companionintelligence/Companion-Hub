@@ -1433,16 +1433,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
-    // "Require Auth" toggle, an exposable app that ships `hub_integration.edge_auth.default:
-    // true` starts protected. Fallback only: an explicit operator true/false always wins, and
-    // a manifest can never force auth OFF. This MUST run before the no-change short-circuit
-    // below: version bumps re-submit the stored config verbatim (updateApp → this method), and
-    // an onboarding-era install whose stored config never decided enableAuth self-heals on the
-    // first update under a manifest that ships the default — the resolved `true` is what makes
-    // hasConfigChanged see a difference at all.
+    // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
+    // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
+    // default when the app never had one (an onboarding-era install). "Explicit operator choice
+    // always wins" must survive a PARTIAL update too: a client that PATCHes some other field
+    // without resending enableAuth must not have a prior explicit `false` silently flipped back
+    // to the manifest's `true`. Inheriting the stored value also keeps hasConfigChanged from
+    // seeing a spurious diff (and restarting the app) on such updates.
+    //
+    // This MUST run before the no-change short-circuit below: a version bump re-submits the
+    // stored config verbatim (updateApp → this method); an onboarding install whose stored config
+    // never decided enableAuth then self-heals to the manifest default here, and that resolved
+    // `true` is what makes hasConfigChanged see a difference at all.
     if (parsedForm.enableAuth === undefined) {
-      parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
+      const storedEnableAuth = (app.config as { enableAuth?: boolean } | null | undefined)?.enableAuth;
+      parsedForm.enableAuth = storedEnableAuth ?? (manifestDefaultsEdgeAuthOn(appInfo) || undefined);
     }
 
     const settingsChanged = this.hasConfigChanged(

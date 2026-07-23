@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { apiKey } from '@/core/database/drizzle/schema';
 import type { ApiKeyScope } from './api-key.scopes';
@@ -73,11 +73,12 @@ export class ApiKeyRepository {
     return res?.count ?? 0;
   }
 
-  /** Count keys carrying a scope. Rows are few (an appliance holds a handful of keys), so this
-   *  filters in memory rather than depending on array-operator support in the query layer. */
+  /** Count keys carrying a scope, via a filtered SQL count (`scope = ANY(scopes)`) rather than
+   *  reading every row into memory — this runs on each boot (seedDefaultKeyIfEmpty) and each MCP
+   *  status poll. The parameterised `sql` operand keeps the scope value bound, not interpolated. */
   async countByScope(scope: ApiKeyScope): Promise<number> {
-    const rows = await this.list();
-    return rows.filter((row) => row.scopes.includes(scope)).length;
+    const [res] = await this.db.select({ count: count() }).from(apiKey).where(sql`${scope} = ANY(${apiKey.scopes})`);
+    return res?.count ?? 0;
   }
 
   async deleteById(id: number): Promise<number> {

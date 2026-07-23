@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
@@ -18,12 +19,6 @@ export interface HubAccessStatus {
 }
 
 export const hubAccessQueryKey = (appUrn: string) => ['app-hub-access', appUrn];
-
-/** Known scopes get a labelled badge; unknown ones fall back to the raw scope string. */
-const SCOPE_BADGE_KEYS: Record<string, string> = {
-  mcp: 'API_KEYS_SCOPE_MCP',
-  app: 'API_KEYS_SCOPE_APP',
-};
 
 /**
  * Compact "Hub access" card for the app-detail page: the Hub-provisioned trust material this app
@@ -88,9 +83,7 @@ export const HubAccess = ({ appUrn }: { appUrn: string }) => {
                   <span className="font-medium">{t('APP_DETAILS_HUB_ACCESS_KEY_LABEL')}</span>
                   <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{status.appKey.prefix}…</code>
                   {status.appKey.scopes.map((scope) => (
-                    <span key={scope} className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
-                      {SCOPE_BADGE_KEYS[scope] ? t(SCOPE_BADGE_KEYS[scope]) : scope}
-                    </span>
+                    <ScopeBadge key={scope} scope={scope} />
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">

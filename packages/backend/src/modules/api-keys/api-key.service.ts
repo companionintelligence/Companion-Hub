@@ -76,12 +76,19 @@ export class ApiKeyService {
   /** Fails closed on an unparseable timestamp: `NaN < now` is false, so a naive comparison would
    *  turn a malformed expiry into a key that never expires — the wrong direction for an expiry
    *  check. An expiry we cannot read is treated as reached. */
-  private isExpired(row: ApiKeyRow): boolean {
-    if (row.expiresAt === null) {
+  private isExpired(key: { expiresAt: string | null }): boolean {
+    if (key.expiresAt === null) {
       return false;
     }
-    const expiresAtMs = new Date(row.expiresAt).getTime();
+    const expiresAtMs = new Date(key.expiresAt).getTime();
     return Number.isNaN(expiresAtMs) || expiresAtMs < Date.now();
+  }
+
+  /** Whether a key still grants access (not expired). The single definition of "usable", so the
+   *  admin "can't revoke the last operator key" guard judges usability with the exact fail-closed
+   *  rule the auth path uses — never a second, subtly-different copy. */
+  isUsable(key: { expiresAt: string | null }): boolean {
+    return !this.isExpired(key);
   }
 
   /** Create a key. Returns the info PLUS the raw key — the only time the raw value is ever exposed. */

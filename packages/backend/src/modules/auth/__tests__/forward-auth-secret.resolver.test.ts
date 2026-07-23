@@ -149,4 +149,55 @@ describe('ForwardAuthSecretResolver', () => {
     const result = await resolveVia('importer-ci-marketplace.ci.lan');
     expect(result.source).toBe('app-env');
   });
+
+  it('does NOT cache the matched-but-secretless fallback: the per-app secret is picked up the moment it lands', async () => {
+    const host = 'importer-ci-marketplace-dev-org.ci.lan';
+    appFilesManager.getAppEnv.mockResolvedValueOnce({ path: '/x', content: '' }); // secret not written yet
+    expect((await resolveVia(host)).source).toBe('global');
+
+    // Secret lands mid-TTL. Because the fallback was not cached, the very next request reads it —
+    // no waiting out a 30s window while the app rejects every global-signed header.
+    expect(await resolveVia(host)).toEqual({ secret: 'per-app-secret', appUrn: 'importer:ci-marketplace', source: 'app-env' });
+  });
+
+  it('does NOT cache a transient resolution error: a one-off app.env read failure does not pin the global secret', async () => {
+    const host = 'importer-ci-marketplace-dev-org.ci.lan';
+    appFilesManager.getAppEnv.mockRejectedValueOnce(new Error('disk hiccup'));
+    expect((await resolveVia(host)).source).toBe('global');
+
+    // Next request (env readable again) resolves the per-app secret immediately, not 30s later.
+    expect((await resolveVia(host)).source).toBe('app-env');
+  });
+
+  it('invalidateApp drops the cached per-app secret so a rotated secret is served immediately', async () => {
+    const host = 'importer-ci-marketplace-dev-org.ci.lan';
+    expect((await resolveVia(host)).secret).toBe('per-app-secret');
+
+    // Rotation: the app.env now holds a fresh secret and the cache is flushed for this app.
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/x', content: 'CI_HUB_FORWARD_AUTH_SECRET=rotated-secret\n' });
+    resolver.invalidateApp('importer:ci-marketplace' as never);
+    // No timer advance — the flush alone forces a re-read within the same TTL window.
+    expect((await resolveVia(host)).secret).toBe('rotated-secret');
+  });
+
+  it('single-flights the host-map rebuild: a burst past the TTL triggers one repo read, not one per request', async () => {
+    await resolveVia('importer-ci-marketplace-dev-org.ci.lan'); // primes the map (1 read)
+    vi.advanceTimersByTime(31_000); // TTL lapses
+
+    // Three concurrent resolutions arriving together must share ONE rebuild.
+    await Promise.all([
+      resolveVia('a-ci-marketplace-dev-org.ci.lan'),
+      resolveVia('b-ci-marketplace-dev-org.ci.lan'),
+      resolveVia('c-ci-marketplace-dev-org.ci.lan'),
+    ]);
+    expect(appsRepository.getApps).toHaveBeenCalledTimes(2); // prime + one shared rebuild
+  });
+
+  it('backs off (does not hammer) when the host-map rebuild keeps failing', async () => {
+    appsRepository.getApps.mockRejectedValue(new Error('db down'));
+    await resolveVia('importer-ci-marketplace-dev-org.ci.lan');
+    await resolveVia('importer-ci-marketplace-dev-org.ci.lan'); // within the backoff window
+    // The second call must not re-issue the failing read — the short backoff suppresses it.
+    expect(appsRepository.getApps).toHaveBeenCalledTimes(1);
+  });
 });

@@ -17,6 +17,13 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
  */
 const CACHE_TTL_MS = 30_000;
 
+/**
+ * Backoff after a failed host-map rebuild. Much shorter than the TTL so recovery is quick once the
+ * dependency (apps repo / device registration) returns, but non-zero so a sustained outage does not
+ * make every forward-auth subrequest re-attempt the failing reads.
+ */
+const HOST_MAP_ERROR_BACKOFF_MS = 5_000;
+
 export interface ResolvedForwardAuthSecret {
   secret: string;
   /** The app the request targets, when the forwarded host matched an installed app. */
@@ -56,6 +63,9 @@ interface CacheEntry {
 export class ForwardAuthSecretResolver {
   private hostToUrn = new Map<string, AppUrn>();
   private hostMapExpiresAt = 0;
+  /** The in-flight rebuild, if one is running — concurrent callers await it instead of each
+   *  launching their own (single-flight; avoids a thundering herd of repo reads at every TTL). */
+  private hostMapRebuild: Promise<void> | null = null;
   private secretCache = new Map<string, CacheEntry>();
   /** Apps already warned about (matched but secretless) — reset on every map rebuild so a fixed
    *  env stops warning and a regressed one warns again, without ever logging per-request. */
@@ -139,6 +149,44 @@ export class ForwardAuthSecretResolver {
   }
 
   /**
+   * Ensure the host map is fresh, single-flighting the rebuild so a burst of subrequests past the
+   * TTL shares ONE repo read. On failure it keeps the last-known-good map and backs off briefly
+   * rather than re-attempting the failing reads on every request — an outage degrades to serving
+   * slightly stale host→app mappings, never to a per-request query storm.
+   */
+  private async ensureHostMapFresh(): Promise<void> {
+    if (this.hostMapExpiresAt > Date.now()) {
+      return;
+    }
+    if (!this.hostMapRebuild) {
+      this.hostMapRebuild = this.rebuildHostMap()
+        .catch((err) => {
+          this.hostMapExpiresAt = Date.now() + HOST_MAP_ERROR_BACKOFF_MS;
+          this.logger.warn(`[ForwardAuthSecretResolver] host map rebuild failed, backing off: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => {
+          this.hostMapRebuild = null;
+        });
+    }
+    await this.hostMapRebuild;
+  }
+
+  /**
+   * Drop any cached signing secret for an app so the next subrequest re-reads its app.env. Called
+   * on rotate (via ModuleRef, to avoid a module cycle): the app is about to restart holding a
+   * freshly minted secret, and a still-valid cache entry for its OLD secret would otherwise keep
+   * being signed until the TTL lapsed — 401ing the app for up to a full TTL after it came back up.
+   * Deleting entries of the current Map during iteration is well-defined in JS.
+   */
+  invalidateApp(appUrn: AppUrn): void {
+    for (const [host, entry] of this.secretCache) {
+      if (entry.value.appUrn === appUrn) {
+        this.secretCache.delete(host);
+      }
+    }
+  }
+
+  /**
    * Resolve the signing secret for a forward-auth subrequest. Never throws: any failure falls
    * back to the Hub-global secret, preserving pre-#74 behaviour.
    */
@@ -153,47 +201,48 @@ export class ForwardAuthSecretResolver {
       return cached.value;
     }
 
-    let value: ResolvedForwardAuthSecret;
+    // ONLY a definitive per-app secret read from app.env is cached. Every fallback to the global
+    // secret — unmatched host, matched-but-secretless app, or a transient read error — returns
+    // WITHOUT caching. Caching a fallback would pin the global secret for a full TTL over a state
+    // that is usually transient (an app mid-install, mid-rotation, or briefly unreadable), so the
+    // Hub would keep signing with the global secret for up to 30s after the app came back up
+    // holding its own per-app secret and began rejecting every global-signed header. The only cost
+    // of not caching is re-reading a secretless app's env per request, which is bounded (such apps
+    // are transitional) and cheap next to a sustained window of 401s.
+    let resolved: ResolvedForwardAuthSecret;
     try {
-      if (this.hostMapExpiresAt <= Date.now()) {
-        await this.rebuildHostMap();
-      }
+      await this.ensureHostMapFresh();
       const appUrn = this.hostToUrn.get(host);
-      if (appUrn) {
-        const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-        const secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
-        if (secret) {
-          value = { secret, appUrn, source: 'app-env' };
-        } else {
-          // Matched app without a provisioned secret: legitimate for apps that predate the
-          // per-app rollout (they verify nothing) — sign with the global value they may hold.
-          if (!this.warnedUrns.has(appUrn)) {
-            this.warnedUrns.add(appUrn);
-            this.logger.warn(`[ForwardAuthSecretResolver] ${appUrn} has no forward-auth secret in app.env; signing with the global secret`);
-          }
-          value = { ...this.globalSecret(), appUrn };
-        }
-      } else {
+      if (!appUrn) {
         // Unknown host (Hub dashboard, not-an-app route) — expected constantly, debug only.
-        // Deliberately NOT cached: resolving an unmatched host costs one Map lookup and no
-        // I/O, so a cache entry would buy nothing while adding a second staleness window on
-        // top of the host map's — a freshly installed app whose first request landed just
-        // after a rebuild would keep getting the global secret for a further full TTL, and
-        // its container (holding a per-app secret) would reject the signature the whole
-        // time. Skipping the write also keeps attacker-supplied junk hosts out of the cache
-        // entirely rather than relying on the size bound below to evict them.
         return this.globalSecret();
       }
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      const secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+      if (!secret) {
+        // Matched app without a provisioned secret: legitimate for apps that predate the per-app
+        // rollout (they verify nothing) and transiently true for one mid-install/mid-rotation.
+        // Sign with the global value they may hold, but do NOT cache it — the secret can land at
+        // any moment and a cached fallback would keep rejecting it until the TTL lapsed.
+        if (!this.warnedUrns.has(appUrn)) {
+          this.warnedUrns.add(appUrn);
+          this.logger.warn(`[ForwardAuthSecretResolver] ${appUrn} has no forward-auth secret in app.env; signing with the global secret`);
+        }
+        return { ...this.globalSecret(), appUrn };
+      }
+      resolved = { secret, appUrn, source: 'app-env' };
     } catch (err) {
       this.logger.warn(`[ForwardAuthSecretResolver] resolution failed for ${host}: ${err instanceof Error ? err.message : String(err)}`);
-      value = this.globalSecret();
+      return this.globalSecret();
     }
 
-    this.secretCache.set(host, { value, expiresAt: Date.now() + CACHE_TTL_MS });
-    // Bound the cache: hostnames are attacker-influenced input, so never let junk hosts grow it.
+    this.secretCache.set(host, { value: resolved, expiresAt: Date.now() + CACHE_TTL_MS });
+    // Belt-and-suspenders bound. Only definitive per-app entries reach here, so the cache is
+    // already bounded by the installed-app count (~apps × hostnames); this guards against a
+    // pathological host-map explosion, not attacker junk (junk hosts never get this far).
     if (this.secretCache.size > 512) {
       this.secretCache.clear();
     }
-    return value;
+    return resolved;
   }
 }

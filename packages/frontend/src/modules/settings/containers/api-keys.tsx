@@ -1,9 +1,11 @@
+import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { apiFetch } from '@/lib/api-fetch';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -38,12 +40,6 @@ const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
   return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
 };
 
-/** Known scopes get a labelled badge; unknown ones fall back to the raw scope string. */
-const SCOPE_BADGE_KEYS: Record<string, string> = {
-  mcp: 'API_KEYS_SCOPE_MCP',
-  app: 'API_KEYS_SCOPE_APP',
-};
-
 export const ApiKeysContainer = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -55,31 +51,35 @@ export const ApiKeysContainer = () => {
   // The raw key is returned only once, at creation — held here so the operator can copy it before it's gone.
   const [createdKey, setCreatedKey] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setKeys(await fetchApiKeys());
-    } catch {
-      setError(t('API_KEYS_LOAD_ERROR'));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
+  // One loader with a `silent` mode. The initial load drives the loading/error UI; a post-action
+  // refresh runs silent — a failed refresh must not be misreported as the action itself failing
+  // (the caller already toasted its own outcome), so it just leaves the list stale until next time.
+  const load = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        setKeys(await fetchApiKeys());
+      } catch {
+        if (!silent) {
+          setError(t('API_KEYS_LOAD_ERROR'));
+        }
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [t],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Never throws: callers toast their own action's outcome, and a failed list refresh must not be
-  // misreported as that action failing — the list just stays stale until the next successful load.
-  const refreshKeys = useCallback(async () => {
-    try {
-      setKeys(await fetchApiKeys());
-    } catch {
-      // stale list until the next refresh
-    }
-  }, []);
+  const refreshKeys = useCallback(() => load({ silent: true }), [load]);
 
   const createKey = useCallback(async () => {
     const name = newKeyName.trim();
@@ -127,19 +127,6 @@ export const ApiKeysContainer = () => {
     },
     [refreshKeys, t],
   );
-
-  // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
-  // (insecure context) or blocked, in which case we stay silent rather than falsely claim success.
-  const copyToClipboard = useCallback((text: string, successMsg: string) => {
-    const clip = navigator.clipboard;
-    if (!clip) return;
-    clip.writeText(text).then(
-      () => toast.success(successMsg),
-      () => {
-        /* clipboard write blocked — no false-positive toast */
-      },
-    );
-  }, []);
 
   return (
     <Card data-testid="api-keys">
@@ -194,9 +181,7 @@ export const ApiKeysContainer = () => {
                         <span className="truncate text-sm font-medium">{key.name}</span>
                         <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{key.prefix}…</code>
                         {key.scopes.map((scope) => (
-                          <span key={scope} className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
-                            {SCOPE_BADGE_KEYS[scope] ? t(SCOPE_BADGE_KEYS[scope]) : scope}
-                          </span>
+                          <ScopeBadge key={scope} scope={scope} />
                         ))}
                         {key.managed && (
                           <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={key.ownerAppUrn ?? undefined}>

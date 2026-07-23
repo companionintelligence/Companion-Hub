@@ -1,4 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
+import type { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { type MockProxy, mock } from 'vitest-mock-extended';
@@ -6,6 +7,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from '../app-lifecycle.service';
 import { HubAccessService } from '../hub-access.service';
@@ -16,6 +18,8 @@ describe('HubAccessService', () => {
   let apiKeys: MockProxy<ApiKeyService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let appLifecycle: MockProxy<AppLifecycleService>;
+  let forwardAuthResolver: MockProxy<ForwardAuthSecretResolver>;
+  let moduleRef: MockProxy<ModuleRef>;
 
   const urn = 'importer:ci-marketplace' as AppUrn;
   const managedKey = fromPartial<Awaited<ReturnType<ApiKeyService['list']>>[number]>({
@@ -33,7 +37,10 @@ describe('HubAccessService', () => {
     apiKeys = mock<ApiKeyService>();
     appFilesManager = mock<AppFilesManager>();
     appLifecycle = mock<AppLifecycleService>();
-    service = new HubAccessService(apiKeys, appFilesManager, appLifecycle, new EnvUtils(), mock<LoggerService>());
+    forwardAuthResolver = mock<ForwardAuthSecretResolver>();
+    moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockReturnValue(forwardAuthResolver);
+    service = new HubAccessService(apiKeys, appFilesManager, appLifecycle, new EnvUtils(), mock<LoggerService>(), moduleRef);
 
     appFilesManager.getInstalledAppInfo.mockResolvedValue(
       fromPartial({ urn, hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } } }),
@@ -81,6 +88,21 @@ describe('HubAccessService', () => {
       expect(written).toContain('OTHER=1');
       // The restart is what regenerates env + reloads the container in one event.
       expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn });
+      expect(res).toEqual({ requestId: 'req-1' });
+    });
+
+    it("flushes the resolver's cached signing secret for the app so the old one isn't served post-restart", async () => {
+      await service.rotate(urn);
+      expect(forwardAuthResolver.invalidateApp).toHaveBeenCalledWith(urn);
+    });
+
+    it('still rotates when the resolver cannot be resolved (cache flush is best-effort)', async () => {
+      moduleRef.get.mockImplementation(() => {
+        throw new Error('resolver unavailable');
+      });
+      const res = await service.rotate(urn);
+      expect(apiKeys.revokeManagedByApp).toHaveBeenCalledWith(urn);
+      expect(appLifecycle.restartApp).toHaveBeenCalled();
       expect(res).toEqual({ requestId: 'req-1' });
     });
 

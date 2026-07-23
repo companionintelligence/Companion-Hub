@@ -1,4 +1,5 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
@@ -127,19 +128,6 @@ export const McpSettingsContainer = () => {
     setRunArgs('{}');
     setRunResult(null);
     setRunConfirmed(false);
-  }, []);
-
-  // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
-  // (insecure context) or blocked, in which case we stay silent rather than falsely claim success.
-  const copyToClipboard = useCallback((text: string, successMsg: string) => {
-    const clip = navigator.clipboard;
-    if (!clip) return;
-    clip.writeText(text).then(
-      () => toast.success(successMsg),
-      () => {
-        /* clipboard write blocked — no false-positive toast */
-      },
-    );
   }, []);
 
   const runToolCall = useCallback(async () => {

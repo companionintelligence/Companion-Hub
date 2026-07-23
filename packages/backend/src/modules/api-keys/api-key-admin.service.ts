@@ -3,11 +3,6 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
 import { MCP_SCOPE } from './api-key.scopes';
 
-/** A key still counts as access: not expired (expiresAt null = never expires). */
-function isUsable(key: ApiKeyInfo): boolean {
-  return key.expiresAt === null || new Date(key.expiresAt).getTime() > Date.now();
-}
-
 /**
  * Business logic behind the session-authed hub-wide API-key admin surface (moved out of the MCP
  * admin service when keys grew beyond the MCP scope). Lists every stored key — operator and
@@ -57,8 +52,8 @@ export class ApiKeyAdminService {
     // (expired) key is always allowed — deleting a dead key can't reduce access. (Two concurrent
     // revokes could race past this check; a single operator drives this UI, so we accept that
     // over a transactional delete.)
-    if (!target.managed && isUsable(target)) {
-      const usableOperatorKeys = keys.filter((k) => !k.managed && isUsable(k));
+    if (!target.managed && this.apiKeys.isUsable(target)) {
+      const usableOperatorKeys = keys.filter((k) => !k.managed && this.apiKeys.isUsable(k));
       if (usableOperatorKeys.length <= 1) {
         throw new ConflictException('Cannot revoke the last operator API key — create a replacement key first');
       }

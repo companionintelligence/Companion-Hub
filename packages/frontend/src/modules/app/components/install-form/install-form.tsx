@@ -251,16 +251,19 @@ export const InstallForm: React.FC<IProps> = ({
       setValue('exposureMode', defaultMode);
       setValue('exposedLocal', true); // backward compat
       // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
-      // unconditionally silently discarded the operator's stored choice every time the settings
-      // dialog was opened — auth flipped back on, a customised port reverted to the manifest's,
-      // and openPort was recomputed from the exposure mode. Only fill what was never decided.
-      if (initialValues?.openPort === undefined) {
+      // unconditionally discarded the operator's choice. Two ways that bites: on an EDIT it reverts
+      // the stored value (guarded by `initialValues?.X === undefined`), and on a FRESH install this
+      // effect re-runs the moment the form goes dirty (isDirty is a dependency) and would re-assert
+      // the default over what the operator just typed — so a first attempt to turn auth off, or set
+      // a custom port, appeared to bounce back. The `!isDirty` guard stops the re-assert once the
+      // operator has touched the form, while still seeding defaults on the untouched initial render.
+      if (!isDirty && initialValues?.openPort === undefined) {
         setValue('openPort', defaultMode === 'local');
       }
-      if (initialValues?.enableAuth === undefined) {
+      if (!isDirty && initialValues?.enableAuth === undefined) {
         setValue('enableAuth', true);
       }
-      if (info.port && initialValues?.port === undefined) {
+      if (!isDirty && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
       // Reset publicDomain when switching apps (appChanged) so stale values

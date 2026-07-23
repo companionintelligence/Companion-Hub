@@ -954,6 +954,25 @@ describe('InstallForm', () => {
     });
   });
 
+  it('lets the operator turn auth OFF on a fresh install without it bouncing back on', async () => {
+    // The defaults effect re-runs when the form goes dirty (isDirty is a dependency). Without the
+    // `!isDirty` guard it re-asserted the ON default over the operator's very first toggle, so the
+    // switch appeared to snap back. One click must now stick.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    await act(async () => {
+      fireEvent.click(getEnableAuthSwitch());
+    });
+    await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+  });
+
   it('keeps a stored custom port when editing, rather than resetting to the manifest default', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 

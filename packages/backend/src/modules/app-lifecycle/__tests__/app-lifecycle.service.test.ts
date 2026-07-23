@@ -883,6 +883,18 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
+      // A PATCH that changes some other field WITHOUT resending enableAuth must inherit the app's
+      // stored explicit false, not resolve to the manifest default — "operator choice wins" has to
+      // hold for a partial update too, and this must not spuriously restart the app.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no enableAuth in the form
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
     it('re-submitting an already-healed config is a no-op (the default converges, it does not churn)', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);

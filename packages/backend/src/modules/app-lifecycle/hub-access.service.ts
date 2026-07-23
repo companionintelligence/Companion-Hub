@@ -1,9 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { hubTrustMaterialScopes } from '@/modules/apps/app.helpers';
+import { ForwardAuthSecretResolver } from '@/modules/auth/forward-auth-secret.resolver';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppLifecycleService } from './app-lifecycle.service';
 
@@ -31,15 +33,27 @@ export class HubAccessService {
     private readonly appLifecycle: AppLifecycleService,
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
-  /** What Hub trust material this app currently holds. */
-  async getStatus(appUrn: AppUrn): Promise<HubAccessStatus> {
+  /** Load the installed app manifest or 404 — shared by getStatus and rotate. */
+  private async requireApp(appUrn: AppUrn) {
     const info = await this.appFilesManager.getInstalledAppInfo(appUrn);
     if (!info) {
       throw new NotFoundException(`App ${appUrn} not found`);
     }
-    const [managed, appEnv] = await Promise.all([this.apiKeys.findManagedByApp(appUrn), this.appFilesManager.getAppEnv(appUrn)]);
+    return info;
+  }
+
+  /** What Hub trust material this app currently holds. */
+  async getStatus(appUrn: AppUrn): Promise<HubAccessStatus> {
+    // All three reads are independent — the manifest, the managed key, and the app.env — so fetch
+    // them together rather than serializing the manifest load ahead of the other two.
+    const [info, managed, appEnv] = await Promise.all([
+      this.requireApp(appUrn),
+      this.apiKeys.findManagedByApp(appUrn),
+      this.appFilesManager.getAppEnv(appUrn),
+    ]);
     const envMap = this.envUtils.envStringToMap(appEnv.content);
     return {
       appKey: managed ? { prefix: managed.prefix, scopes: managed.scopes, lastUsedAt: managed.lastUsedAt, createdAt: managed.createdAt } : null,
@@ -57,10 +71,7 @@ export class HubAccessService {
    * the Hub's signing source together, so nothing is left verifying against a dead value.
    */
   async rotate(appUrn: AppUrn): Promise<{ requestId: string }> {
-    const info = await this.appFilesManager.getInstalledAppInfo(appUrn);
-    if (!info) {
-      throw new NotFoundException(`App ${appUrn} not found`);
-    }
+    await this.requireApp(appUrn);
 
     await this.apiKeys.revokeManagedByApp(appUrn);
 
@@ -70,15 +81,24 @@ export class HubAccessService {
       await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
     }
 
+    // Drop the resolver's cached signing secret for this app NOW. The old per-app secret may still
+    // be a valid, unexpired cache entry; without this, /api/auth/traefik would keep signing with it
+    // for up to a full TTL after the app restarts holding its freshly minted secret — 401ing every
+    // request in between. Resolved lazily via ModuleRef so AppLifecycleModule need not depend on
+    // AuthModule (mirrors uninstall-app-command's ApiKeyService lookup); a miss is non-fatal (the
+    // TTL then bounds the window as before).
+    try {
+      this.moduleRef.get(ForwardAuthSecretResolver, { strict: false })?.invalidateApp(appUrn);
+    } catch (error) {
+      this.logger.warn(
+        `[HubAccessService] could not flush forward-auth cache for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     // The restart is what re-provisions: until it lands, the app still holds credentials the Hub
     // has just stopped honouring. That ordering is forced (regeneration only happens on restart),
     // so a failure here must be loud and must name the remedy — silently returning would leave the
     // app authenticating against nothing with no indication that a manual restart fixes it.
-    //
-    // No explicit ForwardAuthSecretResolver cache flush is needed: that cache's TTL is deliberately
-    // shorter than a container restart (see CACHE_TTL_MS), so by the time the app is back up holding
-    // its fresh secret the stale entry has already expired — the same brief-401-during-restart
-    // window the resolver already documents, which a rotation is just one instance of.
     try {
       const dispatched = await this.appLifecycle.restartApp({ appUrn });
       this.logger.info('Hub access material rotated', appUrn);
