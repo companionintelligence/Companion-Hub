@@ -3,11 +3,13 @@ import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnMo
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { buildHubLocalOrigin, buildHubPublicOrigin, isPrivateHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
@@ -80,11 +82,58 @@ function parseUtcMs(value: string): number {
   return new Date(hasZone ? trimmed : `${trimmed.replace(' ', 'T')}Z`).getTime();
 }
 
-/** State + the browser-reachable launcher URL a wrapper needs to render its gate. */
-export interface MemoryConnectStatus {
-  state: MemoryConnectionState;
-  /** Hub launcher URL to start the connect flow, or null if it can't be built. */
+/**
+ * Why a connect cannot be started right now. Machine-readable so the Hub UI can
+ * localise it and the wrappers can log something actionable — the previous
+ * contract expressed every one of these as a bare `connectUrl: null`, which is
+ * why a dead Connect button could never explain itself.
+ */
+export type ConnectBlockedReason =
+  /** ci-memory is not installed; there is nothing to connect to. */
+  | 'memory_absent'
+  /** ci-memory is installing / booting; a connect would 400 until it is up. */
+  | 'memory_starting'
+  /** ci-memory is installed but down (stopped, install_failed, …). */
+  | 'memory_offline'
+  /** This appliance has no public origin at all (unregistered / placeholder domain). */
+  | 'hub_not_provisioned'
+  /** The Hub's public origin is down and this caller cannot reach the LAN route either. */
+  | 'hub_unreachable'
+  /** ci-memory only has a LAN address and this caller is off-network. */
+  | 'provider_local_only';
+
+/**
+ * The launcher URLs available to one specific caller, plus why there are none.
+ *
+ * Deliberately caller-scoped rather than global: whether the LAN launcher is
+ * usable depends on where the browser is, so the same appliance answers this
+ * differently for a request that arrived on `http://192.168.1.5` than for one
+ * that arrived on `https://hub-….companionintelligence.com`.
+ */
+export interface ConnectLaunchers {
+  /** Public launcher, or null when there is no working public route. */
   connectUrl: string | null;
+  /** LAN launcher, or null when there is no LAN origin or this caller can't use it. */
+  connectUrlLocal: string | null;
+  /** Whether either launcher above is usable by this caller. */
+  connectable: boolean;
+  /** Why not, when `connectable` is false; null otherwise. */
+  reason: ConnectBlockedReason | null;
+}
+
+/** State + the browser-reachable launcher URLs a wrapper needs to render its gate. */
+export interface MemoryConnectStatus extends ConnectLaunchers {
+  state: MemoryConnectionState;
+}
+
+/**
+ * Where a request reached the Hub, so the service can answer "can THIS caller
+ * connect?" — and, when the flow starts, keep the whole ceremony on the origin it
+ * began on instead of relocating the user mid-flow.
+ */
+export interface RequestOriginContext {
+  /** Host header of the incoming request (`192.168.1.5:80`, `hub-x.example.com`). */
+  host?: string;
 }
 
 /** Richer status for the Hub app-detail UI. */
@@ -132,6 +181,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
     private readonly apps: AppsRepository,
+    private readonly tunnelHealth: TunnelHealthService,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -264,7 +314,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * browser should be redirected to. `next` is where the user lands after the
    * connection is applied.
    */
-  async startConnect(appUrn: AppUrn, next: string | undefined, userId: string): Promise<string> {
+  async startConnect(appUrn: AppUrn, next: string | undefined, userId: string, origin?: RequestOriginContext): Promise<string> {
     // The browser leg needs the public consent URL, so this is the one caller
     // that pays for the availability probe.
     const provider = await this.resolver.findProvider({ withPublicUrl: true });
@@ -277,16 +327,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       throw new BadRequestException('CI Memory is not reachable yet; try again once it is running');
     }
 
-    const hubOrigin = await this.hubOrigin();
+    // Run the whole ceremony on the origin the user actually arrived on. The
+    // callback, the finishing interstitial and the Hub session cookie all live on
+    // one origin, so deriving this from config instead of the request is what used
+    // to throw a LAN user onto the public origin mid-flow — where their session
+    // cookie does not exist and they are bounced to a second login.
+    const hubOrigin = await this.resolveFlowOrigin(origin);
 
     if (!hubOrigin) {
-      throw new BadRequestException('This Hub has no public origin to return to');
+      throw new BadRequestException('This Hub has no origin to return to');
     }
 
     // Open-redirect guard: only ever land the browser back on the Hub or on the
     // connecting app's own public URL. An attacker-supplied `next` (e.g. a
     // phishing hand-off right after the consent ceremony) falls back to the app.
-    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin);
+    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin, origin);
 
     const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
@@ -430,11 +485,21 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * refresh of the deny redirect, via the tombstone), else the Hub. A foreign
    * user's deny replay learns nothing (not even the app URL).
    */
-  abandonConnect(state: string | undefined, currentUserId: string): string {
+  abandonConnect(state: string | undefined, currentUserId: string, error?: string): string {
     const attempt = this.pending.consume(state, currentUserId);
 
     if (attempt.outcome === 'unknown' || attempt.outcome === 'foreign') {
-      return '/';
+      // No app to return to. Carry the provider's own error code onto the
+      // dashboard so the toast can distinguish "you declined" from "the consent
+      // page could not authenticate you" (CI-Server's `csrf_failed` /
+      // `login_required`), instead of the single generic marker this used to use.
+      return error ? `/?memoryConnect=${encodeURIComponent(error)}` : '/';
+    }
+
+    if (error) {
+      this.logger.warn(`[MemoryConnect] connect abandoned for ${attempt.appUrn}: provider reported '${error}'`);
+    } else {
+      this.logger.info(`[MemoryConnect] connect declined by the user for ${attempt.appUrn}`);
     }
 
     return attempt.redirect;
@@ -450,26 +515,35 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Wrapper-facing status: current state + the launcher URL to start connecting.
-   * `connectUrl` is null unless CI Memory is actually running — otherwise a
+   * Wrapper-facing status: current state + the launcher URLs to start connecting.
+   * The launchers are null unless CI Memory is actually running — otherwise a
    * wrapper would render a connect gate that dead-ends on startConnect's "not
-   * installed" / "not reachable yet" 400. `getProviderRuntimeStatus` here is the
-   * lightweight DB-only check, run in parallel with the other lookups.
+   * installed" / "not reachable yet" 400. `getProviderRuntimeInfo` here is the
+   * lightweight DB-only check (status + local-only), run in parallel with the
+   * state lookup.
    */
-  async getStatus(appUrn: AppUrn): Promise<MemoryConnectStatus> {
-    const [state, launcherUrl, providerStatus] = await Promise.all([
+  async getStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectStatus> {
+    const [state, providerInfo] = await Promise.all([
       this.connections.getState(appUrn),
-      this.buildLauncherUrl(appUrn),
       // Cheap DB-only status check, and fault-tolerant: a transient failure
       // degrades to "no connect URL" rather than 500ing the whole status poll
-      // (the state + launcher URL are independent of the provider lookup).
-      this.resolver.getProviderRuntimeStatus().catch(() => 'absent' as const),
+      // (the state is independent of the provider lookup).
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
     ]);
 
-    // Only offer the connect launcher when ci-memory is actually running. While it
-    // is merely installing/stopped a launcher link would dead-end on startConnect's
-    // "not reachable yet" 400, so the wrapper gate must suppress itself (null URL).
-    return { state, connectUrl: providerStatus === 'ready' ? launcherUrl : null };
+    const launchers = await this.resolveLaunchers({
+      appUrn,
+      providerStatus: providerInfo.status,
+      providerLocalOnly: providerInfo.localOnly,
+      origin,
+    });
+
+    // This endpoint drives a gate that BLOCKS the app, so it fails toward not
+    // gating: when nothing is connectable the wrapper receives null URLs, stands
+    // down, and lets the user into the app. `reason` still rides along so the
+    // wrapper can log why it suppressed itself — the previous contract made an
+    // unreachable Hub indistinguishable from a healthy one that had nothing to do.
+    return { state, ...launchers };
   }
 
   /**
@@ -477,7 +551,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * consumer, whether CI Memory is installed to connect to, the current
    * state, and the launcher URL.
    */
-  async getUiStatus(appUrn: AppUrn): Promise<MemoryConnectUiStatus> {
+  async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectUiStatus> {
     // Non-consumer apps render no card, so short-circuit before the provider
     // status + state/launcher lookups (the common case — most installed apps
     // are not memory consumers).
@@ -489,6 +563,9 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         providerStatus: 'absent',
         state: 'unconfigured',
         connectUrl: null,
+        connectUrlLocal: null,
+        connectable: false,
+        reason: null,
         keyExpiresAt: null,
       };
     }
@@ -496,11 +573,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     // getRow (not getState) so we get the key's expiry in the same query. The
     // coarse provider status (DB-only lite check) drives installed/ready — a mere
     // install-in-progress row must not read as "ready".
-    const [providerStatus, row, launcherUrl] = await Promise.all([
-      this.resolver.getProviderRuntimeStatus().catch(() => 'absent' as const),
+    const [providerInfo, row] = await Promise.all([
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
       this.connections.getRow(appUrn),
-      this.buildLauncherUrl(appUrn),
     ]);
+
+    const providerStatus = providerInfo.status;
 
     const memoryInstalled = providerStatus !== 'absent';
     const memoryReady = providerStatus === 'ready';
@@ -535,15 +613,25 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
     }
 
-    // Withhold the launcher URL unless ci-memory is running, so the Connect button
-    // can never navigate into a startConnect that would 400.
+    // Unlike `/state`, this endpoint drives a NON-blocking surface (the Connect
+    // button), so it fails toward *showing* — hiding the action here would make
+    // the feature look absent. `connectable: false` + `reason` is what lets the
+    // button render disabled with copy that says why, rather than the generic
+    // description it used to show over a dead click target.
+    const launchers = await this.resolveLaunchers({
+      appUrn,
+      providerStatus,
+      providerLocalOnly: providerInfo.localOnly,
+      origin,
+    });
+
     return {
       applicable: true,
       memoryInstalled,
       memoryReady,
       providerStatus,
       state: effectiveState,
-      connectUrl: memoryReady ? launcherUrl : null,
+      ...launchers,
       keyExpiresAt,
     };
   }
@@ -690,11 +778,241 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const org = await this.deviceRegistration.getFirstDeviceRegistration();
     const domain = this.config.getConfig().domain;
 
-    if (!org?.hubSubdomain || !domain || domain === 'example.com') {
+    return buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain });
+  }
+
+  /**
+   * The Hub's LAN origin (`http://<internalIp>:<port>`), served by the same
+   * gateway as the public route but unaffected by tunnel health. This is the
+   * fallback the connect surfaces offer when the public origin is down — and the
+   * origin that must also appear in ci-memory's `CI_HUB_ORIGINS` allowlist (see
+   * `AppHelpers`) for the callback leg to be accepted.
+   */
+  private hubLocalOrigin(): string | null {
+    const { userSettings } = this.config.getConfig();
+
+    return buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port });
+  }
+
+  /**
+   * Decide which connect launchers this caller can actually use.
+   *
+   * The rules, in the order they are applied:
+   *
+   *  1. **ci-memory must be running.** Anything else short-circuits with the
+   *     matching reason — a launcher offered while it is absent/starting/offline
+   *     would dead-end on `startConnect`'s 400.
+   *  2. **The public launcher is preferred whenever the public route works.**
+   *     Tunnel health `up`, `unknown` (no opinion — never suppress on a cold or
+   *     inconclusive reading) and a missing-but-configured origin all keep
+   *     today's behaviour. Only a confirmed `down` withdraws it.
+   *  3. **The LAN launcher is a fallback, never a preference.** It is offered only
+   *     when the public route is unusable AND the caller reached us on a private
+   *     host — a remote browser cannot route to `192.168.x.x`, so handing it that
+   *     URL would swap one dead button for another.
+   *  4. **The provider must be reachable by the same caller.** A locally-exposed
+   *     ci-memory publishes a private consent origin, so a caller known to be
+   *     off-network cannot complete the ceremony whichever Hub launcher they
+   *     start from. Only a *confirmed* remote caller is blocked — see
+   *     {@link callerLocality} for why "cannot tell" has to mean "allow".
+   *
+   * `providerLocalOnly` comes from the provider's `exposureMode` (a DB read), not
+   * from an availability probe — so a status poll stays cheap.
+   */
+  private async resolveLaunchers(input: {
+    appUrn: AppUrn;
+    providerStatus: MemoryProviderRuntimeStatus;
+    origin?: RequestOriginContext;
+    providerLocalOnly?: boolean;
+  }): Promise<ConnectLaunchers> {
+    const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
+      connectUrl: null,
+      connectUrlLocal: null,
+      connectable: false,
+      reason,
+    });
+
+    // 1. Nothing to connect to.
+    if (input.providerStatus !== 'ready') {
+      return blocked(
+        input.providerStatus === 'absent' ? 'memory_absent' : input.providerStatus === 'starting' ? 'memory_starting' : 'memory_offline',
+      );
+    }
+
+    // 4. A LAN-only provider is unusable from off-network, so this is checked
+    //    before we bother resolving launchers: no Hub launcher can rescue such a
+    //    caller, because the consent hop itself lands on a private address.
+    //
+    //    Blocks only on a CONFIRMED remote caller. `unknown` must not block — it
+    //    is what a `.<localDomain>` host reports (see `callerLocality`), and that
+    //    is the ordinary way a LAN visitor reaches a locally-exposed app.
+    //    Refusing them here would break the one deployment where a LAN-only
+    //    provider is the normal configuration, in order to protect a remote
+    //    caller whose connect was already impossible either way.
+    const locality = this.callerLocality(input.origin?.host);
+    const callerIsLocal = locality === 'local';
+
+    if (input.providerLocalOnly && locality === 'remote') {
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: CI Memory is exposed on the local network only; an off-network caller cannot reach its consent page`,
+      );
+
+      return blocked('provider_local_only');
+    }
+
+    const publicOrigin = await this.hubOrigin();
+    const localOrigin = this.hubLocalOrigin();
+    const health = this.tunnelHealth.getHealth();
+
+    // 2. Public route first, unless it is confirmed down. `unknown` deliberately
+    //    counts as usable — a cold Hub must behave exactly as it did before.
+    const publicUsable = Boolean(publicOrigin) && health !== 'down';
+
+    if (publicUsable && publicOrigin) {
+      return {
+        connectUrl: this.launcherFor(publicOrigin, input.appUrn),
+        // Still advertise the LAN launcher to a local caller so a client can pin
+        // itself to one origin if it wants to; `connectUrl` remains the default.
+        connectUrlLocal:
+          callerIsLocal && localOrigin && this.localOriginReachableBy(localOrigin, input.origin?.host)
+            ? this.launcherFor(localOrigin, input.appUrn)
+            : null,
+        connectable: true,
+        reason: null,
+      };
+    }
+
+    // 3. Fallback: LAN only, and only for a caller who can route to it.
+    if (callerIsLocal && localOrigin && this.localOriginReachableBy(localOrigin, input.origin?.host)) {
+      this.logger.info(
+        `[MemoryConnect] ${input.appUrn}: public origin unusable (tunnel ${health}); offering the LAN launcher ${localOrigin} to a local caller`,
+      );
+
+      return { connectUrl: null, connectUrlLocal: this.launcherFor(localOrigin, input.appUrn), connectable: true, reason: null };
+    }
+
+    return blocked(publicOrigin ? 'hub_unreachable' : 'hub_not_provisioned');
+  }
+
+  /** The Hub launcher URL for an app on a given origin. */
+  private launcherFor(origin: string, appUrn: AppUrn): string {
+    return `${origin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}`;
+  }
+
+  /**
+   * Where the caller that reached us on `callerHost` sits relative to the
+   * appliance's own network.
+   *
+   * Three answers, not two, because the two decisions that depend on this fail in
+   * opposite directions and a boolean would force one of them to be wrong:
+   *
+   *  - `local`   — offer the LAN launcher.
+   *  - `remote`  — a LAN-only ci-memory is genuinely unusable; block.
+   *  - `unknown` — withhold the LAN launcher (it may not route) but do NOT block
+   *                (it may well work).
+   *
+   * `unknown` is not a hedge; it is the honest answer for one specific host. The
+   * Cloudflare tunnel rewrites the `Host` header to `<app-fqdn>.<localDomain>`
+   * (`…​.ci.lan`) before handing the request to Traefik — see
+   * `buildOriginServerName` — so a REMOTE visitor arrives carrying a `.ci.lan`
+   * host. But so does a LAN visitor who browsed to the app's local subdomain
+   * directly. The header genuinely cannot distinguish them, and guessing either
+   * way strands somebody: called `local`, a remote browser gets a
+   * `http://192.168.x.x` launcher it cannot route to; called `remote`, a LAN user
+   * of a LAN-only ci-memory is refused a connect that would have worked.
+   *
+   * Private IP literals and loopback remain trustworthy: nothing rewrites a Host
+   * into those, so they only appear when the browser really did address the
+   * appliance directly.
+   */
+  private callerLocality(callerHost: string | undefined): 'local' | 'remote' | 'unknown' {
+    const hostname = this.hostnameOf(callerHost);
+
+    if (!hostname) {
+      return 'unknown';
+    }
+
+    // Read the override first, then the base value — the same precedence
+    // `AppHelpers` uses when it writes LOCAL_DOMAIN into an app's env, so the two
+    // cannot disagree about which suffix the tunnel rewrites to.
+    const config = this.config.getConfig();
+    const localDomain = (config.userSettings?.localDomain || config.localDomain)?.trim().toLowerCase();
+    const candidate = hostname.toLowerCase();
+
+    if (localDomain && (candidate === localDomain || candidate.endsWith(`.${localDomain}`))) {
+      return 'unknown';
+    }
+
+    return isPrivateHostname(hostname) ? 'local' : 'remote';
+  }
+
+  /**
+   * Whether `localOrigin` is actually routable by a caller that reached us on
+   * `callerHost`.
+   *
+   * Guards one specific trap: with a listen-all `INTERNAL_IP` (`0.0.0.0` / `::`),
+   * {@link buildHubLocalOrigin} collapses to `http://127.0.0.1`. Handing that to a
+   * visitor who reached the appliance at `192.168.1.9` points them at their OWN
+   * machine — swapping one dead link for another, which is precisely the failure
+   * this change set exists to remove. A loopback origin is therefore only offered
+   * to a caller that is itself on loopback.
+   */
+  private localOriginReachableBy(localOrigin: string, callerHost: string | undefined): boolean {
+    const localHostname = this.hostnameOf(localOrigin);
+
+    if (localHostname !== '127.0.0.1' && localHostname !== '::1') {
+      return true;
+    }
+
+    const callerHostname = this.hostnameOf(callerHost);
+
+    return callerHostname === 'localhost' || callerHostname === '127.0.0.1' || callerHostname === '::1';
+  }
+
+  /**
+   * Hostname of a `Host` header or an absolute URL, without the port. Returns
+   * null for anything unparseable, which every caller treats as "not private" —
+   * failing toward withholding the LAN launcher rather than offering it blindly.
+   *
+   * IPv6 literals come back bare (`::1`), not in the bracketed form `URL.hostname`
+   * reports (`[::1]`). Without that normalisation an IPv6 loopback origin — which
+   * {@link buildHubLocalOrigin} does produce, via `resolveBrowserHost`'s bracketing
+   * — never matches the loopback comparisons in {@link localOriginReachableBy},
+   * silently defeating the very guard that method exists to provide.
+   */
+  private hostnameOf(hostOrUrl: string | null | undefined): string | null {
+    // Untrusted and not always a string: Express hands us `string[]` for a
+    // repeated query key (`?clientHost=a&clientHost=b`). Reject anything but a
+    // single string rather than crashing on `.trim` — an array would otherwise
+    // throw a TypeError here, OUTSIDE the try below, and 500 the whole poll.
+    if (typeof hostOrUrl !== 'string') {
       return null;
     }
 
-    return `https://${org.hubSubdomain}.${domain}`;
+    const value = hostOrUrl.trim();
+
+    if (!value) {
+      return null;
+    }
+
+    try {
+      // A bare `Host` header has no scheme; give it one so URL can parse it.
+      const url = new URL(value.includes('://') ? value : `http://${value}`);
+
+      // Reject embedded userinfo. `evil.com@192.168.1.9` parses to hostname
+      // 192.168.1.9, so trusting it would let a remote caller forge a private
+      // host — being classified `local`, bypassing the provider_local_only block
+      // and getting handed (or told) the appliance's LAN launcher.
+      if (url.username || url.password) {
+        return null;
+      }
+
+      const hostname = url.hostname;
+
+      return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -703,15 +1021,36 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * (or an unparseable value) falls back to the app's public URL, then the Hub.
    * This closes the open-redirect the raw `next` param would otherwise allow.
    */
-  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string): Promise<string> {
-    const appPublicUrl = await this.resolver.getAppPublicUrl(appUrn);
-    // Only the Hub or the connecting app's own origin — NOT the memory
+  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, origin?: RequestOriginContext): Promise<string> {
+    const appAccessUrls = await this.resolver.getAppAccessUrls(appUrn);
+    const appPublicUrl = appAccessUrls.publicUrl;
+    // Only the Hub or the connecting app's own origins — NOT the memory
     // provider's — as documented above. The provider is never a designed
     // landing page, so it stays out of the allowlist.
+    //
+    // "The app's origins" is plural on purpose: an app reached over the LAN has a
+    // perfectly legitimate `http://<ip>:<port>` origin that the previous
+    // single-URL allowlist rejected, silently relocating the user to the public
+    // origin they had deliberately not been using. Both Hub origins are allowed
+    // for the same reason — the flow may legitimately be running on either.
     const allowedOrigins = new Set<string>([hubOrigin]);
-    if (appPublicUrl) {
+    const localHubOrigin = this.hubLocalOrigin();
+    // Only allowlist the LAN Hub origin when THIS caller could actually route to
+    // it. With a listen-all INTERNAL_IP it collapses to loopback (127.0.0.1 /
+    // [::1]); allowlisting that unconditionally would let an attacker-supplied
+    // `next` bounce any visitor to their own loopback — an open-redirect the same
+    // guard already prevents for the launcher path.
+    if (localHubOrigin && this.localOriginReachableBy(localHubOrigin, origin?.host)) {
+      allowedOrigins.add(localHubOrigin);
+    }
+
+    for (const candidate of [appAccessUrls.publicUrl, appAccessUrls.localUrl]) {
+      if (!candidate) {
+        continue;
+      }
+
       try {
-        allowedOrigins.add(new URL(appPublicUrl).origin);
+        allowedOrigins.add(new URL(candidate).origin);
       } catch {
         /* ignore unparseable */
       }
@@ -727,7 +1066,23 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
     }
 
-    return appPublicUrl ?? hubOrigin;
+    // No usable `next` (the desktop flow never sends one). Prefer the app's
+    // primary route, but fall back to its LAN address when that route is not
+    // actually serving — landing the user on a known-dead public URL is the same
+    // mistake as offering a dead launcher.
+    //
+    // The LAN fallback is only useful to a caller who can reach the LAN. A
+    // confirmed-remote caller is landed on the public URL even when it is
+    // currently down (it may recover; a `http://192.168.x.x` address never will
+    // for them) — otherwise this would strand the very off-network user the
+    // primary-down branch is meant to help.
+    const callerIsRemote = this.callerLocality(origin?.host) === 'remote';
+
+    if (appPublicUrl && (appAccessUrls.primaryAvailable !== false || callerIsRemote)) {
+      return appPublicUrl;
+    }
+
+    return appAccessUrls.localUrl ?? appPublicUrl ?? hubOrigin;
   }
 
   /**
@@ -748,11 +1103,30 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
-  /** The browser-reachable Hub launcher URL for an app, or null if no Hub origin. */
-  private async buildLauncherUrl(appUrn: AppUrn): Promise<string | null> {
-    const hubOrigin = await this.hubOrigin();
+  /**
+   * The Hub origin the connect ceremony should run on for this request.
+   *
+   * Prefers the origin the browser actually used, so the flow stays on one origin
+   * end to end — but only after checking it against the two origins this Hub
+   * legitimately answers on. An unrecognised `Host` (a spoofed header, or a proxy
+   * we do not know about) falls back to the configured public origin rather than
+   * being echoed into a redirect target, which would be an open redirect.
+   *
+   * Falls back to the LAN origin when there is no public one, so a never-registered
+   * appliance can still run the flow entirely on its own network.
+   */
+  private async resolveFlowOrigin(origin?: RequestOriginContext): Promise<string | null> {
+    const publicOrigin = await this.hubOrigin();
+    const localOrigin = this.hubLocalOrigin();
+    const requestHostname = this.hostnameOf(origin?.host);
 
-    return hubOrigin ? `${hubOrigin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}` : null;
+    for (const candidate of [publicOrigin, localOrigin]) {
+      if (candidate && requestHostname && this.hostnameOf(candidate) === requestHostname) {
+        return candidate;
+      }
+    }
+
+    return publicOrigin ?? localOrigin;
   }
 
   /**

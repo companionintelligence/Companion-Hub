@@ -52,6 +52,62 @@ import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAut
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
 
+/**
+ * Whether THIS browser can plausibly reach an app's LAN address
+ * (`http://<lan-ip>:<port>`). That address is only routable from the appliance's
+ * own network, and the availability probe reports it caller-independently, so the
+ * one locality signal available on the client is the origin this page was served
+ * from: a page on a private/loopback/local-domain host is on the LAN, one on a
+ * public tunnel origin is not. Desktop and any ambiguous origin err toward `true`
+ * — hiding a working route is worse than showing one a remote user can ignore.
+ */
+function currentPageCanReachLan(): boolean {
+  // A desktop webview origin (tauri://…) says nothing about the network, and the
+  // LAN address is opened through the Hub session handoff regardless.
+  if (getTauriInvoke()) return true;
+  if (typeof window === 'undefined') return true;
+
+  const host = window.location.hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  if (!host) return true;
+
+  // Named local hosts.
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+
+  // CRITICAL: the private-range checks below must ONLY apply to real IP literals.
+  // Applying them to any hostname (e.g. `/^192\.168\./` or `startsWith('fc')`)
+  // misclassifies public FQDNs like `192.168.cdn.example.com`, `fcbank.com` or
+  // `fd-cdn.example.com` as LAN-reachable, which re-shows the dead "Open on local
+  // network" button to a remote browser — the exact failure this gate removes.
+  // Kept deliberately in step with the backend's isPrivateHostname (hub-origin.ts):
+  // detect the literal first, then classify. See CI-Engineering#75.
+  const isIpv4Literal = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) && host.split('.').every((octet) => Number(octet) <= 255);
+  const isIpv6Literal = host.includes(':') && /^[0-9a-f:]+$/.test(host);
+
+  if (isIpv4Literal) {
+    // loopback / RFC1918 / link-local / CGNAT (100.64.0.0/10).
+    return (
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+    );
+  }
+
+  if (isIpv6Literal) {
+    // loopback / ULA (fc00::/7) / link-local (fe80::/10) — matching the backend's
+    // stricter regexes rather than a bare startsWith.
+    return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+  }
+
+  // A non-literal hostname: only the conventional private LAN suffixes qualify.
+  return ['.local', '.lan', '.internal', '.home', '.localdomain'].some((suffix) => host.endsWith(suffix));
+}
+
 interface IProps {
   app?: AppDetails | null;
   info: AppInfo;
@@ -351,6 +407,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const {
     state: publicUrlState,
     appUrl,
+    localUrl,
     statusMessage,
     withinGracePeriod,
     pollingStopped,
@@ -403,6 +460,32 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       </button>
     ) : null;
 
+    // A real alternative route, not just an escape hatch. When the public route
+    // is unreachable but the app publishes a LAN port, it is very likely serving
+    // there right now — a broken tunnel says nothing about the local network. So
+    // offer that as an ENABLED primary action instead of the disabled button this
+    // used to show next to a perfectly healthy app (CI-Engineering#75).
+    //
+    // But `localUrl` is `http://<lan-ip>:<port>`, reachable only from the
+    // appliance's own network. `localUrl` itself is caller-independent (the
+    // backend attaches it to every verdict), so we gate on THIS page's origin: a
+    // dashboard loaded over the public tunnel is a remote browser that cannot
+    // reach a 192.168.x address, and offering it that link would just reinstate
+    // the dead button. Ambiguous origins err toward showing it.
+    const openLocallyButton =
+      localUrl && currentPageCanReachLan() ? (
+        <ActionButton
+          IconComponent={ExternalLink}
+          onClick={() => openExternalUrl(localUrl)}
+          title={t('APP_ACTION_OPEN_LOCALLY')}
+          variant="default"
+          size="lg"
+          className="launch-action-button"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t('APP_ACTION_OPEN_LOCALLY_DESC')}
+        />
+      ) : null;
+
     // Available — show enabled Open button
     if (publicUrlState === 'ready') {
       return (
@@ -441,6 +524,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if ((publicUrlState === 'propagating' || publicUrlState === 'unreachable') && (resolvable || pollingStopped)) {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
+          {/* The LAN route leads first when there is one: it is the action most
+              likely to actually work, whereas Resolve only attempts a repair. */}
+          {openLocallyButton}
           {pollingStopped ? (
             <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={restartProbe} />
           ) : (
@@ -466,7 +552,10 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     if (publicUrlState === 'unreachable' || publicUrlState === 'propagating') {
       return (
         <div key="open-error" className="flex flex-col items-start gap-1">
-          <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
+          {/* Prefer the working route over a red disabled button. The failed
+              public route is still reported below, so the user knows the app is
+              only reachable locally rather than silently getting a different URL. */}
+          {openLocallyButton ?? <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />}
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
           {openAnywayLink}
         </div>
@@ -570,20 +659,46 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       );
     }
 
-    if (memory.memoryReady) {
+    if (memory.memoryReady && memory.connectable) {
       return (
         <ActionButton
           key="memory-connect"
           IconComponent={BrainCircuit}
           title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
           onClick={memory.connect}
-          disabled={!memory.connectUrl}
           variant="outline"
           size="lg"
           className="launch-action-button memory-action-button"
           data-tooltip-id="app-actions-tooltip"
           data-tooltip-content={t('MEMORY_CONNECT_DESC')}
         />
+      );
+    }
+
+    // ci-memory is up, but this browser cannot start a connect — the Hub's public
+    // origin is down and we're not on its LAN, or ci-memory is LAN-only and we
+    // are not. Keep the affordance visible (this surface blocks nothing) but say
+    // WHY: this branch used to render the enabled button with `disabled` derived
+    // from a null URL and the generic "what connecting does" tooltip, so the user
+    // got a dead control with no explanation. Tooltip anchored on the wrapper
+    // span because a disabled button has `pointer-events: none`.
+    if (memory.memoryReady) {
+      return (
+        <span
+          key="memory-connect-blocked"
+          className="inline-flex"
+          data-tooltip-id="app-actions-tooltip"
+          data-tooltip-content={t(memory.blockedReasonKey ?? 'MEMORY_CONNECT_DESC')}
+        >
+          <ActionButton
+            IconComponent={BrainCircuit}
+            title={t('MEMORY_CONNECT_ACTION_CONNECT_MEMORY')}
+            disabled
+            variant="outline"
+            size="lg"
+            className="launch-action-button memory-action-button"
+          />
+        </span>
       );
     }
 
