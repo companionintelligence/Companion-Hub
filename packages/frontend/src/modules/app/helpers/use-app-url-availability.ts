@@ -33,6 +33,8 @@ export type AppUrlProbeStage = 'ready' | 'propagating' | 'error';
 export interface AppUrlProbeResult {
   available: boolean;
   appUrl?: string;
+  /** Direct LAN address, present even on failure verdicts (see the backend's AppAvailabilityResult). */
+  localUrl?: string;
   stage?: AppUrlProbeStage;
   detail?: string;
   errorCode?: string;
@@ -58,6 +60,13 @@ export interface AppUrlAvailability {
    * it would strand a user whose app is in fact serving.
    */
   appUrl: string | null;
+  /**
+   * The app's direct LAN address, when it has one. Independent of `state`: a
+   * Cloudflare-exposed app whose tunnel is down is very often still serving on
+   * the local network, and this is what lets the Open button offer that route
+   * instead of a disabled button next to a working app.
+   */
+  localUrl: string | null;
   /** Already-translated explanation ("DNS propagating..."); null when ready/idle. */
   statusMessage: string | null;
   /** The backend believes a `resolve` attempt could fix this. */
@@ -101,6 +110,8 @@ const PROBE_MESSAGE_KEYS: Record<string, string> = {
   CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
   CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
+  // Without this the user saw the backend's raw English detail string.
+  TAILSCALE_NOT_READY: 'APP_ACTION_ERROR_TAILSCALE_NOT_READY',
   UNKNOWN: 'APP_ACTION_APPLICATION_ERROR',
 };
 
@@ -178,6 +189,38 @@ export function derivePublicUrlState(input: {
  */
 function isProbeApplicable(input: { status?: AppStatus | null; noGui?: boolean; exposureMode?: string | null }): boolean {
   return input.status === 'running' && !input.noGui && (input.exposureMode || 'local') !== 'local';
+}
+
+/**
+ * Latch the last non-empty `value`, clearing it whenever `resetKey` changes.
+ *
+ * A ref rather than state on purpose: this must not itself trigger a render. It
+ * only ever supplies a fallback for a value the current render already lacks, so
+ * the render that stores it has nothing new to show.
+ *
+ * The reset and the latch both happen DURING render, not in effects. An effect
+ * runs after commit, so on the first render after `resetKey` changes the ref
+ * would still hold the previous key's value — long enough to hand one app's LAN
+ * URL to another app's Open button. Comparing the key inline closes that window.
+ *
+ * The latch and its owning key live in ONE ref and the return is guarded by that
+ * key, so even under concurrent rendering — where a discarded render may write a
+ * ref it never commits — a latch stamped with a different key can never be handed
+ * back: a stale write is re-derived away on the next render and, until then, the
+ * key guard withholds it.
+ */
+function useLastKnownUrl(value: string | undefined, resetKey: string): string | null {
+  const ref = useRef<{ key: string; url: string | null }>({ key: resetKey, url: null });
+
+  if (ref.current.key !== resetKey) {
+    ref.current = { key: resetKey, url: null };
+  }
+
+  if (value) {
+    ref.current = { key: resetKey, url: value };
+  }
+
+  return ref.current.key === resetKey ? ref.current.url : null;
 }
 
 /**
@@ -282,21 +325,14 @@ export function useAppUrlAvailability(input: {
     };
   }, [appUrn, enabled, runId, routeAvailable, queryClient, queryOptions.queryKey]);
 
-  // Remember the last URL the backend resolved. Some verdicts carry no URL at
-  // all (a momentary registration or Tailscale blip), and letting the "Open
-  // anyway" link vanish under the user's cursor would remove their only way into
-  // an app that may well be serving. Reset per app, so one app's URL can never
-  // be offered for another.
-  const lastKnownAppUrlRef = useRef<string | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: appUrn is the reset trigger, not a value the effect reads.
-  useEffect(() => {
-    lastKnownAppUrlRef.current = null;
-  }, [appUrn]);
-  useEffect(() => {
-    if (probe?.appUrl) {
-      lastKnownAppUrlRef.current = probe.appUrl;
-    }
-  }, [probe?.appUrl]);
+  // Remember the last URL the backend resolved, and the last LAN address. Some
+  // verdicts carry no URL at all (a momentary registration or Tailscale blip),
+  // and letting the "Open anyway" link — or the local-network escape hatch —
+  // vanish under the user's cursor would remove their only way into an app that
+  // may well be serving. Both reset per app, so one app's URL can never be
+  // offered for another.
+  const lastKnownAppUrl = useLastKnownUrl(probe?.appUrl, appUrn);
+  const lastKnownLocalUrl = useLastKnownUrl(probe?.localUrl, appUrn);
 
   // A failed request is "no verdict", not "unavailable": the app may well be up
   // and the Hub call is what broke. Keep the UI neutral and let the next tick
@@ -322,8 +358,11 @@ export function useAppUrlAvailability(input: {
   }, [query.error, appUrn]);
 
   const reset = useCallback(() => {
-    // Drop the cached verdict as well as the local latches, so `hasVerdict`
-    // falls back to false and the UI returns to a neutral "checking".
+    // Drop the cached verdict and re-arm the probe, so `hasVerdict` falls back to
+    // false and the UI returns to a neutral "checking". The last-known-URL latches
+    // are deliberately NOT cleared: reset() only fires for the same app (Resolve),
+    // so keeping them preserves the "Open anyway" / local-network escape hatch
+    // while the fresh probe runs. They clear only when appUrn changes.
     void queryClient.resetQueries({ queryKey: queryOptions.queryKey });
     setRunId((current) => current + 1);
   }, [queryClient, queryOptions.queryKey]);
@@ -387,7 +426,8 @@ export function useAppUrlAvailability(input: {
 
   return {
     state,
-    appUrl: probe?.appUrl ?? lastKnownAppUrlRef.current,
+    appUrl: probe?.appUrl ?? lastKnownAppUrl,
+    localUrl: probe?.localUrl ?? lastKnownLocalUrl,
     statusMessage,
     resolvable: Boolean(probe?.resolvable),
     withinGracePeriod: !graceElapsed && !pollingStopped,
@@ -407,6 +447,7 @@ export function useAppUrlAvailability(input: {
 export const IDLE_APP_URL_AVAILABILITY: AppUrlAvailability = {
   state: 'idle',
   appUrl: null,
+  localUrl: null,
   statusMessage: null,
   resolvable: false,
   withinGracePeriod: false,

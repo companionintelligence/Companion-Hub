@@ -10,6 +10,37 @@ import { useTranslation } from 'react-i18next';
 /** Coarse ci-memory lifecycle, mirrors the backend MemoryProviderRuntimeStatus. */
 export type MemoryProviderStatus = 'ready' | 'starting' | 'offline' | 'absent';
 
+/** Mirrors the backend ConnectBlockedReason. */
+export type ConnectBlockedReason =
+  | 'memory_absent'
+  | 'memory_starting'
+  | 'memory_offline'
+  | 'hub_not_provisioned'
+  | 'hub_unreachable'
+  | 'provider_local_only';
+
+/**
+ * Why the Connect action is unavailable, as user-facing copy. Without this a
+ * blocked Connect button rendered disabled under the generic "what connecting
+ * does" tooltip, which explained the feature but never the obstacle.
+ */
+const BLOCKED_REASON_KEYS: Record<ConnectBlockedReason, string> = {
+  memory_absent: 'MEMORY_CONNECT_NOT_INSTALLED',
+  memory_starting: 'MEMORY_CONNECT_STARTING_DESC',
+  memory_offline: 'MEMORY_CONNECT_OFFLINE_DESC',
+  hub_not_provisioned: 'MEMORY_CONNECT_BLOCKED_HUB_NOT_PROVISIONED',
+  hub_unreachable: 'MEMORY_CONNECT_BLOCKED_HUB_UNREACHABLE',
+  provider_local_only: 'MEMORY_CONNECT_BLOCKED_PROVIDER_LOCAL_ONLY',
+};
+
+/**
+ * Translation key explaining why connecting is blocked, or null when it isn't.
+ * Exported for tests.
+ */
+export function resolveBlockedReasonKey(reason: ConnectBlockedReason | null | undefined): string | null {
+  return reason ? (BLOCKED_REASON_KEYS[reason] ?? null) : null;
+}
+
 /** Mirrors the backend MemoryConnectUiStatus (GET /api/memory-connect/apps/:urn/status). */
 export interface MemoryConnectionStatus {
   applicable: boolean;
@@ -20,7 +51,14 @@ export interface MemoryConnectionStatus {
   /** Why it isn't ready, so the UI can say "starting" vs "offline". */
   providerStatus: MemoryProviderStatus;
   state: 'unconfigured' | 'connected' | 'skipped' | 'manual';
+  /** Absolute public launcher, or null when the public route is unusable. */
   connectUrl: string | null;
+  /** Absolute LAN launcher, or null when this caller can't use one. */
+  connectUrlLocal: string | null;
+  /** Whether a connect can be started at all right now. */
+  connectable: boolean;
+  /** Why not, when `connectable` is false. */
+  reason: ConnectBlockedReason | null;
   /** ISO instant the key expires (when connected); the Hub auto-rotates before this. */
   keyExpiresAt: string | null;
 }
@@ -156,7 +194,7 @@ export function useMemoryConnection(appUrn: string) {
   const status = query.data ?? null;
 
   const connect = () => {
-    if (!status?.connectUrl) {
+    if (!status?.connectable) {
       return;
     }
 
@@ -176,7 +214,18 @@ export function useMemoryConnection(appUrn: string) {
     // browser (via a one-time handoff ticket), so the consent round-trip's Hub hops
     // authenticate instead of bouncing to a second Hub login.
     if (getTauriInvoke()) {
-      void openExternalWithHubSession(status.connectUrl);
+      // Desktop needs an ABSOLUTE launcher: the webview is served from
+      // tauri://localhost, so a same-origin path would resolve against the
+      // bundle, not the Hub. Prefer the public route and fall back to the LAN
+      // one, which is what makes connecting work from the desktop app while the
+      // tunnel is down.
+      const desktopLauncher = status.connectUrl ?? status.connectUrlLocal;
+
+      if (!desktopLauncher) {
+        return;
+      }
+
+      void openExternalWithHubSession(desktopLauncher);
 
       // The consent completes in that separate browser, so this webview never
       // reloads (unlike the web path's full-page return to `next`). Refetch this
@@ -195,9 +244,19 @@ export function useMemoryConnection(appUrn: string) {
       return;
     }
 
-    // Web: same-origin navigation — return to this app-detail page after the
-    // connection is applied.
-    window.location.href = `${status.connectUrl}&next=${encodeURIComponent(window.location.href)}`;
+    // Web: start the flow on the origin this page is ALREADY being served from,
+    // via a relative path. The `start` endpoint lives on the Hub itself, so the
+    // browser resolves it against the current origin — which is by definition
+    // reachable (it just served this page) and already holds the session cookie.
+    //
+    // Using the backend's absolute `connectUrl` here is what used to throw a user
+    // browsing the Hub over the LAN onto the public origin, where their session
+    // does not exist and a dead tunnel has nothing to serve. The backend still
+    // validates `app` and `next` on arrival, so this shortens the hop without
+    // loosening anything.
+    const launcher = `/api/memory-connect/start?app=${encodeURIComponent(appUrn)}`;
+
+    window.location.href = `${launcher}&next=${encodeURIComponent(window.location.href)}`;
   };
 
   return {
@@ -211,6 +270,11 @@ export function useMemoryConnection(appUrn: string) {
     /** Coarse provider lifecycle for precise "starting"/"offline" copy. */
     providerStatus: status?.providerStatus ?? 'absent',
     connectUrl: status?.connectUrl ?? null,
+    connectUrlLocal: status?.connectUrlLocal ?? null,
+    /** Whether a connect can be started right now (drives the button's enabled state). */
+    connectable: !!status?.connectable,
+    /** Translated-key explanation for a blocked connect, or null when it isn't blocked. */
+    blockedReasonKey: resolveBlockedReasonKey(status?.reason),
     connect,
     disconnect: () => disconnect.mutate(),
     isDisconnecting: disconnect.isPending,

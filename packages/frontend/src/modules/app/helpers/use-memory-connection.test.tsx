@@ -73,6 +73,9 @@ describe('useMemoryConnection connect()', () => {
     providerStatus: 'ready',
     state: 'unconfigured',
     connectUrl: CONNECT_URL,
+    connectUrlLocal: null,
+    connectable: true,
+    reason: null,
     keyExpiresAt: null,
   };
 
@@ -148,12 +151,14 @@ describe('useMemoryConnection connect()', () => {
     result.current.connect();
 
     expect(ext.openExternalWithHubSession).not.toHaveBeenCalled();
-    expect(window.location.href).toBe(`${CONNECT_URL}&next=${encodeURIComponent(CURRENT_HREF)}`);
+    expect(window.location.href).toBe(`/api/memory-connect/start?app=${encodeURIComponent(NORMAL)}&next=${encodeURIComponent(CURRENT_HREF)}`);
   });
 
   it('does nothing when there is no connect URL', async () => {
     ext.getTauriInvoke.mockReturnValue(vi.fn());
-    h.get.mockResolvedValue({ data: { ...READY_STATUS, connectUrl: null, memoryReady: false, providerStatus: 'starting' } });
+    h.get.mockResolvedValue({
+      data: { ...READY_STATUS, connectUrl: null, connectable: false, reason: 'memory_starting', memoryReady: false, providerStatus: 'starting' },
+    });
     const { result } = renderHook(() => useMemoryConnection(NORMAL), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.applicable).toBe(true));
 

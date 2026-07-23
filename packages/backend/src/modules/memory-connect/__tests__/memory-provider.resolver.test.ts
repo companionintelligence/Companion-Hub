@@ -93,6 +93,43 @@ describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
   });
 });
 
+describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const readyMemory = (exposureMode?: string) => [{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode }];
+
+  it('is local-only for a LAN-exposed provider', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+  });
+
+  it('is local-only for a Tailscale-exposed provider — its MagicDNS consent page is not publicly reachable', async () => {
+    // The bug this pins: a tailscale provider was reporting localOnly=false, so a
+    // confirmed-remote caller was never blocked and got sent to an unreachable
+    // tailnet consent URL that hangs.
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+  });
+
+  it('is NOT local-only for a Cloudflare-exposed provider — a public browser can reach it', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
+  });
+
+  it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+  });
+});
+
 describe('MemoryProviderResolver.findProvider', () => {
   beforeEach(() => vi.clearAllMocks());
 
