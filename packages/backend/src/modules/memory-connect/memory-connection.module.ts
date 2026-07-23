@@ -10,7 +10,7 @@ import { MemoryConnectionService } from './memory-connection.service';
  * Kept deliberately dependency-light (only the global Database/Logger modules +
  * EncryptionModule) so that both AppsModule (env generation reads stored creds)
  * and the orchestration MemoryConnectModule can import it without a circular
- * dependency — the same split McpApiKeyModule uses for the api-key store.
+ * dependency — the same split ApiKeyModule uses for the api-key store.
  */
 @Module({
   imports: [EncryptionModule, LoggerModule],

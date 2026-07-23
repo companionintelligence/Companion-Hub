@@ -19,6 +19,7 @@ import {
   formFieldSchema,
   frontmatterSchema,
   hubIntegrationSchema,
+  manifestDefaultsEdgeAuthOn,
 } from './app-info.js';
 import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, MemoryUrlStyle, RandomEncoding } from './app-info.js';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from './port-expose.js';
@@ -70,6 +71,7 @@ export {
   agentOpenApiConfigSchema,
   agentSkillConfigSchema,
   hubIntegrationSchema,
+  manifestDefaultsEdgeAuthOn,
   sseSchema,
   frontmatterSchema,
   isPortExposeApp,

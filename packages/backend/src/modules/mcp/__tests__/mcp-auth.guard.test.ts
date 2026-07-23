@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { McpAuthGuard } from '../mcp-auth.guard';
-import { McpApiKeyService } from '../mcp-api-key.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { UnauthorizedException } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -18,12 +18,12 @@ function mockExecutionContext(authHeader?: string) {
 
 describe('McpAuthGuard', () => {
   let guard: McpAuthGuard;
-  let apiKeys: MockProxy<McpApiKeyService>;
+  let apiKeys: MockProxy<ApiKeyService>;
 
   beforeEach(async () => {
-    apiKeys = mock<McpApiKeyService>();
+    apiKeys = mock<ApiKeyService>();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpAuthGuard, { provide: LoggerService, useValue: mock<LoggerService>() }, { provide: McpApiKeyService, useValue: apiKeys }],
+      providers: [McpAuthGuard, { provide: LoggerService, useValue: mock<LoggerService>() }, { provide: ApiKeyService, useValue: apiKeys }],
     }).compile();
 
     guard = module.get<McpAuthGuard>(McpAuthGuard);
@@ -37,7 +37,7 @@ describe('McpAuthGuard', () => {
     it('allows a request whose Bearer token matches a stored key', async () => {
       apiKeys.validate.mockResolvedValue(true);
       await expect(guard.canActivate(mockExecutionContext('Bearer stored-key'))).resolves.toBe(true);
-      expect(apiKeys.validate).toHaveBeenCalledWith('stored-key');
+      expect(apiKeys.validate).toHaveBeenCalledWith('stored-key', 'mcp');
     });
 
     it('rejects the env MCP_API_KEY itself when the store does not contain it (no env fallback)', async () => {

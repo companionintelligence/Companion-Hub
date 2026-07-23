@@ -251,7 +251,12 @@ export const InstallForm: React.FC<IProps> = ({
       setValue('exposureMode', defaultMode);
       setValue('exposedLocal', true); // backward compat
       setValue('openPort', defaultMode === 'local');
-      setValue('enableAuth', true); // Enable authentication by default
+      // Enable authentication by default — but only when there is no stored operator
+      // choice to respect: unconditionally forcing ON here silently flipped an
+      // explicitly auth-OFF app back on whenever its settings dialog was saved.
+      if (initialValues?.enableAuth === undefined) {
+        setValue('enableAuth', true);
+      }
       if (info.port) {
         setValue('port', info.port.toString());
       }
@@ -550,6 +555,9 @@ export const InstallForm: React.FC<IProps> = ({
                   {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
                 </Tooltip>
                 <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                {info.hub_integration?.edge_auth?.default ? (
+                  <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
+                ) : null}
               </>
             }
           />

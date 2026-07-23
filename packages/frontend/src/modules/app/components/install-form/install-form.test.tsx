@@ -935,4 +935,74 @@ describe('InstallForm', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(dnsMessage);
   });
+
+  // The enable-auth switch carries aria-label={name} (see Switch), so its accessible name is the
+  // field name, not the translated label text.
+  const getEnableAuthSwitch = () => screen.getByRole('switch', { name: 'enableAuth' });
+
+  it('defaults the enable-auth switch ON for a fresh install', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).toBeChecked();
+    });
+  });
+
+  it('keeps the enable-auth switch OFF when editing an app saved with auth disabled', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    // The init effect must respect the stored operator choice: enableAuth is only defaulted to ON
+    // when initialValues carry no explicit value, so a saved auth-OFF app stays OFF on re-open.
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo()}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare', enableAuth: false }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).not.toBeChecked();
+    });
+  });
+
+  it('shows the recommended hint when the manifest defaults edge auth on', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    const infoWithEdgeAuth = {
+      ...(exposableInfo() as object),
+      hub_integration: { edge_auth: { default: true } },
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={infoWithEdgeAuth} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).toBeInTheDocument();
+  });
+
+  it('does not show the recommended hint for apps without an edge-auth default', () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(getEnableAuthSwitch()).toBeInTheDocument(); // the switch itself still renders
+    expect(screen.queryByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).not.toBeInTheDocument();
+  });
 });

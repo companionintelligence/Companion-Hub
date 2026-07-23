@@ -2,7 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
 import type { SSE } from '@ci-hub/common/schemas';
-import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -616,6 +616,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
+    // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
+    // "Require Auth" toggle — the onboarding install path sends no enableAuth at all — an
+    // exposable app that ships `hub_integration.edge_auth.default: true` starts protected.
+    // Fallback only: an explicit operator true/false (form or API) always wins, and a
+    // manifest can never force auth OFF. Placed before the queue publish so compose/labels
+    // and the persisted row all see the resolved value.
+    if (parsedForm.enableAuth === undefined) {
+      parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
+    }
+
     if (appInfo.force_expose && !exposed) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
@@ -678,7 +688,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposureMode: parsedForm.exposureMode ?? 'local',
         appStoreSlug: appStoreId,
         isVisibleOnGuestDashboard,
-        enableAuth: enableAuth ?? false,
+        enableAuth: parsedForm.enableAuth ?? false,
       }));
 
     if (existingApp) {
@@ -695,7 +705,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
         isVisibleOnGuestDashboard,
-        enableAuth: enableAuth ?? false,
+        enableAuth: parsedForm.enableAuth ?? false,
       });
     }
 
@@ -1417,6 +1427,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+
+    if (!appInfo) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
+    // "Require Auth" toggle, an exposable app that ships `hub_integration.edge_auth.default:
+    // true` starts protected. Fallback only: an explicit operator true/false always wins, and
+    // a manifest can never force auth OFF. This MUST run before the no-change short-circuit
+    // below: version bumps re-submit the stored config verbatim (updateApp → this method), and
+    // an onboarding-era install whose stored config never decided enableAuth self-heals on the
+    // first update under a manifest that ships the default — the resolved `true` is what makes
+    // hasConfigChanged see a difference at all.
+    if (parsedForm.enableAuth === undefined) {
+      parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
+    }
+
     const settingsChanged = this.hasConfigChanged(
       normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
       parsedForm as Record<string, unknown>,
@@ -1424,12 +1452,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (!settingsChanged) {
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
-    }
-
-    const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
-
-    if (!appInfo) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
     if (!appInfo.exposable) {

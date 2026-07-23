@@ -163,7 +163,12 @@ export const apiKey = pgTable(
   'api_key',
   {
     id: serial().primaryKey().notNull(),
-    audience: varchar({ length: 16 }).default('mcp').notNull(), // which surface accepts this key
+    // Transitional: single-valued predecessor of `scopes`, dual-written as scopes[0] for one
+    // release so a rolled-back Hub still reads the table correctly. Dropped in a follow-up.
+    audience: varchar({ length: 16 }).default('mcp').notNull(),
+    // Which surfaces accept this key ('mcp' tools, 'app' callbacks). One key can open several, so
+    // a companion app holds a single credential and scope grants never rotate its secret.
+    scopes: text().array().default([]).notNull(),
     name: varchar().notNull(),
     prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
     hashedKey: varchar('hashed_key').notNull(),

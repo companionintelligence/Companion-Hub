@@ -1,16 +1,13 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { type McpApiKeyInfo, McpApiKeyService } from './mcp-api-key.service';
+import type { ApiKeyInfo } from '@/modules/api-keys/api-key.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { ApiKeyAdminService } from '@/modules/api-keys/api-key-admin.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
-
-/** A key still counts as access: not expired (expiresAt null = never expires). */
-function isUsable(key: McpApiKeyInfo): boolean {
-  return key.expiresAt === null || new Date(key.expiresAt).getTime() > Date.now();
-}
 
 /** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate
  *  and a `category` for grouping the catalog). */
@@ -35,7 +32,8 @@ export class McpAdminService {
     private readonly mcpService: McpService,
     private readonly sessions: McpSessionRegistry,
     private readonly configuration: ConfigurationService,
-    private readonly apiKeys: McpApiKeyService,
+    private readonly apiKeys: ApiKeyService,
+    private readonly apiKeyAdmin: ApiKeyAdminService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -49,8 +47,8 @@ export class McpAdminService {
       toolCount: this.registry.listTools().length,
       activeSessions: this.sessions.activeSessions,
       destructiveAllowed: McpToolRegistry.destructiveAllowedByEnv(),
-      // SEC-MCP-8: number of stored API keys (operator + managed) — replaces the single-key flag.
-      activeKeyCount: await this.apiKeys.count(),
+      // SEC-MCP-8: number of keys accepted by the MCP surface ('mcp' scope, operator + managed).
+      activeKeyCount: await this.apiKeys.count('mcp'),
       endpoint: '/api/mcp',
     };
   }
@@ -102,46 +100,21 @@ export class McpAdminService {
     return { destructiveAllowed: allow };
   }
 
-  /** List all stored API keys (operator + managed) — hashes/raw values are never included. */
-  async listKeys(): Promise<McpApiKeyInfo[]> {
-    return this.apiKeys.list();
-  }
-
   /**
-   * SEC-MCP-8: create an operator API key. Returns the raw key exactly once so the operator can copy
-   * it; only its hash is stored. Multiple keys are valid at once, so "rotation" is create-new →
-   * roll-out → revoke-old, with no downtime for connected agents.
+   * Transitional delegates: key management moved to the hub-wide surface
+   * (`/api/api-keys`, {@link ApiKeyAdminService}) once keys grew beyond the MCP
+   * scope. These keep the old `/api/mcp-admin/keys` routes working for one
+   * release so a not-yet-refreshed frontend build doesn't lose key management.
    */
-  async createKey(name: string): Promise<McpApiKeyInfo & { key: string }> {
-    const created = await this.apiKeys.create(name);
-    this.logger.info('MCP admin: API key created', created.id);
-    return created;
+  async listKeys(): Promise<ApiKeyInfo[]> {
+    return this.apiKeyAdmin.listKeys();
   }
 
-  /** Revoke a key by id. Managed keys can be revoked too (break-glass) — the owning app loses MCP
-   *  access until it is re-provisioned on its next install/env-regen. */
+  async createKey(name: string): Promise<ApiKeyInfo & { key: string }> {
+    return this.apiKeyAdmin.createKey(name);
+  }
+
   async revokeKey(id: number): Promise<{ revoked: boolean }> {
-    const keys = await this.apiKeys.list();
-    const target = keys.find((k) => k.id === id);
-    if (!target) {
-      this.logger.info('MCP admin: API key revoke', id, 'not-found');
-      return { revoked: false };
-    }
-    // SEC-MCP-8: never revoke the last USABLE OPERATOR key. Managed keys don't count (uninstalls
-    // delete them, and an operator must not lose access when the last app leaves) and neither do
-    // expired keys. This guarantees the store never empties through any path, so the boot-time
-    // seed can never resurrect a deliberately revoked Default key. Revoking an already-unusable
-    // (expired) key is always allowed — deleting a dead key can't reduce access. (Two concurrent
-    // revokes could race past this check; a single operator drives this UI, so we accept that
-    // over a transactional delete.)
-    if (!target.managed && isUsable(target)) {
-      const usableOperatorKeys = keys.filter((k) => !k.managed && isUsable(k));
-      if (usableOperatorKeys.length <= 1) {
-        throw new ConflictException('Cannot revoke the last operator API key — create a replacement key first');
-      }
-    }
-    const revoked = await this.apiKeys.revoke(id);
-    this.logger.info('MCP admin: API key revoke', id, revoked ? 'ok' : 'not-found');
-    return { revoked };
+    return this.apiKeyAdmin.revokeKey(id);
   }
 }

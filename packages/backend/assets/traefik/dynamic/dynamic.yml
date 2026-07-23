@@ -8,5 +8,10 @@ http:
       forwardAuth:
         address: "http://ci-os-hub:5002/api/auth/traefik"
         trustForwardHeader: true
+        # All three signed identity headers must ride through — Traefik copies ONLY the
+        # headers listed here, and consumers verifying the signature fail closed on a
+        # missing timestamp/signature (CI-Engineering#74).
         authResponseHeaders:
           - "X-CI-Hub-User"
+          - "X-CI-Hub-User-Timestamp"
+          - "X-CI-Hub-User-Signature"

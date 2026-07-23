@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { HubAccess } from '../components/hub-access/hub-access';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 
@@ -197,6 +198,10 @@ export default () => {
       </Card>
 
       <AppAccessPoints app={app} info={info} />
+
+      {/* Hub-provisioned trust material (app key + identity secret). Installed apps only; the
+          component itself renders nothing for apps without any Hub access. */}
+      {app && app.status !== 'missing' ? <HubAccess appUrn={appUrn} /> : null}
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs
