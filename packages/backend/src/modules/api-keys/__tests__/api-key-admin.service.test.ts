@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyAdminService } from '../api-key-admin.service';
@@ -26,18 +26,6 @@ describe('ApiKeyAdminService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-  });
-
-  beforeEach(() => {
-    // The admin guard now delegates usability to ApiKeyService.isUsable (single source of the
-    // fail-closed expiry rule); give the mock that real behaviour so the guard tests exercise it.
-    apiKeys.isUsable.mockImplementation((key) => {
-      if (key.expiresAt === null) {
-        return true;
-      }
-      const ms = new Date(key.expiresAt).getTime();
-      return !Number.isNaN(ms) && ms > Date.now();
-    });
   });
 
   it("createKey mints an 'mcp'-scoped operator key and returns the raw key once", async () => {
