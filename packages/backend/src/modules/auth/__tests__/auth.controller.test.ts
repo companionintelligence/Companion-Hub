@@ -288,6 +288,59 @@ describe('AuthController', () => {
       expect(location.searchParams.get('redirect')).toBe(`https://${APP_HOST}/path`);
     });
 
+    it('does not treat an unrelated param that merely ends in the ticket name as a ticket', async () => {
+      // `?xcihub_sso=1` substring-matches `cihub_sso=` but is a DIFFERENT param. Treating it as a
+      // lingering ticket "cleans" the URL to an identical string and redirects to itself forever.
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'x-forwarded-uri': '/home?xcihub_sso=1', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+      } as unknown as Request;
+      const res = { ...consumeRes(), setHeader: vi.fn() } as unknown as Response;
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 's', source: 'global' });
+
+      await authController.traefik(req, res);
+
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200); // signed pass-through, not a self-redirect
+    });
+
+    it('redirects the browser to https, not the tunnel hop scheme, when consuming through the tunnel', async () => {
+      // The tunnel connects to the plain-HTTP entrypoint, so X-Forwarded-Proto is 'http' for
+      // every remote visitor even though their page is https. Echoing the hop scheme would
+      // bounce the browser to http://<public-host>.
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'cf-ray': 'ray-LAX',
+          'x-forwarded-uri': '/files?cihub_sso=t-1',
+          'x-forwarded-proto': 'http',
+          'x-forwarded-host': APP_HOST,
+        },
+        cookies: {},
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/files`);
+    });
+
+    it('refuses a single-label forwarded host instead of crashing on an underivable hub origin', async () => {
+      const req = {
+        user: undefined,
+        headers: { 'x-forwarded-uri': '/', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'localhost' },
+        cookies: {},
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
+
     it('strips a lingering ticket with a clean redirect when already authenticated', async () => {
       // LAN fast path: the domain cookie authenticated the request before the ticket was ever
       // consumed. The credential-bearing URL must not reach the app.

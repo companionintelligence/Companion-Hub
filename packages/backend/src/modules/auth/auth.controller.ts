@@ -728,11 +728,14 @@ export class AuthController {
   /** Lowercase, port-stripped view of a forwarded host — the same normalization the secret
    *  resolver applies, so ticket host-binding and host-map lookups agree on the key. */
   private normalizeForwardedHost(value: string | string[] | undefined): string {
+    return this.rawForwardedHost(value).toLowerCase().replace(/:\d+$/, '');
+  }
+
+  /** The forwarded host as the browser sent it (port preserved), first value if the header was
+   *  repeated — for rebuilding redirect URLs the browser must land back on. */
+  private rawForwardedHost(value: string | string[] | undefined): string {
     const raw = Array.isArray(value) ? value[0] : value;
-    if (typeof raw !== 'string') {
-      return '';
-    }
-    return raw.trim().toLowerCase().replace(/:\d+$/, '');
+    return typeof raw === 'string' ? raw.trim() : '';
   }
 
   /**
@@ -786,15 +789,23 @@ export class AuthController {
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = this.normalizeForwardedHost(req.headers['x-forwarded-host']);
+    const rawHost = this.rawForwardedHost(req.headers['x-forwarded-host']);
     const uri = (req.headers['x-forwarded-uri'] as string | undefined) || '/';
     const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http';
+    // The scheme the BROWSER is on, as opposed to the hop Traefik saw: the tunnel connects to
+    // the plain-HTTP entrypoint, so the forwarded proto is 'http' for every remote visitor even
+    // though their page is https. Redirects the browser must follow have to use its own scheme —
+    // echoing the hop's would bounce a remote visitor to http://<public-host>.
+    const browserProto = req.headers['cf-ray'] ? 'https' : proto;
 
     if (req.user) {
       // A ticket that reaches an already-authenticated request was never consumed (the LAN
       // domain cookie short-circuited the exchange). Strip it with one extra redirect so the
       // credential-bearing URL never reaches the app's logs or stays in the address bar.
-      if (forwardedHost && uri.includes(`${EDGE_SSO_TICKET_PARAM}=`)) {
-        return res.status(302).redirect(`${proto}://${req.headers['x-forwarded-host']}${this.cleanForwardedUri(uri)}`);
+      // Matched as an exact query param, never by substring: an unrelated `…cihub_sso=`-suffixed
+      // param would otherwise "clean" to an identical URL and redirect to itself forever.
+      if (forwardedHost && this.extractEdgeSsoTicket(uri)) {
+        return res.status(302).redirect(`${browserProto}://${rawHost}${this.cleanForwardedUri(uri)}`);
       }
 
       // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
@@ -852,7 +863,7 @@ export class AuthController {
         // session must still resolve — a ticket outliving its session plants nothing.
         if (sessionId && targetHost === forwardedHost && this.sessionManager.resolveSessionUserId(sessionId)) {
           await this.setSessionCookie(res, sessionId, req);
-          return res.status(302).redirect(`${proto}://${req.headers['x-forwarded-host']}${this.cleanForwardedUri(uri)}`);
+          return res.status(302).redirect(`${browserProto}://${rawHost}${this.cleanForwardedUri(uri)}`);
         }
       }
     }
@@ -878,6 +889,11 @@ export class AuthController {
       target = `https://${publicAppHost}${cleanUri}`;
     } else {
       const rootDomain = forwardedHost.split('.').slice(1).join('.');
+      // A single-label host (`localhost`, a bare container name) leaves nothing to derive a Hub
+      // origin from — refuse plainly. The old code fed the empty root into new URL() and 500'd.
+      if (!rootDomain) {
+        return res.status(401).send();
+      }
       hubOrigin = `${proto}://${rootDomain}`;
       target = `${proto}://${forwardedHost}${cleanUri}`;
     }
