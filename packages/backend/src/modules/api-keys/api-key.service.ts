@@ -196,11 +196,16 @@ export class ApiKeyService {
     return created.key;
   }
 
-  /** Revoke a companion app's managed key(s) — called on uninstall so access dies with the app. */
+  /**
+   * Revoke a companion app's managed key(s). Called on uninstall (access dies with the app) and on
+   * an operator rotate (the old key stops resolving before the app restarts holding a fresh one),
+   * so the log line names neither — an operator reading it during a rotate should not be told the
+   * app was uninstalled.
+   */
   async revokeManagedByApp(appUrn: string): Promise<void> {
     const removed = await this.repo.deleteByOwnerAppUrn(appUrn);
     if (removed > 0) {
-      this.logger.info('Managed key revoked on uninstall', appUrn, `(${removed})`);
+      this.logger.info('Managed key revoked', appUrn, `(${removed})`);
     }
   }
 
