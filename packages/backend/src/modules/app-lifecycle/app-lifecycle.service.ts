@@ -1460,7 +1460,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (!appInfo.exposable) {
-      if (exposed || exposedLocal || enableAuth) {
+      // Read from parsedForm, not the destructured copies taken at the top of this method: both
+      // the production-exposed guard above and the edge-auth defaulting have since mutated it, so
+      // the stale copies would make this warning describe the REQUEST rather than what is actually
+      // being reset — announcing a reset that already happened, and staying silent on an
+      // enableAuth the defaulting just resolved.
+      if (parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
       }
       parsedForm.exposed = false;

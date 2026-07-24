@@ -895,6 +895,29 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
+      // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
+      // so the warning must read the resolved values. Reading the destructured copies taken at the
+      // top of the method would stay silent here — the request carried no enableAuth, yet an
+      // enableAuth of true is exactly what is about to be reset away.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('stays silent when a non-exposable app has nothing to reset', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+    });
+
     it('re-submitting an already-healed config is a no-op (the default converges, it does not churn)', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
