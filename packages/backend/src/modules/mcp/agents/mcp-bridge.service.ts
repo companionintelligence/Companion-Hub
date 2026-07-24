@@ -391,7 +391,12 @@ export class McpBridgeService implements OnModuleDestroy {
 
       proc.on('error', (err) => settle(() => reject(err)));
       proc.stdin.write(input);
-      proc.stdin.end();
+      // Deliberately NOT closing stdin: docker's exec stream tears down on stdin EOF and
+      // (racily, ~1 in 3 from inside the Hub container) cancels the copy of input that was
+      // written just before — the server then answers initialize but never sees tools/list,
+      // or sees nothing at all ("context canceled"). Leaving stdin open makes the server
+      // idle-wait after answering; we already kill the exec the moment the matching
+      // response id arrives (tryResolveResponse), and the timeout reaps everything else.
     });
   }
 
