@@ -111,6 +111,37 @@ describe('AuthController', () => {
       expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: true }));
     });
 
+    it('strips the port before deriving the cookie domain', async () => {
+      // `getCookieDomain` gates on `validator.isFQDN`, which rejects `ci.lan:8443` outright. The
+      // resulting host-only cookie is not cosmetic on the LAN: the `.ci.lan` domain cookie is what
+      // lets an app subdomain see the session, so SSO silently stops working over the documented
+      // `:8443` tailnet path.
+      authService.getCookieDomain.mockReturnValue('.ci.lan' as never);
+      const res = cookieRes();
+
+      await authController.login(
+        { username: 'op', password: 'pw' } as never,
+        res,
+        loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'Hub.CI.lan:8443' }),
+      );
+
+      expect(authService.getCookieDomain).toHaveBeenCalledWith('hub.ci.lan');
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ domain: '.ci.lan' }));
+    });
+
+    it('takes the first hop of a comma-joined forwarded host before deriving the cookie domain', async () => {
+      authService.getCookieDomain.mockReturnValue('.example.com' as never);
+      const res = cookieRes();
+
+      await authController.login(
+        { username: 'op', password: 'pw' } as never,
+        res,
+        loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub.example.com, proxy.example' }),
+      );
+
+      expect(authService.getCookieDomain).toHaveBeenCalledWith('hub.example.com');
+    });
+
     it('leaves the cookie unflagged over plain http', async () => {
       // Regression pin: an http appliance must not get a Secure cookie or the browser drops it.
       authService.getCookieDomain.mockReturnValue('.ci.lan' as never);

@@ -94,7 +94,13 @@ export class AuthController {
    * domain-match the browser's host, so the cookie is discarded (RFC 6265) and the visitor loops.
    */
   private async setSessionCookie(res: Response, sessionId: string, req: Request, scope?: { host?: string; proto?: string }) {
-    const host = scope?.host ?? (req.headers['x-forwarded-host'] as string | undefined);
+    // Normalized for the same reason `/traefik` normalizes it: `getCookieDomain` gates on
+    // `validator.isFQDN`, which rejects a port (`ci.lan:8443`) and a comma-joined repeat
+    // (`hub.example.com, proxy.example`) alike. Either one silently drops the Domain attribute and
+    // makes the cookie host-only — which on the LAN is not cosmetic: the `.ci.lan` domain cookie
+    // is exactly what lets an app subdomain see the session, so SSO stops working over the
+    // documented `:8443` tailnet path with nothing in the logs to say why.
+    const host = normalizeForwardedHost(scope?.host ?? req.headers['x-forwarded-host']);
     // First hop only: a repeated header reaches Node comma-joined, and `https, http` matches
     // neither branch below, so an https request would silently be treated as plaintext.
     const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
