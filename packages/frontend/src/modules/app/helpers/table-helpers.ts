@@ -10,6 +10,7 @@ import {
   Gamepad2,
   Music,
   PiggyBank,
+  Plug,
   Radio,
   ShieldCheck,
   Star,
@@ -33,6 +34,7 @@ export const colorSchemeForCategory: Record<string, string> = {
   finance: 'dark',
   gaming: 'pink',
   ai: 'muted',
+  mcp: 'violet',
 };
 
 type AppCategoryEntry = {
@@ -49,6 +51,7 @@ export const iconForCategory: AppCategoryEntry[] = [
   { id: 'development', icon: Code },
   { id: 'finance', icon: PiggyBank },
   { id: 'gaming', icon: Gamepad2 },
+  { id: 'mcp', icon: Plug },
   { id: 'media', icon: Clapperboard },
   { id: 'music', icon: Music },
   { id: 'network', icon: Radio },

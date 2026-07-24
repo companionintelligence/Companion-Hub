@@ -219,6 +219,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'mcp',
   'companion-intelligence',
 ] as const;
 export type AppCategory = (typeof APP_CATEGORIES)[number];
