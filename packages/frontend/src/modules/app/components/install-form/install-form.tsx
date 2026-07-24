@@ -248,8 +248,16 @@ export const InstallForm: React.FC<IProps> = ({
         cloudflareAvailable,
         tailscaleAvailable,
       });
-      setValue('exposureMode', defaultMode);
-      setValue('exposedLocal', true); // backward compat
+      // Seed only while the form is untouched, or when it has been reused for a DIFFERENT app.
+      // Same trap as the defaults below: this effect depends on isDirty, so writing
+      // unconditionally re-asserted the resolved default the instant the operator picked a mode
+      // and made their selection bounce back. Keeping `appChanged` means switching apps still
+      // re-resolves the mode against what that app supports, rather than inheriting the previous
+      // app's choice.
+      if (!isDirty || appChanged) {
+        setValue('exposureMode', defaultMode);
+        setValue('exposedLocal', true); // backward compat
+      }
       // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
       // unconditionally discarded the operator's choice. Two ways that bites: on an EDIT it reverts
       // the stored value (guarded by `initialValues?.X === undefined`), and on a FRESH install this

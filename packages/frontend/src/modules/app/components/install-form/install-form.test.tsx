@@ -973,6 +973,32 @@ describe('InstallForm', () => {
     await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
   });
 
+  it('lets the operator switch exposure mode on a fresh install without it bouncing back', async () => {
+    // Same init-effect hazard as enableAuth, on the field the effect seeds first: the resolved
+    // default was written unconditionally, so the moment the operator picked a mode the form went
+    // dirty, the effect re-ran, and the default overwrote the choice.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    const modeButton = (key: string) => screen.getByRole('button', { name: `APP_INSTALL_FORM_EXPOSURE_${key}` });
+    const isSelected = (key: string) => modeButton(key).className.includes('bg-primary');
+
+    // Seeds to the first available mode (cloudflare) on the untouched form.
+    await waitFor(() => expect(isSelected('CLOUDFLARE')).toBe(true));
+
+    await act(async () => {
+      fireEvent.click(modeButton('LOCAL'));
+    });
+
+    await waitFor(() => expect(isSelected('LOCAL')).toBe(true));
+    expect(isSelected('CLOUDFLARE')).toBe(false);
+  });
+
   it('keeps a stored custom port when editing, rather than resetting to the manifest default', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 
