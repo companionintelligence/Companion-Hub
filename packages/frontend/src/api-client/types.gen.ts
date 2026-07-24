@@ -189,6 +189,32 @@ export type MyAppsDto = {
             id: string;
             name: string;
             no_gui: boolean;
+            mcp?: {
+                transport: 'stdio' | 'http';
+                command?: string;
+                args?: Array<string>;
+                url?: string;
+                env?: Array<{
+                    key: string;
+                    label?: string;
+                    hint?: string;
+                    required?: boolean;
+                    secret?: boolean;
+                }>;
+                requires?: {
+                    host_software?: Array<string>;
+                    notes?: string;
+                };
+                tags?: Array<string>;
+                manifest?: {
+                    tools?: Array<{
+                        name: string;
+                        description?: string;
+                    }>;
+                    resources?: Array<unknown>;
+                    prompts?: Array<unknown>;
+                };
+            };
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
@@ -281,6 +307,32 @@ export type GuestAppsDto = {
             id: string;
             name: string;
             no_gui: boolean;
+            mcp?: {
+                transport: 'stdio' | 'http';
+                command?: string;
+                args?: Array<string>;
+                url?: string;
+                env?: Array<{
+                    key: string;
+                    label?: string;
+                    hint?: string;
+                    required?: boolean;
+                    secret?: boolean;
+                }>;
+                requires?: {
+                    host_software?: Array<string>;
+                    notes?: string;
+                };
+                tags?: Array<string>;
+                manifest?: {
+                    tools?: Array<{
+                        name: string;
+                        description?: string;
+                    }>;
+                    resources?: Array<unknown>;
+                    prompts?: Array<unknown>;
+                };
+            };
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
@@ -360,6 +412,32 @@ export type GetAppDto = {
         id: string;
         name: string;
         no_gui: boolean;
+        mcp?: {
+            transport: 'stdio' | 'http';
+            command?: string;
+            args?: Array<string>;
+            url?: string;
+            env?: Array<{
+                key: string;
+                label?: string;
+                hint?: string;
+                required?: boolean;
+                secret?: boolean;
+            }>;
+            requires?: {
+                host_software?: Array<string>;
+                notes?: string;
+            };
+            tags?: Array<string>;
+            manifest?: {
+                tools?: Array<{
+                    name: string;
+                    description?: string;
+                }>;
+                resources?: Array<unknown>;
+                prompts?: Array<unknown>;
+            };
+        };
         short_desc: string;
         source: string;
         supported_architectures: Array<'amd64' | 'arm64'>;

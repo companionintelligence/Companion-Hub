@@ -131,6 +131,77 @@ describe('AgentConfigService', () => {
     });
   });
 
+  describe('marketplace top-level mcp block (#936)', () => {
+    const MCP_URN = 'fetch-mcp:ci-marketplace' as AppUrn;
+
+    const makeMcpAppInfo = (mcp: unknown, agents?: unknown): AppInfo =>
+      ({ id: 'fetch-mcp', urn: MCP_URN, name: 'Fetch MCP', available: true, agents, mcp }) as unknown as AppInfo;
+
+    it('normalizes a stdio listing: command string + args → command array, resolved container', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/data/apps/ci-marketplace/fetch-mcp/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'fetch-mcp', isMain: true, image: 'x' }] },
+      });
+
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({ transport: 'stdio', command: 'uvx', args: ['mcp-server-fetch==2026.6.4'] }),
+      );
+
+      expect(result?.mcp.enabled).toBe(true);
+      expect(result?.mcp.config?.transport).toBe('stdio');
+      expect(result?.mcp.config?.command).toEqual(['uvx', 'mcp-server-fetch==2026.6.4']);
+      expect(result?.mcp.config?.container).toBe('fetch-mcp_ci-marketplace-fetch-mcp-1');
+    });
+
+    it('falls back to the app name when the compose file is unreadable', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      appFilesManager.getDockerComposeJson.mockRejectedValue(new Error('missing'));
+
+      const result = await service.getAgentConfig(MCP_URN, makeMcpAppInfo({ transport: 'stdio', command: 'uvx', args: [] }));
+      expect(result?.mcp.config?.container).toBe('fetch-mcp_ci-marketplace-fetch-mcp-1');
+    });
+
+    it('bridges an http listing with a pinned url over the http client', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({ transport: 'http', command: '', args: [], url: 'http://miro.example/mcp' }),
+      );
+
+      expect(result?.mcp.enabled).toBe(true);
+      expect(result?.mcp.config?.transport).toBe('sse');
+      expect(result?.mcp.config?.url).toBe('http://miro.example/mcp');
+    });
+
+    it('does not bridge an http listing without a url (hosted/remote server)', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      const result = await service.getAgentConfig(MCP_URN, makeMcpAppInfo({ transport: 'http', command: '', args: [] }));
+      expect(result).toBeNull();
+    });
+
+    it('prefers an explicit agents.mcp over the marketplace block', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({ transport: 'stdio', command: 'uvx', args: [] }, { mcp: { enabled: true, transport: 'sse', url: 'http://explicit/mcp' } }),
+      );
+      expect(result?.mcp.config?.transport).toBe('sse');
+      expect(result?.mcp.config?.url).toBe('http://explicit/mcp');
+    });
+
+    it('counts a marketplace mcp block as agent integration', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/x/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'fetch-mcp', isMain: true, image: 'x' }] },
+      });
+      const result = await service.hasAgentIntegration(MCP_URN, makeMcpAppInfo({ transport: 'stdio', command: 'uvx', args: [] }));
+      expect(result).toBe(true);
+    });
+  });
+
   describe('getAgentSummary', () => {
     it('should return summary with layer flags', async () => {
       filesystem.pathExists.mockResolvedValue(false);

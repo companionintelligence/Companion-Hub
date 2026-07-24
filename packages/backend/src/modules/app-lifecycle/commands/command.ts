@@ -93,6 +93,14 @@ export class AppLifecycleCommand {
         mergedServices = mergedServices.map((service) => (service.platform ? service : { ...service, platform: appInfo.runtime_platform }));
       }
 
+      // #936: a stdio MCP server reads MCP JSON-RPC from stdin. Docker closes stdin unless
+      // stdin_open is set, so the main process EOFs at boot and restart-loops. Force it for
+      // apps whose listing declares a stdio MCP transport, even when the store compose
+      // forgot "stdinOpen": true.
+      if (appInfo?.mcp?.transport === 'stdio') {
+        mergedServices = mergedServices.map((service) => (service.isMain ? { ...service, stdinOpen: true } : service));
+      }
+
       // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envUtils = new EnvUtils();

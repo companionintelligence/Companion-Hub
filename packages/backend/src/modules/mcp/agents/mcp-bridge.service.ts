@@ -14,6 +14,33 @@ interface McpConnection {
   retryCount: number;
   retryTimer?: ReturnType<typeof setTimeout>;
   abortController?: AbortController;
+  /** Streamable-HTTP session id returned by the server's initialize response, if any. */
+  sessionId?: string;
+}
+
+/**
+ * Spec-required initialize params (#936): servers are entitled to reject an
+ * `initialize` without protocolVersion/capabilities/clientInfo, and most reference
+ * servers do. Sent on every connection, both transports.
+ */
+const INITIALIZE_PARAMS = {
+  protocolVersion: '2025-06-18',
+  capabilities: {},
+  clientInfo: { name: 'ci-hub-mcp-bridge', version: '1.0.0' },
+} as const;
+
+/** Parse a JSON-RPC response that may arrive as plain JSON or as an SSE `data:` frame. */
+async function parseJsonRpcHttpResponse(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+    for (const line of text.split('\n')) {
+      if (line.startsWith('data:')) {
+        return JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
+      }
+    }
+    throw new Error('SSE response contained no data frame');
+  }
+  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
 }
 
 export interface BridgedToolInfo {
@@ -128,7 +155,10 @@ export class McpBridgeService implements OnModuleDestroy {
     }
 
     const url = this.resolveTemplateUrl(conn.config.url, appUrn);
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    };
 
     // Auth
     if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
@@ -138,26 +168,35 @@ export class McpBridgeService implements OnModuleDestroy {
       }
     }
 
-    // Send initialize
+    // Full handshake (#936): initialize with spec-required params, capture the
+    // streamable-HTTP session id, acknowledge with notifications/initialized.
     const initResponse = await fetch(url, {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {},
-      }),
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: INITIALIZE_PARAMS }),
     });
 
     if (!initResponse.ok) {
       throw new Error(`MCP initialize failed for ${appUrn}: HTTP ${initResponse.status}`);
     }
+    await parseJsonRpcHttpResponse(initResponse).catch(() => ({}));
+
+    const sessionId = initResponse.headers.get('mcp-session-id');
+    if (sessionId) {
+      conn.sessionId = sessionId;
+      headers['mcp-session-id'] = sessionId;
+    }
+
+    await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    }).catch(() => undefined);
 
     // Discover tools
     const listResponse = await fetch(url, {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 2,
@@ -170,7 +209,7 @@ export class McpBridgeService implements OnModuleDestroy {
       throw new Error(`MCP tools/list failed for ${appUrn}: HTTP ${listResponse.status}`);
     }
 
-    const listResult = (await listResponse.json()) as { result?: { tools?: McpConnection['tools'] } };
+    const listResult = (await parseJsonRpcHttpResponse(listResponse)) as { result?: { tools?: McpConnection['tools'] } };
     const tools = listResult.result?.tools ?? [];
 
     conn.connected = true;
@@ -190,65 +229,10 @@ export class McpBridgeService implements OnModuleDestroy {
       throw new Error(`No MCP command configured for ${appUrn}`);
     }
 
-    // For stdio, we'll use docker exec to communicate
-    // The container name is derived from the compose project + service
-    const [storeSlug, appName] = appUrn.split(':') as [string, string];
-    const containerName = conn.config.container ?? `${appName}-${storeSlug}`;
-    const command = conn.config.command;
-
-    // Execute initialize + tools/list via stdin/stdout
-    const initPayload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
-    const listPayload = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-    const input = `${initPayload}\n${listPayload}\n`;
-
-    const { spawn } = await import('node:child_process');
-    const tools = await new Promise<McpConnection['tools']>((resolve, reject) => {
-      const proc = spawn('docker', ['exec', '-i', containerName, ...command]);
-      let stdout = '';
-
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data: Buffer) => {
-        this.logger.warn(`MCP stdio stderr (${appUrn}): ${data.toString()}`);
-      });
-
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`docker exec failed with code ${code}`));
-          return;
-        }
-
-        try {
-          // Parse the last JSON-RPC response (tools/list result)
-          const lines = stdout.trim().split('\n');
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const parsed = JSON.parse(lines[i] ?? '{}') as { result?: { tools?: McpConnection['tools'] } };
-              if (parsed.result?.tools) {
-                resolve(parsed.result.tools);
-                return;
-              }
-            } catch {
-              // Not a valid JSON-RPC response line, skip
-            }
-          }
-          resolve([]);
-        } catch {
-          resolve([]);
-        }
-      });
-
-      proc.on('error', reject);
-      proc.stdin.write(input);
-      proc.stdin.end();
-
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error(`MCP stdio timeout for ${appUrn}`));
-      }, 10000);
-    });
+    const result = (await this.stdioRequest(appUrn, conn, { method: 'tools/list', params: {} }, 15000)) as
+      | { tools?: McpConnection['tools'] }
+      | undefined;
+    const tools = result?.tools ?? [];
 
     conn.connected = true;
     conn.tools = tools;
@@ -256,6 +240,96 @@ export class McpBridgeService implements OnModuleDestroy {
 
     this.logger.info(`Connected to ${appUrn} MCP server via stdio, discovered ${tools.length} tools`);
     return tools;
+  }
+
+  /**
+   * Run one MCP request against a stdio server via `docker exec -i` (#936).
+   *
+   * Each exec spawns a fresh server process, so every invocation performs the full
+   * spec handshake — `initialize` (with required params) → `notifications/initialized`
+   * → the actual request — and resolves the response line whose `id` matches the
+   * request, rather than whatever happened to be printed last.
+   */
+  private async stdioRequest(
+    appUrn: AppUrn,
+    conn: McpConnection,
+    request: { method: string; params: Record<string, unknown> },
+    timeoutMs: number,
+  ): Promise<unknown> {
+    const containerName = conn.config.container ?? this.defaultMainContainerName(appUrn);
+    const command = conn.config.command ?? [];
+    const requestId = 2;
+
+    const input = [
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: INITIALIZE_PARAMS }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: requestId, method: request.method, params: request.params }),
+    ]
+      .map((line) => `${line}\n`)
+      .join('');
+
+    const { spawn } = await import('node:child_process');
+    return new Promise((resolve, reject) => {
+      const proc = spawn('docker', ['exec', '-i', containerName, ...command]);
+      let stdout = '';
+      let settled = false;
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      const timer = setTimeout(() => {
+        proc.kill();
+        settle(() => reject(new Error(`MCP stdio timeout for ${appUrn} (${request.method})`)));
+      }, timeoutMs);
+
+      const tryResolveResponse = () => {
+        for (const line of stdout.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } };
+            if (parsed.id === requestId) {
+              proc.kill();
+              if (parsed.error) {
+                settle(() => reject(new Error(`MCP error from ${appUrn}: ${parsed.error?.message ?? 'unknown'}`)));
+              } else {
+                settle(() => resolve(parsed.result));
+              }
+              return;
+            }
+          } catch {
+            // partial or non-JSON line — keep buffering
+          }
+        }
+      };
+
+      proc.stdout.on('data', (data: Buffer) => {
+        stdout += data.toString();
+        tryResolveResponse();
+      });
+
+      proc.stderr.on('data', (data: Buffer) => {
+        this.logger.warn(`MCP stdio stderr (${appUrn}): ${data.toString()}`);
+      });
+
+      proc.on('close', (code) => {
+        tryResolveResponse();
+        settle(() => reject(new Error(`MCP stdio server for ${appUrn} exited (code ${code}) without answering ${request.method}`)));
+      });
+
+      proc.on('error', (err) => settle(() => reject(err)));
+      proc.stdin.write(input);
+      proc.stdin.end();
+    });
+  }
+
+  /** Compose names containers `<project>-<service>-1`; the Hub's project is `<app>_<store>`. */
+  private defaultMainContainerName(appUrn: AppUrn): string {
+    const [appName, storeSlug] = appUrn.split(':') as [string, string];
+    return `${appName}_${storeSlug}-${appName}-1`;
   }
 
   private bridgeTool(appUrn: AppUrn, prefix: string, tool: McpConnection['tools'][0]): McpToolDefinition {
@@ -307,7 +381,13 @@ export class McpBridgeService implements OnModuleDestroy {
 
   private async callViaSse(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
     const url = this.resolveTemplateUrl(conn.config.url ?? '', appUrn);
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    };
+    if (conn.sessionId) {
+      headers['mcp-session-id'] = conn.sessionId;
+    }
 
     if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
       const token = process.env[conn.config.auth.token_env];
@@ -325,47 +405,24 @@ export class McpBridgeService implements OnModuleDestroy {
       }),
     });
 
-    const result = await response.json();
+    // A 404 with a session header means the server dropped our session — reconnect once.
+    if (response.status === 404 && conn.sessionId) {
+      conn.connected = false;
+      conn.sessionId = undefined;
+      await this.connectAndDiscover(appUrn, conn);
+      return this.callViaSse(appUrn, conn, toolName, params);
+    }
+
+    const result = await parseJsonRpcHttpResponse(response);
     return (result as { result?: unknown }).result ?? result;
   }
 
   private async callViaStdio(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
-    const [storeSlug, appName] = appUrn.split(':') as [string, string];
-    const containerName = conn.config.container ?? `${appName}-${storeSlug}`;
-    const command = conn.config.command ?? [];
-
-    const payload = JSON.stringify({
-      jsonrpc: '2.0',
-      id: Date.now(),
-      method: 'tools/call',
-      params: { name: toolName, arguments: params },
-    });
-
-    const { spawn } = await import('node:child_process');
-    return new Promise((resolve) => {
-      const proc = spawn('docker', ['exec', '-i', containerName, ...command]);
-      let stdout = '';
-
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-      proc.on('close', () => {
-        try {
-          const parsed = JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as { result?: unknown };
-          resolve(parsed.result ?? parsed);
-        } catch {
-          resolve({ error: 'Failed to parse MCP response', isError: true });
-        }
-      });
-      proc.on('error', () => resolve({ error: 'docker exec failed', isError: true }));
-      proc.stdin.write(`${payload}\n`);
-      proc.stdin.end();
-
-      setTimeout(() => {
-        proc.kill();
-        resolve({ error: 'MCP call timeout', isError: true });
-      }, 30000);
-    });
+    try {
+      return await this.stdioRequest(appUrn, conn, { method: 'tools/call', params: { name: toolName, arguments: params } }, 30000);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'MCP stdio call failed', isError: true };
+    }
   }
 
   private getOrCreateConnection(appUrn: AppUrn, config: NonNullable<ResolvedAgentConfig['mcp']['config']>): McpConnection {
