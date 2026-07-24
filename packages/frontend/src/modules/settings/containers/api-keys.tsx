@@ -108,13 +108,9 @@ export const ApiKeysContainer = () => {
   const revokeKey = useCallback(
     async (id: number) => {
       try {
+        // Any key can be revoked, including the last one — nothing is seeded at boot, so an
+        // appliance with zero keys is a valid end state (the MCP tool surface is just closed).
         const res = await apiFetch(`/api/api-keys/${id}`, { method: 'DELETE' });
-        if (res.status === 409) {
-          // The backend refuses to revoke the last usable operator key (an empty store would
-          // re-seed the same derived Default key at next boot, resurrecting the credential).
-          toast.error(t('API_KEYS_REVOKE_LAST'));
-          return;
-        }
         if (!res.ok) throw new Error('revoke');
         const body = (await res.json()) as { revoked: boolean };
         // revoked:false = the id no longer exists (e.g. revoked from another tab). No success toast

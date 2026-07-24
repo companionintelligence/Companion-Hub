@@ -1320,7 +1320,6 @@
   "API_KEYS_REVOKE": "Revoke",
   "API_KEYS_REVOKED": "API key revoked",
   "API_KEYS_REVOKE_ERROR": "Failed to revoke API key",
-  "API_KEYS_REVOKE_LAST": "Cannot revoke your last operator API key. Create a replacement key first",
   "API_KEYS_DISMISS": "Done",
   "API_KEYS_COPY": "Copy key",
   "API_KEYS_COPIED": "Key copied to clipboard",

@@ -214,30 +214,4 @@ describe('ApiKeyService', () => {
       expect(repo.deleteByOwnerAppUrn).toHaveBeenCalledWith('me:s');
     });
   });
-
-  describe('seedDefaultKeyIfEmpty', () => {
-    it('seeds MCP_API_KEY as the "Default" mcp-scoped key when the store is empty (conflict-tolerant insert)', async () => {
-      process.env.MCP_API_KEY = 'legacy-key';
-      repo.countByScope.mockResolvedValue(0);
-      await service.seedDefaultKeyIfEmpty();
-      // insertIfHashAbsent (not plain insert) so a double-start race can't kill bootstrap.
-      const stored = repo.insertIfHashAbsent.mock.calls[0][0];
-      expect(stored.name).toBe('Default');
-      expect(stored.scopes).toEqual(['mcp']);
-      expect(stored.hashedKey).toBe(sha256('legacy-key'));
-    });
-
-    it('is a no-op when keys already exist (so a deliberately revoked key is never resurrected) or no key is set', async () => {
-      process.env.MCP_API_KEY = 'legacy-key';
-      repo.countByScope.mockResolvedValue(2);
-      await service.seedDefaultKeyIfEmpty();
-
-      delete process.env.MCP_API_KEY;
-      repo.countByScope.mockResolvedValue(0);
-      await service.seedDefaultKeyIfEmpty();
-
-      expect(repo.insertIfHashAbsent).not.toHaveBeenCalled();
-      expect(repo.insert).not.toHaveBeenCalled();
-    });
-  });
 });

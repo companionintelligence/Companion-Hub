@@ -195,14 +195,16 @@ describe('ApiKeysContainer', () => {
     expect(screen.getByText('openclaw')).toBeTruthy(); // the other key remains
   });
 
-  it('shows the last-key explanation when the backend refuses the revoke with 409', async () => {
+  it('revokes the last remaining key, since nothing reseeds one at boot', async () => {
     const user = userEvent.setup();
+    let revoked = false;
     mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/api-keys/1' && init?.method === 'DELETE') {
-        // Backend blocks revoking the last usable operator key.
-        return Promise.resolve({ ok: false, status: 409, json: async () => ({}) });
+        revoked = true;
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ revoked: true }) });
       }
-      return mockGet(url);
+      // After the revoke the store is empty — a legitimate end state now.
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ keys: revoked ? [] : [KEYS.keys[0]] }) });
     });
 
     render(<ApiKeysContainer />);
@@ -211,8 +213,8 @@ describe('ApiKeysContainer', () => {
     const row = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
     await user.click(within(row).getByRole('button', { name: 'API_KEYS_REVOKE' }));
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API_KEYS_REVOKE_LAST'));
-    expect(screen.getByText('Laptop CLI')).toBeTruthy(); // row stays — nothing was revoked
+    await waitFor(() => expect(screen.getByText('API_KEYS_EMPTY')).toBeTruthy());
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it('surfaces a load error with a retry that reloads the list', async () => {

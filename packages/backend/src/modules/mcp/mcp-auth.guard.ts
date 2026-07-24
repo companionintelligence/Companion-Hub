@@ -28,8 +28,9 @@ export class McpAuthGuard implements CanActivate {
 
     // SEC-MCP-8: the hashed, multi-key store is the sole authority (lookup by SHA-256; a 256-bit key
     // isn't brute-forceable, so no timing-safe compare is needed). Deliberately NO env MCP_API_KEY
-    // fallback — that value is always derived, so a live env compare would be a credential no revoke
-    // could retire. How the env key enters the store: see ApiKeyService.seedDefaultKeyIfEmpty.
+    // fallback — that value is derived from the appliance seed, so a live env compare would be a
+    // credential no revoke could retire. Nothing seeds a key either: every key in the store was
+    // created by an operator or provisioned to an app, and revoking one really retires it.
     // Scope-strict: only 'mcp'-scoped keys open the tool surface — an app-callback
     // key (HUB_APP_KEY, 'app' scope) can never call MCP tools.
     if (await this.apiKeys.validate(token, 'mcp')) {

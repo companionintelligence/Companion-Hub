@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
-import { type ApiKeyScope, MCP_SCOPE } from './api-key.scopes';
+import type { ApiKeyScope } from './api-key.scopes';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
@@ -206,42 +206,6 @@ export class ApiKeyService {
     const removed = await this.repo.deleteByOwnerAppUrn(appUrn);
     if (removed > 0) {
       this.logger.info('Managed key revoked', appUrn, `(${removed})`);
-    }
-  }
-
-  /**
-   * Ensure the appliance has at least one usable MCP-scoped key. When the store is empty, seed the
-   * derived `MCP_API_KEY` (env-helpers always provides one) as the revocable "Default" operator
-   * key. This is how the store — now the sole auth authority (the guard no longer accepts the env
-   * key directly) — stays in sync with the value pre-upgrade agents already hold, and how a wiped
-   * DB self-heals on the next boot. It is NOT gated on "migrated": a fresh appliance's key is
-   * equally the default.
-   *
-   * Seeding is empty-store-only, so it never resurrects a specific key an operator deliberately
-   * revoked while other keys remain. To retire the Default key, create a replacement first
-   * (leaving the store non-empty) and then revoke Default — it will not be reseeded. The admin
-   * surface enforces this by refusing to revoke the last remaining operator key; an empty store
-   * can only arise from external interference (wipe/restore), where re-seeding is the desired
-   * self-heal.
-   */
-  async seedDefaultKeyIfEmpty(): Promise<void> {
-    const envKey = process.env.MCP_API_KEY;
-    if (!envKey || (await this.repo.countByScope(MCP_SCOPE)) > 0) {
-      return;
-    }
-    // Conflict-tolerant so a double-start race (two boots seeding the same derived key) is a no-op
-    // for the loser instead of a unique-index violation that kills its bootstrap.
-    const seeded = await this.repo.insertIfHashAbsent({
-      scopes: [MCP_SCOPE],
-      name: 'Default',
-      prefix: envKey.slice(0, PREFIX_LEN),
-      hashedKey: this.hash(envKey),
-      managed: false,
-      ownerAppUrn: null,
-      expiresAt: null,
-    });
-    if (seeded) {
-      this.logger.info('Seeded the default MCP key from MCP_API_KEY');
     }
   }
 }

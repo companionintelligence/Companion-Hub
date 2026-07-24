@@ -17,7 +17,6 @@ import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
-import { ApiKeyService } from './modules/api-keys/api-key.service';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -49,7 +48,6 @@ export class AppService implements OnApplicationShutdown {
     private readonly registryService: RegistryService,
     private readonly portManager: PortManagerService,
     private readonly appsRepository: AppsRepository,
-    private readonly apiKeyService: ApiKeyService,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
@@ -63,9 +61,10 @@ export class AppService implements OnApplicationShutdown {
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
 
-      // SEC-MCP-8: seed the default MCP key when the store is empty (full rationale on the method).
-      // Must run after migrate() (api_key table) and before listen so agents can auth immediately.
-      await this.apiKeyService.seedDefaultKeyIfEmpty();
+      // No key is seeded at boot. Every MCP key is created deliberately by an operator (Settings →
+      // Security) or provisioned to an app; the appliance ships with none. The previous "Default"
+      // key was derived from the appliance seed, which made it the one credential here that could
+      // not be rotated and that anyone with read access to the state directory already held.
 
       // Validate data directory integrity
       await this.validateDataDirectories();

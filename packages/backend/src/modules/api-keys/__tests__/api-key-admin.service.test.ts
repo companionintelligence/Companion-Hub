@@ -1,4 +1,3 @@
-import { ConflictException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -69,22 +68,14 @@ describe('ApiKeyAdminService', () => {
     expect(apiKeys.revoke).not.toHaveBeenCalled();
   });
 
-  it('refuses to revoke the last usable operator key (409) so the store can never empty and re-seed it', async () => {
-    // A managed key does NOT count as retained access — it dies with its app on uninstall,
-    // which would empty the store and resurrect the revoked Default key at next boot.
-    apiKeys.list.mockResolvedValue([keyInfo({ id: 5 }), keyInfo({ id: 7, managed: true, ownerAppUrn: 'openclaw:ci-store' })]);
-    await expect(service.revokeKey(5)).rejects.toThrow(ConflictException);
-    expect(apiKeys.revoke).not.toHaveBeenCalled();
-  });
-
-  it('ignores expired keys when counting retained access, and always allows revoking a dead key', async () => {
-    const expired = keyInfo({ id: 8, expiresAt: '2000-01-01T00:00:00Z' });
-    // Live key 5 + expired key 8: revoking 5 would leave only a dead key -> blocked.
-    apiKeys.list.mockResolvedValue([keyInfo({ id: 5 }), expired]);
-    await expect(service.revokeKey(5)).rejects.toThrow(ConflictException);
-    // Revoking the dead key itself is always fine — it cannot reduce access.
+  it('revokes the last operator key, leaving the appliance with none', async () => {
+    // Nothing reseeds a key any more, so an empty store is a legitimate end state: the MCP tool
+    // surface is simply closed until an operator creates a key. Refusing here would force the
+    // appliance to keep a credential alive that its operator had decided to retire.
+    apiKeys.list.mockResolvedValue([keyInfo({ id: 5 })]);
     apiKeys.revoke.mockResolvedValue(true);
-    expect(await service.revokeKey(8)).toEqual({ revoked: true });
+    expect(await service.revokeKey(5)).toEqual({ revoked: true });
+    expect(apiKeys.revoke).toHaveBeenCalledWith(5);
   });
 
   it('allows revoking a managed key even when it is the only managed key (break-glass)', async () => {

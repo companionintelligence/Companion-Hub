@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
 import { MCP_SCOPE } from './api-key.scopes';
@@ -45,19 +45,12 @@ export class ApiKeyAdminService {
       this.logger.info('API key admin: key revoke', id, 'not-found');
       return { revoked: false };
     }
-    // SEC-MCP-8: never revoke the last USABLE OPERATOR key. Managed keys don't count (uninstalls
-    // delete them, and an operator must not lose access when the last app leaves) and neither do
-    // expired keys. This guarantees the store never empties through any path, so the boot-time
-    // seed can never resurrect a deliberately revoked Default key. Revoking an already-unusable
-    // (expired) key is always allowed — deleting a dead key can't reduce access. (Two concurrent
-    // revokes could race past this check; a single operator drives this UI, so we accept that
-    // over a transactional delete.)
-    if (!target.managed && this.apiKeys.isUsable(target)) {
-      const usableOperatorKeys = keys.filter((k) => !k.managed && this.apiKeys.isUsable(k));
-      if (usableOperatorKeys.length <= 1) {
-        throw new ConflictException('Cannot revoke the last operator API key — create a replacement key first');
-      }
-    }
+    // Any key may be revoked, including the last one. This used to refuse, to keep the store from
+    // ever emptying — because an empty store made the boot-time seed resurrect the derived
+    // "Default" key. With no seeding, zero MCP keys is a legitimate state (the tool surface is
+    // simply closed) and refusing would instead force an appliance to keep a credential alive that
+    // its operator wants gone. Nothing locks the operator out either way: this surface is
+    // session-authed, so a replacement can always be created afterwards.
     const revoked = await this.apiKeys.revoke(id);
     this.logger.info('API key admin: key revoke', id, revoked ? 'ok' : 'not-found');
     return { revoked };

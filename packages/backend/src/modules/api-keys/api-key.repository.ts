@@ -74,8 +74,8 @@ export class ApiKeyRepository {
   }
 
   /** Count keys carrying a scope, via a filtered SQL count (`scope = ANY(scopes)`) rather than
-   *  reading every row into memory — this runs on each boot (seedDefaultKeyIfEmpty) and each MCP
-   *  status poll. The parameterised `sql` operand keeps the scope value bound, not interpolated. */
+   *  reading every row into memory — this runs on each MCP status poll. The parameterised `sql`
+   *  operand keeps the scope value bound, not interpolated. */
   async countByScope(scope: ApiKeyScope): Promise<number> {
     const [res] = await this.db.select({ count: count() }).from(apiKey).where(sql`${scope} = ANY(${apiKey.scopes})`);
     return res?.count ?? 0;
