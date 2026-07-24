@@ -21,12 +21,18 @@ export function resolveSafeRedirect(url: string, location: { origin: string; hos
     return null;
   }
 
+  // http(s) only, checked FIRST and for both branches — the same gate the backend's
+  // `validateEdgeSsoTarget` applies. Origin equality alone is not a scheme check: WHATWG gives a
+  // `blob:` URL the origin of its INNER url, so `blob:https://<this host>/<uuid>` compares equal
+  // to `location.origin` and would be navigated to — a document this app never served. (`javascript:`
+  // and `data:` are already excluded because their origin is the opaque string `"null"`.)
   const safe =
-    parsed.origin === location.origin ||
-    // The historical LAN shape: the Hub sits at the domain root and apps are subdomains beneath
-    // it. The scheme must still match — the backend refuses to hand out a downgraded target, and
-    // this is the same decision on the client side.
-    (parsed.protocol === location.protocol && parsed.host.endsWith(`.${location.host}`));
+    (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+    (parsed.origin === location.origin ||
+      // The historical LAN shape: the Hub sits at the domain root and apps are subdomains beneath
+      // it. The scheme must still match — the backend refuses to hand out a downgraded target, and
+      // this is the same decision on the client side.
+      (parsed.protocol === location.protocol && parsed.host.endsWith(`.${location.host}`)));
 
   return safe ? parsed.toString() : null;
 }

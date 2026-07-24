@@ -461,6 +461,7 @@ describe('AuthController', () => {
       // LAN fast path: the domain cookie authenticated the request before the ticket was ever
       // consumed. Leaving it live would keep a session-planting credential replayable from any
       // browser for the rest of its TTL.
+      cache.get.mockReturnValue(ticketFor());
       const req = {
         user: { id: 1, username: 'op' },
         headers: { 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
@@ -471,17 +472,36 @@ describe('AuthController', () => {
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9');
       expect(res.status).toHaveBeenCalledWith(302);
-      expect(res.redirect).toHaveBeenCalledWith('/home');
+      // ABSOLUTE. Traefik does not hand a forward-auth Location back untouched: it resolves a
+      // relative value against the AUTH-SERVER address, so `/home` would reach the browser as
+      // `http://ci-os-hub:5002/home` — an internal name it cannot resolve.
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
       expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
     });
 
-    it('strips a lingering ticket without naming a host the browser may not be able to reach', async () => {
+    it('does not write to the store for a lingering ticket that was never minted', async () => {
+      // Same flood rationale as the unauthenticated miss below: an unconditional delete lets
+      // anyone holding a session force a synchronous store write per request by appending a junk
+      // `cihub_sso=` — on the endpoint that runs for EVERY request to EVERY app.
+      cache.get.mockReturnValue(undefined as never);
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'x-forwarded-uri': '/home?cihub_sso=forged', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(cache.del).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
+    });
+
+    it('strips a lingering ticket to an address the REMOTE browser can reach, not the rewritten LAN name', async () => {
       // Reachable remotely whenever a ticket-bearing request finds the cookie already planted —
-      // e.g. a second tab entering the flow while the first tab's consume was in flight. Every
-      // host we could name here is a guess: the forwarded one is the tunnel-rewritten `.ci.lan`
-      // name that does not resolve off the LAN, and the public one needs a map lookup that can
-      // miss. A relative Location is resolved by the browser against the address it is already
-      // on, so it cannot dead-end and needs no lookup.
+      // e.g. a second tab entering the flow while the first tab's consume was in flight. The
+      // forwarded host is the tunnel-rewritten `.ci.lan` origin server name, which does not
+      // resolve off the LAN, so the public hostname is the only usable return address.
+      cache.get.mockReturnValue(ticketFor());
       const req = {
         user: { id: 1, username: 'op' },
         headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'http', 'x-forwarded-host': LAN_HOST },
@@ -491,9 +511,47 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9');
-      expect(res.redirect).toHaveBeenCalledWith('/home');
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
       expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).not.toContain(LAN_HOST);
-      expect(forwardAuthSecrets.resolvePublicHostForHost).not.toHaveBeenCalled();
+    });
+
+    it('serves the request instead of redirecting when no reachable return address is known', async () => {
+      // Tunnel visitor whose forwarded host maps to no public hostname (host map behind a fresh
+      // install, router created outside the app lifecycle). Neither candidate works: the `.ci.lan`
+      // name does not resolve off the LAN, and a relative Location is the one shape Traefik
+      // rewrites to its own internal address. The ticket is already burned, so tidying the URL is
+      // cosmetic — keep the visitor on a page that works and let the stale param through.
+      cache.get.mockReturnValue(ticketFor());
+      forwardAuthSecrets.resolvePublicHostForHost.mockResolvedValue(null);
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 's', appUrn: 'importer:ci-marketplace' as never, source: 'app-env' });
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'http', 'x-forwarded-host': LAN_HOST },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9'); // still burned
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('pins the stripped target to the app host so an authority-shaped request path cannot escape it', async () => {
+      // `//evil.com/` is a legal origin-form request target that reaches us intact through Go and
+      // Express, and a browser reads `Location: //evil.com/` as protocol-relative. Any session
+      // holder clicking `https://<app>//evil.com/?cihub_sso=x` would otherwise leave the appliance.
+      cache.get.mockReturnValue(undefined as never);
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'x-forwarded-uri': '//evil.com/pwn?cihub_sso=x', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).hostname).toBe(APP_HOST);
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/evil.com/pwn`);
     });
 
     it('strips only the ticket, leaving the rest of the query byte-for-byte', async () => {
@@ -512,7 +570,7 @@ describe('AuthController', () => {
 
       await authController.traefik(req, res);
 
-      expect(res.redirect).toHaveBeenCalledWith('/search?q=a%20b&s=~z&flag');
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/search?q=a%20b&s=~z&flag`);
     });
 
     it('strips EVERY ticket occurrence while reading only the first as the ticket', async () => {
@@ -520,6 +578,7 @@ describe('AuthController', () => {
       // builds its target from this cleaned URI and appends the fresh ticket at the END, while the
       // consume reads the FIRST — so the stale one is what every consume looks up. It misses,
       // falls through to another mint, and three rounds later the loop guard serves its 409.
+      cache.get.mockReturnValue(ticketFor());
       const req = {
         user: { id: 1, username: 'op' },
         headers: {
@@ -533,7 +592,7 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-first');
-      expect(res.redirect).toHaveBeenCalledWith('/files?keep=1');
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/files?keep=1`);
     });
 
     it('does not treat an unrelated param that merely ends in the ticket name as a ticket', async () => {
@@ -556,6 +615,29 @@ describe('AuthController', () => {
       const req = {
         user: undefined,
         headers: { 'x-forwarded-uri': '/', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'localhost' },
+        cookies: {},
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      // Lopping a label off an IPv4 literal yields `0.0.5`, which `new URL` silently re-expands to
+      // the unrelated host `0.0.0.5` — a redirect to a machine that does not exist, with nothing
+      // in the logs. The documented `https://<ip>:8443` tailnet path is exactly this shape.
+      ['10.0.0.5:8443'],
+      // The IPv6 form is worse: `0.0.5]:8443` contains a forbidden host code point, so `new URL`
+      // THROWS — a 500 out of the forward-auth hop, i.e. the crash the single-label guard exists
+      // to prevent.
+      ['[::ffff:10.0.0.5]:8443'],
+    ])('refuses the IP literal %s instead of inventing a hub origin from its trailing octets', async (host) => {
+      const req = {
+        user: undefined,
+        headers: { 'x-forwarded-uri': '/', 'x-forwarded-proto': 'https', 'x-forwarded-host': host },
         cookies: {},
       } as unknown as Request;
       const res = consumeRes();
@@ -624,6 +706,14 @@ describe('AuthController', () => {
     it('rejects a missing or unparsable target', async () => {
       await expect(authController.edgeSso(undefined, { user: undefined } as never, ssoRes())).rejects.toThrow();
       await expect(authController.edgeSso('not a url', { user: undefined } as never, ssoRes())).rejects.toThrow();
+    });
+
+    it('rejects a repeated redirect param instead of minting for the comma-joined value', async () => {
+      // Express hands a repeated query key to `@Query` as an ARRAY despite the `string | undefined`
+      // annotation, and an array is truthy. `new URL(['https://app/', 'x'])` stringifies to
+      // `https://app/,x`, whose hostname the allowlist vouches for — so this would mint a real
+      // single-use ticket and bounce the browser to a corrupted path inside the app.
+      await expect(authController.edgeSso([`https://${APP_HOST}/`, 'x'] as never, { user: undefined } as never, ssoRes())).rejects.toThrow();
     });
 
     it('allows plain http only under the appliance local domain', async () => {

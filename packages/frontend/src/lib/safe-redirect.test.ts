@@ -29,6 +29,15 @@ describe('isSafeRedirect', () => {
     expect(isSafeRedirect('https://evilhub.example.com/', HUB)).toBe(false);
   });
 
+  it('rejects non-http(s) schemes, including the one that reports the Hub origin as its own', () => {
+    // WHATWG gives a `blob:` URL the origin of its INNER url, so this compares EQUAL to
+    // `location.origin` — origin equality alone is not a scheme check. `javascript:` and `data:`
+    // get the opaque origin `"null"` and were already excluded; `blob:` was not.
+    expect(isSafeRedirect('blob:https://hub.example.com/9a1f-uuid', HUB)).toBe(false);
+    expect(isSafeRedirect('javascript:alert(1)', HUB)).toBe(false);
+    expect(isSafeRedirect('data:text/html,<script>alert(1)</script>', HUB)).toBe(false);
+  });
+
   it('refuses to downgrade the scheme on a subdomain target', () => {
     // The backend's own target validator will not hand out a downgraded scheme; this is the
     // same decision client-side.

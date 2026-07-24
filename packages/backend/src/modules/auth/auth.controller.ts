@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
 import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -113,7 +114,11 @@ export class AuthController {
     // documented `https://<ip>:8443` tailnet path is exactly that shape.
     const secure = proto === 'https';
 
-    this.logger.debug('Request headers', req.headers);
+    // The whole header bag is NOT logged. `LoggerService.log` JSON.stringifies every object
+    // argument before winston gets to drop it, so the dump cost was paid at any level — and on
+    // the edge-SSO consume path the bag carries `cookie: ci-hub-sid=<live session>` and
+    // `x-forwarded-uri: …cihub_sso=<ticket>`, which is the very leak `/traefik` strips its own
+    // log line to avoid. The derived values below are what this function actually decides on.
     this.logger.debug('Setting session cookie', { host, domain, proto, secure });
 
     if (this.config.get('userSettings').experimental.insecureCookie) {
@@ -850,6 +855,45 @@ export class AuthController {
   }
 
   /**
+   * The address to send a browser back to from a forward-auth subrequest, as an ABSOLUTE URL.
+   *
+   * Absolute is not a style choice: Traefik runs a non-2xx forward-auth `Location` through Go's
+   * `http.Response.Location()`, which resolves a relative value against the auth-server address
+   * (`http://ci-os-hub:5002/api/auth/traefik`) and overwrites the header with the result. A
+   * relative Location therefore reaches the browser as an unresolvable Docker-internal name.
+   *
+   * A tunnel visitor gets the app's PUBLIC hostname — the forwarded host is the rewritten
+   * `<app>.<localDomain>` origin server name, which only resolves on the LAN. Everyone else gets
+   * the host they arrived on, port included.
+   *
+   * Returns null when neither is available, which the caller reads as "do not redirect". There is
+   * no safe fallback: the LAN name is unreachable for a tunnel visitor, and a relative Location is
+   * the one shape guaranteed to be rewritten to the internal address. Since the only reason to
+   * redirect here is to tidy a ticket that has ALREADY been burned, not redirecting costs a stale
+   * param in the app's log and keeps the visitor on a page that works.
+   *
+   * `path` is re-pinned to exactly one leading slash: `X-Forwarded-Uri` is the client's own
+   * request target, and `//evil.com/` is a legal origin-form path that reaches us intact — a
+   * browser reads `Location: //evil.com/` as a protocol-relative jump off the appliance.
+   */
+  private async buildReturnUrl(input: {
+    forwardedHost: string;
+    rawHost: string;
+    proto: string;
+    viaTunnel: boolean;
+    path: string;
+  }): Promise<string | null> {
+    const safePath = `/${input.path.replace(/^[/\\]+/, '')}`;
+
+    if (input.viaTunnel) {
+      const publicHost = await this.forwardAuthSecrets.resolvePublicHostForHost(input.forwardedHost);
+      return publicHost ? `https://${publicHost}${safePath}` : null;
+    }
+
+    return input.rawHost ? `${input.proto}://${input.rawHost}${safePath}` : null;
+  }
+
+  /**
    * Validate an edge-SSO redirect target: a well-formed http(s) URL whose hostname the secret
    * resolver's host map vouches for — an exact allowlist of "router hostnames of apps installed
    * on THIS appliance", which is a strictly tighter check than the `-<orgSlug>` label heuristic
@@ -859,7 +903,11 @@ export class AuthController {
    * handed a downgraded scheme.
    */
   private async validateEdgeSsoTarget(redirect: string | undefined): Promise<URL | null> {
-    if (!redirect) {
+    // `typeof`, not just truthiness: Express hands a REPEATED query key to `@Query` as an array,
+    // and an array is truthy. `new URL(['https://app.example.com/', 'x'])` stringifies to
+    // `https://app.example.com/,x`, whose hostname the allowlist below happily vouches for — so
+    // `?redirect=<app>&redirect=x` would mint a real ticket for a corrupted target.
+    if (typeof redirect !== 'string' || !redirect) {
       return null;
     }
     let url: URL;
@@ -886,6 +934,9 @@ export class AuthController {
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
     const rawHost = rawForwardedHost(req.headers['x-forwarded-host']);
+    // Deliberately NOT comma-split like the host and proto below: a comma is a legal sub-delim in
+    // both a path and a query (`/items/1,2,3`, `?q=a,b`), so "first hop wins" cannot be recovered
+    // here without truncating ordinary request targets.
     const uri = (req.headers['x-forwarded-uri'] as string | undefined) || '/';
     // First hop only, same as the forwarded host: a REPEATED header reaches Node as one
     // comma-joined string, and `https, http` fed into `new URL()` below is not a scheme — it
@@ -900,16 +951,31 @@ export class AuthController {
       // session-planting credential replayable from any browser for the rest of its TTL — and
       // strip it with one extra redirect so the URL never reaches the app's logs or address bar.
       if (ticket) {
-        this.cache.del(`${EDGE_SSO_CACHE_PREFIX}${ticket}`);
-        // RELATIVE, deliberately: the browser resolves it against the address it is already on,
-        // which is the only address known to be reachable here. Naming a host instead means
-        // guessing which one the browser used — and through the tunnel every candidate we hold is
-        // wrong: `X-Forwarded-Host` is the rewritten `<app>.<localDomain>` origin server name,
-        // which does not resolve off the LAN, and the public name has to be looked up in a map
-        // that can miss (fresh install, router created outside the app lifecycle). A relative
-        // Location has no such failure mode and needs no lookup. Traefik returns this non-2xx
-        // response to the client verbatim, so the browser — not Traefik — does the resolving.
-        return res.status(302).redirect(cleanUri);
+        // Burn only a ticket that is actually there. An unconditional delete would let anyone
+        // holding a session force a synchronous store write per request by appending a junk
+        // `cihub_sso=` to any app URL — the same flood amplifier the unauthenticated consume
+        // below refuses to expose, on the endpoint that runs for EVERY request to EVERY app.
+        const lingeringKey = `${EDGE_SSO_CACHE_PREFIX}${ticket}`;
+        if (this.cache.get(lingeringKey)) {
+          this.cache.del(lingeringKey);
+        }
+        // ABSOLUTE, and pinned to a host we chose. Traefik does not hand a forward-auth
+        // `Location` back untouched: for a non-2xx it runs the header through Go's
+        // `http.Response.Location()`, which resolves a relative value against the AUTH-SERVER
+        // address (`http://ci-os-hub:5002/api/auth/traefik`) and rewrites the header with the
+        // result — so a relative Location reaches the browser as an internal Docker name it
+        // cannot resolve, and leaks that name and port. The path is re-pinned to exactly one
+        // leading slash for the same reason the frontend resolves before judging: a request
+        // target of `//evil.com/` is a legal origin-form path that survives Go and Express
+        // untouched, and a browser reads `Location: //evil.com/` as protocol-relative.
+        //
+        // Null means no address the browser can reach is known; the ticket is already burned, so
+        // fall through to the signed pass-through and let the visitor keep the working page
+        // rather than bounce them somewhere that does not resolve for the sake of a tidy URL.
+        const returnUrl = await this.buildReturnUrl({ forwardedHost, rawHost, proto, viaTunnel, path: cleanUri });
+        if (returnUrl) {
+          return res.status(302).redirect(returnUrl);
+        }
       }
 
       // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
@@ -937,6 +1003,17 @@ export class AuthController {
     if (!forwardedHost) {
       return res.status(401).send();
     }
+
+    // One lookup per request. The consume's host binding and the mint's return address both ask
+    // the same question of the same host map, and a failed consume falls straight through to the
+    // mint — so the unmemoised pair cost two lookups on exactly the path that already loops.
+    let cachedPublicHost: string | null | undefined;
+    const resolvePublicHostOnce = async (): Promise<string | null> => {
+      if (cachedPublicHost === undefined) {
+        cachedPublicHost = await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost);
+      }
+      return cachedPublicHost;
+    };
 
     // `cleanUri`, never the raw one: the raw target carries `cihub_sso=<ticket>`, and a ticket is a
     // session-planting credential. Writing it to the Hub's own log is the same leak the redirects
@@ -976,8 +1053,7 @@ export class AuthController {
         // forwarded host itself (LAN, where they coincide) or the public hostname that host maps
         // to. The check stays exact — both sides resolve through the same host map — so a ticket
         // for app A presented on app B still fails.
-        const publicForHost =
-          targetHost && targetHost !== forwardedHost ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
+        const publicForHost = targetHost && targetHost !== forwardedHost ? await resolvePublicHostOnce() : null;
         const hostMatches = Boolean(targetHost) && (targetHost === forwardedHost || targetHost === publicForHost);
 
         // Parsed defensively even though the mint validated it: a throw here would escape as a
@@ -1014,7 +1090,7 @@ export class AuthController {
     // origin) this preserves the historical LAN shape: the Hub is assumed to sit at the root of
     // the app's domain, and the `.ci.lan`-scoped session cookie makes the ticket exchange a no-op.
     const publicHub = viaTunnel ? await this.resolvePublicHub() : null;
-    const publicAppHost = publicHub ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
+    const publicAppHost = publicHub ? await resolvePublicHostOnce() : null;
 
     let hubOrigin: string;
     let target: string;
@@ -1036,7 +1112,12 @@ export class AuthController {
       // rawHost, not the normalized key: a LAN visitor reaching Traefik on a nonstandard port
       // (the documented `:8443` tailnet path) must keep it in both the Hub origin and the return
       // address, or both point at :443 where nothing answers.
-      const rootDomain = rawHost.split('.').slice(1).join('.');
+      // An IP literal has no parent domain to lop a label off. `10.0.0.5` yields `0.0.5`, which
+      // `new URL` silently re-expands to the unrelated host `0.0.0.5`; a bracketed IPv6 literal
+      // yields `0.0.5]`, where `]` is a forbidden host code point and `new URL` THROWS — a 500
+      // straight out of the forward-auth hop, i.e. exactly the crash the guard below was added to
+      // eliminate, on the documented `https://<ip>:8443` tailnet path.
+      const rootDomain = net.isIP(forwardedHost.replace(/^\[|]$/g, '')) ? '' : rawHost.split('.').slice(1).join('.');
       // A single-label host (`localhost`, a bare container name) leaves nothing to derive a Hub
       // origin from — refuse plainly. The old code fed the empty root into new URL() and 500'd.
       if (!rootDomain) {
@@ -1100,8 +1181,12 @@ export class AuthController {
       // through the plain-HTTP tunnel entrypoint, so the forwarded proto is `http` while the
       // browser is on `https`. An http self-URL survives the round trip only to be rejected as
       // cross-origin by the login page's redirect check, silently stranding the visitor on /home.
+      // Case-INSENSITIVE: scheme names are case-insensitive per RFC 3986 and the origin is built
+      // by interpolating `x-forwarded-proto` verbatim, so an upstream sending `HTTP` would slip
+      // past an anchored `/^http:/` and strand the visitor on /home — silently, because
+      // `new URL` lowercases the scheme afterwards and the missed upgrade leaves no trace.
       const requestOrigin = resolveRequestOriginFallback(req);
-      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/, 'https:') : requestOrigin;
+      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
       const selfUrl = new URL('/api/auth/edge-sso', origin);
       selfUrl.searchParams.set('redirect', target.toString());
       const loginUrl = new URL('/login', origin);
