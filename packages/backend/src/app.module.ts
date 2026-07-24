@@ -85,7 +85,8 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AgentNotifyModule,
   InferenceModule,
   // SEC-MCP-8: always available (not gated on MCP_ENABLED) — AppsModule provisions companion-app
-  // managed keys and AppService seeds the legacy key regardless of whether the MCP endpoint is mounted.
+  // managed keys, and the operator key surface lives here, regardless of whether the MCP endpoint
+  // is mounted. Keys are only ever created deliberately; nothing is seeded at boot.
   ApiKeyModule,
   MemoryConnectModule,
 ];
