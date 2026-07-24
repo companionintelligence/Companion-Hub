@@ -1,5 +1,6 @@
-import { type CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { type CanActivate, type ExecutionContext, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
+import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -31,7 +32,17 @@ export class ManagedAppKeyGuard implements CanActivate {
     const bearer = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
     const rawKey = bearer || (req.get('x-api-key') ?? '');
 
-    const ownerAppUrn = await this.apiKeys.resolveManagedAppUrn(rawKey, ['app', 'mcp']);
+    // #933: mirror McpAuthGuard — a key store outage is a 503, not a key rejection.
+    let ownerAppUrn: string | null;
+    try {
+      ownerAppUrn = await this.apiKeys.resolveManagedAppUrn(rawKey, ['app', 'mcp']);
+    } catch (err) {
+      if (err instanceof ApiKeyStoreUnavailableError) {
+        this.logger.error('[ManagedAppKeyGuard] API key store unreachable', err.cause instanceof Error ? err.cause.message : '');
+        throw new ServiceUnavailableException('Authentication temporarily unavailable — API key store unreachable');
+      }
+      throw err;
+    }
     // Express has already URL-decoded the route param, so decoding again is
     // normally a no-op; do it inside try/catch so a malformed `%` sequence yields
     // a mismatch (401) rather than an unhandled URIError → 500.

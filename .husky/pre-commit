@@ -17,3 +17,8 @@ else
   echo "pre-commit: pnpm/corepack not found in PATH. Install pnpm (recommended) or enable corepack." >&2
   exit 127
 fi
+
+# Optional: agent precommit-fix with LLM remediation hints (CURSOR_AGENT_FIX=1)
+if [ "${AGENT_PRECOMMIT_FIX:-}" = "1" ]; then
+  pnpm exec tsx scripts/agent/precommit-fix.ts
+fi

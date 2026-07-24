@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
-import { UnauthorizedException } from '@nestjs/common';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
 import { LoggerService } from '@/core/logger/logger.service';
 
 function mockExecutionContext(authHeader?: string) {
@@ -64,6 +65,19 @@ describe('McpAuthGuard', () => {
 
     it('rejects a request with a malformed Authorization header', async () => {
       await expect(guard.canActivate(mockExecutionContext('Basic abc123'))).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('answers 503 (not 401) when the key store is unreachable (#933)', async () => {
+      // A DB outage is not an auth verdict: a 401 tells a correctly-credentialed client its key
+      // is bad and points operators at the wrong layer.
+      apiKeys.validate.mockRejectedValue(new ApiKeyStoreUnavailableError(new Error('getaddrinfo EAI_AGAIN ci-hub-db')));
+      await expect(guard.canActivate(mockExecutionContext('Bearer stored-key'))).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('still surfaces unexpected validate() errors unchanged', async () => {
+      const bug = new Error('unexpected');
+      apiKeys.validate.mockRejectedValue(bug);
+      await expect(guard.canActivate(mockExecutionContext('Bearer stored-key'))).rejects.toBe(bug);
     });
   });
 });

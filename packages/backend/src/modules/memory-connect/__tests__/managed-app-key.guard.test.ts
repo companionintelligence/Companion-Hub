@@ -1,6 +1,7 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
+import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
 import { ManagedAppKeyGuard } from '../managed-app-key.guard';
 
 /**
@@ -17,12 +18,12 @@ function ctx(headers: Record<string, string>, urn: string): ExecutionContext {
 
 describe('ManagedAppKeyGuard', () => {
   let apiKeys: { resolveManagedAppUrn: ReturnType<typeof vi.fn> };
-  let logger: { warn: ReturnType<typeof vi.fn> };
+  let logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
   let guard: ManagedAppKeyGuard;
 
   beforeEach(() => {
     apiKeys = { resolveManagedAppUrn: vi.fn() };
-    logger = { warn: vi.fn() };
+    logger = { warn: vi.fn(), error: vi.fn() };
     guard = new ManagedAppKeyGuard(apiKeys as never, logger as never);
   });
 
@@ -52,5 +53,11 @@ describe('ManagedAppKeyGuard', () => {
   it('matches the url-encoded :urn param', async () => {
     apiKeys.resolveManagedAppUrn.mockResolvedValue('ci-openclaw:local');
     await expect(guard.canActivate(ctx({ authorization: 'Bearer good' }, encodeURIComponent('ci-openclaw:local')))).resolves.toBe(true);
+  });
+
+  it('answers 503 (not 401) when the key store is unreachable (#933)', async () => {
+    apiKeys.resolveManagedAppUrn.mockRejectedValue(new ApiKeyStoreUnavailableError(new Error('getaddrinfo EAI_AGAIN ci-hub-db')));
+    await expect(guard.canActivate(ctx({ authorization: 'Bearer good' }, 'ci-openclaw:local'))).rejects.toThrow(ServiceUnavailableException);
+    expect(logger.error).toHaveBeenCalled();
   });
 });

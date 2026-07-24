@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Unified cross-agent review CLI for CI-Hub.
+# Usage: bin/agent-review --phase research|plan|impl|wrap [--persona NAME] [--cursor]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+PHASE=""
+PERSONA="code-quality"
+USE_CURSOR=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --phase) PHASE="$2"; shift 2 ;;
+    --persona) PERSONA="$2"; shift 2 ;;
+    --cursor) USE_CURSOR=1; shift ;;
+    -h|--help)
+      echo "Usage: bin/agent-review --phase research|plan|impl|wrap [--persona NAME] [--cursor]"
+      echo "Personas: security, performance, maintainability, code-quality, ai-smells, domain"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$PHASE" ]]; then
+  echo "error: --phase required (research|plan|impl|wrap)" >&2
+  exit 1
+fi
+
+REVIEW_DOC="$ROOT/docs/agent/AGENT_REVIEW.md"
+PERSONA_DOC="$ROOT/docs/agent/REVIEW_PERSONAS.md"
+CONVENTIONS="$ROOT/docs/agent/CODING_CONVENTIONS.md"
+
+PROMPT_FILE="$(mktemp)"
+trap 'rm -f "$PROMPT_FILE"' EXIT
+
+cat > "$PROMPT_FILE" <<EOF
+# CI-Hub Agent Review
+
+**Phase:** $PHASE
+**Persona:** $PERSONA
+
+Read these docs first:
+- $REVIEW_DOC
+- $PERSONA_DOC
+- $CONVENTIONS
+
+## Your task
+
+Perform a **$PHASE** review from the **$PERSONA** perspective on the current branch changes.
+
+1. Run \`git diff\` and \`git log -5 --oneline\` to understand scope.
+2. Apply the checklist for phase "$PHASE" and persona "$PERSONA".
+3. Report: Critical / Warning / Suggestion findings with file paths.
+4. Do NOT implement fixes unless explicitly asked — review only.
+
+Use a different model than the one that wrote the code.
+EOF
+
+echo "=== Agent Review: phase=$PHASE persona=$PERSONA ==="
+echo ""
+cat "$PROMPT_FILE"
+echo ""
+echo "=== End prompt — paste into a different agent session ==="
+
+if [[ "$USE_CURSOR" -eq 1 ]]; then
+  case "$PERSONA" in
+    code-quality|ai-smells)
+      echo ""
+      echo "Cursor: use review-bugbot skill on branch changes."
+      ;;
+    security)
+      echo ""
+      echo "Cursor: use review-security skill on branch changes."
+      ;;
+    *)
+      echo ""
+      echo "Cursor: paste prompt above into a new Agent chat with a different model."
+      ;;
+  esac
+fi
