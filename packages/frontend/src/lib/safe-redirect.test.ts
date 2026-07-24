@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSafeRedirect } from './safe-redirect';
+import { followSafeRedirect, isSafeRedirect, resolveSafeRedirect } from './safe-redirect';
 
 // Post-login redirect targets. This is open-redirect protection: anything that escapes the Hub's
 // origin must be rejected, including the encodings a naive prefix check does not survive.
@@ -39,5 +39,58 @@ describe('isSafeRedirect', () => {
     // The original implementation called new URL(url) bare, which THREW on a relative
     // redirect_url and took the login page down mid-render.
     expect(isSafeRedirect('http://[', HUB)).toBe(false);
+  });
+});
+
+describe('resolveSafeRedirect', () => {
+  it('returns the absolute URL the caller must navigate to, not the raw input', () => {
+    // `followSafeRedirect` assigns this result rather than the raw string. Assigning the raw
+    // string re-resolves it against the current PATH, so a path-relative value validated here as
+    // `/home` would land on `/apps/foo/home` from a nested login route — the browser going
+    // somewhere other than the address that was checked.
+    expect(resolveSafeRedirect('home', HUB)).toBe('https://hub.example.com/home');
+    expect(resolveSafeRedirect('/home', HUB)).toBe('https://hub.example.com/home');
+  });
+
+  it('returns null for anything isSafeRedirect rejects', () => {
+    expect(resolveSafeRedirect('/\\evil.com', HUB)).toBeNull();
+    expect(resolveSafeRedirect('https://evil.com/', HUB)).toBeNull();
+    expect(resolveSafeRedirect('http://[', HUB)).toBeNull();
+  });
+});
+
+describe('followSafeRedirect', () => {
+  // jsdom refuses a real navigation, so `location` is replaced with a plain object whose `href`
+  // simply records what was assigned.
+  const withLocation = (href: string, run: () => void) => {
+    const original = Object.getOwnPropertyDescriptor(window, 'location');
+    const stub = { ...HUB, href };
+    Object.defineProperty(window, 'location', { value: stub, configurable: true, writable: true });
+    try {
+      run();
+      return stub.href;
+    } finally {
+      if (original) {
+        Object.defineProperty(window, 'location', original);
+      }
+    }
+  };
+
+  it('navigates to the resolved URL, not the raw string', () => {
+    // The address that was judged safe must be the address the browser goes to. Assigning the raw
+    // value re-resolves it against the current PATH, sending a visitor on a nested login route to
+    // `/apps/foo/home` after `/home` passed the check.
+    const landed = withLocation('https://hub.example.com/apps/foo/login', () => {
+      expect(followSafeRedirect('home')).toBe(true);
+    });
+    expect(landed).toBe('https://hub.example.com/home');
+  });
+
+  it('reports false and does not navigate for an unsafe target', () => {
+    const landed = withLocation('https://hub.example.com/login', () => {
+      expect(followSafeRedirect('https://evil.com/')).toBe(false);
+      expect(followSafeRedirect(null)).toBe(false);
+    });
+    expect(landed).toBe('https://hub.example.com/login');
   });
 });

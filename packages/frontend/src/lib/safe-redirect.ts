@@ -13,32 +13,47 @@
  * the parser resolve first means anything that escapes the origin is judged as what it actually
  * is.
  */
-export function isSafeRedirect(url: string, location: { origin: string; host: string; protocol: string } = window.location): boolean {
+export function resolveSafeRedirect(url: string, location: { origin: string; host: string; protocol: string } = window.location): string | null {
   let parsed: URL;
   try {
     parsed = new URL(url, location.origin);
   } catch {
-    return false;
+    return null;
   }
 
-  if (parsed.origin === location.origin) {
-    return true;
-  }
+  const safe =
+    parsed.origin === location.origin ||
+    // The historical LAN shape: the Hub sits at the domain root and apps are subdomains beneath
+    // it. The scheme must still match — the backend refuses to hand out a downgraded target, and
+    // this is the same decision on the client side.
+    (parsed.protocol === location.protocol && parsed.host.endsWith(`.${location.host}`));
 
-  // The historical LAN shape: the Hub sits at the domain root and apps are subdomains beneath it.
-  // The scheme must still match — the backend refuses to hand out a downgraded target, and this
-  // is the same decision on the client side.
-  return parsed.protocol === location.protocol && parsed.host.endsWith(`.${location.host}`);
+  return safe ? parsed.toString() : null;
+}
+
+/** Whether `url` is a target the browser may be sent to after authenticating. */
+export function isSafeRedirect(url: string, location: { origin: string; host: string; protocol: string } = window.location): boolean {
+  return resolveSafeRedirect(url, location) !== null;
 }
 
 /**
  * Navigate to `url` when it is a safe target, reporting whether it did. Callers use the return
  * value to decide whether to fall back to their own default destination.
+ *
+ * Navigates to the RESOLVED url, not the raw string, so the address judged safe is the address
+ * the browser actually goes to. Assigning the raw value re-resolves it against the current PATH
+ * rather than the origin, so a path-relative `home` validated as `/home` would land on
+ * `/apps/foo/home` when the login page is nested. Same-origin either way — but "checked one URL,
+ * navigated to another" is exactly the gap this module exists to close.
  */
 export function followSafeRedirect(url: string | null | undefined): boolean {
-  if (!url || !isSafeRedirect(url)) {
+  if (!url) {
     return false;
   }
-  window.location.href = url;
+  const target = resolveSafeRedirect(url);
+  if (!target) {
+    return false;
+  }
+  window.location.href = target;
   return true;
 }

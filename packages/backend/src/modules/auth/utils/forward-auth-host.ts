@@ -11,7 +11,17 @@
  *  the header was repeated. Use when rebuilding a URL the browser has to land back on. */
 export function rawForwardedHost(value: string | string[] | undefined): string {
   const raw = Array.isArray(value) ? value[0] : value;
-  return typeof raw === 'string' ? raw.trim() : '';
+  if (typeof raw !== 'string') {
+    return '';
+  }
+  // A REPEATED header reaches Node as one comma-joined string, not an array — only `set-cookie`
+  // is kept as an array — so the branch above never fires for `X-Forwarded-Host` and the split is
+  // what actually implements "first value wins". Same treatment `resolvePortalReturnOrigin`
+  // (portal-sso.ts) already gives this header. Left unsplit, a request through a second proxy
+  // yields the key `app.ci.lan, edge.example`: it matches no host-map entry, so every ticket
+  // fails its binding and the visitor loops back to login with no error signal. Commas cannot
+  // occur inside a single host, so this is lossless for the one-value case.
+  return (raw.split(',')[0] ?? '').trim();
 }
 
 /**
