@@ -8,6 +8,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { normalizeForwardedHost } from './utils/forward-auth-host';
 
 /**
  * How long resolved host→secret entries (and the host→app map behind them) are trusted before a
@@ -95,13 +96,10 @@ export class ForwardAuthSecretResolver {
     private readonly logger: LoggerService,
   ) {}
 
-  /** Lowercase and strip any port — Traefik forwards the host exactly as the client sent it. */
+  /** Lowercase and strip any port — Traefik forwards the host exactly as the client sent it.
+   *  Shared with AuthController's edge-SSO ticket binding, which compares against these keys. */
   private normalizeHost(forwardedHost: string | string[] | undefined): string {
-    const raw = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
-    if (typeof raw !== 'string') {
-      return '';
-    }
-    return raw.trim().toLowerCase().replace(/:\d+$/, '');
+    return normalizeForwardedHost(forwardedHost);
   }
 
   private globalSecret(): ResolvedForwardAuthSecret {
@@ -123,11 +121,15 @@ export class ForwardAuthSecretResolver {
       // Same construction as the compose/labels build (app-lifecycle command.ts):
       // the router host in cloudflare mode is the origin server name.
       const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-      const register = (hostname: string | null | undefined) => {
-        const normalized = (hostname ?? '').trim().toLowerCase();
+      /** Registers a hostname and returns the key it was stored under (empty when there was none),
+       *  so callers needing the normalized form reuse this one normalization instead of repeating
+       *  it — the two maps can then never disagree about a key's shape. */
+      const register = (hostname: string | null | undefined): string => {
+        const normalized = normalizeForwardedHost(hostname ?? undefined);
         if (normalized) {
           map.set(normalized, appUrn);
         }
+        return normalized;
       };
 
       try {
@@ -139,20 +141,20 @@ export class ForwardAuthSecretResolver {
             localDomain,
           }),
         );
-        const publicHostname = buildPublicWebIdentity({
-          appSubdomain,
-          publicDomainRoot: resolvePublicDomainRoot({
-            selectedPublicDomain: app.publicDomain ?? undefined,
-            envDomain: undefined,
-            configDomain: domain,
-          }),
-          hubSubdomain: org?.hubSubdomain,
-          orgSlug: org?.slug,
-        }).hostname;
-        register(publicHostname);
-        const normalizedPublic = (publicHostname ?? '').trim().toLowerCase();
-        if (normalizedPublic) {
-          publicHosts.set(appUrn, normalizedPublic);
+        const publicHostname = register(
+          buildPublicWebIdentity({
+            appSubdomain,
+            publicDomainRoot: resolvePublicDomainRoot({
+              selectedPublicDomain: app.publicDomain ?? undefined,
+              envDomain: undefined,
+              configDomain: domain,
+            }),
+            hubSubdomain: org?.hubSubdomain,
+            orgSlug: org?.slug,
+          }).hostname,
+        );
+        if (publicHostname) {
+          publicHosts.set(appUrn, publicHostname);
         }
         register(app.domain); // operator-entered custom domain
       } catch (err) {

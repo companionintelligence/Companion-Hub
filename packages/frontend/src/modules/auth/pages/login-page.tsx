@@ -4,6 +4,7 @@ import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -16,26 +17,6 @@ import { TotpForm } from '../components/totp-form/totp-form';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/**
- * Where a post-login redirect may point: a relative path (`/…` but not `//…`, which browsers
- * treat as protocol-relative and would leave the origin), this exact origin (the edge-SSO mint
- * endpoint lives at `/api/auth/edge-sso` and loops back through here as an absolute same-origin
- * URL — CI-Engineering#77), or a subdomain of this host (the historical LAN app shape, where the
- * Hub sits at the domain root and apps live under it). Anything unparsable is unsafe — the old
- * bare `new URL(url)` THREW on a relative redirect_url, taking the whole login page down.
- */
-export const isSafeRedirect = (url: string) => {
-  if (url.startsWith('/') && !url.startsWith('//')) {
-    return true;
-  }
-  try {
-    const parsed = new URL(url);
-    return parsed.origin === window.location.origin || parsed.host.endsWith(`.${window.location.host}`);
-  } catch {
-    return false;
-  }
-};
-
 export async function clientLoader() {
   try {
     const user = await userContext();
@@ -44,9 +25,7 @@ export async function clientLoader() {
       // Honor a safe redirect target instead of dropping it: a visitor who signed in from
       // another tab mid-flow (e.g. between an edge-SSO bounce and this page) should continue to
       // where they were headed, not be stranded on /home.
-      const redirectUrl = new URLSearchParams(window.location.search).get('redirect_url');
-      if (redirectUrl && isSafeRedirect(redirectUrl)) {
-        window.location.href = redirectUrl;
+      if (followSafeRedirect(new URLSearchParams(window.location.search).get('redirect_url'))) {
         return null;
       }
       return redirect('/home');
@@ -117,8 +96,7 @@ export default () => {
         setUserContext({ isLoggedIn: true });
         refreshUserContext();
 
-        if (redirect_url && isSafeRedirect(redirect_url)) {
-          window.location.href = redirect_url;
+        if (followSafeRedirect(redirect_url)) {
           return;
         }
         navigate('/home');
@@ -143,8 +121,7 @@ export default () => {
       setUserContext({ isLoggedIn: true });
       refreshUserContext();
 
-      if (redirect_url && isSafeRedirect(redirect_url)) {
-        window.location.href = redirect_url;
+      if (followSafeRedirect(redirect_url)) {
         return;
       }
       navigate('/home');
@@ -152,8 +129,7 @@ export default () => {
   });
 
   if (isLoggedIn) {
-    if (redirect_url && isSafeRedirect(redirect_url)) {
-      window.location.href = redirect_url;
+    if (followSafeRedirect(redirect_url)) {
       return;
     }
     return <Navigate to="/home" />;

@@ -211,63 +211,97 @@ describe('AuthController', () => {
   });
 
   describe('traefik — edge-SSO ticket consume', () => {
+    // The two names for one app. Through the tunnel the browser is on the PUBLIC host while
+    // cloudflared rewrites Host to the LAN origin server name, so the consume hop sees LAN_HOST
+    // for a ticket minted against APP_HOST — the case that must work, and the one earlier
+    // fixtures hid by putting the public name in x-forwarded-host.
     const APP_HOST = 'importer-core-2-org.companionintelligence.com';
+    const LAN_HOST = 'importer-core-2-org.ci.lan';
+    const TARGET = `https://${APP_HOST}/files?dir=%2Fdata`;
 
-    const consumeReq = (uri: string) =>
+    /** A request as it actually arrives through the tunnel: rewritten Host, hop proto http, cf-ray. */
+    const tunnelReq = (uri: string) =>
       ({
         user: undefined,
-        headers: { 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+        headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': uri, 'x-forwarded-proto': 'http', 'x-forwarded-host': LAN_HOST },
         cookies: {},
       }) as unknown as Request;
 
-    const consumeRes = () => ({ status: vi.fn().mockReturnThis(), redirect: vi.fn(), cookie: vi.fn(), send: vi.fn() }) as unknown as Response;
+    const consumeRes = () =>
+      ({ status: vi.fn().mockReturnThis(), redirect: vi.fn(), cookie: vi.fn(), send: vi.fn(), setHeader: vi.fn() }) as unknown as Response;
+
+    const ticketFor = (over: Record<string, unknown> = {}) =>
+      JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST, targetUrl: TARGET, ...over });
 
     beforeEach(() => {
-      // setSessionCookie dependencies for the consume path.
       config.get.mockImplementation((key: string) => {
         if (key === 'userSettings') return { experimental: { insecureCookie: false } } as never;
         return undefined as never;
       });
-      authService.getCookieDomain.mockReturnValue(`.${APP_HOST}`);
+      config.getConfig.mockReturnValue({ domain: 'companionintelligence.com', localDomain: 'ci.lan' } as never);
+      authService.getCookieDomain.mockImplementation((host?: string) => (host ? `.${host}` : undefined) as never);
+      // The rewritten host resolves back to the app's public hostname.
+      forwardAuthSecrets.resolvePublicHostForHost.mockResolvedValue(APP_HOST);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-org', slug: 'org' } as never);
     });
 
-    it('plants the session cookie on the app host and retries the clean URL for a valid ticket', async () => {
-      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST }));
+    it('accepts a ticket bound to the PUBLIC host when the tunnel presents the rewritten LAN host', async () => {
+      cache.get.mockReturnValue(ticketFor());
       sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
       const res = consumeRes();
 
-      await authController.traefik(consumeReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
+      await authController.traefik(tunnelReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
 
-      // Burned before acted on — single use.
-      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123');
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ httpOnly: true }));
-      expect(res.status).toHaveBeenCalledWith(302);
-      // The retry URL is the forwarded URL minus the ticket — it must never reach the app.
-      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/files?dir=%2Fdata`);
+      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123'); // single use, burned before acting
+      // Cookie scoped to the host the BROWSER is on. Scoping it to the forwarded `.ci.lan` name
+      // would emit a Domain the browser cannot match, so it would silently drop the cookie.
+      expect(authService.getCookieDomain).toHaveBeenCalledWith(APP_HOST);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ httpOnly: true, secure: true }));
+      // And the retry goes to the public URL — the `.ci.lan` name does not resolve for a remote
+      // browser. Query encoding is preserved exactly.
+      expect(res.redirect).toHaveBeenCalledWith(TARGET);
     });
 
-    it('plants nothing for a ticket bound to a different host', async () => {
-      // A ticket minted for one app must not plant a cookie on a sibling that lured it.
-      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-1', targetHost: 'other-app.companionintelligence.com' }));
+    it('accepts a ticket on the LAN, where bound host and forwarded host coincide', async () => {
+      const lanTarget = `http://${LAN_HOST}/files`;
+      cache.get.mockReturnValue(ticketFor({ targetHost: LAN_HOST, targetUrl: lanTarget }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      const req = {
+        user: undefined,
+        headers: { 'x-forwarded-uri': '/files?cihub_sso=t-1', 'x-forwarded-proto': 'http', 'x-forwarded-host': LAN_HOST },
+        cookies: {},
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(res.redirect).toHaveBeenCalledWith(lanTarget);
+      // http on the LAN: the cookie must not be flagged Secure or the browser discards it.
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: false }));
+    });
+
+    it('plants nothing for a ticket bound to a different app', async () => {
+      // The sibling's public host is not what this forwarded host resolves to, so the binding
+      // must reject even though both are legitimate apps on this appliance.
+      cache.get.mockReturnValue(ticketFor({ targetHost: 'other-core-2-org.companionintelligence.com' }));
       sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
       const res = consumeRes();
 
-      await authController.traefik(consumeReq('/?cihub_sso=t-123'), res);
+      await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123'); // still burned
       expect(res.cookie).not.toHaveBeenCalled();
-      // Falls through to a fresh edge-sso redirect rather than dead-ending.
       const location = String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
       expect(location).toContain('/api/auth/edge-sso');
       expect(location).not.toContain('cihub_sso=');
     });
 
     it('plants nothing when the ticket outlived its session', async () => {
-      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-dead', targetHost: APP_HOST }));
+      cache.get.mockReturnValue(ticketFor({ sessionId: 'sid-dead' }));
       sessionManager.resolveSessionUserId.mockReturnValue(undefined as never);
       const res = consumeRes();
 
-      await authController.traefik(consumeReq('/?cihub_sso=t-123'), res);
+      await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
 
       expect(res.cookie).not.toHaveBeenCalled();
       expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
@@ -277,7 +311,7 @@ describe('AuthController', () => {
       cache.get.mockReturnValue(undefined as never);
       const res = consumeRes();
 
-      await authController.traefik(consumeReq('/path?cihub_sso=forged'), res);
+      await authController.traefik(tunnelReq('/path?cihub_sso=forged'), res);
 
       // Unauthenticated endpoint: deleting on every miss would let a ticket flood force a
       // synchronous store write per bogus request (browser-handoff rationale).
@@ -288,6 +322,24 @@ describe('AuthController', () => {
       expect(location.searchParams.get('redirect')).toBe(`https://${APP_HOST}/path`);
     });
 
+    it('burns a lingering ticket when the request is already authenticated', async () => {
+      // LAN fast path: the domain cookie authenticated the request before the ticket was ever
+      // consumed. Leaving it live would keep a session-planting credential replayable from any
+      // browser for the rest of its TTL.
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9');
+      expect(res.status).toHaveBeenCalledWith(302);
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
+      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
     it('does not treat an unrelated param that merely ends in the ticket name as a ticket', async () => {
       // `?xcihub_sso=1` substring-matches `cihub_sso=` but is a DIFFERENT param. Treating it as a
       // lingering ticket "cleans" the URL to an identical string and redirects to itself forever.
@@ -295,36 +347,13 @@ describe('AuthController', () => {
         user: { id: 1, username: 'op' },
         headers: { 'x-forwarded-uri': '/home?xcihub_sso=1', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
       } as unknown as Request;
-      const res = { ...consumeRes(), setHeader: vi.fn() } as unknown as Response;
+      const res = consumeRes();
       forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 's', source: 'global' });
 
       await authController.traefik(req, res);
 
       expect(res.redirect).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200); // signed pass-through, not a self-redirect
-    });
-
-    it('redirects the browser to https, not the tunnel hop scheme, when consuming through the tunnel', async () => {
-      // The tunnel connects to the plain-HTTP entrypoint, so X-Forwarded-Proto is 'http' for
-      // every remote visitor even though their page is https. Echoing the hop scheme would
-      // bounce the browser to http://<public-host>.
-      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST }));
-      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
-      const req = {
-        user: undefined,
-        headers: {
-          'cf-ray': 'ray-LAX',
-          'x-forwarded-uri': '/files?cihub_sso=t-1',
-          'x-forwarded-proto': 'http',
-          'x-forwarded-host': APP_HOST,
-        },
-        cookies: {},
-      } as unknown as Request;
-      const res = consumeRes();
-
-      await authController.traefik(req, res);
-
-      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/files`);
     });
 
     it('refuses a single-label forwarded host instead of crashing on an underivable hub origin', async () => {
@@ -341,20 +370,37 @@ describe('AuthController', () => {
       expect(res.redirect).not.toHaveBeenCalled();
     });
 
-    it('strips a lingering ticket with a clean redirect when already authenticated', async () => {
-      // LAN fast path: the domain cookie authenticated the request before the ticket was ever
-      // consumed. The credential-bearing URL must not reach the app.
+    it('preserves a nonstandard port in both the hub origin and the return address on the LAN', async () => {
+      // The documented :8443 tailnet path. Deriving these from the port-stripped key sends both
+      // to :443, where nothing answers.
       const req = {
-        user: { id: 1, username: 'op' },
-        headers: { 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+        user: undefined,
+        headers: { 'x-forwarded-uri': '/x', 'x-forwarded-proto': 'https', 'x-forwarded-host': `${LAN_HOST}:8443` },
+        cookies: {},
       } as unknown as Request;
       const res = consumeRes();
 
       await authController.traefik(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(302);
-      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
-      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(location.origin).toBe('https://ci.lan:8443');
+      expect(location.searchParams.get('redirect')).toBe(`https://${LAN_HOST}:8443/x`);
+    });
+
+    it('passes an untouched query through to the return address without re-encoding it', async () => {
+      // URLSearchParams round-tripping rewrites %20 to '+', '~' to %7E and bare flags to 'flag=',
+      // corrupting signature-checked or strictly-parsed query strings on the way back to the app.
+      const req = {
+        user: undefined,
+        headers: { 'x-forwarded-uri': '/search?q=a%20b&s=~z&flag', 'x-forwarded-proto': 'https', 'x-forwarded-host': APP_HOST },
+        cookies: {},
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(location.searchParams.get('redirect')).toBe(`https://${APP_HOST}/search?q=a%20b&s=~z&flag`);
     });
   });
 
@@ -416,6 +462,24 @@ describe('AuthController', () => {
       expect(location.searchParams.get('app')).toBe('importer-core-2-org');
     });
 
+    it('builds an https self-URL for a tunnel visitor even though the hop proto is http', async () => {
+      // This endpoint is itself reached through the plain-HTTP tunnel entrypoint. An http
+      // self-URL survives the round trip only to be rejected as cross-origin by the login page's
+      // redirect check, silently stranding the visitor on /home.
+      const req = {
+        user: undefined,
+        headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
+        get: vi.fn(),
+      } as unknown as Request;
+      const res = ssoRes();
+
+      await authController.edgeSso(TARGET, req, res);
+
+      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(location.protocol).toBe('https:');
+      expect(new URL(location.searchParams.get('redirect_url') ?? '').protocol).toBe('https:');
+    });
+
     it('treats a Bearer-authenticated request as having no session to hand off', async () => {
       // Bearer auth sets req.user but carries no session cookie — there is nothing to plant on
       // the app host, so the browser flow is the only way through.
@@ -447,7 +511,9 @@ describe('AuthController', () => {
 
       const ticketCall = (cache.set as ReturnType<typeof vi.fn>).mock.calls.find(([key]) => String(key).startsWith('edge_sso:'));
       expect(ticketCall).toBeDefined();
-      expect(JSON.parse(String(ticketCall?.[1]))).toEqual({ sessionId: 'sid-9', targetHost: APP_HOST });
+      // The full target rides with the ticket: the consume hop cannot rebuild it from the
+      // tunnel-rewritten forwarded host, which names the same app but is unreachable remotely.
+      expect(JSON.parse(String(ticketCall?.[1]))).toEqual({ sessionId: 'sid-9', targetHost: APP_HOST, targetUrl: TARGET });
       expect(ticketCall?.[2]).toBe(60); // short-lived — the browser consumes it within one hop
 
       const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
