@@ -160,10 +160,41 @@ export const hubIntegrationSchema = z
           .optional(),
       })
       .optional(),
+    /**
+     * Edge-auth posture the app ships with (CI-Engineering#74).
+     *
+     * `default: true` asks the Hub to default the install/expose "Require Auth" toggle ON for
+     * this app, so a fresh install sits behind the Hub-session forward-auth middleware without
+     * the operator having to remember the toggle. It only supplies the FALLBACK for an
+     * undecided value: an explicit operator choice (form or API) always wins, and the field can
+     * never force auth OFF (`default: false` and absence are equally no-ops — absence already
+     * means "leave the toggle default alone").
+     *
+     * Deliberately honored from ANY store, unlike the credential provisioning gates: the field
+     * is strictly safety-increasing — the worst a hostile manifest can do is put its own app
+     * behind the Hub login (self-lockout, no privilege gained), while the dangerous direction
+     * is unreachable by construction.
+     */
+    edge_auth: z
+      .object({
+        /** Default the "Require Auth" toggle ON at install/expose time. */
+        default: z.boolean().optional(),
+      })
+      .optional(),
   })
   .optional();
 
 export type HubIntegration = z.output<typeof hubIntegrationSchema>;
+
+/**
+ * Whether a manifest asks for edge auth ON by default. Only exposable apps qualify — the toggle
+ * is meaningless for apps that are never routed — and only an explicit `default: true` counts.
+ * Shared between the backend (which enforces the fallback for formless installs, e.g.
+ * onboarding) and the frontend (which mirrors it in the install form), so the two can't drift.
+ */
+export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {
+  return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
+}
 
 /**
  * How a consumer wants the brokered Companion Memory address shaped. Derived from the
@@ -171,6 +202,56 @@ export type HubIntegration = z.output<typeof hubIntegrationSchema>;
  * unhandled in the other.
  */
 export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>['memory']>['url_style']>;
+
+/**
+ * Marketplace MCP listing block (#936). CI-Marketplace ships MCP server apps with a
+ * top-level `mcp` object in config.json describing transport, launch command, required
+ * env, and a manifest of the tools the server exposes. The Hub ingests this block so
+ * installed MCP servers are visible to the agent bridge (`McpBridgeService`) and the
+ * app page can render an access card — without requiring stores to duplicate the
+ * information into the Hub-native `agents.mcp` shape.
+ *
+ * Loose objects throughout: the marketplace owns this contract and extends it over
+ * time (tags, requires, manifest extras); unknown fields must never fail an install.
+ */
+export const MCP_TRANSPORTS = ['stdio', 'http'] as const;
+export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
+export const mcpEnvVarSchema = z.looseObject({
+  key: z.string(),
+  label: z.string().optional(),
+  hint: z.string().optional(),
+  required: z.boolean().optional().default(false),
+  secret: z.boolean().optional().default(false),
+});
+
+export const mcpManifestSchema = z.looseObject({
+  tools: z
+    .array(z.looseObject({ name: z.string(), description: z.string().optional().default('') }))
+    .optional()
+    .default([]),
+  resources: z.array(z.unknown()).optional().default([]),
+  prompts: z.array(z.unknown()).optional().default([]),
+});
+
+export const marketplaceMcpSchema = z.looseObject({
+  transport: z.enum(MCP_TRANSPORTS),
+  /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */
+  command: z.string().optional().default(''),
+  args: z.array(z.string()).optional().default([]),
+  /** Endpoint for http-transport servers, when the listing pins one. */
+  url: z.string().optional(),
+  env: z.array(mcpEnvVarSchema).optional().default([]),
+  requires: z
+    .looseObject({
+      host_software: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+    })
+    .optional(),
+  tags: z.array(z.string()).optional().default([]),
+  manifest: mcpManifestSchema.optional(),
+});
+export type MarketplaceMcp = z.output<typeof marketplaceMcpSchema>;
 
 export const APP_CATEGORIES = [
   'network',
@@ -188,6 +269,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'mcp',
   'companion-intelligence',
 ] as const;
 export type AppCategory = (typeof APP_CATEGORIES)[number];
@@ -281,6 +363,8 @@ export const appInfoObjectSchema = z.object({
   /** Host port the workload listens on when `kind` is `port-expose`. */
   upstreamPort: z.number().min(1).max(65535).optional(),
   agents: agentConfigSchema,
+  /** Marketplace MCP server listing block — see marketplaceMcpSchema (#936). */
+  mcp: marketplaceMcpSchema.optional(),
   hub_integration: hubIntegrationSchema,
 });
 

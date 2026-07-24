@@ -33,7 +33,7 @@ export type AppContextDto = {
     appDataRootHostPath?: string | null;
     apps: Array<{
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         id: string;
@@ -158,7 +158,7 @@ export type MyAppsDto = {
         info: {
             author: string;
             available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
             created_at: number;
             deprecated: boolean;
             description: string;
@@ -189,6 +189,32 @@ export type MyAppsDto = {
             id: string;
             name: string;
             no_gui: boolean;
+            mcp?: {
+                transport: 'stdio' | 'http';
+                command?: string;
+                args?: Array<string>;
+                url?: string;
+                env?: Array<{
+                    key: string;
+                    label?: string;
+                    hint?: string;
+                    required?: boolean;
+                    secret?: boolean;
+                }>;
+                requires?: {
+                    host_software?: Array<string>;
+                    notes?: string;
+                };
+                tags?: Array<string>;
+                manifest?: {
+                    tools?: Array<{
+                        name: string;
+                        description?: string;
+                    }>;
+                    resources?: Array<unknown>;
+                    prompts?: Array<unknown>;
+                };
+            };
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
@@ -250,7 +276,7 @@ export type GuestAppsDto = {
         info: {
             author: string;
             available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
             created_at: number;
             deprecated: boolean;
             description: string;
@@ -281,6 +307,32 @@ export type GuestAppsDto = {
             id: string;
             name: string;
             no_gui: boolean;
+            mcp?: {
+                transport: 'stdio' | 'http';
+                command?: string;
+                args?: Array<string>;
+                url?: string;
+                env?: Array<{
+                    key: string;
+                    label?: string;
+                    hint?: string;
+                    required?: boolean;
+                    secret?: boolean;
+                }>;
+                requires?: {
+                    host_software?: Array<string>;
+                    notes?: string;
+                };
+                tags?: Array<string>;
+                manifest?: {
+                    tools?: Array<{
+                        name: string;
+                        description?: string;
+                    }>;
+                    resources?: Array<unknown>;
+                    prompts?: Array<unknown>;
+                };
+            };
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
@@ -329,7 +381,7 @@ export type GetAppDto = {
     info: {
         author: string;
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         description: string;
@@ -360,6 +412,32 @@ export type GetAppDto = {
         id: string;
         name: string;
         no_gui: boolean;
+        mcp?: {
+            transport: 'stdio' | 'http';
+            command?: string;
+            args?: Array<string>;
+            url?: string;
+            env?: Array<{
+                key: string;
+                label?: string;
+                hint?: string;
+                required?: boolean;
+                secret?: boolean;
+            }>;
+            requires?: {
+                host_software?: Array<string>;
+                notes?: string;
+            };
+            tags?: Array<string>;
+            manifest?: {
+                tools?: Array<{
+                    name: string;
+                    description?: string;
+                }>;
+                resources?: Array<unknown>;
+                prompts?: Array<unknown>;
+            };
+        };
         short_desc: string;
         source: string;
         supported_architectures: Array<'amd64' | 'arm64'>;
@@ -489,7 +567,7 @@ export type FactoryResetDto = {
 export type SearchAppsDto = {
     data: Array<{
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         id: string;
@@ -2422,7 +2500,7 @@ export type SearchAppsData = {
     body?: never;
     path?: never;
     query?: {
-        category?: 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
+        category?: 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
         cursor?: string;
         pageSize?: number | string;
         search?: string;

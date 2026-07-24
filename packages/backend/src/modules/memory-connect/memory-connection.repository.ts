@@ -21,8 +21,8 @@ export interface MemoryConnectionRow {
 /**
  * Data access for the `memory_connection` table. One row per memory-consumer
  * app (keyed by URN), holding the connection state and — when connected — the
- * encrypted CI-Server key plus the resolved memory URL. Mirrors the
- * audience-scoped repository style used by {@link ApiKeyRepository}.
+ * encrypted CI-Server key plus the resolved memory URL. Mirrors the thin
+ * repository style used by {@link ApiKeyRepository}.
  */
 @Injectable()
 export class MemoryConnectionRepository {

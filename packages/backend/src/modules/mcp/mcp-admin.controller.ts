@@ -1,7 +1,7 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { McpAdminService } from './mcp-admin.service';
-import { McpAdminSettingsBody, McpCreateKeyBody, McpToolCallBody } from './mcp-admin.dto';
+import { McpAdminSettingsBody, McpToolCallBody } from './mcp-admin.dto';
 
 /**
  * ENH-MCP-4: operator-facing MCP admin surface, powering the "MCP" Settings screen. Distinct from the
@@ -35,23 +35,5 @@ export class McpAdminController {
   @Post('settings')
   updateSettings(@Body() body: McpAdminSettingsBody) {
     return this.adminService.setDestructiveAllowed(body.allowDestructive);
-  }
-
-  /** SEC-MCP-8: list all stored MCP API keys (operator + companion-app managed). Never returns raw keys. */
-  @Get('keys')
-  async listKeys() {
-    return { keys: await this.adminService.listKeys() };
-  }
-
-  /** Create an operator API key. Returns the raw key ONCE so it can be copied; only the hash is stored. */
-  @Post('keys')
-  createKey(@Body() body: McpCreateKeyBody) {
-    return this.adminService.createKey(body.name);
-  }
-
-  /** Revoke a key by id (create-new → roll-out → revoke-old is the no-downtime rotation flow). */
-  @Delete('keys/:id')
-  revokeKey(@Param('id', ParseIntPipe) id: number) {
-    return this.adminService.revokeKey(id);
   }
 }

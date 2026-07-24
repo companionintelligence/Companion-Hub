@@ -3,6 +3,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } fro
 import type { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
+import { HubAccessService } from './hub-access.service';
 import { AppRehydrationService } from './app-rehydration.service';
 import {
   AppFormBody,
@@ -26,6 +27,7 @@ export class AppLifecycleController {
   constructor(
     private readonly appLifecycleService: AppLifecycleService,
     private readonly appRehydrationService: AppRehydrationService,
+    private readonly hubAccessService: HubAccessService,
   ) {}
 
   @Get('rehydrate/plan')
@@ -49,6 +51,18 @@ export class AppLifecycleController {
       source: body.source,
       operatorUserId: req.user?.id,
     });
+  }
+
+  /** Hub-provisioned trust material held by this app (managed key prefix, forward-auth state). */
+  @Get(':urn/hub-access')
+  async getHubAccess(@Param('urn') urn: string) {
+    return this.hubAccessService.getStatus(castAppUrn(urn));
+  }
+
+  /** Rotate the app's Hub trust material: revoke + clear, then restart to re-provision fresh values. */
+  @Post(':urn/hub-access/rotate')
+  async rotateHubAccess(@Param('urn') urn: string) {
+    return this.hubAccessService.rotate(castAppUrn(urn));
   }
 
   @Post(':urn/install')

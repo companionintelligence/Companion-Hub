@@ -14,7 +14,7 @@ import { AppsService } from './apps.service';
 import { AppIntentSyncService } from './app-intent-sync.service';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
-import { McpApiKeyModule } from '../mcp/mcp-api-key.module';
+import { ApiKeyModule } from '../api-keys/api-key.module';
 import { MemoryConnectionModule } from '../memory-connect/memory-connection.module';
 
 @Module({
@@ -25,7 +25,7 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
     forwardRef(() => InferenceModule),
     MarketplaceModule,
     forwardRef(() => RegistrationModule),
-    McpApiKeyModule,
+    ApiKeyModule,
     MemoryConnectionModule,
   ],
   controllers: [AppsController],

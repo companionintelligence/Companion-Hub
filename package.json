@@ -37,7 +37,15 @@
     "build:desktop": "node -e \"const { execSync } = require('node:child_process'); const command = process.platform === 'win32' ? 'cargo tauri build' : 'pnpm run build'; execSync(command, { cwd: 'packages/desktop', stdio: 'inherit', shell: true });\"",
     "build:mobile:android": "pnpm --filter frontend build && pnpm --filter mobile android:build",
     "build:mobile:ios": "pnpm --filter frontend build && pnpm --filter mobile ios:build",
-    "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts"
+    "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts",
+    "agent:test-inventory": "pnpm exec tsx scripts/agent/generate-test-inventory.ts",
+    "agent:precommit-fix": "pnpm exec tsx scripts/agent/precommit-fix.ts",
+    "agent:review": "bin/agent-review",
+    "agent:sweep": "bin/agent-sweep",
+    "test:visual": "pnpm exec playwright test e2e/visual/",
+    "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual",
+    "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
+    "agent:validate": "bin/agent-validate-shift"
   },
   "lint-staged": {
     "*": [
@@ -58,6 +66,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
     "@playwright/test": "^1.52.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",

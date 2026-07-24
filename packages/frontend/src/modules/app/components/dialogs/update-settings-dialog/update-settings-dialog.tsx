@@ -7,6 +7,7 @@ import type React from 'react';
 import { useEffect, useId, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { HubAccess } from '../../hub-access/hub-access';
 import { InstallFormButtons } from '../../install-form-buttons/install-form-buttons';
 import { type FormValues, InstallForm } from '../../install-form/install-form';
 
@@ -81,6 +82,11 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             editingAppUrn={info.urn}
             onDirtyChange={setHasChanges}
           />
+
+          {/* Outside the <form>: the Hub-provisioned trust material (app key + identity secret) is
+              app state, not a config field, and Rotate acts immediately rather than on save. The
+              component renders nothing for apps holding no Hub access, which is most of them. */}
+          <HubAccess appUrn={info.urn} hasUnsavedChanges={hasChanges} />
         </div>
         <DialogFooter>
           <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />

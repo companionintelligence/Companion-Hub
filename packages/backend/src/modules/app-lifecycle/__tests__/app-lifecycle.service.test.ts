@@ -658,6 +658,34 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
 
+    // ── manifest edge-auth default (CI-Engineering#74) ────────────────────
+    describe('manifest edge-auth default', () => {
+      const edgeAuthApp = { ...baseAppInfo, hub_integration: { edge_auth: { default: true } } };
+
+      it('defaults enableAuth ON for an undecided install when the manifest asks (the onboarding path sends no enableAuth)', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: true }));
+      });
+
+      it('an explicit operator false always wins over the manifest default', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
+        await service.installApp({ appUrn, form: { enableAuth: false } });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('a non-exposable app never gets auth defaulted on (the reset also strips the manifest ask)', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...edgeAuthApp, exposable: false } as any);
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('without the manifest field an undecided install stays auth-OFF (existing behavior)', async () => {
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+    });
+
     it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
@@ -832,6 +860,83 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async (_id, patch) => ({ id: 1, ...patch }) as any);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
       appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it('applies the manifest edge-auth default when the stored config never decided it (version-bump self-heal, #74)', async () => {
+      // updateApp re-submits app.config through updateAppConfig; onboarding-era installs
+      // stored no enableAuth key, so the marketplace update that ships edge_auth flips them ON.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: true }));
+    });
+
+    it('preserves an explicit stored enableAuth=false through the same path (operator choice wins)', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
+
+      // Another field changes so the update proceeds; the explicit false must survive it.
+      await service.updateAppConfig({ appUrn, form: { port: 9090, enableAuth: false } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
+      // A PATCH that changes some other field WITHOUT resending enableAuth must inherit the app's
+      // stored explicit false, not resolve to the manifest default — "operator choice wins" has to
+      // hold for a partial update too, and this must not spuriously restart the app.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no enableAuth in the form
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
+      // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
+      // so the warning must read the resolved values. Reading the destructured copies taken at the
+      // top of the method would stay silent here — the request carried no enableAuth, yet an
+      // enableAuth of true is exactly what is about to be reset away.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('persists the RESET exposure state, not what the request asked for', async () => {
+      // The row has to agree with the `config` blob written in the same call. Reading the request
+      // snapshot recorded exposed=true and kept the domain for an app the non-exposable reset had
+      // just cleared, so the columns claimed a public exposure the app never got.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposed: false, domain: null }));
+    });
+
+    it('stays silent when a non-exposable app has nothing to reset', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+    });
+
+    it('re-submitting an already-healed config is a no-op (the default converges, it does not churn)', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, enableAuth: true } });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
     it.each(['running', 'starting', 'restarting'] as const)('triggers restartApp({ skipPull: true }) when app status is "%s"', async (status) => {

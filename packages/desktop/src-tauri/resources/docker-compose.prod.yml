@@ -147,6 +147,13 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-os-hub-queue,
+    # per-app services) through Docker's embedded DNS, which drops queries under network churn —
+    # every app install/uninstall recreates networks. Default musl/glibc behavior gives up after
+    # 2 attempts and surfaces getaddrinfo EAI_AGAIN. Retry harder before failing.
+    dns_opt:
+      - attempts:5
+      - timeout:2
     networks:
       ci_os_hub_network:
         aliases:
@@ -190,7 +197,10 @@ services:
       ci-os-hub.managed: true
       traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User"
+      # All three signed identity headers must ride through — Traefik copies ONLY the headers
+      # listed here onto the forwarded request, and consumers verifying the signature fail
+      # closed on a missing timestamp/signature (CI-Engineering#74).
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-os-hub.entrypoints: "web"
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"

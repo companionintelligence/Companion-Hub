@@ -1,18 +1,22 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Switch } from '@/components/ui/Switch';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import { Link } from 'react-router';
 
 // ENH-MCP-4: operator screen for the Hub's MCP server. Talks to the session-authed /api/mcp-admin
 // surface (never the Bearer /api/mcp endpoint), so the browser never holds the agent key and the
 // tool runner executes server-side. Mirrors the existing settings-container pattern (ai-settings).
+// API-key management moved to the hub-wide Settings → Security card (ApiKeysContainer); this tab
+// only links there.
 
 interface McpStatus {
   enabled: boolean;
@@ -23,17 +27,6 @@ interface McpStatus {
   destructiveAllowed: boolean;
   activeKeyCount: number;
   endpoint: string;
-}
-
-interface McpApiKeyInfo {
-  id: number;
-  name: string;
-  prefix: string;
-  managed: boolean;
-  ownerAppUrn: string | null;
-  expiresAt: string | null;
-  lastUsedAt: string | null;
-  createdAt: string;
 }
 
 interface McpToolInfo {
@@ -57,14 +50,6 @@ export const McpSettingsContainer = () => {
   // Destructive-gate toggle state.
   const [savingDestructive, setSavingDestructive] = useState(false);
 
-  // API-key management state (SEC-MCP-8: multi-key store).
-  const [keys, setKeys] = useState<McpApiKeyInfo[]>([]);
-  const [createKeyOpen, setCreateKeyOpen] = useState(false);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [creatingKey, setCreatingKey] = useState(false);
-  // The raw key is returned only once, at creation — held here so the operator can copy it before it's gone.
-  const [createdKey, setCreatedKey] = useState<string | null>(null);
-
   // Tool runner state.
   const [runTool, setRunTool] = useState<McpToolInfo | null>(null);
   const [runArgs, setRunArgs] = useState('{}');
@@ -77,17 +62,12 @@ export const McpSettingsContainer = () => {
     setLoading(true);
     setError(null);
     try {
-      const [statusRes, toolsRes, keysRes] = await Promise.all([
-        apiFetch('/api/mcp-admin/status'),
-        apiFetch('/api/mcp-admin/tools'),
-        apiFetch('/api/mcp-admin/keys'),
-      ]);
-      if (!statusRes.ok || !toolsRes.ok || !keysRes.ok) {
+      const [statusRes, toolsRes] = await Promise.all([apiFetch('/api/mcp-admin/status'), apiFetch('/api/mcp-admin/tools')]);
+      if (!statusRes.ok || !toolsRes.ok) {
         throw new Error('status');
       }
       setStatus((await statusRes.json()) as McpStatus);
       setTools(((await toolsRes.json()) as { tools: McpToolInfo[] }).tools);
-      setKeys(((await keysRes.json()) as { keys: McpApiKeyInfo[] }).keys);
     } catch {
       setError(t('MCP_SETTINGS_LOAD_ERROR'));
     } finally {
@@ -143,85 +123,11 @@ export const McpSettingsContainer = () => {
     [t],
   );
 
-  // Never throws: callers toast their own action's outcome, and a failed list refresh must not be
-  // misreported as that action failing — the list just stays stale until the next successful load.
-  const refreshKeys = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/mcp-admin/keys');
-      if (!res.ok) return;
-      const body = (await res.json()) as { keys: McpApiKeyInfo[] };
-      setKeys(body.keys);
-      setStatus((prev) => (prev ? { ...prev, activeKeyCount: body.keys.length } : prev));
-    } catch {
-      // stale list until the next refresh
-    }
-  }, []);
-
-  const createKey = useCallback(async () => {
-    const name = newKeyName.trim();
-    if (!name) return;
-    setCreatingKey(true);
-    try {
-      const res = await apiFetch('/api/mcp-admin/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) throw new Error('create');
-      const body = (await res.json()) as { key: string };
-      setCreatedKey(body.key); // shown once
-      setCreateKeyOpen(false);
-      setNewKeyName('');
-      toast.success(t('MCP_SETTINGS_KEY_CREATED'));
-      await refreshKeys();
-    } catch {
-      toast.error(t('MCP_SETTINGS_KEY_CREATE_ERROR'));
-    } finally {
-      setCreatingKey(false);
-    }
-  }, [newKeyName, refreshKeys, t]);
-
-  const revokeKey = useCallback(
-    async (id: number) => {
-      try {
-        const res = await apiFetch(`/api/mcp-admin/keys/${id}`, { method: 'DELETE' });
-        if (res.status === 409) {
-          // The backend refuses to revoke the last key (an empty store would re-seed the same
-          // derived Default key at next boot, resurrecting the credential).
-          toast.error(t('MCP_SETTINGS_KEY_REVOKE_LAST'));
-          return;
-        }
-        if (!res.ok) throw new Error('revoke');
-        const body = (await res.json()) as { revoked: boolean };
-        // revoked:false = the id no longer exists (e.g. revoked from another tab). No success toast
-        // for a no-op — the refresh below reconciles the stale list.
-        if (body.revoked) toast.success(t('MCP_SETTINGS_KEY_REVOKED'));
-        await refreshKeys();
-      } catch {
-        toast.error(t('MCP_SETTINGS_KEY_REVOKE_ERROR'));
-      }
-    },
-    [refreshKeys, t],
-  );
-
   const openRunner = useCallback((tool: McpToolInfo) => {
     setRunTool(tool);
     setRunArgs('{}');
     setRunResult(null);
     setRunConfirmed(false);
-  }, []);
-
-  // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
-  // (insecure context) or blocked, in which case we stay silent rather than falsely claim success.
-  const copyToClipboard = useCallback((text: string, successMsg: string) => {
-    const clip = navigator.clipboard;
-    if (!clip) return;
-    clip.writeText(text).then(
-      () => toast.success(successMsg),
-      () => {
-        /* clipboard write blocked — no false-positive toast */
-      },
-    );
   }, []);
 
   const runToolCall = useCallback(async () => {
@@ -318,64 +224,20 @@ export const McpSettingsContainer = () => {
         </CardContent>
       </Card>
 
-      {/* API keys (SEC-MCP-8: multi-key store) */}
+      {/* API keys moved to the hub-wide Settings → Security card. Point operators there and keep
+          the tab's key-count visibility via the status endpoint's activeKeyCount. */}
       <Card>
         <CardHeader>
           <CardTitle>{t('MCP_SETTINGS_KEYS_TITLE')}</CardTitle>
-          <CardDescription>{t('MCP_SETTINGS_KEYS_DESC')}</CardDescription>
+          <CardDescription>{t('API_KEYS_DESC')}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <Button variant="outline" onClick={() => setCreateKeyOpen(true)} data-testid="mcp-create-key">
-            {t('MCP_SETTINGS_KEY_CREATE')}
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground" data-testid="mcp-active-key-count">
+            {t('MCP_SETTINGS_ACTIVE_KEYS', { count: status.activeKeyCount })}
+          </p>
+          <Button asChild variant="outline" data-testid="mcp-manage-keys">
+            <Link to="/settings?tab=security">{t('MCP_SETTINGS_MANAGE_KEYS_LINK')}</Link>
           </Button>
-
-          {/* A freshly created key is shown once, right here — it can never be retrieved again. */}
-          {createdKey && (
-            <div className="space-y-1 rounded-md border border-primary/40 bg-primary/5 p-2">
-              <p className="text-xs font-medium text-primary">{t('MCP_SETTINGS_KEY_CREATED_ONCE')}</p>
-              <div className="flex items-center gap-2">
-                <code className="min-w-0 flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-xs" data-testid="mcp-created-key">
-                  {createdKey}
-                </code>
-                <Button variant="ghost" size="sm" onClick={() => copyToClipboard(createdKey, t('MCP_SETTINGS_KEY_COPIED'))}>
-                  {t('MCP_SETTINGS_KEY_COPY')}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setCreatedKey(null)}>
-                  {t('MCP_SETTINGS_KEY_DISMISS')}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_KEYS_EMPTY')}</p>
-          ) : (
-            <ul className="divide-y divide-border" data-testid="mcp-key-list">
-              {keys.map((key) => (
-                <li key={key.id} className="flex items-center justify-between gap-3 py-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">{key.name}</span>
-                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{key.prefix}…</code>
-                      {key.managed && (
-                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={key.ownerAppUrn ?? undefined}>
-                          {t('MCP_SETTINGS_KEY_MANAGED_BADGE')}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {key.lastUsedAt
-                        ? t('MCP_SETTINGS_KEY_LAST_USED', { when: new Date(key.lastUsedAt).toLocaleString() })
-                        : t('MCP_SETTINGS_KEY_NEVER_USED')}
-                    </p>
-                  </div>
-                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void revokeKey(key.id)}>
-                    {t('MCP_SETTINGS_KEY_REVOKE')}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
         </CardContent>
       </Card>
 
@@ -444,41 +306,6 @@ export const McpSettingsContainer = () => {
           )}
         </CardContent>
       </Card>
-
-      {/* Create-key dialog */}
-      <Dialog open={createKeyOpen} onOpenChange={(open) => !open && setCreateKeyOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('MCP_SETTINGS_KEY_CREATE_TITLE')}</DialogTitle>
-            <DialogDescription>{t('MCP_SETTINGS_KEY_CREATE_DESC')}</DialogDescription>
-          </DialogHeader>
-          <div className="min-w-0 space-y-2">
-            <label className="text-sm font-medium" htmlFor="mcp-new-key-name">
-              {t('MCP_SETTINGS_KEY_NAME_LABEL')}
-            </label>
-            <Input
-              id="mcp-new-key-name"
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              placeholder={t('MCP_SETTINGS_KEY_NAME_PLACEHOLDER')}
-              data-testid="mcp-new-key-name"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
-              {t('COMMON_CANCEL')}
-            </Button>
-            <Button
-              loading={creatingKey}
-              disabled={creatingKey || !newKeyName.trim()}
-              onClick={() => void createKey()}
-              data-testid="mcp-create-key-submit"
-            >
-              {t('MCP_SETTINGS_KEY_CREATE')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Tool runner */}
       <Dialog open={Boolean(runTool)} onOpenChange={(open) => !open && setRunTool(null)}>

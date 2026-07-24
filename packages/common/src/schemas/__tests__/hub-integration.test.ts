@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hubIntegrationSchema } from '../app-info';
+import { manifestDefaultsEdgeAuthOn, hubIntegrationSchema } from '../app-info';
 import { appInfoSchema } from '../app-info';
 
 describe('hubIntegrationSchema', () => {
@@ -205,6 +205,50 @@ describe('hubIntegrationSchema', () => {
       if (result.success) {
         expect(result.data.hub_integration).toBeUndefined();
       }
+    });
+  });
+
+  describe('edge_auth (CI-Engineering#74)', () => {
+    const minimalAppInfo = {
+      id: 'test-app',
+      urn: 'test-app:test-store',
+      available: true,
+      port: 8080,
+      name: 'Test',
+      short_desc: 'Test app',
+      author: 'Test',
+      source: 'https://example.com',
+      cihub_app_version: 1,
+    };
+
+    it('parses an edge_auth default-on declaration', () => {
+      const result = appInfoSchema.safeParse({
+        ...minimalAppInfo,
+        hub_integration: { edge_auth: { default: true } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.hub_integration?.edge_auth?.default).toBe(true);
+      }
+    });
+
+    it('parses default:false and absence harmlessly (both are no-ops, never install-breaking)', () => {
+      expect(appInfoSchema.safeParse({ ...minimalAppInfo, hub_integration: { edge_auth: { default: false } } }).success).toBe(true);
+      expect(appInfoSchema.safeParse({ ...minimalAppInfo, hub_integration: { edge_auth: {} } }).success).toBe(true);
+    });
+
+    describe('manifestDefaultsEdgeAuthOn', () => {
+      it('is true only for an exposable app with an explicit default:true', () => {
+        expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: { default: true } } })).toBe(true);
+      });
+
+      it('is false for non-exposable apps, absent blocks, and default:false', () => {
+        expect(manifestDefaultsEdgeAuthOn({ exposable: false, hub_integration: { edge_auth: { default: true } } })).toBe(false);
+        expect(manifestDefaultsEdgeAuthOn({ exposable: true })).toBe(false);
+        expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: {} })).toBe(false);
+        expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: {} } })).toBe(false);
+        expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: { default: false } } })).toBe(false);
+      });
     });
   });
 });

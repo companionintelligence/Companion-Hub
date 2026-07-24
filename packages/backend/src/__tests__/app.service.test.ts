@@ -63,6 +63,7 @@ describe('AppService', () => {
     appsRepository = moduleRef.get(AppsRepository);
     portManagerService = moduleRef.get(PortManagerService);
 
+    databaseService.waitUntilReady.mockResolvedValue(undefined);
     databaseService.migrate.mockResolvedValue(undefined);
     cacheService.get.mockReturnValue(undefined);
     cacheService.clear.mockReturnValue(undefined);

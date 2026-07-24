@@ -8,7 +8,7 @@ import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
-import { McpApiKeyService } from '../mcp-api-key.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppDiscoveryTools } from '../tools/app-discovery.tools';
 import { AppLifecycleTools } from '../tools/app-lifecycle.tools';
 import { AppConfigTools } from '../tools/app-config.tools';
@@ -67,7 +67,7 @@ describe('McpModule', () => {
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
         { provide: LinksService, useValue: mock<LinksService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
-        { provide: McpApiKeyService, useValue: mock<McpApiKeyService>() },
+        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
       ],
     }).compile();
 

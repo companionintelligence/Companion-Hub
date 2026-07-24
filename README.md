@@ -137,6 +137,18 @@ See **[docs/CLI.md](docs/CLI.md)** for the full reference.
 
 ---
 
+## AI agents
+
+Coding agents (Cursor, Claude Code, Copilot) should start at **[AGENTS.md](AGENTS.md)** — the router to workflow docs, system docs, skills, and validation scripts.
+
+- **Workflow:** [docs/agent/AGENT_WORKFLOW.md](docs/agent/AGENT_WORKFLOW.md) — tag this in most sessions
+- **Run the app:** `pnpm run local` or `pnpm run local:desktop` before finishing UI or API work
+- **Task queue:** [TODO.md](TODO.md)
+
+For marketplace app QA automation (separate from general development), see [docs/FLYWHEEL.md](docs/FLYWHEEL.md).
+
+---
+
 ## Development
 
 ```bash

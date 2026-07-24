@@ -9,6 +9,7 @@ import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
+import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -60,6 +61,7 @@ import {
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
+    private readonly forwardAuthSecrets: ForwardAuthSecretResolver,
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
     private readonly cache: CacheService,
@@ -718,12 +720,19 @@ export class AuthController {
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     if (req.user) {
-      this.logger.debug('User authenticated for Traefik forward auth', { username: req.user.username });
-
-      // Sign the identity header so a consumer (e.g. CI-Server) can verify it was
-      // issued by the Hub and not forged by another container on ci_os_hub_network.
-      // See CI-Engineering/architecture/subsystems/security-trust-and-ops.md (gap #5).
-      const signed = buildSignedForwardAuthHeaders(this.config.get('forwardAuthSecret'), req.user.username);
+      // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
+      // verify it was issued by the Hub and not forged by another container on
+      // ci_os_hub_network. The signing secret is PER TARGET APP (CI-Engineering#74):
+      // the resolver maps X-Forwarded-Host to the destination app and signs with the
+      // secret that app's env actually holds, so one app can never forge an identity
+      // header a sibling accepts. Unknown hosts fall back to the Hub-global secret.
+      const resolved = await this.forwardAuthSecrets.resolveForHost(req.headers['x-forwarded-host']);
+      this.logger.debug('User authenticated for Traefik forward auth', {
+        username: req.user.username,
+        secretSource: resolved.source,
+        targetApp: resolved.appUrn,
+      });
+      const signed = buildSignedForwardAuthHeaders(resolved.secret, req.user.username);
       for (const [header, value] of Object.entries(signed)) {
         res.setHeader(header, value);
       }

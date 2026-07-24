@@ -1959,6 +1959,65 @@
         ]
       }
     },
+    "/api/api-keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
     "/api/i18n/locales/{ns}/{lng}.json": {
       "get": {
         "operationId": "getTranslation",
@@ -2594,6 +2653,52 @@
       "post": {
         "operationId": "executeRehydrate",
         "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/hub-access": {
+      "get": {
+        "operationId": "getHubAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/hub-access/rotate": {
+      "post": {
+        "operationId": "rotateHubAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "201": {
             "description": ""
@@ -4493,65 +4598,6 @@
           "McpAdmin"
         ]
       }
-    },
-    "/api/mcp-admin/keys": {
-      "get": {
-        "operationId": "listKeys",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      },
-      "post": {
-        "operationId": "createKey",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/McpCreateKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
-    },
-    "/api/mcp-admin/keys/{id}": {
-      "delete": {
-        "operationId": "revokeKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
     }
   },
   "info": {
@@ -4661,6 +4707,10 @@
         "properties": {}
       },
       "UpdateAppStoreDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateApiKeyBody": {
         "type": "object",
         "properties": {}
       },
@@ -4853,10 +4903,6 @@
         "properties": {}
       },
       "McpAdminSettingsBody": {
-        "type": "object",
-        "properties": {}
-      },
-      "McpCreateKeyBody": {
         "type": "object",
         "properties": {}
       }

@@ -5,8 +5,10 @@
  */
 
 import type { Page } from '@playwright/test';
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { PNG } from 'pngjs';
+import pixelmatch from 'pixelmatch';
 
 export interface ScreenshotOptions {
   fullPage?: boolean;
@@ -20,7 +22,7 @@ export class ScreenshotHelper {
   private diffPath: string;
 
   constructor(basePath = './e2e/screenshots') {
-    this.baselinePath = join(basePath, 'baseline');
+    this.baselinePath = join(basePath, 'baselines');
     this.actualPath = join(basePath, 'actual');
     this.diffPath = join(basePath, 'diff');
 
@@ -122,33 +124,45 @@ export class ScreenshotHelper {
   }
 
   /**
-   * Compare screenshots and return match percentage
-   * Note: Full implementation would use pixelmatch or similar
+   * Compare screenshots using pixelmatch. Returns match when diff ratio <= (1 - threshold).
    */
-  async compare(name: string): Promise<{ match: boolean; percentage: number }> {
+  async compare(name: string, options: ScreenshotOptions = {}): Promise<{ match: boolean; percentage: number; mismatchedPixels: number }> {
+    const threshold = options.threshold ?? 0.05;
     const baselinePath = this.getBaselinePath(name);
     const actualPath = this.getActualPath(name);
 
     if (!existsSync(baselinePath)) {
       console.warn(`No baseline found for ${name}`);
-      return { match: false, percentage: 0 };
+      return { match: false, percentage: 0, mismatchedPixels: -1 };
     }
 
     if (!existsSync(actualPath)) {
       console.warn(`No actual screenshot found for ${name}`);
-      return { match: false, percentage: 0 };
+      return { match: false, percentage: 0, mismatchedPixels: -1 };
     }
 
-    // Simple file size comparison as a basic check
-    // In production, use pixelmatch or similar
-    const baselineSize = readFileSync(baselinePath).length;
-    const actualSize = readFileSync(actualPath).length;
+    const baseline = PNG.sync.read(readFileSync(baselinePath));
+    const actual = PNG.sync.read(readFileSync(actualPath));
 
-    const sizeDiff = Math.abs(baselineSize - actualSize) / baselineSize;
-    const percentage = 1 - sizeDiff;
-    const match = percentage > 0.95;
+    if (baseline.width !== actual.width || baseline.height !== actual.height) {
+      console.warn(`Dimension mismatch for ${name}: ${baseline.width}x${baseline.height} vs ${actual.width}x${actual.height}`);
+      return { match: false, percentage: 0, mismatchedPixels: -1 };
+    }
 
-    return { match, percentage };
+    const { width, height } = baseline;
+    const diff = new PNG({ width, height });
+    const mismatchedPixels = pixelmatch(baseline.data, actual.data, diff.data, width, height, {
+      threshold: 0.1,
+    });
+
+    const diffPath = this.getDiffPath(name);
+    writeFileSync(diffPath, PNG.sync.write(diff));
+
+    const totalPixels = width * height;
+    const percentage = 1 - mismatchedPixels / totalPixels;
+    const match = mismatchedPixels / totalPixels <= threshold;
+
+    return { match, percentage, mismatchedPixels };
   }
 }
 

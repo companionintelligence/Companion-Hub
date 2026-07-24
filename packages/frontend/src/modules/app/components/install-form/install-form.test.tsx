@@ -935,4 +935,177 @@ describe('InstallForm', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(dnsMessage);
   });
+
+  // The enable-auth switch carries aria-label={name} (see Switch), so its accessible name is the
+  // field name, not the translated label text.
+  const getEnableAuthSwitch = () => screen.getByRole('switch', { name: 'enableAuth' });
+
+  it('defaults the enable-auth switch ON for a fresh install', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).toBeChecked();
+    });
+  });
+
+  it('lets the operator turn auth OFF on a fresh install without it bouncing back on', async () => {
+    // The defaults effect re-runs when the form goes dirty (isDirty is a dependency). Without the
+    // `!isDirty` guard it re-asserted the ON default over the operator's very first toggle, so the
+    // switch appeared to snap back. One click must now stick.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    await act(async () => {
+      fireEvent.click(getEnableAuthSwitch());
+    });
+    await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+  });
+
+  it('lets the operator switch exposure mode on a fresh install without it bouncing back', async () => {
+    // Same init-effect hazard as enableAuth, on the field the effect seeds first: the resolved
+    // default was written unconditionally, so the moment the operator picked a mode the form went
+    // dirty, the effect re-ran, and the default overwrote the choice.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    const modeButton = (key: string) => screen.getByRole('button', { name: `APP_INSTALL_FORM_EXPOSURE_${key}` });
+    const isSelected = (key: string) => modeButton(key).className.includes('bg-primary');
+
+    // Seeds to the first available mode (cloudflare) on the untouched form.
+    await waitFor(() => expect(isSelected('CLOUDFLARE')).toBe(true));
+
+    await act(async () => {
+      fireEvent.click(modeButton('LOCAL'));
+    });
+
+    await waitFor(() => expect(isSelected('LOCAL')).toBe(true));
+    expect(isSelected('CLOUDFLARE')).toBe(false);
+  });
+
+  it('reseeds every default when a dirty form is reused for a different app', async () => {
+    // The dialog keeps one form instance across apps. Edits made against the PREVIOUS app are
+    // stale, so a switch must reseed the whole form — not just the exposure mode, which would
+    // leave the new app wearing half of its predecessor's config.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo(3001)} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    // Dirty the form against the first app: switch to Local and turn auth off.
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    });
+    await act(async () => {
+      fireEvent.click(getEnableAuthSwitch());
+    });
+    await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+
+    // Now the same instance is handed a different app.
+    const nextApp = { ...exposableInfo(4242), urn: 'other-app:store' } as never;
+    rerender(
+      <MemoryRouter>
+        <InstallForm info={nextApp} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    // Both the exposure mode AND the port/auth defaults belong to the new app.
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    expect(getAppBaseUrlInput()).not.toHaveValue('http://localhost:3001');
+  });
+
+  it('keeps a stored custom port when editing, rather than resetting to the manifest default', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    // Same init-effect hazard as enableAuth: the defaults run after initialValues are applied, so
+    // an operator who moved the app off its manifest port (3001 → 9000) must not have that reset on
+    // re-open. The Public URL field derives from the resolved port, so it reflects the stored value.
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo(3001)}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[appBaseUrlField]}
+          initialValues={{ exposureMode: 'local', port: '9000' }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getAppBaseUrlInput()).toHaveValue('http://localhost:9000');
+    });
+  });
+
+  it('keeps the enable-auth switch OFF when editing an app saved with auth disabled', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    // The init effect must respect the stored operator choice: enableAuth is only defaulted to ON
+    // when initialValues carry no explicit value, so a saved auth-OFF app stays OFF on re-open.
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo()}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare', enableAuth: false }}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).not.toBeChecked();
+    });
+  });
+
+  it('shows the recommended hint when the manifest defaults edge auth on', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    const infoWithEdgeAuth = {
+      ...(exposableInfo() as object),
+      hub_integration: { edge_auth: { default: true } },
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={infoWithEdgeAuth} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).toBeInTheDocument();
+  });
+
+  it('does not show the recommended hint for apps without an edge-auth default', () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(getEnableAuthSwitch()).toBeInTheDocument(); // the switch itself still renders
+    expect(screen.queryByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).not.toBeInTheDocument();
+  });
 });
