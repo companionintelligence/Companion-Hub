@@ -51,8 +51,16 @@ export class TraefikLabelsBuilder {
     });
 
     if (this.params.enableAuth) {
+      // BOTH routers, not just the TLS one. The `-insecure` router above serves the same host
+      // rule on the `web` entrypoint, and that is precisely the entrypoint the Cloudflare tunnel
+      // connects to (see traefik.yml: "Cloudflare Tunnel connects via plain HTTP"). Attaching the
+      // forward-auth middleware only to `websecure` left every request that arrived through the
+      // tunnel — i.e. all remote traffic to a cloudflare-exposed app — bypassing edge auth
+      // entirely, while `curl`-ing the HTTPS entrypoint from the appliance looked correctly
+      // gated. An app trusting the edge alone was open to the internet (CI-Engineering#74).
       Object.assign(this.labels, {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'ci-hub@docker',
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: 'ci-hub@docker',
       });
     }
 
