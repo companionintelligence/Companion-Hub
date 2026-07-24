@@ -33,12 +33,6 @@ vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
   MemoryStatusBadge: () => null,
 }));
 
-// HubAccess is likewise self-contained (useQuery + useMutation + useQueryClient) and has its own
-// colocated test; stub it here so the narrow react-query mock above stays narrow.
-vi.mock('../components/hub-access/hub-access', () => ({
-  HubAccess: () => null,
-}));
-
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getAppOptions: () => ({ queryKey: ['app'] }),
   getServeStatusOptions: () => ({ queryKey: ['serve-status'], queryFn: vi.fn() }),

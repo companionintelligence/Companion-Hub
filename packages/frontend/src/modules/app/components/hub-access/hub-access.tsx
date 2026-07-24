@@ -1,8 +1,6 @@
 import { client } from '@/api-client/client.gen';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card/Card';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useState } from 'react';
@@ -20,17 +18,31 @@ export interface HubAccessStatus {
 
 export const hubAccessQueryKey = (appUrn: string) => ['app-hub-access', appUrn];
 
+interface HubAccessProps {
+  appUrn: string;
+  /**
+   * Set while the surrounding settings form holds unsaved edits. Rotating restarts the app, which
+   * would drop those edits without ever telling the operator they were lost, so the action is
+   * blocked (with a reason) rather than racing the save.
+   */
+  hasUnsavedChanges?: boolean;
+}
+
 /**
- * Compact "Hub access" card for the app-detail page: the Hub-provisioned trust material this app
+ * "Hub access" section of the app settings dialog: the Hub-provisioned trust material this app
  * holds (its app-scoped API key + forward-auth identity secret) and a Rotate action that revokes
  * the key, clears the secret, and restarts the app so it re-provisions fresh values. Renders
  * NOTHING for apps without any Hub trust material (most apps) and on fetch errors — this is an
- * optional operator surface, never a load-bearing part of the page.
+ * optional operator surface, never a load-bearing part of the dialog.
+ *
+ * Confirmation is inline rather than a nested dialog: this renders inside the settings modal, and
+ * a modal stacked on a modal competes for the same focus trap and Escape handling — dismissing the
+ * confirm could take the settings dialog down with it.
  */
-export const HubAccess = ({ appUrn }: { appUrn: string }) => {
+export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const query = useQuery({
     queryKey: hubAccessQueryKey(appUrn),
@@ -49,10 +61,10 @@ export const HubAccess = ({ appUrn }: { appUrn: string }) => {
     // success toast while the app keeps its old credentials.
     mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(appUrn)}/hub-access/rotate`, throwOnError: true }),
     onSuccess: async () => {
-      toast.success(t('APP_DETAILS_HUB_ACCESS_ROTATED'));
+      toast.success(t('APP_SETTINGS_HUB_ACCESS_ROTATED'));
       await queryClient.invalidateQueries({ queryKey: hubAccessQueryKey(appUrn) });
     },
-    onError: () => toast.error(t('APP_DETAILS_HUB_ACCESS_ROTATE_ERROR')),
+    onError: () => toast.error(t('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR')),
   });
 
   const status = query.data ?? null;
@@ -64,69 +76,86 @@ export const HubAccess = ({ appUrn }: { appUrn: string }) => {
 
   const confirmRotate = () => {
     rotate.mutate();
-    setConfirmOpen(false);
+    setConfirming(false);
   };
 
   return (
-    <Card className="border-border/60 bg-card/80 shadow-sm" data-testid="hub-access">
-      <CardHeader className="px-3 pb-3 pt-3 sm:px-6 sm:pb-4 sm:pt-6">
-        <CardTitle className="text-lg">{t('APP_DETAILS_HUB_ACCESS_TITLE')}</CardTitle>
-        <CardDescription>{t('APP_DETAILS_HUB_ACCESS_DESC')}</CardDescription>
-      </CardHeader>
-      <CardContent className="px-3 pb-3 pt-0 sm:px-6 sm:pb-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 space-y-2 text-sm">
-            {status.appKey && (
-              <div className="min-w-0" data-testid="hub-access-key">
-                <div className="flex flex-wrap items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium">{t('APP_DETAILS_HUB_ACCESS_KEY_LABEL')}</span>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{status.appKey.prefix}…</code>
-                  {status.appKey.scopes.map((scope) => (
-                    <ScopeBadge key={scope} scope={scope} />
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {status.appKey.lastUsedAt
-                    ? t('API_KEYS_LAST_USED', { when: new Date(status.appKey.lastUsedAt).toLocaleString() })
-                    : t('API_KEYS_NEVER_USED')}
-                </p>
+    <div className="mt-4 rounded-md border border-border/60 p-3" data-testid="hub-access">
+      <p className="text-sm font-medium">{t('APP_SETTINGS_HUB_ACCESS_TITLE')}</p>
+      <p className="text-xs text-muted-foreground">{t('APP_SETTINGS_HUB_ACCESS_DESC')}</p>
+
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-2 text-sm">
+          {status.appKey && (
+            <div className="min-w-0" data-testid="hub-access-key">
+              <div className="flex flex-wrap items-center gap-2">
+                <KeyRound className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{t('APP_SETTINGS_HUB_ACCESS_KEY_LABEL')}</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{status.appKey.prefix}…</code>
+                {status.appKey.scopes.map((scope) => (
+                  <ScopeBadge key={scope} scope={scope} />
+                ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                {status.appKey.lastUsedAt
+                  ? t('API_KEYS_LAST_USED', { when: new Date(status.appKey.lastUsedAt).toLocaleString() })
+                  : t('API_KEYS_NEVER_USED')}
+              </p>
+            </div>
+          )}
+          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+            {status.identityVerification ? (
+              <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <ShieldOff className="h-4 w-4" />
             )}
-            <p className="flex items-center gap-2 text-xs text-muted-foreground">
-              {status.identityVerification ? (
-                <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-              ) : (
-                <ShieldOff className="h-4 w-4" />
-              )}
-              {status.identityVerification ? t('APP_DETAILS_HUB_ACCESS_IDENTITY_ON') : t('APP_DETAILS_HUB_ACCESS_IDENTITY_OFF')}
-            </p>
-          </div>
-          <Button variant="outline" size="sm" disabled={rotate.isPending} onClick={() => setConfirmOpen(true)} data-testid="hub-access-rotate">
-            {t('APP_DETAILS_HUB_ACCESS_ROTATE')}
-          </Button>
+            {status.identityVerification ? t('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON') : t('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')}
+          </p>
         </div>
-      </CardContent>
+
+        {/* type="button" throughout: this sits inside the settings dialog, and the default submit
+            type would save the form on every click of a control that is not a form field. */}
+        {!confirming && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={rotate.isPending || hasUnsavedChanges}
+            onClick={() => setConfirming(true)}
+            data-testid="hub-access-rotate"
+          >
+            {t('APP_SETTINGS_HUB_ACCESS_ROTATE')}
+          </Button>
+        )}
+      </div>
+
+      {hasUnsavedChanges && !confirming && (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="hub-access-unsaved-hint">
+          {t('APP_SETTINGS_HUB_ACCESS_UNSAVED')}
+        </p>
+      )}
 
       {/* Confirmation gate: rotating restarts the app, so it must not fire on a single click. */}
-      <Dialog open={confirmOpen} onOpenChange={(open) => !open && setConfirmOpen(false)}>
-        <DialogContent size="sm">
-          <DialogHeader>
-            <DialogTitle>{t('APP_DETAILS_HUB_ACCESS_TITLE')}</DialogTitle>
-          </DialogHeader>
-          <DialogDescription>
-            <span className="text-muted-foreground">{t('APP_DETAILS_HUB_ACCESS_ROTATE_CONFIRM')}</span>
-          </DialogDescription>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+      {confirming && (
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3" data-testid="hub-access-confirm">
+          <p className="text-xs text-amber-500 dark:text-amber-400">{t('APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM')}</p>
+          <div className="mt-3 flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setConfirming(false)}>
               {t('COMMON_CANCEL')}
             </Button>
-            <Button intent="danger" onClick={confirmRotate} disabled={rotate.isPending} data-testid="hub-access-rotate-confirm">
-              {t('APP_DETAILS_HUB_ACCESS_ROTATE')}
+            <Button
+              type="button"
+              intent="danger"
+              size="sm"
+              onClick={confirmRotate}
+              disabled={rotate.isPending}
+              data-testid="hub-access-rotate-confirm"
+            >
+              {t('APP_SETTINGS_HUB_ACCESS_ROTATE')}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </Card>
+          </div>
+        </div>
+      )}
+    </div>
   );
 };

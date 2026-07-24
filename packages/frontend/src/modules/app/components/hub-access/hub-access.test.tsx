@@ -6,8 +6,9 @@ import toast from 'react-hot-toast';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubAccess } from './hub-access';
 
-// Per-app "Hub access" card: Hub-provisioned trust material (app key + identity secret) and the
-// rotate flow, against a mocked raw-URL client (the generated api-client doesn't know these routes).
+// "Hub access" section of the app settings dialog: Hub-provisioned trust material (app key +
+// identity secret) and the rotate flow, against a mocked raw-URL client (the generated api-client
+// doesn't know these routes).
 
 const h = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('@/api-client/client.gen', () => ({
@@ -20,29 +21,15 @@ vi.mock('react-i18next', () => {
 });
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
-// Minimal UI-primitive stubs so the test focuses on data flow, not Radix internals.
+// Minimal Button stub so the test focuses on data flow, not Radix internals. `type` is forwarded
+// deliberately — this renders inside the settings <form>, where a defaulted submit type would save
+// the form on every click.
 vi.mock('@/components/ui/Button', () => ({
   Button: ({ children, onClick, ...props }: any) => (
     <button onClick={onClick} {...props}>
       {children}
     </button>
   ),
-}));
-vi.mock('@/components/ui/Card/Card', () => ({
-  Card: ({ children, ...props }: any) => <div data-testid={props['data-testid']}>{children}</div>,
-  CardHeader: ({ children }: any) => <div>{children}</div>,
-  CardTitle: ({ children }: any) => <div>{children}</div>,
-  CardDescription: ({ children }: any) => <div>{children}</div>,
-  CardContent: ({ children }: any) => <div>{children}</div>,
-  CardFooter: ({ children }: any) => <div>{children}</div>,
-}));
-vi.mock('@/components/ui/Dialog', () => ({
-  Dialog: ({ open, children }: any) => (open ? <div data-testid="dialog">{children}</div> : null),
-  DialogContent: ({ children }: any) => <div>{children}</div>,
-  DialogHeader: ({ children }: any) => <div>{children}</div>,
-  DialogFooter: ({ children }: any) => <div>{children}</div>,
-  DialogTitle: ({ children }: any) => <div>{children}</div>,
-  DialogDescription: ({ children }: any) => <div>{children}</div>,
 }));
 
 const APP_URN = 'openclaw:ci-store';
@@ -54,10 +41,10 @@ const WITH_KEY = {
   provisioned: true,
 };
 
-function renderHubAccess() {
+function renderHubAccess(props: { hasUnsavedChanges?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  return render(<HubAccess appUrn={APP_URN} />, { wrapper });
+  return render(<HubAccess appUrn={APP_URN} {...props} />, { wrapper });
 }
 
 describe('HubAccess', () => {
@@ -94,7 +81,7 @@ describe('HubAccess', () => {
     expect(within(keyRow).getByText('API_KEYS_SCOPE_MCP')).toBeTruthy();
     expect(within(keyRow).getByText('API_KEYS_SCOPE_APP')).toBeTruthy();
     expect(within(keyRow).getByText('API_KEYS_LAST_USED')).toBeTruthy();
-    expect(screen.getByText('APP_DETAILS_HUB_ACCESS_IDENTITY_ON')).toBeTruthy();
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON')).toBeTruthy();
   });
 
   it('reports identity verification off when no forward-auth secret is provisioned', async () => {
@@ -103,7 +90,29 @@ describe('HubAccess', () => {
     renderHubAccess();
 
     await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
-    expect(screen.getByText('APP_DETAILS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy();
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')).toBeTruthy();
+  });
+
+  it('never renders a submit button — it lives inside the settings form', async () => {
+    const user = userEvent.setup();
+    h.get.mockResolvedValue({ data: WITH_KEY });
+
+    renderHubAccess();
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+
+    // Both states, because they render disjoint sets of buttons: revealing the confirm unmounts
+    // the Rotate trigger, so checking only after the click would never inspect it.
+    const assertNoSubmitters = (state: string) => {
+      const buttons = screen.getAllByRole('button');
+      expect(buttons.length, `${state}: nothing to assert on`).toBeGreaterThan(0);
+      for (const button of buttons) {
+        expect(button.getAttribute('type'), `${state}: "${button.textContent}" would submit the settings form`).toBe('button');
+      }
+    };
+
+    assertNoSubmitters('resting');
+    await user.click(screen.getByTestId('hub-access-rotate'));
+    assertNoSubmitters('confirming');
   });
 
   it('rotates only after explicit confirmation, then toasts and refetches', async () => {
@@ -114,21 +123,47 @@ describe('HubAccess', () => {
     renderHubAccess();
     await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
 
-    // Opening the dialog must not fire the rotate on its own.
+    // Opening the confirm must not fire the rotate on its own.
     await user.click(screen.getByTestId('hub-access-rotate'));
-    expect(screen.getByTestId('dialog')).toBeTruthy();
-    expect(screen.getByText('APP_DETAILS_HUB_ACCESS_ROTATE_CONFIRM')).toBeTruthy();
+    expect(screen.getByTestId('hub-access-confirm')).toBeTruthy();
+    expect(screen.getByText('APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM')).toBeTruthy();
     expect(h.post).not.toHaveBeenCalled();
 
     const getCalls = h.get.mock.calls.length;
     await user.click(screen.getByTestId('hub-access-rotate-confirm'));
 
     await waitFor(() => expect(h.post).toHaveBeenCalledWith(expect.objectContaining({ url: `${HUB_ACCESS_URL}/rotate` })));
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_DETAILS_HUB_ACCESS_ROTATED'));
-    // Invalidation refetches the status so the card reflects the fresh material.
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('APP_SETTINGS_HUB_ACCESS_ROTATED'));
+    // Invalidation refetches the status so the section reflects the fresh material.
     await waitFor(() => expect(h.get.mock.calls.length).toBeGreaterThan(getCalls));
-    // Dialog closed after confirming.
-    expect(screen.queryByTestId('dialog')).toBeNull();
+    // Confirm dismissed after rotating.
+    expect(screen.queryByTestId('hub-access-confirm')).toBeNull();
+  });
+
+  it('abandons the rotate when the confirm is cancelled', async () => {
+    const user = userEvent.setup();
+    h.get.mockResolvedValue({ data: WITH_KEY });
+
+    renderHubAccess();
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+
+    await user.click(screen.getByTestId('hub-access-rotate'));
+    await user.click(screen.getByText('COMMON_CANCEL'));
+
+    expect(screen.queryByTestId('hub-access-confirm')).toBeNull();
+    expect(h.post).not.toHaveBeenCalled();
+    expect(screen.getByTestId('hub-access-rotate')).toBeTruthy(); // back to the resting state
+  });
+
+  it('blocks rotating while the settings form has unsaved edits', async () => {
+    h.get.mockResolvedValue({ data: WITH_KEY });
+
+    renderHubAccess({ hasUnsavedChanges: true });
+
+    await waitFor(() => expect(screen.getByTestId('hub-access')).toBeTruthy());
+    // Rotating restarts the app, which would discard the pending edits without saying so.
+    expect(screen.getByTestId('hub-access-rotate')).toBeDisabled();
+    expect(screen.getByTestId('hub-access-unsaved-hint')).toBeTruthy();
   });
 
   it('toasts an error when the rotate fails', async () => {
@@ -142,6 +177,6 @@ describe('HubAccess', () => {
     await user.click(screen.getByTestId('hub-access-rotate'));
     await user.click(screen.getByTestId('hub-access-rotate-confirm'));
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_DETAILS_HUB_ACCESS_ROTATE_ERROR'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('APP_SETTINGS_HUB_ACCESS_ROTATE_ERROR'));
   });
 });
