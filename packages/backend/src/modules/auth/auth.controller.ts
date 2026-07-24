@@ -805,14 +805,21 @@ export class AuthController {
       // Match the param NAME exactly, never the substring: `?xcihub_sso=1` contains the marker but
       // is a DIFFERENT param, and treating it as a ticket "cleans" to an identical URL — an
       // endless self-redirect.
-      if (ticket === null && eq !== -1 && segment.slice(0, eq) === EDGE_SSO_TICKET_PARAM) {
-        const raw = segment.slice(eq + 1);
-        try {
-          ticket = decodeURIComponent(raw);
-        } catch {
-          // Malformed percent-escapes cannot name a minted ticket; keep the raw value so the
-          // lookup below misses instead of throwing a 500 out of the forward-auth hop.
-          ticket = raw;
+      if (eq !== -1 && segment.slice(0, eq) === EDGE_SSO_TICKET_PARAM) {
+        // EVERY occurrence is dropped, but only the FIRST is read as the ticket. Keeping the
+        // extras would strand the visitor permanently: the mint below builds its target from this
+        // cleaned URI and appends the fresh ticket at the END, while the consume reads the FIRST —
+        // so a surviving stale `cihub_sso` is what every consume would look up. It misses, falls
+        // through to another mint, and three rounds later the loop guard serves its 409 dead end.
+        if (ticket === null) {
+          const raw = segment.slice(eq + 1);
+          try {
+            ticket = decodeURIComponent(raw);
+          } catch {
+            // Malformed percent-escapes cannot name a minted ticket; keep the raw value so the
+            // lookup below misses instead of throwing a 500 out of the forward-auth hop.
+            ticket = raw;
+          }
         }
         continue;
       }

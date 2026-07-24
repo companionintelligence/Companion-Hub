@@ -484,6 +484,27 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('/search?q=a%20b&s=~z&flag');
     });
 
+    it('strips EVERY ticket occurrence while reading only the first as the ticket', async () => {
+      // A surviving duplicate strands the visitor permanently, not just for an extra hop: the mint
+      // builds its target from this cleaned URI and appends the fresh ticket at the END, while the
+      // consume reads the FIRST — so the stale one is what every consume looks up. It misses,
+      // falls through to another mint, and three rounds later the loop guard serves its 409.
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: {
+          'x-forwarded-uri': '/files?cihub_sso=t-first&keep=1&cihub_sso=t-second',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': APP_HOST,
+        },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-first');
+      expect(res.redirect).toHaveBeenCalledWith('/files?keep=1');
+    });
+
     it('does not treat an unrelated param that merely ends in the ticket name as a ticket', async () => {
       // `?xcihub_sso=1` substring-matches `cihub_sso=` but is a DIFFERENT param. Treating it as a
       // lingering ticket "cleans" the URL to an identical string and redirects to itself forever.
