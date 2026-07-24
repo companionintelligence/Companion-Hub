@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { execAsync } from '@/common/helpers/exec-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -137,14 +138,40 @@ export class AppFilesManager {
     await this.filesystem.writeTextFile(dockerComposePath, composeFile);
   }
 
-  public async deleteAppFolder(appUrn: AppUrn) {
+  /** Returns whether the app's install folder was fully removed (false on a partial/failed delete). */
+  public async deleteAppFolder(appUrn: AppUrn): Promise<boolean> {
     const { appInstalledDir } = this.getAppPaths(appUrn);
-    await this.filesystem.removeDirectory(appInstalledDir);
+    return this.filesystem.removeDirectory(appInstalledDir);
   }
 
-  public async deleteAppDataDir(appUrn: AppUrn) {
+  /** Returns whether the app's data dir was fully removed (false on a partial/failed delete). */
+  public async deleteAppDataDir(appUrn: AppUrn): Promise<boolean> {
     const { appDataDir } = this.getAppPaths(appUrn);
-    await this.filesystem.removeDirectory(appDataDir);
+    return this.filesystem.removeDirectory(appDataDir);
+  }
+
+  /**
+   * Like {@link deleteAppDataDir} but reports whether a failure was a permission
+   * error, so the uninstall path can escalate to a privileged (root) cleanup when
+   * a container left root-owned files behind.
+   */
+  public async deleteAppDataDirDetailed(appUrn: AppUrn): Promise<{ removed: boolean; permissionDenied: boolean }> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    return this.filesystem.removeDirectoryDetailed(appDataDir);
+  }
+
+  /**
+   * The HOST path of the app's data dir (`{base}/app-data/{store}/{app}`) — the path
+   * Docker actually bind-mounts, and the one to show a user for a manual `rm`. Mirrors
+   * the precedence compose generation uses (see app.helpers.ts / getAppDataHostPath).
+   */
+  public getAppDataHostDir(appUrn: AppUrn): string {
+    const config = this.configuration.getConfig();
+    return getAppDataHostPath(appUrn, {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    });
   }
 
   public async createAppDataDir(appUrn: AppUrn) {

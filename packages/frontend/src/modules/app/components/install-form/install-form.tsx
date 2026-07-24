@@ -232,7 +232,16 @@ export const InstallForm: React.FC<IProps> = ({
     const appChanged = prevUrnRef.current !== undefined && prevUrnRef.current !== info.urn;
     prevUrnRef.current = info.urn;
 
-    if (initialValues && !isDirty) {
+    // Whether this pass may (re)seed the form. Untouched forms seed normally. A DIRTY form does
+    // not — this effect depends on isDirty, so re-seeding would re-assert defaults over what the
+    // operator just typed and make their input bounce back. The exception is `appChanged`: the
+    // dialog reuses one form instance across apps, and edits made against the PREVIOUS app are
+    // stale by definition, so a switch reseeds as if freshly rendered. Every field in this effect
+    // shares the one condition — seeding some (the exposure mode) while skipping others (port,
+    // openPort, enableAuth) would leave a switched-to app wearing half of its predecessor's config.
+    const shouldSeed = !isDirty || appChanged;
+
+    if (initialValues && shouldSeed) {
       for (const [key, value] of Object.entries(initialValues)) {
         setValue(key, value as string);
       }
@@ -248,11 +257,22 @@ export const InstallForm: React.FC<IProps> = ({
         cloudflareAvailable,
         tailscaleAvailable,
       });
-      setValue('exposureMode', defaultMode);
-      setValue('exposedLocal', true); // backward compat
-      setValue('openPort', defaultMode === 'local');
-      setValue('enableAuth', true); // Enable authentication by default
-      if (info.port) {
+      if (shouldSeed) {
+        setValue('exposureMode', defaultMode);
+        setValue('exposedLocal', true); // backward compat
+      }
+      // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
+      // unconditionally discarded the operator's choice — on an EDIT it reverted the stored value,
+      // which is what `initialValues?.X === undefined` still guards. `shouldSeed` covers the other
+      // half: without it this effect re-asserted the default the moment the form went dirty, so a
+      // first attempt to turn auth off, or to set a custom port, appeared to bounce back.
+      if (shouldSeed && initialValues?.openPort === undefined) {
+        setValue('openPort', defaultMode === 'local');
+      }
+      if (shouldSeed && initialValues?.enableAuth === undefined) {
+        setValue('enableAuth', true);
+      }
+      if (shouldSeed && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
       // Reset publicDomain when switching apps (appChanged) so stale values
@@ -550,6 +570,9 @@ export const InstallForm: React.FC<IProps> = ({
                   {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
                 </Tooltip>
                 <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                {info.hub_integration?.edge_auth?.default ? (
+                  <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
+                ) : null}
               </>
             }
           />

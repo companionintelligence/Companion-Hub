@@ -26,6 +26,7 @@ import {
 } from './lib/register-hub';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
+import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
@@ -110,6 +111,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>]`,
         description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
       },
+      {
+        command: `${BASE_COMMAND} device-id [--from-hub]`,
+        description: "Print this machine's stable device ID (default: local resolver; --from-hub asks the running Hub API)",
+      },
     ],
   },
   {
@@ -122,7 +127,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
-      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires Companion Hub)' },
+      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires CI Hub)' },
     ],
   },
   {
@@ -320,7 +325,7 @@ export function renderManPage() {
     '',
     box('Synopsis', [`${BASE_COMMAND} <command> [args]`]),
     box('Description', [
-      'Companion Intelligence Hub CLI \u2014 setup, registration, Docker lifecycle,',
+      'CI Hub CLI \u2014 setup, registration, Docker lifecycle,',
       'MCP toggles, environment resets, and app management.',
       '',
       'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
@@ -808,9 +813,9 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   printMessageBox(
     'No prod Hub install found',
     [
-      `${action} needs either a CI-Hub checkout or an installed Companion Hub.`,
+      `${action} needs either a CI-Hub checkout or an installed CI Hub.`,
       `Expected prod data at: ${ctx.dataDir}`,
-      'Launch the Companion Hub desktop app once to provision it, then retry.',
+      'Launch the CI Hub desktop app once to provision it, then retry.',
     ],
     'red',
   );
@@ -1020,8 +1025,8 @@ export async function setupHub(env: HubEnv) {
     requireRepoOrApplianceContext('cihub setup', 'require-seed');
     const ctx = resolveHubContext(env);
     printMessageBox(
-      'Setup managed by Companion Hub',
-      ['The Companion Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
+      'Setup managed by CI Hub',
+      ['The CI Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
       'cyan',
     );
     return;
@@ -1041,6 +1046,40 @@ export async function setupHub(env: HubEnv) {
 
 export function printConfig(env: HubEnv) {
   printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
+}
+
+export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } = {}) {
+  if (options.fromHub) {
+    const env = options.env ?? 'local';
+    const ctx = resolveHubContext(env);
+    const apiBase = resolveRegisterApiBase(ctx.envFile);
+    try {
+      const deviceInfo = await fetchDeviceId(apiBase);
+      if (!deviceInfo.device_id) {
+        printMessageBox(
+          'Device ID unavailable',
+          ['The running Hub could not resolve a device ID.', 'Check backend logs and ensure the appliance initialized correctly.'],
+          'red',
+        );
+        return;
+      }
+      console.log(deviceInfo.device_id);
+      return;
+    } catch (error) {
+      printMessageBox(
+        'Device ID lookup failed',
+        [error instanceof Error ? error.message : String(error), `Ensure the Hub is running: ${BASE_COMMAND} up ${env}`],
+        'red',
+      );
+      return;
+    }
+  }
+
+  try {
+    console.log(await resolveLocalDeviceId());
+  } catch (error) {
+    printMessageBox('Device ID lookup failed', [error instanceof Error ? error.message : String(error)], 'red');
+  }
 }
 
 export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
@@ -1405,7 +1444,7 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   cleanRootOwnedHubData(env);
   printMessageBox(
     'Reset complete',
-    ['Hub runtime state, volumes, and host data were removed.', 'Re-launch Companion Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
+    ['Hub runtime state, volumes, and host data were removed.', 'Re-launch CI Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
     'green',
   );
   return true;
@@ -2074,7 +2113,7 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
       const cfDomain = process.env.CF_DOMAIN || fileVars.CF_DOMAIN || fileVars.DOMAIN;
       console.log();
       console.log(hr('dim'));
-      console.log(colorize(`  ${STEP_ICONS.done} Setup complete! Your Companion Intelligence Hub is running.`, 'green'));
+      console.log(colorize(`  ${STEP_ICONS.done} Setup complete! Your CI Hub is running.`, 'green'));
       console.log(dim(`  Local     http://localhost:${fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002'}`));
       if (cfDomain) console.log(dim(`  Cloud     https://${cfDomain}`));
       if (tsIp.trim()) console.log(dim(`  Tailscale ${tsIp.trim()}`));
@@ -2172,7 +2211,7 @@ export function runHostUpdate(args: string[]) {
   const cliArgs = checkOnly ? ['update', '--check'] : ['update'];
   const result = spawnSync(binary, cliArgs, { stdio: 'inherit' });
   if (result.error) {
-    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install Companion Hub desktop or run from the app Settings.`);
+    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install CI Hub desktop or run from the app Settings.`);
     process.exit(1);
   }
   process.exit(result.status ?? 1);

@@ -33,6 +33,7 @@ import {
   runWizard,
   setMcpState,
   setupHub,
+  showDeviceId,
   showStatus,
   startHub,
   uninstallHub,
@@ -81,6 +82,13 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'register') {
     const registerArgs = normalizeRegisterFlags(args.slice(1));
     await registerHub(registerArgs.env, { fresh: registerArgs.fresh, code: registerArgs.code });
+    return;
+  }
+
+  if (first === 'device-id') {
+    const fromHub = args.includes('--from-hub');
+    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--from-hub'));
+    await showDeviceId({ fromHub, env });
     return;
   }
 

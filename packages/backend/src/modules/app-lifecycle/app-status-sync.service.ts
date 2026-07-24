@@ -168,7 +168,13 @@ export class AppStatusSyncService {
         }
 
         if (app.status !== newStatus) {
-          await this.appRepository.updateAppById(app.id, { status: newStatus });
+          const applied = await this.appRepository.updateAppByIdIfStatus(app.id, app.status, { status: newStatus });
+          if (!applied) {
+            this.logger.debug(`Skipped ${appUrn}: status changed since sync snapshot ('${app.status}' -> '${newStatus}')`);
+            skippedCount++;
+            continue;
+          }
+
           this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: newStatus });
           this.logger.info(`Synced ${appUrn}: '${app.status}' -> '${newStatus}'`);
 

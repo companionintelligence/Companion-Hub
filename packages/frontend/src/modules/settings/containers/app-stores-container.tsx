@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import toast from 'react-hot-toast';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 
 export const AppStoresContainer = () => {
   const { t } = useTranslation();
@@ -22,7 +23,7 @@ export const AppStoresContainer = () => {
     ...pullAppStoresMutation(),
     onSuccess: () => {
       toast.success(t('APP_STORES_UPDATE_SUCCESS'));
-      queryClient.invalidateQueries({ queryKey: getAllAppStoresOptions().queryKey });
+      invalidateStoreCatalogQueries(queryClient);
     },
     onError: () => {
       toast.error(t('APP_STORES_UPDATE_ERROR'));

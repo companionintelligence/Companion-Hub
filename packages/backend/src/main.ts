@@ -81,7 +81,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, {
     abortOnError: true,
-    logger: ['log', 'error', 'warn', 'fatal'],
+    logger: process.env.NEST_VERBOSE === '1' ? ['log', 'error', 'warn', 'fatal'] : ['error', 'warn', 'fatal'],
   });
 
   const appService = app.get(AppService);

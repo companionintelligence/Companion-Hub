@@ -49,33 +49,84 @@ describe('MemoryProviderResolver.consumerEnv', () => {
   });
 });
 
-describe('MemoryProviderResolver.isProviderInstalled', () => {
+describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('is true for an official-store ci-memory row via the DB-only lite check (no availability/full probe)', async () => {
+  it("is 'ready' for a running official-store ci-memory row via the DB-only lite check (no availability/full probe)", async () => {
     const { resolver, appsService } = makeResolver([]);
     appsService.getInstalledAppsLite.mockResolvedValue([
-      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' },
-      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace' },
+      { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' },
+      { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' },
     ]);
 
-    expect(await resolver.isProviderInstalled()).toBe(true);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('ready');
     expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
     expect(appsService.getInstalledApps).not.toHaveBeenCalled();
   });
 
-  it('is false for a ci-memory row from a non-official store (no id-squat)', async () => {
+  it("is 'starting' while ci-memory is still installing (a mere row is not connectable)", async () => {
     const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party' }]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'installing' }]);
 
-    expect(await resolver.isProviderInstalled()).toBe(false);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('starting');
   });
 
-  it('is false when ci-memory is not installed', async () => {
+  it("is 'offline' when ci-memory is installed but stopped", async () => {
     const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace' }]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'stopped' }]);
 
-    expect(await resolver.isProviderInstalled()).toBe(false);
+    expect(await resolver.getProviderRuntimeStatus()).toBe('offline');
+  });
+
+  it("is 'absent' for a ci-memory row from a non-official store (no id-squat)", async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party', status: 'running' }]);
+
+    expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
+  });
+
+  it("is 'absent' when ci-memory is not installed", async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' }]);
+
+    expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
+  });
+});
+
+describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const readyMemory = (exposureMode?: string) => [{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode }];
+
+  it('is local-only for a LAN-exposed provider', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+  });
+
+  it('is local-only for a Tailscale-exposed provider — its MagicDNS consent page is not publicly reachable', async () => {
+    // The bug this pins: a tailscale provider was reporting localOnly=false, so a
+    // confirmed-remote caller was never blocked and got sent to an unreachable
+    // tailnet consent URL that hangs.
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
+  });
+
+  it('is NOT local-only for a Cloudflare-exposed provider — a public browser can reach it', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
+  });
+
+  it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
+    const { resolver, appsService } = makeResolver([]);
+    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
+
+    expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
   });
 });
 

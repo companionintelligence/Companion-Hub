@@ -87,7 +87,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
           <span className={cn('rounded-full px-2.5 py-0.5 text-xs font-medium', badge.color)} data-testid="tier-badge">
             {badge.emoji} {badge.label}
           </span>
-          <Button variant="ghost" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
+          <Button variant="outline" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
             {t('ONBOARDING_RESCAN')}
           </Button>
         </div>

@@ -1959,6 +1959,65 @@
         ]
       }
     },
+    "/api/api-keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
     "/api/i18n/locales/{ns}/{lng}.json": {
       "get": {
         "operationId": "getTranslation",
@@ -2111,6 +2170,51 @@
                 }
               }
             }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/browser-handoff/mint": {
+      "post": {
+        "operationId": "mintBrowserHandoff",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserHandoffMintBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserHandoffMintDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/browser-handoff": {
+      "get": {
+        "operationId": "consumeBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
           }
         },
         "tags": [
@@ -2559,6 +2663,52 @@
         ]
       }
     },
+    "/api/app-lifecycle/{urn}/hub-access": {
+      "get": {
+        "operationId": "getHubAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
+    "/api/app-lifecycle/{urn}/hub-access/rotate": {
+      "post": {
+        "operationId": "rotateHubAccess",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
     "/api/app-lifecycle/{urn}/install": {
       "post": {
         "operationId": "installApp",
@@ -2772,6 +2922,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetAppBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -4158,6 +4318,20 @@
         ]
       }
     },
+    "/api/memory-connect/consumers": {
+      "get": {
+        "operationId": "consumers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "MemoryConnect"
+        ]
+      }
+    },
     "/api/memory-connect/apps/{urn}/skip": {
       "post": {
         "operationId": "skip",
@@ -4424,65 +4598,6 @@
           "McpAdmin"
         ]
       }
-    },
-    "/api/mcp-admin/keys": {
-      "get": {
-        "operationId": "listKeys",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      },
-      "post": {
-        "operationId": "createKey",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/McpCreateKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
-    },
-    "/api/mcp-admin/keys/{id}": {
-      "delete": {
-        "operationId": "revokeKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
     }
   },
   "info": {
@@ -4595,6 +4710,10 @@
         "type": "object",
         "properties": {}
       },
+      "CreateApiKeyBody": {
+        "type": "object",
+        "properties": {}
+      },
       "LoginBody": {
         "type": "object",
         "properties": {}
@@ -4616,6 +4735,14 @@
         "properties": {}
       },
       "SessionRefreshDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "BrowserHandoffMintBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "BrowserHandoffMintDto": {
         "type": "object",
         "properties": {}
       },
@@ -4692,6 +4819,10 @@
         "properties": {}
       },
       "UninstallAppBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "ResetAppBody": {
         "type": "object",
         "properties": {}
       },
@@ -4772,10 +4903,6 @@
         "properties": {}
       },
       "McpAdminSettingsBody": {
-        "type": "object",
-        "properties": {}
-      },
-      "McpCreateKeyBody": {
         "type": "object",
         "properties": {}
       }

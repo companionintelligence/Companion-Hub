@@ -17,6 +17,7 @@ describe('AppStatusSyncService', () => {
 
   beforeEach(() => {
     appRepository = mock<AppsRepository>();
+    appRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
@@ -95,7 +96,7 @@ describe('AppStatusSyncService', () => {
 
     await service.syncAllAppStatuses();
 
-    expect(appRepository.updateAppById).toHaveBeenCalledWith(2, expect.objectContaining({ status: 'missing' }));
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(2, 'stopped', expect.objectContaining({ status: 'missing' }));
   });
 
   it('keeps port-expose workloads running without Docker containers', async () => {
@@ -151,6 +152,25 @@ describe('AppStatusSyncService', () => {
       expect.objectContaining({ appUrn: 'demo:ci-marketplace', status: 'restarting' }),
       expect.objectContaining({ debounceKey: 'app-status-sync:stuck:demo:ci-marketplace:restarting' }),
     );
+  });
+
+  it('does not overwrite status when the app moved into a lifecycle transition since the snapshot', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 8,
+        appName: 'demo',
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+    appRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(8, 'running', expect.objectContaining({ status: 'missing' }));
+    expect(result.skippedCount).toBe(1);
+    expect(result.syncedCount).toBe(0);
   });
 
   it('reports warning coverage for mixed container states', async () => {

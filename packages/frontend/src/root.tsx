@@ -205,13 +205,22 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/login');
   }
 
+  // Carry a memory-connect result marker (set by the Hub's memory-connect start/
+  // callback redirects at `/?memoryConnect=…`) across this root→/home hop so the
+  // dashboard can surface it as a toast; without this the query is dropped here.
+  // Whitelisted values only, so arbitrary query junk is never reflected onward.
+  const memoryConnect = url.searchParams.get('memoryConnect');
+  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
+    return redirect(`/home?memoryConnect=${memoryConnect}`);
+  }
+
   return redirect('/home');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
   const [apiReady, setApiReady] = useState(() => !isTauriRelease);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
@@ -239,7 +248,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 

@@ -47,7 +47,9 @@ jobs:
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/companionintelligence/ci-os-hub:nightly
+          # Publish alongside every other Hub stack image, in the public ci-hub package.
+          # ci-os-hub is private and is no longer a publish target (#920).
+          tags: ghcr.io/companionintelligence/ci-hub:nightly
 
   update-manifest:
     needs: [build-images]
@@ -60,7 +62,7 @@ jobs:
           cat > latest.json << EOF
           {
             "version": "nightly",
-            "image": "ghcr.io/companionintelligence/ci-os-hub:nightly",
+            "image": "ghcr.io/companionintelligence/ci-hub:nightly",
             "channel": "nightly",
             "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "sha": "${{ github.sha }}"

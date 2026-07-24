@@ -1043,7 +1043,7 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   it('keeps the trusted allowlist tight and self-consistent', () => {
     // Guard against accidental broadening: every allowlisted app must resolve to zero
     // violations for exactly the access it is granted, and nothing else.
-    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual(['coolify', 'home-assistant', 'netdata', 'steam-headless']);
+    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual(['coolify', 'home-assistant', 'netdata', 'steam-headless', 'torollo']);
     expect(
       collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
     ).toHaveLength(0);
@@ -1053,5 +1053,12 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
         TRUSTED_APP_SECURITY_ALLOWLIST.netdata,
       ),
     ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/run/docker.sock' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(0);
+    // torollo's grant is per-path: privileged and other denied paths stay rejected
+    expect(
+      collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(2);
   });
 });

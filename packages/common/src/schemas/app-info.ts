@@ -133,6 +133,24 @@ export const hubIntegrationSchema = z
           .min(1)
           .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'token_env must be a valid environment variable name')
           .optional(),
+        /**
+         * The SHAPE of the URL this app wants in `url_env`. The provider is reachable
+         * at `http://<service>:<port>`, but its gateway only proxies the API under
+         * `/api/`, so consumers disagree about what to be handed:
+         *
+         * - `origin` (default) — the bare origin `http://gateway:8642`. For apps that
+         *   append the full path themselves (CI-OpenClaw / CI-Hermes hardcode
+         *   `/api/memory/...`). Giving them an `/api` base would double the prefix.
+         * - `api_base` — `http://gateway:8642/api`. For apps that treat the value as
+         *   the API base and append server-local paths to it (CI-Import-Tools derives
+         *   `<base>/graphql`, `<base>/v1/...`). A bare origin sends those to the SPA.
+         *
+         * Declared here, rather than sniffed by the consumer, because only the Hub
+         * knows whether a value it is injecting is the brokered provider address at
+         * all — an operator-supplied "external, self-managed CI-Server" URL must be
+         * passed through untouched.
+         */
+        url_style: z.enum(['origin', 'api_base']).optional(),
         /** Provider role (ci-memory only): where the Hub reaches it on the shared docker network. */
         provider: z
           .object({
@@ -142,10 +160,48 @@ export const hubIntegrationSchema = z
           .optional(),
       })
       .optional(),
+    /**
+     * Edge-auth posture the app ships with (CI-Engineering#74).
+     *
+     * `default: true` asks the Hub to default the install/expose "Require Auth" toggle ON for
+     * this app, so a fresh install sits behind the Hub-session forward-auth middleware without
+     * the operator having to remember the toggle. It only supplies the FALLBACK for an
+     * undecided value: an explicit operator choice (form or API) always wins, and the field can
+     * never force auth OFF (`default: false` and absence are equally no-ops — absence already
+     * means "leave the toggle default alone").
+     *
+     * Deliberately honored from ANY store, unlike the credential provisioning gates: the field
+     * is strictly safety-increasing — the worst a hostile manifest can do is put its own app
+     * behind the Hub login (self-lockout, no privilege gained), while the dangerous direction
+     * is unreachable by construction.
+     */
+    edge_auth: z
+      .object({
+        /** Default the "Require Auth" toggle ON at install/expose time. */
+        default: z.boolean().optional(),
+      })
+      .optional(),
   })
   .optional();
 
 export type HubIntegration = z.output<typeof hubIntegrationSchema>;
+
+/**
+ * Whether a manifest asks for edge auth ON by default. Only exposable apps qualify — the toggle
+ * is meaningless for apps that are never routed — and only an explicit `default: true` counts.
+ * Shared between the backend (which enforces the fallback for formless installs, e.g.
+ * onboarding) and the frontend (which mirrors it in the install form), so the two can't drift.
+ */
+export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {
+  return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
+}
+
+/**
+ * How a consumer wants the brokered Companion Memory address shaped. Derived from the
+ * schema rather than restated, so a new style cannot be added in one place and silently
+ * unhandled in the other.
+ */
+export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>['memory']>['url_style']>;
 
 export const APP_CATEGORIES = [
   'network',

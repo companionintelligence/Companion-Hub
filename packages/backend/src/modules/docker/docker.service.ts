@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
+import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -34,6 +36,8 @@ const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 /** Grace period after SIGTERM before a cancelled `docker compose` child is force-killed with SIGKILL. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
 const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
+// Upper bound for the privileged uninstall-remnant cleanup helper (image pull + delete).
+const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
 const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
 const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
@@ -444,6 +448,118 @@ export class DockerService {
         this.logger.warn(`Failed to remove network ${networkName} for ${appUrn}: ${error}`);
       }
     }
+  }
+
+  /**
+   * Empty an app's data directory using a short-lived ROOT helper container, for the
+   * one case the non-root Hub process cannot handle itself: files a container created
+   * as root (e.g. MinIO's `.minio.sys`). The Docker daemon runs as root, so a throwaway
+   * container can delete them; the Hub then removes the now-empty dir normally.
+   *
+   * Security (this is a root-privileged delete, so it is deliberately paranoid):
+   *  - The target is recomputed from `appUrn` via {@link getAppDataHostPath} — NEVER a
+   *    caller-supplied path — and validated to be exactly `{app-data-root}/{store}/{app}`
+   *    with safe path segments; anything else is refused.
+   *  - The container bind-mounts ONLY that one app's data dir (never a parent that holds
+   *    sibling apps) and only empties it (`find -mindepth 1 -delete`).
+   *  - `--rm` (no residue), `--network none` (no egress), `--user 0:0`, array args (no
+   *    shell → no injection), and a hard timeout.
+   *
+   * Returns whether the helper reported success. Best-effort: any failure returns false
+   * so the caller falls back to warning the user with a manual command.
+   */
+  public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+    const config = this.config.getConfig();
+    const inputs = {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    };
+
+    let hostAppDataDir: string;
+    let appDataRoot: string;
+    try {
+      hostAppDataDir = getAppDataHostPath(appUrn, inputs);
+      appDataRoot = resolveAppDataHostRoot(inputs);
+    } catch (err) {
+      this.logger.error(`[uninstall-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const p = path.posix;
+    const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const expected = p.join(appDataRoot, appStoreId, appName);
+
+    // Refuse anything that is not EXACTLY {app-data-root}/{store}/{app}. This is what
+    // bounds the root-privileged delete to a single app's own data directory.
+    if (
+      !isSafeSegment(appStoreId) ||
+      !isSafeSegment(appName) ||
+      p.normalize(appDataRoot) === '/' ||
+      p.normalize(hostAppDataDir) !== p.normalize(expected) ||
+      p.basename(hostAppDataDir) !== appName ||
+      p.basename(p.dirname(hostAppDataDir)) !== appStoreId ||
+      hostAppDataDir.split('/').filter(Boolean).length < 3
+    ) {
+      this.logger.error(`[uninstall-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
+      return false;
+    }
+
+    const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
+    // Mount ONLY this app's data dir and empty it (never delete the mountpoint itself).
+    const args = [
+      'run',
+      '--rm',
+      '--network',
+      'none',
+      '--user',
+      '0:0',
+      '-v',
+      `${hostAppDataDir}:/target:rw`,
+      image,
+      'find',
+      '/target',
+      '-mindepth',
+      '1',
+      '-delete',
+    ];
+
+    this.logger.warn(`[uninstall-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
+    try {
+      await this.runDockerCliCommand(args, PRIVILEGED_CLEANUP_TIMEOUT_MS);
+      return true;
+    } catch (err) {
+      this.logger.error(`[uninstall-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Run a one-off `docker <args>` CLI command (no shell), rejecting on non-zero exit or
+   * timeout. Args MUST be a pre-split array so no value is shell-interpreted.
+   */
+  private runDockerCliCommand(args: string[], timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('docker', args, { stdio: 'pipe' });
+      const stderr: string[] = [];
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish(() => reject(new Error(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
+      }, timeoutMs);
+      child.stderr?.on('data', (chunk) => stderr.push(String(chunk)));
+      child.on('error', (err) => finish(() => reject(err)));
+      child.on('close', (code) =>
+        finish(() => (code === 0 ? resolve() : reject(new Error(`docker ${args[0]} exited ${code}: ${stderr.join('').trim()}`)))),
+      );
+    });
   }
 
   /**

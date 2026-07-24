@@ -133,4 +133,23 @@ export class AppOperationRegistry {
       this.logger.debug(`[op-registry] clear ${appUrn} req=${requestId}`);
     }
   }
+
+  /** True when this requestId is still the latest dispatched command for the app. */
+  ownsOutcome(appUrn: AppUrn, requestId: string): boolean {
+    return this.ops.get(appUrn)?.requestId === requestId;
+  }
+
+  /**
+   * Claim a command's completion outcome. Returns false when a newer command superseded this one,
+   * in which case no status write, SSE, or notification side-effects should run.
+   */
+  claimCompletion(appUrn: AppUrn, requestId: string): boolean {
+    const entry = this.ops.get(appUrn);
+    if (!entry || entry.requestId !== requestId) {
+      return false;
+    }
+    this.ops.delete(appUrn);
+    this.logger.debug(`[op-registry] claim ${appUrn} req=${requestId} command=${entry.command}`);
+    return true;
+  }
 }

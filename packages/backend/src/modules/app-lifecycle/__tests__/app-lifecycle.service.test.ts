@@ -25,6 +25,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
@@ -50,12 +53,17 @@ describe('AppLifecycleService', () => {
   let mutex: any;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
+  let agentNotifyService: MockProxy<AgentNotifyService>;
+  let errorReportingService: MockProxy<ErrorReportingService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
     appEventsQueue = mock<AppEventsQueue>();
     commandFactory = mock<AppLifecycleCommandFactory>();
     appsRepository = mock<AppsRepository>();
+    // Completion handlers use a compare-and-set write; default to "applied" so
+    // their SSE emissions fire unless a test exercises the takeover race.
+    appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     configService = mock<ConfigurationService>();
     marketplaceService = mock<MarketplaceService>();
     imageSizeService = mock<ImageSizeService>();
@@ -76,6 +84,8 @@ describe('AppLifecycleService', () => {
     };
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(logger);
+    agentNotifyService = mock<AgentNotifyService>();
+    errorReportingService = mock<ErrorReportingService>();
     appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -103,6 +113,8 @@ describe('AppLifecycleService', () => {
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: AppOperationRegistry, useValue: operationRegistry },
+        { provide: AgentNotifyService, useValue: agentNotifyService },
+        { provide: ErrorReportingService, useValue: errorReportingService },
         { provide: ModuleRef, useValue: { get: vi.fn() } },
       ],
     }).compile();
@@ -299,7 +311,7 @@ describe('AppLifecycleService', () => {
         userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
-      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
@@ -317,6 +329,103 @@ describe('AppLifecycleService', () => {
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
         'anything-llm:ci-marketplace',
       );
+    });
+
+    it('surfaces the DNS failure class instead of always blaming zone provisioning', async () => {
+      // A stale record CI-Cloud refuses to overwrite is not a domain problem, and
+      // saying so sent the CI-Portal#403 investigation down the wrong path.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: ['anything-llm'],
+        failures: [
+          {
+            app: 'anything-llm',
+            hostname: 'anything-llm-laptop-cid.companionintelligence.com',
+            reason: 'conflict',
+            message: 'already in use by another tunnel',
+          },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('already claimed by another device or tunnel'));
+      expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining("verify the selected domain's zone is provisioned"));
+
+      // The class rides along on the SSE event so the toast can say what is wrong.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace', errorCode: 'conflict' }),
+        'anything-llm:ci-marketplace',
+      );
+    });
+
+    it('names every failed app in the log, including ones it cannot map to a hostname', async () => {
+      // The log used to list only the apps it could rebuild a hostname for, while the
+      // count came from result.failed — so a failed app with no DB row (or the
+      // privileged Hub entry) vanished from the message entirely. That is the same
+      // class of misleading operator error this PR exists to fix.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        // 'OS Hub' is the privileged entry: it has no DB row, so it maps to no toast
+        // target and used to be dropped from the log.
+        failed: ['anything-llm', 'OS Hub'],
+        failures: [
+          { app: 'anything-llm', reason: 'conflict', message: 'already in use by another tunnel' },
+          { app: 'OS Hub', reason: 'api_error', message: 'rate limited' },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Both apps are named: the one we could resolve, by hostname; the one we could
+      // not, by the name CI-Cloud sent.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintelligence.com'));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OS Hub'));
+      // The count and the list agree.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('NOT created for 2 app(s)'));
     });
 
     it('excludes only the targeted app URN when releasing DNS for a routing change', async () => {
@@ -380,7 +489,7 @@ describe('AppLifecycleService', () => {
       } as any);
       // A full sync failure (e.g. CI-Cloud unreachable / non-success response),
       // distinct from a partial per-app failure.
-      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], synced: 0 });
+      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], failures: [], synced: 0 });
 
       await service.triggerCloudflareSync();
 
@@ -547,6 +656,34 @@ describe('AppLifecycleService', () => {
       await service.installApp({ appUrn, form: { exposureMode: 'local' } });
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
+    });
+
+    // ── manifest edge-auth default (CI-Engineering#74) ────────────────────
+    describe('manifest edge-auth default', () => {
+      const edgeAuthApp = { ...baseAppInfo, hub_integration: { edge_auth: { default: true } } };
+
+      it('defaults enableAuth ON for an undecided install when the manifest asks (the onboarding path sends no enableAuth)', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: true }));
+      });
+
+      it('an explicit operator false always wins over the manifest default', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
+        await service.installApp({ appUrn, form: { enableAuth: false } });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('a non-exposable app never gets auth defaulted on (the reset also strips the manifest ask)', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...edgeAuthApp, exposable: false } as any);
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
+
+      it('without the manifest field an undecided install stays auth-OFF (existing behavior)', async () => {
+        await service.installApp({ appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
+      });
     });
 
     it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
@@ -723,6 +860,83 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async (_id, patch) => ({ id: 1, ...patch }) as any);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
       appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it('applies the manifest edge-auth default when the stored config never decided it (version-bump self-heal, #74)', async () => {
+      // updateApp re-submits app.config through updateAppConfig; onboarding-era installs
+      // stored no enableAuth key, so the marketplace update that ships edge_auth flips them ON.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: true }));
+    });
+
+    it('preserves an explicit stored enableAuth=false through the same path (operator choice wins)', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
+
+      // Another field changes so the update proceeds; the explicit false must survive it.
+      await service.updateAppConfig({ appUrn, form: { port: 9090, enableAuth: false } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('does not flip a stored explicit enableAuth=false when a partial update omits the field (#74)', async () => {
+      // A PATCH that changes some other field WITHOUT resending enableAuth must inherit the app's
+      // stored explicit false, not resolve to the manifest default — "operator choice wins" has to
+      // hold for a partial update too, and this must not spuriously restart the app.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no enableAuth in the form
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('warns about the reset using the RESOLVED settings, not the ones the request arrived with', async () => {
+      // The non-exposable reset runs after the edge-auth defaulting has already mutated the form,
+      // so the warning must read the resolved values. Reading the destructured copies taken at the
+      // top of the method would stay silent here — the request carried no enableAuth, yet an
+      // enableAuth of true is exactly what is about to be reset away.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
+    });
+
+    it('persists the RESET exposure state, not what the request asked for', async () => {
+      // The row has to agree with the `config` blob written in the same call. Reading the request
+      // snapshot recorded exposed=true and kept the domain for an app the non-exposable reset had
+      // just cleared, so the columns claimed a public exposure the app never got.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposed: false, domain: null }));
+    });
+
+    it('stays silent when a non-exposable app has nothing to reset', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
+    });
+
+    it('re-submitting an already-healed config is a no-op (the default converges, it does not churn)', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, enableAuth: true } });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
     it.each(['running', 'starting', 'restarting'] as const)('triggers restartApp({ skipPull: true }) when app status is "%s"', async (status) => {
@@ -909,6 +1123,12 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async () => {
         callOrder.push('db_update');
         return fakeApp as any;
+      });
+      // The completion handlers claim their outcome with a compare-and-set;
+      // report it as applied so the SSE ordering under test still fires.
+      appsRepository.updateAppByIdIfStatus.mockImplementation(async () => {
+        callOrder.push('db_update');
+        return true;
       });
       appsRepository.deleteAppById.mockImplementation(async () => {
         callOrder.push('db_delete');
@@ -1098,9 +1318,113 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
-      // Backups are always removed on uninstall, even when app data/volumes are preserved.
-      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      // Backups follow the data choice: preserving app data/volumes preserves the backups too (#908).
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
+    });
+
+    // Each scenario is its own `it` so a regression in one reports independently —
+    // packed into a single test, an early failure hides whether the later rules still hold.
+    it('keeps backups when the user chose to keep the data (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the uninstall FAILED, even with deleteAllData (#908)', async () => {
+      // The app and all of its live data survive a failed uninstall, so the safety net
+      // has to survive with it. Deleting before the worker ran left the app installed
+      // but unrecoverable.
+      appEventsQueue.publish.mockResolvedValueOnce({ success: false, message: 'fail' } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('keeps backups when the data wipe was only partial (#908)', async () => {
+      // A remnant means the app's data demonstrably survived on disk. Discarding its
+      // backups here is the same inversion at the other end: data kept, safety net gone.
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+    });
+
+    it('discards backups on a clean delete-all-data uninstall (#908)', async () => {
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+    });
+
+    it('warns instead of claiming a clean removal when the backups could not be deleted (#908)', async () => {
+      // The user asked for every trace of the app to go. If the archives survive, saying
+      // "uninstalled successfully" is a lie — reuse the #907 remnant channel.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      // The detail must travel with the code: the client only renders an actionable
+      // manual-cleanup command when a path is present, and falls back to a generic
+      // "some files remain" toast without one. It must point at the BACKUP directory —
+      // this arm fires only when the app-data wipe already succeeded.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/hub/backups/store/app',
+        }),
+      );
+    });
+
+    it('still warns when the backups host path cannot be resolved, just without a command (#908)', async () => {
+      // A misconfigured (non-absolute) ROOT_FOLDER_HOST yields no path. Guidance is
+      // best-effort: the warning must survive, degrading to the generic toast.
+      backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
+      backupManager.getAppBackupsHostDir.mockReturnValueOnce(undefined);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'uninstall_success', warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT', warningDetail: undefined }),
+      );
+    });
+
+    it('uninstallApp success: threads the command warningCode + warningDetail into the uninstall_success SSE (#907)', async () => {
+      appEventsQueue.publish.mockResolvedValueOnce({
+        success: true,
+        message: 'partial',
+        warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+        warningDetail: '/srv/app-data/store/app',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_success',
+          appUrn,
+          warningCode: 'APP_UNINSTALL_PARTIAL_REMNANT',
+          warningDetail: '/srv/app-data/store/app',
+        }),
+      );
     });
 
     // ── resetApp ─────────────────────────────────────────────────────────
@@ -1306,6 +1630,27 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
+    it('updateApp downloads fresh app files for ci_cloud_api stores before queueing (#915)', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(reposHelpers.downloadAppFiles).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'myapp');
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'update', appUrn }));
+    });
+
+    it('updateApp fails fast when the ci_cloud_api file download fails', async () => {
+      appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: false, message: 'boom' } as any);
+
+      await expect(service.updateApp({ appUrn, performBackup: false })).rejects.toThrow();
+      expect(appEventsQueue.publish).not.toHaveBeenCalledWith(expect.objectContaining({ command: 'update' }));
+    });
+
     // ── exposure sync uses committed state ───────────────────────────────
     it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
@@ -1326,6 +1671,113 @@ describe('AppLifecycleService', () => {
       const successIdx = callOrder.indexOf('sse:install_success');
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+  });
+
+  describe('memory provider uninstall/reset guard', () => {
+    const providerUrn = 'ci-memory:ci-marketplace' as any;
+    const nonProviderUrn = 'myapp:ci-marketplace' as any;
+    const providerApp = { id: 7, appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' as const, config: {}, exposedLocal: false };
+
+    let memoryConnect: { listConnectedConsumers: ReturnType<typeof vi.fn>; handleUninstall: ReturnType<typeof vi.fn> };
+    let moduleRefGet: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      memoryConnect = { listConnectedConsumers: vi.fn().mockResolvedValue([]), handleUninstall: vi.fn().mockResolvedValue(undefined) };
+      // The guard lazily resolves MemoryConnectService via the (mocked) ModuleRef.
+      moduleRefGet = vi.mocked((service as any).moduleRef.get);
+      moduleRefGet.mockReturnValue(memoryConnect);
+      appsRepository.getAppByUrn.mockResolvedValue(providerApp as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('blocks uninstall of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([
+        { appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' },
+        { appUrn: 'ci-openclaw:ci-marketplace', name: 'OpenClaw' },
+      ]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '2', apps: 'Hermes, OpenClaw' } },
+        status: 409,
+      });
+
+      expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced uninstall of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true, force: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('allows uninstall of the provider when no consumers remain', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
+    });
+
+    it('dispatches the memory-connect cleanup off the response path — a slow sweep never blocks uninstall (#906)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([]); // guard passes (provider, 0 consumers)
+      // Provider teardown re-arms every consumer by restarting containers; that sweep
+      // must not hold the HTTP response. A handleUninstall that never settles must
+      // still let uninstallApp resolve with a requestId (it would hang if awaited).
+      memoryConnect.handleUninstall.mockReturnValue(new Promise<void>(() => {}));
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
+
+      // ...but the cleanup IS dispatched (just not awaited) — guard against a
+      // regression that silently drops the sweep from the uninstall path.
+      await vi.waitFor(() => expect(memoryConnect.handleUninstall).toHaveBeenCalledWith(providerUrn));
+    });
+
+    it('does not consult consumers when uninstalling a non-provider app', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...providerApp, appName: 'myapp' } as any);
+
+      await service.uninstallApp({ appUrn: nonProviderUrn, deleteAllData: true });
+
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the memory module cannot be resolved', async () => {
+      moduleRefGet.mockReturnValue(undefined);
+
+      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE' },
+        status: 409,
+      });
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('blocks reset of the provider while consumers are connected (409, no side effects)', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn })).rejects.toMatchObject({
+        response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '1', apps: 'Hermes' } },
+        status: 409,
+      });
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('allows a forced reset of the provider despite connected consumers', async () => {
+      memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
+
+      await expect(service.resetApp({ appUrn: providerUrn, force: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'reset', appUrn: providerUrn }));
     });
   });
 
@@ -1405,7 +1857,7 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.deleteAppById).toHaveBeenCalledWith(7);
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_cancelled', appUrn }));
       expect(reply).toHaveBeenCalledWith(expect.objectContaining({ cancelled: true }));
-      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared in finally
+      expect(operationRegistry.get(appUrn)).toBeUndefined(); // cleared after worker-side cancel finalization
     });
 
     it('finalizes a cancelled result returned by the command (in-flight abort)', async () => {
@@ -1455,6 +1907,81 @@ describe('AppLifecycleService', () => {
       // Status guard: already install_failed → no second status write / SSE.
       expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+    });
+  });
+
+  describe('command-identity completion claims (#903)', () => {
+    const appUrn = 'myapp:ci-marketplace' as AppUrn;
+    const fakeApp = {
+      id: 42,
+      appName: 'myapp',
+      appStoreSlug: 'ci-marketplace',
+      status: 'running',
+      config: {},
+      exposedLocal: false,
+      exposureMode: 'local',
+    };
+
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    /** Resolve publish callbacks only after every command in the test has registered. */
+    function deferPublishResults(...results: Array<{ success: boolean; message: string }>) {
+      const resolvers: Array<(value: { success: boolean; message: string }) => void> = [];
+      appEventsQueue.publish.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+      return () => {
+        for (const [index, result] of results.entries()) {
+          resolvers[index]?.(result);
+        }
+      };
+    }
+
+    beforeEach(() => {
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockResolvedValue(fakeApp as any);
+      appEventsQueue.publish.mockReset();
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
+
+      await service.restartApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_error', appUrn, appStatus: 'stopped' }));
+    });
+
+    it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
+      const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
+
+      await service.stopApp({ appUrn });
+      await service.restartApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'restart_success', appUrn, appStatus: 'running' }));
+    });
+
+    it('superseded restart failure does not fire phantom failure alerts', async () => {
+      const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
+
+      await service.restartApp({ appUrn });
+      await service.stopApp({ appUrn });
+      resolvePublish();
+      await flushMicrotasks();
+
+      expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
+      expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
     });
   });
 });

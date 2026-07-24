@@ -3,11 +3,13 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthController } from '../auth.controller';
+import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { SessionManager } from '../session.manager';
@@ -27,31 +29,37 @@ describe('AuthController', () => {
   let authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
   let config: MockProxy<ConfigurationService>;
+  let forwardAuthSecrets: MockProxy<ForwardAuthSecretResolver>;
   let cache: MockProxy<CacheService>;
   let userRepository: MockProxy<UserRepository>;
   let sessionManager: MockProxy<SessionManager>;
+  let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [AuthController],
       providers: [
         { provide: AuthService, useValue: mock<AuthService>() },
+        { provide: ForwardAuthSecretResolver, useValue: mock<ForwardAuthSecretResolver>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: CacheService, useValue: mock<CacheService>() },
         { provide: UserRepository, useValue: mock<UserRepository>() },
         { provide: SessionManager, useValue: mock<SessionManager>() },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
       ],
     }).compile();
 
     authController = moduleRef.get(AuthController);
     authService = moduleRef.get(AuthService);
+    forwardAuthSecrets = moduleRef.get(ForwardAuthSecretResolver);
     logger = moduleRef.get(LoggerService);
     config = moduleRef.get(ConfigurationService);
     cache = moduleRef.get(CacheService);
     userRepository = moduleRef.get(UserRepository);
     sessionManager = moduleRef.get(SessionManager);
+    deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
   });
 
   it('should be defined', () => {
@@ -60,11 +68,17 @@ describe('AuthController', () => {
 
   describe('traefik', () => {
     it('should return 200 with a signed X-CI-Hub-User header when user is authenticated', async () => {
-      // Arrange
-      config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'shared-secret' : undefined) as never);
+      // Arrange: the resolver (not config) is the source of the signing secret —
+      // per-app when the forwarded host maps to an installed app (#74).
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'importer:ci-marketplace' as never,
+        source: 'app-env',
+      });
       const mockUser = { id: 1, username: 'testuser' };
       const req = {
         user: mockUser,
+        headers: { 'x-forwarded-host': 'importer-dev-org.ci.lan' },
       } as unknown as Request;
 
       const setHeader = vi.fn();
@@ -78,20 +92,39 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       // Assert: identity header + signature + timestamp are all set, and the
-      // signature verifies against the shared secret and canonical message.
+      // signature verifies against the RESOLVED per-app secret and canonical message.
+      expect(forwardAuthSecrets.resolveForHost).toHaveBeenCalledWith('importer-dev-org.ci.lan');
       expect(setHeader).toHaveBeenCalledWith('X-CI-Hub-User', 'testuser');
       const headers = Object.fromEntries(setHeader.mock.calls);
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
       expect(Number.isFinite(timestamp)).toBe(true);
-      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('shared-secret', 'testuser', timestamp));
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'testuser', timestamp));
 
       // A signature computed with any other secret must NOT match — this is what
-      // stops a container on ci_os_hub_network forging the identity header.
+      // stops a container on ci_os_hub_network forging the identity header, and what
+      // stops one app's secret validating a header destined for another app.
       expect(headers['X-CI-Hub-User-Signature']).not.toBe(signForwardAuthUser('wrong-secret', 'testuser', timestamp));
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalled();
-      expect(logger.debug).toHaveBeenCalledWith('User authenticated for Traefik forward auth', { username: 'testuser' });
+      expect(logger.debug).toHaveBeenCalledWith(
+        'User authenticated for Traefik forward auth',
+        expect.objectContaining({ username: 'testuser', secretSource: 'app-env', targetApp: 'importer:ci-marketplace' }),
+      );
+    });
+
+    it('falls back to the global secret for a host that maps to no app', async () => {
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'global-secret', source: 'global' });
+      const req = { user: { id: 1, username: 'testuser' }, headers: {} } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('global-secret', 'testuser', timestamp));
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it('should redirect to login when user is not authenticated', async () => {
@@ -355,6 +388,141 @@ describe('AuthController', () => {
       expect(userRepository.updateUser).toHaveBeenCalledWith(1, { username: 'companion@example.com' });
       expect(sessionManager.createSession).toHaveBeenCalledWith(1);
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+    });
+  });
+
+  describe('browser-handoff', () => {
+    const hubOrigin = 'https://hub-core-2-myorg.companionintelligence.com';
+
+    const mockHubOrigin = () => {
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-myorg', slug: 'myorg' } as never);
+      config.getConfig.mockReturnValue({ domain: 'companionintelligence.com', localDomain: 'ci.lan' } as never);
+    };
+
+    it('mints a single-use ticket bound to the caller session and returns a Hub handoff URL', async () => {
+      mockHubOrigin();
+      const req = {
+        cookies: {},
+        get: vi.fn((header: string) => (header === 'x-ci-hub-session' ? 'sess-1' : undefined)),
+        headers: {},
+      } as unknown as Request;
+
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      const result = await authController.mintBrowserHandoff({ next }, req);
+
+      expect(result.url).toEqual(
+        expect.stringMatching(/^https:\/\/hub-core-2-myorg\.companionintelligence\.com\/api\/auth\/browser-handoff\?ticket=/),
+      );
+      expect(cache.set).toHaveBeenCalledTimes(1);
+      const [key, value, ttl] = cache.set.mock.calls[0];
+      expect(key).toMatch(/^browser_handoff:/);
+      expect(JSON.parse(value as string)).toEqual({ sessionId: 'sess-1', next });
+      expect(ttl).toBe(60);
+    });
+
+    it('accepts an app sibling origin under the public domain root as the target', async () => {
+      mockHubOrigin();
+      const req = { cookies: { 'ci-hub-sid': 'sess-2' }, get: vi.fn(), headers: {} } as unknown as Request;
+
+      const result = await authController.mintBrowserHandoff({ next: 'https://ci-hermes-core-2-myorg.companionintelligence.com/' }, req);
+
+      expect(result.url).toContain('/api/auth/browser-handoff?ticket=');
+    });
+
+    it('rejects an off-domain handoff target', async () => {
+      mockHubOrigin();
+      const req = { cookies: { 'ci-hub-sid': 'sess-3' }, get: vi.fn(), headers: {} } as unknown as Request;
+
+      await expect(authController.mintBrowserHandoff({ next: 'https://evil.example/steal' }, req)).rejects.toThrow();
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects a co-tenant host on the shared registrable domain (different org slug)', async () => {
+      mockHubOrigin();
+      const req = { cookies: { 'ci-hub-sid': 'sess-3b' }, get: vi.fn(), headers: {} } as unknown as Request;
+
+      // Same registrable domain, but a different org's `-<slug>` boundary — not one of
+      // this appliance's own app hosts, so it must not be an accepted redirect target.
+      await expect(
+        authController.mintBrowserHandoff({ next: 'https://ci-hermes-core-9-attackerorg.companionintelligence.com/' }, req),
+      ).rejects.toThrow();
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('fails open with url:null when no public Hub origin is known yet', async () => {
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+      config.getConfig.mockReturnValue({ domain: 'example.com', localDomain: 'ci.lan' } as never);
+      const req = { cookies: { 'ci-hub-sid': 'sess-4' }, get: vi.fn(), headers: {} } as unknown as Request;
+
+      const result = await authController.mintBrowserHandoff({ next: `${hubOrigin}/x` }, req);
+
+      expect(result.url).toBeNull();
+      expect(cache.set).not.toHaveBeenCalled();
+    });
+
+    it('consume plants the session cookie and redirects to the stored next, consuming the ticket', async () => {
+      mockHubOrigin();
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+
+      // The real desktop flow arrives as a user-initiated navigation (Sec-Fetch-Site: none).
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      expect(cache.get).toHaveBeenCalledWith('browser_handoff:ticket-abc');
+      expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sess-1', expect.objectContaining({ httpOnly: true }));
+      expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it.each([
+      'cross-site',
+      'same-site',
+      'same-origin',
+      // A spoofed multi-valued header (duplicate Sec-Fetch-Site joined by the runtime)
+      // must not slip past the `=== 'none'` allow-list.
+      'none, cross-site',
+    ])('consume rejects a %s navigation without touching the ticket or setting a cookie', async (fetchSite) => {
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? fetchSite : undefined)), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      // Login-CSRF guard fires before the ticket is read, so a lured victim never
+      // gets the attacker's session and the ticket is left intact.
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(cache.del).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('/');
+    });
+
+    it('consume redirects home for a missing/expired/replayed ticket without setting a cookie or writing', async () => {
+      cache.get.mockReturnValue(undefined as never);
+      const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('gone', req, res);
+
+      expect(res.cookie).not.toHaveBeenCalled();
+      // A cache miss must not trigger a delete — this endpoint is unauthenticated, so a
+      // per-miss SQLite write would be a flood amplifier.
+      expect(cache.del).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('/');
+    });
+
+    it('consume refuses a stored next that no longer passes validation', async () => {
+      mockHubOrigin();
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next: 'https://evil.example/x' }));
+      const req = { cookies: {}, get: vi.fn(), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-xyz', req, res);
+
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('/');
     });
   });
 });

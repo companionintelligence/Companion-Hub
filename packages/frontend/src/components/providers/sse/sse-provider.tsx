@@ -10,6 +10,22 @@ import { Link, useNavigate } from 'react-router';
 
 const logsPageHref = '/settings?tab=logs';
 
+/**
+ * Map CI-Cloud's public-DNS failure class onto the message the user sees. An
+ * unknown or absent code (older CI-Cloud) falls back to the generic copy.
+ */
+const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
+  conflict: 'APP_ERROR_PUBLIC_DNS_CONFLICT',
+  zone_unreachable: 'APP_ERROR_PUBLIC_DNS_ZONE_UNAVAILABLE',
+  // A transient Cloudflare rejection is not a domain problem — the generic
+  // fallback copy tells the user to check their domain, which is the very
+  // misattribution this mapping exists to end.
+  api_error: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
+  // The subdomain is the problem, not the domain — pointing the user at the
+  // domain would be the same wrong turn in a class we ourselves introduced.
+  invalid_subdomain: 'APP_ERROR_PUBLIC_DNS_INVALID_SUBDOMAIN',
+};
+
 export const SSEProvider = ({ children }: PropsWithChildren) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -32,7 +48,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     topic: 'app',
     onEvent: (data) => {
       const payload = data as AppSsePayload;
-      const { event, appUrn, error, errorCode, settingsPath } = payload;
+      const { event, appUrn, error, errorCode, settingsPath, warningCode, warningDetail } = payload;
 
       if (error) {
         console.error(error);
@@ -110,7 +126,37 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_STOP_TOAST', appName));
           break;
         case 'uninstall_success':
-          toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          // The app is gone, but the delete may have left a remnant it couldn't
+          // remove even via a privileged cleanup (e.g. a container-created root-owned
+          // path, #907) — warn instead of claiming a clean removal. Branch on the
+          // code's VALUE (like errorCode above): a future, unrecognized warningCode
+          // must fall through to the plain success toast, not mislabel itself.
+          if (warningCode === 'APP_UNINSTALL_PARTIAL_REMNANT') {
+            if (warningDetail) {
+              // Actionable: show the exact host path + command the operator can run.
+              // Single-quote the path (escaping any embedded quote) and add `--`: an
+              // operator-configured root can contain spaces or shell metacharacters, so
+              // an unquoted path could be mis-split or read as an option on paste.
+              const quotedPath = `'${warningDetail.replace(/'/g, "'\\''")}'`;
+              const command = `sudo rm -rf -- ${quotedPath}`;
+              toast(
+                () => (
+                  <span className="text-sm">
+                    <Trans
+                      i18nKey="APP_UNINSTALL_PARTIAL_REMNANT_MANUAL"
+                      values={{ id: appName, command }}
+                      components={{ cmd: <code className="font-mono text-xs break-all" /> }}
+                    />
+                  </span>
+                ),
+                { icon: '⚠️', duration: 20000 },
+              );
+            } else {
+              toast(t('APP_UNINSTALL_PARTIAL_REMNANT', { id: appName }), { icon: '⚠️', duration: 8000 });
+            }
+          } else {
+            toast.success(t('APP_UNINSTALL_SUCCESS', { id: appName }));
+          }
           break;
         case 'uninstall_error':
           toast.error(renderLogsErrorToast('APP_ERROR_APP_FAILED_TO_UNINSTALL_TOAST', appName));
@@ -146,7 +192,10 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_RESTORE_ERROR_TOAST', appName));
           break;
         case 'public_dns_error':
-          toast.error(t('APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
+          // errorCode carries CI-Cloud's failure class. A conflict and an
+          // unprovisioned domain need different actions from the user, so they
+          // must not share the same message.
+          toast.error(t(PUBLIC_DNS_ERROR_KEYS[errorCode ?? ''] ?? 'APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
           break;
         case 'tailscale_serve_error':
           toast.error(

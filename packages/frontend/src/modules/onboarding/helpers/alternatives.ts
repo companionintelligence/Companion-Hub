@@ -85,18 +85,15 @@ function detectedMatchesPick(detectedLower: Set<string>, pick: OnboardingCurated
   return false;
 }
 
-function resolvePickSlug(pick: OnboardingCuratedPick, storeApps: CatalogApp[]): string | null {
-  for (const slug of pick.preferredSlugs) {
-    if (findCatalogAppBySlug(storeApps, slug)) {
-      return slug;
-    }
-  }
-  return null;
+function resolvePickSlugs(pick: OnboardingCuratedPick, storeApps: CatalogApp[]): string[] {
+  return pick.preferredSlugs.filter((slug) => !!findCatalogAppBySlug(storeApps, slug));
 }
 
 /**
- * Resolve curated onboarding recommendations: one high-value pick per category,
- * intersected with the marketplace catalog and filtered for already-running services.
+ * Resolve curated onboarding recommendations: preferred marketplace apps per
+ * category (in preferred-slug order), filtered for already-running services.
+ * Multiple preferred slugs in the catalog become separate picks so onboarding
+ * can reveal more recommendations over time.
  */
 export function resolveOnboardingRecommendations(
   detectedServiceNames: string[],
@@ -107,35 +104,37 @@ export function resolveOnboardingRecommendations(
   const resolved: OnboardingRecommendation[] = [];
 
   for (const pick of ONBOARDING_CURATED_PICKS) {
-    const slug = resolvePickSlug(pick, storeApps);
-    if (!slug) continue;
+    const boosted = detectedMatchesPick(detectedLower, pick, altsData);
 
-    const storeApp = findCatalogAppBySlug(storeApps, slug);
-    const altMeta = findAltEntryForSlug(altsData, slug);
-    const altName = altMeta?.alt.name ?? storeApp?.name ?? slug;
+    for (const slug of resolvePickSlugs(pick, storeApps)) {
+      const storeApp = findCatalogAppBySlug(storeApps, slug);
+      const altMeta = findAltEntryForSlug(altsData, slug);
+      const altName = altMeta?.alt.name ?? storeApp?.name ?? slug;
 
-    if (isAlreadyRunning(slug, altName, detectedLower)) continue;
+      if (isAlreadyRunning(slug, altName, detectedLower)) continue;
 
-    const alt: AltAlternative = altMeta?.alt ?? {
-      name: altName,
-      icon: storeApp?.icon ?? '',
-      url: '',
-      appSlug: slug,
-    };
+      const alt: AltAlternative = altMeta?.alt ?? {
+        name: altName,
+        icon: storeApp?.icon ?? '',
+        url: '',
+        appSlug: slug,
+      };
 
-    resolved.push({
-      category: pick.category,
-      proprietary: proprietaryNamesForPick(pick, altsData, slug),
-      alternatives: [alt],
-      boosted: detectedMatchesPick(detectedLower, pick, altsData),
-    });
+      resolved.push({
+        category: pick.category,
+        proprietary: proprietaryNamesForPick(pick, altsData, slug),
+        alternatives: [alt],
+        boosted,
+      });
+    }
   }
 
   resolved.sort((a, b) => {
     if (a.boosted !== b.boosted) return a.boosted ? -1 : 1;
     const aIndex = ONBOARDING_CURATED_PICKS.findIndex((p) => p.category === a.category);
     const bIndex = ONBOARDING_CURATED_PICKS.findIndex((p) => p.category === b.category);
-    return aIndex - bIndex;
+    if (aIndex !== bIndex) return aIndex - bIndex;
+    return (a.alternatives[0]?.appSlug ?? '').localeCompare(b.alternatives[0]?.appSlug ?? '');
   });
 
   return resolved;

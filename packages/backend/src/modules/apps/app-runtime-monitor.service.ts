@@ -228,7 +228,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
       return {
         appUrn: HUB_RUNTIME_URN,
-        appName: 'Companion Hub',
+        appName: 'CI Hub',
         status: 'running',
         cpuPercent,
         memoryUsageBytes,

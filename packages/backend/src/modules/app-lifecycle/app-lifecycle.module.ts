@@ -1,4 +1,6 @@
 import { SSEModule } from '@/core/sse/sse.module';
+import { HubAccessService } from './hub-access.service';
+import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { AppsModule } from '../apps/apps.module';
 import { BackupsModule } from '../backups/backups.module';
@@ -36,8 +38,10 @@ import { AppStatusSyncService } from './app-status-sync.service';
     TailscaleModule,
     UserModule,
     NetworkModule,
+    ApiKeyModule,
   ],
   providers: [
+    HubAccessService,
     AppLifecycleService,
     AppInstallValidator,
     ExposureSyncService,

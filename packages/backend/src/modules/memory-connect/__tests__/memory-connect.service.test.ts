@@ -9,8 +9,14 @@ import { MemoryConnectService } from '../memory-connect.service';
 function makeService() {
   const resolver = {
     findProvider: vi.fn(),
-    isProviderInstalled: vi.fn().mockResolvedValue(true),
+    // Default to a running provider so the existing status/connect expectations
+    // exercise the "ready" path; individual tests override for not-ready cases.
+    getProviderRuntimeStatus: vi.fn().mockResolvedValue('ready'),
+    // Default: a publicly-exposed provider, so the provider_local_only guard is
+    // inert unless a test opts into it.
+    getProviderRuntimeInfo: vi.fn().mockResolvedValue({ status: 'ready', localOnly: false }),
     getAppPublicUrl: vi.fn().mockResolvedValue('https://app.example.org'),
+    getAppAccessUrls: vi.fn().mockResolvedValue({ publicUrl: 'https://app.example.org', localUrl: 'http://192.168.1.9:8080' }),
     isConsumerApp: vi.fn().mockResolvedValue(true),
     getAppName: vi.fn().mockResolvedValue('OpenClaw'),
   };
@@ -31,12 +37,25 @@ function makeService() {
     credsFromRow: vi.fn().mockReturnValue({ url: 'http://gateway:8642', token: 'tok' }),
     listConnected: vi.fn().mockResolvedValue([]),
   };
-  const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn() };
+  const pending = { create: vi.fn().mockReturnValue('state-nonce'), consume: vi.fn(), recordOutcome: vi.fn() };
   const deviceRegistration = { getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: 'core2-x' }) };
-  const config = { getConfig: vi.fn().mockReturnValue({ domain: 'example.org' }) };
+  const config = {
+    getConfig: vi.fn().mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '192.168.1.9', port: 80 } }),
+  };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const lifecycle = { restartApp: vi.fn().mockResolvedValue(undefined) };
+  const lifecycle = {
+    restartApp: vi.fn().mockResolvedValue({ requestId: 'r-1' }),
+    restartAppAndWait: vi.fn().mockResolvedValue(true),
+    regenerateAppEnv: vi.fn().mockResolvedValue(true),
+  };
+  // applyAndRestart only restarts an app that is actually up — a stopped app must
+  // not be started by a rotation sweep or a status poll. Default to running so the
+  // existing expectations exercise the restart path.
+  const appsRepository = { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) };
   const moduleRef = { get: vi.fn().mockReturnValue(lifecycle) };
+  // Default to a healthy tunnel so the existing expectations exercise the public
+  // launcher path; the local-fallback cases override this per test.
+  const tunnelHealth = { getHealth: vi.fn().mockReturnValue('up'), getHealthNow: vi.fn().mockResolvedValue('up'), invalidate: vi.fn() };
 
   const service = new MemoryConnectService(
     resolver as never,
@@ -46,10 +65,12 @@ function makeService() {
     deviceRegistration as never,
     config as never,
     logger as never,
+    appsRepository as never,
+    tunnelHealth as never,
     moduleRef as never,
   );
 
-  return { service, resolver, exchange, connections, pending, lifecycle };
+  return { service, resolver, exchange, connections, pending, lifecycle, appsRepository, logger, tunnelHealth, deviceRegistration, config };
 }
 
 const PROVIDER = {
@@ -87,6 +108,33 @@ describe('MemoryConnectService.startConnect', () => {
     expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org', 'user-1');
   });
 
+  it('does not allowlist the loopback Hub origin for a non-loopback caller', async () => {
+    const { service, resolver, pending, config } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    // A listen-all INTERNAL_IP collapses the local Hub origin to loopback.
+    config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+
+    // A LAN visitor supplies a `next` pointing at the Hub's own loopback origin.
+    await service.startConnect('ci-openclaw:local', 'http://127.0.0.1/phish', 'user-1', { host: '192.168.1.9' });
+
+    // 127.0.0.1 is not routable from 192.168.x, so it must NOT be allowlisted —
+    // otherwise `next` becomes a loopback open-redirect. The next is discarded and
+    // the app's own URL is stored instead.
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'https://app.example.org', 'user-1');
+  });
+
+  it('allowlists the loopback Hub origin only when the caller is itself on loopback', async () => {
+    const { service, resolver, pending, config } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    config.getConfig.mockReturnValue({ domain: 'example.org', userSettings: { internalIp: '0.0.0.0', port: 80 } });
+
+    // Same loopback `next`, but this caller reached the Hub on loopback too, so the
+    // origin is genuinely routable for them and the return path is honored.
+    await service.startConnect('ci-openclaw:local', 'http://127.0.0.1/finish', 'user-1', { host: '127.0.0.1' });
+
+    expect(pending.create).toHaveBeenCalledWith('ci-openclaw:local', 'http://127.0.0.1/finish', 'user-1');
+  });
+
   it('throws when Companion Memory is not installed', async () => {
     const { service, resolver } = makeService();
     resolver.findProvider.mockResolvedValue(null);
@@ -105,61 +153,174 @@ describe('MemoryConnectService.startConnect', () => {
 describe('MemoryConnectService.handleCallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('exchanges the code, stores the key (internal URL), restarts, and returns next', async () => {
+  const FINISHING_PATH = '/memory-connect/finishing?app=ci-openclaw%3Alocal&next=https%3A%2F%2Fapp.example.org%2F';
+  const CONSUMED = {
+    outcome: 'consumed',
+    appUrn: 'ci-openclaw:local',
+    next: 'https://app.example.org/',
+    userId: 'user-1',
+    redirect: 'https://app.example.org/',
+  };
+
+  it('exchanges the code, stores the key, schedules the restart, and returns the finishing interstitial', async () => {
     const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
+    pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
+    // The store resolves the state for THIS user and the presented code (hashed),
+    // so a fresh consent grant is distinguishable from a browser replay.
+    expect(pending.consume).toHaveBeenCalledWith('state-nonce', 'user-1', expect.stringMatching(/^[0-9a-f]{64}$/));
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    // The restart is scheduled (fire-and-track, skipPull — env-only change), NOT
+    // awaited to completion: the browser must not hang out the compose cycle.
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    // The real outcome is recorded so a later replay repeats this exact redirect.
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', FINISHING_PATH);
+    expect(result).toEqual({ next: FINISHING_PATH });
+  });
+
+  it('rewrites the env in place and returns the app URL directly when the app is down (nothing to watch)', async () => {
+    const { service, resolver, exchange, pending, lifecycle, appsRepository } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
+
+    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
     expect(result).toEqual({ next: 'https://app.example.org/' });
+    // Every consumed outcome records its actual redirect — deferred lands on
+    // the app URL, so a replay repeats that, never the finishing interstitial.
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
+  });
+
+  it('still lands on the app (no error marker) when scheduling the restart fails — parity with the awaited flow', async () => {
+    const { service, resolver, exchange, pending, lifecycle, logger } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'raw-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    lifecycle.restartApp.mockRejectedValue(new Error('queue unavailable'));
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
+
+    expect(result).toEqual({ next: 'https://app.example.org/' });
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('failed to apply the connection change'), expect.any(Error));
   });
 
   it('rejects an invalid/expired state without exchanging', async () => {
     const { service, pending, exchange } = makeService();
-    pending.consume.mockReturnValue(null);
+    pending.consume.mockReturnValue({ outcome: 'unknown' });
 
     await expect(service.handleCallback('the-code', 'bad-state', 'user-1')).rejects.toThrow(/Invalid or expired/);
     expect(exchange.exchange).not.toHaveBeenCalled();
   });
 
+  it('sends a foreign user to the dashboard without exchanging or learning the app URL', async () => {
+    // The store reports 'foreign' for a state bound to another Hub user — and
+    // crucially does NOT consume it, so the initiator's flow survives the hit.
+    const { service, exchange, connections, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue({ outcome: 'foreign' });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-2');
+
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    // Same landing as an unknown/expired state, so a probing non-initiator can't
+    // tell 'foreign' from 'unknown', and the real user whose session drifted
+    // still gets a failure toast.
+    expect(result).toEqual({ next: '/?memoryConnect=error', error: true });
+  });
+
+  it('routes a replayed state to its RECORDED redirect without re-exchanging or restarting', async () => {
+    // The browser refreshing the callback URL after an aborted navigation: the
+    // first request already exchanged the (single-use) code and scheduled the
+    // restart, recording the finishing path — the replay repeats it.
+    const { service, exchange, connections, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue({
+      outcome: 'replayed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: FINISHING_PATH,
+    });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
+
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: FINISHING_PATH });
+  });
+
+  it('replays a FAILED attempt to the app URL, never fabricating a finishing/success redirect', async () => {
+    // The first attempt failed downstream (exchange threw / provider gone), so
+    // its recorded redirect stayed the app URL — the replay must land there,
+    // where the connect interstitial re-appears.
+    const { service, exchange, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue({
+      outcome: 'replayed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: 'https://app.example.org/',
+    });
+
+    const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
+
+    expect(exchange.exchange).not.toHaveBeenCalled();
+    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(result).toEqual({ next: 'https://app.example.org/' });
+  });
+
+  it('runs the full flow when the store re-opens a consumed state for a fresh code (deny → back → allow)', async () => {
+    // The store returns 'consumed' for a different code hash on a tombstoned
+    // state; the service must treat it exactly like a first consume — the
+    // user's second Allow carries a fresh, valid, single-use code.
+    const { service, resolver, exchange, connections, pending, lifecycle } = makeService();
+    pending.consume.mockReturnValue(CONSUMED);
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    exchange.exchange.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+
+    const result = await service.handleCallback('fresh-code', 'state-nonce', 'user-1');
+
+    expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'fresh-code');
+    expect(connections.storeConnected).toHaveBeenCalled();
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(result).toEqual({ next: FINISHING_PATH });
+  });
+
   it('returns the app URL with error on app mismatch (does not store), so the user lands back on the app', async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
+    pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockResolvedValue({ appUrn: 'ci-hermes:local', key: 'raw-key' });
 
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(connections.storeConnected).not.toHaveBeenCalled();
-    expect(result).toEqual({ next: 'https://app.example.org/', error: true });
-  });
-
-  it('returns error without exchanging when the callback user differs from the initiator (login-CSRF guard)', async () => {
-    const { service, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
-
-    // A different Hub user completes the callback than the one who started the flow.
-    const result = await service.handleCallback('the-code', 'state-nonce', 'user-2');
-
-    expect(exchange.exchange).not.toHaveBeenCalled();
-    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
     expect(result).toEqual({ next: 'https://app.example.org/', error: true });
   });
 
   it('returns the app URL with error when the exchange throws (no dead-end on the dashboard)', async () => {
     const { service, resolver, exchange, connections, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
+    pending.consume.mockReturnValue(CONSUMED);
     resolver.findProvider.mockResolvedValue(PROVIDER);
     exchange.exchange.mockRejectedValue(new Error('ci-memory unreachable'));
 
     const result = await service.handleCallback('the-code', 'state-nonce', 'user-1');
 
     expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', 'https://app.example.org/');
     expect(result).toEqual({ next: 'https://app.example.org/', error: true });
   });
 });
@@ -167,20 +328,70 @@ describe('MemoryConnectService.handleCallback', () => {
 describe('MemoryConnectService.abandonConnect', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('consumes the pending state and returns the originating app URL', () => {
+  it('consumes the pending state (bound to the user, no code) and returns the originating app URL', () => {
     const { service, pending } = makeService();
-    pending.consume.mockReturnValue({ appUrn: 'ci-openclaw:local', next: 'https://app.example.org/', userId: 'user-1' });
+    pending.consume.mockReturnValue({
+      outcome: 'consumed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: 'https://app.example.org/',
+    });
 
-    expect(service.abandonConnect('state-nonce')).toBe('https://app.example.org/');
-    expect(pending.consume).toHaveBeenCalledWith('state-nonce');
+    expect(service.abandonConnect('state-nonce', 'user-1')).toBe('https://app.example.org/');
+    expect(pending.consume).toHaveBeenCalledWith('state-nonce', 'user-1');
+  });
+
+  it('resolves a replayed deny (refresh of the error redirect) to its recorded redirect', () => {
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue({
+      outcome: 'replayed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: 'https://app.example.org/',
+    });
+
+    expect(service.abandonConnect('state-nonce', 'user-1')).toBe('https://app.example.org/');
+  });
+
+  it('sends a foreign user to the Hub root — a co-user replaying a deny URL learns nothing', () => {
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue({ outcome: 'foreign' });
+
+    expect(service.abandonConnect('state-nonce', 'user-2')).toBe('/');
   });
 
   it('falls back to the Hub root when the state is missing or unknown', () => {
     const { service, pending } = makeService();
-    pending.consume.mockReturnValue(null);
+    pending.consume.mockReturnValue({ outcome: 'unknown' });
 
-    expect(service.abandonConnect(undefined)).toBe('/');
-    expect(service.abandonConnect('gone')).toBe('/');
+    expect(service.abandonConnect(undefined, 'user-1')).toBe('/');
+    expect(service.abandonConnect('gone', 'user-1')).toBe('/');
+  });
+
+  it("carries the provider's error code onto the dashboard for an unknown state, so the toast can tell a failure from a decline", () => {
+    // The fail-silent behavior CI-Engineering#75 set out to remove: a
+    // csrf_failed / login_required consent failure must not land on a bare '/'
+    // indistinguishable from a user-initiated decline.
+    const { service, pending } = makeService();
+    pending.consume.mockReturnValue({ outcome: 'unknown' });
+
+    expect(service.abandonConnect(undefined, 'user-1', 'csrf_failed')).toBe('/?memoryConnect=csrf_failed');
+  });
+
+  it('logs (does not swallow) a provider error even when the state resolves to an app redirect', () => {
+    const { service, pending, logger } = makeService();
+    pending.consume.mockReturnValue({
+      outcome: 'consumed',
+      appUrn: 'ci-openclaw:local',
+      next: 'https://app.example.org/',
+      userId: 'user-1',
+      redirect: 'https://app.example.org/',
+    });
+
+    expect(service.abandonConnect('state-nonce', 'user-1', 'login_required')).toBe('https://app.example.org/');
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('login_required'));
   });
 });
 
@@ -201,7 +412,41 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+  });
+
+  it('disconnect does not START an app the user had stopped, but DOES scrub its env', async () => {
+    // A restart is compose down + up, so restarting a stopped app would silently bring
+    // it back. Its env must still be rewritten though — deferring that too would leave
+    // the revoked token sitting in app.env until the app happened to be started again.
+    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
+  });
+
+  it.each([
+    'backing_up',
+    'restoring',
+    'updating',
+    'resetting',
+  ] as const)('does not restart an app mid-%s (those stop it first, and restore its run-state after)', async (status) => {
+    // Restarting here would race the maintenance op AND leave an app the user had
+    // stopped running once it finished.
+    const { service, resolver, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    appsRepository.getAppByUrn.mockResolvedValue({ status });
+
+    await service.disconnect('ci-openclaw:local');
+
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+    expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
 
   it('disconnect throws and keeps the connection (no clear/restart) when the revoke fails', async () => {
@@ -213,7 +458,7 @@ describe('MemoryConnectService side effects', () => {
 
     // Must NOT falsely report disconnected while the key is still live server-side.
     expect(connections.clear).not.toHaveBeenCalled();
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
 
   it('disconnect clears locally when the provider is unresolvable (nothing to revoke)', async () => {
@@ -234,7 +479,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:local');
-    expect(lifecycle.restartApp).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
   });
 
   it('getUiStatus clears a stale connection AND restarts the app when ci-memory rejects the stored key', async () => {
@@ -247,7 +492,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
     // Must restart so the container drops the dead credential and re-prompts.
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
     expect(status.state).toBe('unconfigured');
     // The stale key's expiry is cleared alongside the connection.
     expect(status.keyExpiresAt).toBeNull();
@@ -259,7 +504,36 @@ describe('MemoryConnectService side effects', () => {
 
     const status = await service.getUiStatus('some-random-app:local');
 
-    expect(status).toEqual({ applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null });
+    expect(status).toEqual({
+      applicable: false,
+      memoryInstalled: false,
+      memoryReady: false,
+      providerStatus: 'absent',
+      state: 'unconfigured',
+      connectUrl: null,
+      connectUrlLocal: null,
+      connectable: false,
+      // A non-consumer app is not "blocked" from connecting — it simply has no
+      // memory integration, so there is nothing to explain.
+      reason: null,
+      keyExpiresAt: null,
+    });
+    expect(resolver.findProvider).not.toHaveBeenCalled();
+  });
+
+  it('getUiStatus reports the provider as installed-but-not-ready and withholds the connect URL while ci-memory is installing', async () => {
+    const { service, resolver, connections } = makeService();
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'starting', localOnly: false });
+    connections.getRow.mockResolvedValue({ state: 'unconfigured', keyExpiresAt: null });
+
+    const status = await service.getUiStatus('ci-openclaw:local');
+
+    expect(status.memoryInstalled).toBe(true);
+    expect(status.memoryReady).toBe(false);
+    expect(status.providerStatus).toBe('starting');
+    // No launcher URL while it isn't running — the Connect button stays inert.
+    expect(status.connectUrl).toBeNull();
+    // Never probe key validity (nor restart) against a provider that isn't up.
     expect(resolver.findProvider).not.toHaveBeenCalled();
   });
 
@@ -301,7 +575,7 @@ describe('MemoryConnectService side effects', () => {
 
     expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
     expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
   });
 
   it('rotateDueKeys leaves a still-fresh key untouched', async () => {
@@ -325,6 +599,60 @@ describe('MemoryConnectService side effects', () => {
     expect(exchange.rotate).not.toHaveBeenCalled();
   });
 
+  it('rotateDueKeys does NOT rotate a down app — retiring its key would strand it for 60 days', async () => {
+    // Rotation retires the old key on CI-Server, and storeConnected bumps `updatedAt`,
+    // which re-arms the age gate. Rotating an app we cannot restart would therefore
+    // leave it 401ing and skipped by the next ~60 days of sweeps. Leave it entirely
+    // alone: the first sweep after it comes back up picks it up.
+    const { service, resolver, exchange, connections, lifecycle, appsRepository } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    appsRepository.getAppByUrn.mockResolvedValue({ status: 'stopped' });
+
+    await service.rotateDueKeys();
+
+    expect(exchange.rotate).not.toHaveBeenCalled();
+    expect(connections.storeConnected).not.toHaveBeenCalled();
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
+  });
+
+  it('rotateDueKeys retries once and reports failure when the restart does not take', async () => {
+    // `restartApp` resolves as soon as the command is PUBLISHED, so the sweep awaits the
+    // real outcome instead — otherwise a failed compose would be logged as a success and
+    // the app would sit on the key CI-Server just retired.
+    const { service, resolver, exchange, connections, lifecycle, logger } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    lifecycle.restartAppAndWait.mockResolvedValue(false);
+
+    await service.rotateDueKeys();
+
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not restart it'));
+  });
+
+  it('rotateDueKeys does not let a restart-induced stop masquerade as a benign deferral', async () => {
+    // A failed restart marks the app `stopped`. The retry then sees a down app and would
+    // report 'deferred' — logging the reassuring "applies on next start" line for an app
+    // that was RUNNING and that the sweep itself just knocked over onto a retired key.
+    const { service, resolver, exchange, connections, lifecycle, appsRepository, logger } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
+    // Running at rotation time; the failed restart then leaves it stopped.
+    appsRepository.getAppByUrn
+      .mockResolvedValueOnce({ status: 'running' }) // pre-rotation liveness check
+      .mockResolvedValueOnce({ status: 'running' }) // first apply
+      .mockResolvedValue({ status: 'stopped' }); // retry sees the wreckage
+    lifecycle.restartAppAndWait.mockResolvedValue(false);
+
+    await service.rotateDueKeys();
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('could not restart it'));
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('applies on next start'));
+  });
+
   it('rotateDueKeys keeps going when one app fails to rotate', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
@@ -340,14 +668,14 @@ describe('MemoryConnectService side effects', () => {
 
     // The second app still rotates despite the first throwing.
     expect(exchange.rotate).toHaveBeenCalledTimes(2);
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local' });
-    expect(lifecycle.restartApp).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:local', skipPull: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
   });
 
   it('getStatus returns the state and a launcher URL built from the Hub origin', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockResolvedValue(true);
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'ready', localOnly: false });
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -358,7 +686,7 @@ describe('MemoryConnectService side effects', () => {
   it('getStatus withholds the connectUrl when Companion Memory is not installed (no dead-end gate)', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockResolvedValue(false);
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'absent', localOnly: false });
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -367,10 +695,22 @@ describe('MemoryConnectService side effects', () => {
     expect(status.connectUrl).toBeNull();
   });
 
+  it('getStatus withholds the connectUrl while Companion Memory is only installing (not reachable yet)', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.getState.mockResolvedValue('unconfigured');
+    resolver.getProviderRuntimeInfo.mockResolvedValue({ status: 'starting', localOnly: false });
+
+    const status = await service.getStatus('ci-openclaw:local');
+
+    // The wrapper gate stays suppressed until ci-memory is actually running,
+    // rather than linking to a startConnect that 400s with "not reachable yet".
+    expect(status.connectUrl).toBeNull();
+  });
+
   it('getStatus still returns state (connectUrl null) when the provider lookup fails', async () => {
     const { service, connections, resolver } = makeService();
     connections.getState.mockResolvedValue('unconfigured');
-    resolver.isProviderInstalled.mockRejectedValue(new Error('db blip'));
+    resolver.getProviderRuntimeInfo.mockRejectedValue(new Error('db blip'));
 
     const status = await service.getStatus('ci-openclaw:local');
 
@@ -394,8 +734,27 @@ describe('MemoryConnectService side effects', () => {
     expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
     expect(connections.clear).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
     expect(connections.clear).not.toHaveBeenCalledWith('ci-memory:ci-marketplace');
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace' });
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace' });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
+  });
+
+  it('re-arms the remaining consumers even when one fails, and never rejects the sweep (#906)', async () => {
+    const { service, resolver, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(null);
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    // One consumer wedges while being cleared; it must not strand the other.
+    connections.clear.mockImplementation(async (urn: string) => {
+      if (urn === 'ci-openclaw:ci-marketplace') throw new Error('clear failed');
+    });
+
+    await expect(service.handleUninstall('ci-memory:ci-marketplace')).resolves.toBeUndefined();
+
+    // The healthy consumer is still cleared + restarted; the failed one never reached restart.
+    expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-hermes:ci-marketplace', skipPull: true });
+    expect(lifecycle.restartAppAndWait).not.toHaveBeenCalledWith({ appUrn: 'ci-openclaw:ci-marketplace', skipPull: true });
   });
 
   it('handleUninstall of a regular consumer does NOT cascade to other apps', async () => {
@@ -408,5 +767,74 @@ describe('MemoryConnectService side effects', () => {
     // Only the uninstalled app's row is removed; no consumer is cleared.
     expect(connections.remove).toHaveBeenCalledWith('ci-openclaw:ci-marketplace');
     expect(connections.clear).not.toHaveBeenCalled();
+  });
+});
+
+describe('MemoryConnectService.listConnectedConsumers', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("excludes the provider's own connection row", async () => {
+    const { service, connections } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-memory:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers.map((c) => c.appUrn)).toEqual(['ci-hermes:ci-marketplace']);
+  });
+
+  it('excludes stale rows whose app is no longer installed', async () => {
+    const { service, connections, appsRepository } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-gone:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    appsRepository.getAppByUrn.mockImplementation(async (urn: string) => (urn === 'ci-gone:ci-marketplace' ? undefined : { status: 'running' }));
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers.map((c) => c.appUrn)).toEqual(['ci-hermes:ci-marketplace']);
+  });
+
+  it('resolves the display name, falling back to the URN app-name half', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-openclaw:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    resolver.getAppName.mockImplementation(async (urn: string) => (urn === 'ci-hermes:ci-marketplace' ? 'Hermes' : undefined));
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers).toEqual([
+      { appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' },
+      { appUrn: 'ci-openclaw:ci-marketplace', name: 'ci-openclaw' },
+    ]);
+  });
+
+  it('skips a malformed connection row instead of throwing', async () => {
+    const { service, connections, resolver } = makeService();
+    connections.listConnected.mockResolvedValue([
+      { appUrn: 'no-separator-here', updatedAt: '2026-07-09T00:00:00.000Z' },
+      { appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' },
+    ]);
+    // Force the name fallback (extractAppUrn) so the malformed URN throws inside the loop.
+    resolver.getAppName.mockResolvedValue(undefined);
+
+    const consumers = await service.listConnectedConsumers();
+
+    expect(consumers).toEqual([{ appUrn: 'ci-hermes:ci-marketplace', name: 'ci-hermes' }]);
+  });
+
+  it('propagates a DB error on a real row instead of dropping the consumer (fails closed)', async () => {
+    const { service, connections, appsRepository } = makeService();
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', updatedAt: '2026-07-09T00:00:00.000Z' }]);
+    // A transient infra error on a genuinely-connected row must NOT be swallowed —
+    // otherwise the uninstall/reset guard would see 0 consumers and destroy the store.
+    appsRepository.getAppByUrn.mockRejectedValue(new Error('db pool exhausted'));
+
+    await expect(service.listConnectedConsumers()).rejects.toThrow('db pool exhausted');
   });
 });
