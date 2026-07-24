@@ -58,6 +58,10 @@ export class AppService implements OnApplicationShutdown {
   public async bootstrap() {
     try {
       this.logger.info('Starting bootstrap...');
+      // #933: wait for Postgres before touching it. `depends_on: service_healthy` only gates the
+      // FIRST stack start — a Hub container restarting alone (update, crash, OOM) races a DB that
+      // may itself be restarting or waiting on Docker DNS. Bounded wait, then fail loudly.
+      await this.databaseService.waitUntilReady();
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
 
