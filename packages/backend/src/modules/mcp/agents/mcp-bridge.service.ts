@@ -29,6 +29,14 @@ const INITIALIZE_PARAMS = {
   clientInfo: { name: 'ci-hub-mcp-bridge', version: '1.0.0' },
 } as const;
 
+/** A stdio server exited without emitting a single JSON-RPC line — it never got our input. */
+class StdioSilentExitError extends Error {
+  constructor(appUrn: string, code: number | null) {
+    super(`MCP stdio server for ${appUrn} exited (code ${code}) without emitting any response`);
+    this.name = 'StdioSilentExitError';
+  }
+}
+
 /** Parse a JSON-RPC response that may arrive as plain JSON or as an SSE `data:` frame. */
 async function parseJsonRpcHttpResponse(response: Response): Promise<Record<string, unknown>> {
   const text = await response.text();
@@ -101,6 +109,37 @@ export class McpBridgeService implements OnModuleDestroy {
         },
       },
     ];
+  }
+
+  /**
+   * Connect (if needed) and return the app's bridged tools (#936). This is the entry
+   * point `hub_list_app_tools` uses so callers see the real tool list instead of an
+   * empty array until something else happens to have connected.
+   */
+  async discoverTools(appUrn: AppUrn, agentConfig: ResolvedAgentConfig): Promise<BridgedToolInfo[]> {
+    if (!agentConfig.mcp.enabled || !agentConfig.mcp.config) {
+      return [];
+    }
+    const conn = this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
+    if (!conn.connected) {
+      await this.connectAndDiscover(appUrn, conn);
+    }
+    return this.listToolInfo(appUrn);
+  }
+
+  /**
+   * Call one bridged tool by its bare (unprefixed) name — the invocation side of
+   * `hub_call_app_tool` (#936). Accepts the prefixed form too, for callers pasting
+   * names straight out of `hub_list_app_tools`.
+   */
+  async callTool(appUrn: AppUrn, agentConfig: ResolvedAgentConfig, toolName: string, params: Record<string, unknown>): Promise<unknown> {
+    if (!agentConfig.mcp.enabled || !agentConfig.mcp.config) {
+      return { error: `App ${appUrn} has no MCP server configured`, isError: true };
+    }
+    this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
+    const prefix = `${appUrn.replace(':', '_')}__`;
+    const bareName = toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
+    return this.callBridgedTool(appUrn, bareName, params);
   }
 
   /**
@@ -256,6 +295,27 @@ export class McpBridgeService implements OnModuleDestroy {
     request: { method: string; params: Record<string, unknown> },
     timeoutMs: number,
   ): Promise<unknown> {
+    try {
+      return await this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
+    } catch (err) {
+      // `docker exec -i` can drop stdin that is written-and-closed before the exec
+      // stream is fully attached; the server then sees immediate EOF and exits 0
+      // having said nothing. That silence is the tell — the request was never
+      // received, so one retry is safe even for side-effecting calls.
+      if (err instanceof StdioSilentExitError) {
+        this.logger.warn(`MCP stdio server for ${appUrn} exited silently (early stdin close?) — retrying once`);
+        return this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
+      }
+      throw err;
+    }
+  }
+
+  private async stdioRequestOnce(
+    appUrn: AppUrn,
+    conn: McpConnection,
+    request: { method: string; params: Record<string, unknown> },
+    timeoutMs: number,
+  ): Promise<unknown> {
     const containerName = conn.config.container ?? this.defaultMainContainerName(appUrn);
     const command = conn.config.command ?? [];
     const requestId = 2;
@@ -286,11 +346,14 @@ export class McpBridgeService implements OnModuleDestroy {
         settle(() => reject(new Error(`MCP stdio timeout for ${appUrn} (${request.method})`)));
       }, timeoutMs);
 
+      let sawAnyResponse = false;
+
       const tryResolveResponse = () => {
         for (const line of stdout.split('\n')) {
           if (!line.trim()) continue;
           try {
             const parsed = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } };
+            sawAnyResponse = true;
             if (parsed.id === requestId) {
               proc.kill();
               if (parsed.error) {
@@ -317,7 +380,13 @@ export class McpBridgeService implements OnModuleDestroy {
 
       proc.on('close', (code) => {
         tryResolveResponse();
-        settle(() => reject(new Error(`MCP stdio server for ${appUrn} exited (code ${code}) without answering ${request.method}`)));
+        settle(() =>
+          reject(
+            sawAnyResponse
+              ? new Error(`MCP stdio server for ${appUrn} exited (code ${code}) without answering ${request.method}`)
+              : new StdioSilentExitError(appUrn, code),
+          ),
+        );
       });
 
       proc.on('error', (err) => settle(() => reject(err)));

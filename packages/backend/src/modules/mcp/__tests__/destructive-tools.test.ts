@@ -26,6 +26,9 @@ import { SystemTools } from '../tools/system.tools';
  */
 const EXPECTED_DESTRUCTIVE = [
   'hub_call_app_api',
+  // Bridged MCP tools are opaque to the Hub (#936) — a bridged call can mutate anything the
+  // remote server can (delete branches, overwrite files), so the proxy is always gated.
+  'hub_call_app_tool',
   'hub_delete_app_store',
   'hub_delete_backup',
   'hub_delete_link',
