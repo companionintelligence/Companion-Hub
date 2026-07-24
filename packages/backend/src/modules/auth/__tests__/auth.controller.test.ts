@@ -197,6 +197,25 @@ describe('AuthController', () => {
       expect(location.searchParams.get('redirect')).toBe('http://importer-org.ci.lan/');
     });
 
+    it('sends a tunnel visitor to the Hub login when the app has no public hostname to return to', async () => {
+      // Registered appliance, but the host map cannot name a public address for this host (a
+      // fresh install the map has not caught up with, a router created outside the app
+      // lifecycle). Falling through to the LAN shape would hand a remote browser a
+      // `.<localDomain>` origin it cannot resolve — a dead end with no way back.
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-org', slug: 'org' } as never);
+      config.getConfig.mockReturnValue({ domain: 'companionintelligence.com' } as never);
+      forwardAuthSecrets.resolvePublicHostForHost.mockResolvedValue(null);
+      const req = {
+        user: undefined,
+        headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': '/x', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'brand-new-org.ci.lan' },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.redirect).toHaveBeenCalledWith('https://hub-core-2-org.companionintelligence.com/login');
+    });
+
     it('refuses a request with no forwarded host instead of crashing', async () => {
       // The old code called host.split(...) on undefined — a 500 the visitor saw as a server
       // error. A forward-auth subrequest with no forwarded host has nothing to route back to.
@@ -338,6 +357,23 @@ describe('AuthController', () => {
       expect(res.status).toHaveBeenCalledWith(302);
       expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
       expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
+    it('strips a lingering ticket on the PUBLIC host when the request came through the tunnel', async () => {
+      // Reachable remotely whenever a ticket-bearing request finds the cookie already planted —
+      // e.g. a second tab entering the flow while the first tab's consume was in flight. Echoing
+      // the tunnel-rewritten `.ci.lan` host back would bounce the visitor to a name their browser
+      // cannot resolve.
+      const req = {
+        user: { id: 1, username: 'op' },
+        headers: { 'cf-ray': 'ray-LAX', 'x-forwarded-uri': '/home?cihub_sso=t-9', 'x-forwarded-proto': 'http', 'x-forwarded-host': LAN_HOST },
+      } as unknown as Request;
+      const res = consumeRes();
+
+      await authController.traefik(req, res);
+
+      expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9');
+      expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
     });
 
     it('does not treat an unrelated param that merely ends in the ticket name as a ticket', async () => {
@@ -521,6 +557,26 @@ describe('AuthController', () => {
       expect(location.pathname).toBe('/files');
       expect(location.searchParams.get('dir')).toBe('/data');
       expect(location.searchParams.get('cihub_sso')).toBe(String(ticketCall?.[0]).slice('edge_sso:'.length));
+    });
+
+    it('appends the ticket without re-encoding the app query', async () => {
+      // `searchParams.set` re-serializes the WHOLE query — `%20`→`+`, `~`→`%7E`, bare `flag`→`flag=`
+      // — the same corruption parseForwardedUri avoids, and it reaches the app whenever this hop's
+      // URL is the one the browser ends up on (an already-authenticated ticket, or a failed consume).
+      cache.get.mockReturnValue(undefined as never);
+      const req = {
+        user: { id: 1, username: 'op' },
+        cookies: { 'ci-hub-sid': 'sid-9' },
+        get: vi.fn().mockReturnValue(undefined),
+        headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'hub-core-2-org.companionintelligence.com' },
+      } as unknown as Request;
+      const res = ssoRes();
+
+      await authController.edgeSso(`https://${APP_HOST}/search?q=a%20b&s=~z&flag`, req, res);
+
+      const ticketCall = (cache.set as ReturnType<typeof vi.fn>).mock.calls.find(([key]) => String(key).startsWith('edge_sso:'));
+      const ticket = String(ticketCall?.[0]).slice('edge_sso:'.length);
+      expect((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(`https://${APP_HOST}/search?q=a%20b&s=~z&flag&cihub_sso=${ticket}`);
     });
 
     it('breaks the redirect loop for a cookie-refusing browser instead of minting forever', async () => {

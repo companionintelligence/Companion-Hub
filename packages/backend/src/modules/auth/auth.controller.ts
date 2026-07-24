@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
+import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -65,6 +66,8 @@ const EDGE_SSO_COUNTER_PREFIX = 'edge_sso_mints:';
 /** Mints allowed per (session, app host) per minute before the loop guard breaks the redirect
  *  cycle a cookie-refusing browser would otherwise ride forever. */
 const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
+/** Width of the loop-guard window, in seconds. Fixed, not sliding — see the mint counter below. */
+const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
 
 @Controller('auth')
 export class AuthController {
@@ -119,18 +122,34 @@ export class AuthController {
    */
   private async resolvePublicHub(): Promise<{ origin: string; orgSlug: string } | null> {
     const org = await this.deviceRegistration.getFirstDeviceRegistration();
-    const cfg = this.config.getConfig();
-    // Same precedence exposure-sync uses to PROVISION the Hub's tunnel hostname
-    // (`userSettings.domain || domain`, exposure-sync.service.ts). Reading only the env-derived
-    // `domain` here built an origin at a root the tunnel never published whenever an operator had
-    // set a custom domain — every hop that trusts this value then lands on an unresolvable host.
-    const domain = cfg.userSettings?.domain || cfg.domain;
+    // `buildHubPublicOrigin` owns the construction AND the unprovisioned-domain sentinel, so a
+    // change to what counts as "provisioned" cannot apply to memory-connect and not to here.
+    const origin = buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain: this.publicDomainRoot() });
 
-    if (!org?.hubSubdomain || !domain || domain === 'example.com') {
+    if (!origin) {
       return null;
     }
 
-    return { origin: `https://${org.hubSubdomain}.${domain}`, orgSlug: org.slug ?? '' };
+    return { origin, orgSlug: org?.slug ?? '' };
+  }
+
+  /**
+   * The root domain app/Hub hostnames are actually PUBLISHED under. Same precedence exposure-sync
+   * uses to provision the tunnel (`userSettings.domain || domain`, exposure-sync.service.ts) and
+   * the resolver uses to build its host map: an operator-set value wins until env regeneration
+   * folds it back into `DOMAIN`. Reading only the env-derived `domain` builds origins at a root
+   * the tunnel never published, and every hop that trusts such a value lands on an unresolvable
+   * host.
+   */
+  private publicDomainRoot(): string {
+    const cfg = this.config.getConfig();
+    return cfg.userSettings?.domain || cfg.domain;
+  }
+
+  /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
+  private localDomainRoot(): string {
+    const cfg = this.config.getConfig();
+    return cfg.userSettings?.localDomain || cfg.localDomain;
   }
 
   /**
@@ -160,7 +179,11 @@ export class AuthController {
       return false;
     }
 
-    const { domain, localDomain } = this.config.getConfig();
+    // Same precedence as the origins these hosts are published under (see publicDomainRoot):
+    // reading the env-only values rejected every sibling on an appliance whose operator had set a
+    // custom domain — i.e. exactly the hosts the edge-SSO allowlist accepts.
+    const domain = this.publicDomainRoot();
+    const localDomain = this.localDomainRoot();
     const host = url.hostname.toLowerCase();
     const slugLabel = `-${orgSlug.toLowerCase()}`;
 
@@ -792,11 +815,7 @@ export class AuthController {
       return null;
     }
     if (url.protocol === 'http:') {
-      const cfg = this.config.getConfig();
-      // `userSettings.localDomain || localDomain` — the precedence app hostnames are actually
-      // BUILT with (resolver host map, compose labels). Reading only the env-derived value
-      // rejected every http LAN target on an appliance whose operator had customized it.
-      const localDomain = cfg.userSettings?.localDomain || cfg.localDomain;
+      const localDomain = this.localDomainRoot();
       if (!localDomain || localDomain === 'example.com' || !url.hostname.endsWith(`.${localDomain.toLowerCase()}`)) {
         return null;
       }
@@ -830,7 +849,13 @@ export class AuthController {
       // strip it with one extra redirect so the URL never reaches the app's logs or address bar.
       if (forwardedHost && ticket) {
         this.cache.del(`${EDGE_SSO_CACHE_PREFIX}${ticket}`);
-        return res.status(302).redirect(`${browserProto}://${rawHost}${cleanUri}`);
+        // Strip it on the address the BROWSER is on, not the forwarded one: through the tunnel
+        // `rawHost` is the rewritten `<app>.<localDomain>` origin server name, which a remote
+        // browser cannot resolve. This branch is reachable remotely whenever a ticket-bearing
+        // request finds the cookie already planted — e.g. a second tab entering the flow while
+        // the first tab's consume was in flight — and echoing the LAN name dead-ends it.
+        const publicHost = viaTunnel ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
+        return res.status(302).redirect(`${browserProto}://${publicHost ?? rawHost}${cleanUri}`);
       }
 
       // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
@@ -898,14 +923,26 @@ export class AuthController {
           targetHost && targetHost !== forwardedHost ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
         const hostMatches = Boolean(targetHost) && (targetHost === forwardedHost || targetHost === publicForHost);
 
+        // Parsed defensively even though the mint validated it: a throw here would escape as a
+        // 500 the visitor sees as a server error, breaking the "every failure mode falls through
+        // to the login redirect" property this whole block rests on.
+        let ticketTarget: URL | null = null;
+        try {
+          ticketTarget = targetUrl ? new URL(targetUrl) : null;
+        } catch {
+          ticketTarget = null;
+        }
+
         // The session must still resolve — a ticket outliving its session plants nothing.
-        if (sessionId && targetUrl && hostMatches && this.sessionManager.resolveSessionUserId(sessionId)) {
-          const target = new URL(targetUrl);
+        if (sessionId && ticketTarget && hostMatches && this.sessionManager.resolveSessionUserId(sessionId)) {
           // Scope the cookie and the retry to the address the BROWSER is on (the minted target),
           // never to the forwarded host: through the tunnel the latter is a `.<localDomain>` name
           // the browser would reject the cookie for and could not resolve on retry.
-          await this.setSessionCookie(res, sessionId, req, { host: target.hostname, proto: target.protocol.replace(':', '') });
-          return res.status(302).redirect(target.toString());
+          await this.setSessionCookie(res, sessionId, req, {
+            host: ticketTarget.hostname,
+            proto: ticketTarget.protocol.replace(':', ''),
+          });
+          return res.status(302).redirect(ticketTarget.toString());
         }
       }
     }
@@ -927,6 +964,15 @@ export class AuthController {
     if (publicHub && publicAppHost) {
       hubOrigin = publicHub.origin;
       target = `https://${publicAppHost}${cleanUri}`;
+    } else if (publicHub) {
+      // Through the tunnel, but the forwarded host maps to no app we can name a public return
+      // address for (a host map that has not caught up with a fresh install, or a router created
+      // outside the app lifecycle). The LAN shape below would hand this remote browser a
+      // `.<localDomain>` origin it cannot resolve — a hard dead end with no way back. Send it to
+      // the Hub's public login instead: reachable, and retrying the original URL succeeds once
+      // the map catches up.
+      this.logger.warn(`[edge-sso] no public hostname for forwarded host ${forwardedHost}; sending the visitor to the Hub login`);
+      return res.status(302).redirect(new URL('/login', publicHub.origin).toString());
     } else {
       // rawHost, not the normalized key: a LAN visitor reaching Traefik on a nonstandard port
       // (the documented `:8443` tailnet path) must keep it in both the Hub origin and the return
@@ -1008,7 +1054,12 @@ export class AuthController {
             '</body></html>',
         );
     }
-    this.cache.set(counterKey, String(mints + 1), 60);
+    // Fixed window, not sliding: re-arming the full TTL on every mint keeps extending the window,
+    // so three sign-ins spaced under a minute apart eventually trip the cap on a browser that is
+    // accepting cookies perfectly well — and the 409 page is a dead end with no way forward.
+    const windowEndsAt = this.cache.getExpirationAt(counterKey);
+    const windowTtl = windowEndsAt ? Math.max(1, Math.ceil((windowEndsAt - Date.now()) / 1000)) : EDGE_SSO_MINT_WINDOW_SECONDS;
+    this.cache.set(counterKey, String(mints + 1), windowTtl);
 
     const ticket = crypto.randomUUID();
     // The ticket is the only value that travels in a URL; the session it resolves to stays
@@ -1019,7 +1070,13 @@ export class AuthController {
     const targetUrl = target.toString();
     this.cache.set(`${EDGE_SSO_CACHE_PREFIX}${ticket}`, JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl }), 60);
 
-    target.searchParams.set(EDGE_SSO_TICKET_PARAM, ticket);
+    // Appended as a raw query segment rather than via `searchParams.set`: that setter re-serializes
+    // the WHOLE query through URLSearchParams, which rewrites `%20`→`+`, `~`→`%7E` and a bare
+    // `flag` to `flag=` — the exact corruption `parseForwardedUri` goes out of its way to avoid,
+    // and it reaches the app whenever this hop's URL is the one the browser ends up on (a ticket
+    // that arrives already authenticated, or a consume that falls through to a fresh mint).
+    const ticketParam = `${EDGE_SSO_TICKET_PARAM}=${encodeURIComponent(ticket)}`;
+    target.search = target.search ? `${target.search}&${ticketParam}` : `?${ticketParam}`;
     return res.status(302).redirect(target.toString());
   }
 }

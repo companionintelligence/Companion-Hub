@@ -17,7 +17,7 @@ import { TotpForm } from '../components/totp-form/totp-form';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export async function clientLoader() {
+export async function clientLoader({ request }: { request: Request }) {
   try {
     const user = await userContext();
 
@@ -25,7 +25,11 @@ export async function clientLoader() {
       // Honor a safe redirect target instead of dropping it: a visitor who signed in from
       // another tab mid-flow (e.g. between an edge-SSO bounce and this page) should continue to
       // where they were headed, not be stranded on /home.
-      if (followSafeRedirect(new URLSearchParams(window.location.search).get('redirect_url'))) {
+      //
+      // Read from the loader's request, not `window.location`: on a client-side navigation the
+      // address bar still holds the PREVIOUS route while loaders run, so this would pick up that
+      // page's `redirect_url` (or miss this one entirely).
+      if (followSafeRedirect(new URL(request.url).searchParams.get('redirect_url'))) {
         return null;
       }
       return redirect('/home');
