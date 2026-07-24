@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
 
@@ -197,6 +198,8 @@ export default () => {
       </Card>
 
       <AppAccessPoints app={app} info={info} />
+
+      <McpAccessCard app={app} info={info} />
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs
