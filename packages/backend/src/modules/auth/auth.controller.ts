@@ -68,6 +68,9 @@ const EDGE_SSO_COUNTER_PREFIX = 'edge_sso_mints:';
 const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
 /** Width of the loop-guard window, in seconds. Fixed, not sliding — see the mint counter below. */
 const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
+/** Ticket lifetime, in seconds. The browser consumes it within one redirect hop, so this only has
+ *  to cover that round trip — a longer window just widens the replay surface. */
+const EDGE_SSO_TICKET_TTL_SECONDS = 60;
 
 @Controller('auth')
 export class AuthController {
@@ -92,9 +95,17 @@ export class AuthController {
    */
   private async setSessionCookie(res: Response, sessionId: string, req: Request, scope?: { host?: string; proto?: string }) {
     const host = scope?.host ?? (req.headers['x-forwarded-host'] as string | undefined);
-    const proto = scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined);
+    // First hop only: a repeated header reaches Node comma-joined, and `https, http` matches
+    // neither branch below, so an https request would silently be treated as plaintext.
+    const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
     const domain = this.authService.getCookieDomain(host);
-    const secure = Boolean(domain) && proto === 'https';
+    // Derived from the SCHEME alone. `getCookieDomain` returns undefined for any non-FQDN host —
+    // an IP, `localhost`, a single label — which is a statement about the cookie's Domain
+    // attribute (omit it, make the cookie host-only), not about its transport. Gating `secure` on
+    // it too meant an https request to such a host got a cookie with no `Secure` flag, which the
+    // browser then sends in cleartext to the same host over http: the session id on the wire. The
+    // documented `https://<ip>:8443` tailnet path is exactly that shape.
+    const secure = proto === 'https';
 
     this.logger.debug('Request headers', req.headers);
     this.logger.debug('Setting session cookie', { host, domain, proto, secure });
@@ -767,29 +778,62 @@ export class AuthController {
    * and the address bar, and a failed consume falling through to a fresh mint must not stack a
    * second ticket onto the URL.
    *
-   * When no ticket is present (effectively every request) the raw target is returned UNTOUCHED.
-   * Round-tripping it through URLSearchParams re-encodes params the Hub has no business
-   * rewriting — `?q=a%20b&s=~z&flag` comes back as `?q=a+b&s=%7Ez&flag=` — which corrupts
-   * signature-checked or strictly-parsed query strings on the way back to the app.
+   * Every OTHER query param survives BYTE-FOR-BYTE, ticket or no ticket. Round-tripping them
+   * through URLSearchParams re-encodes params the Hub has no business rewriting —
+   * `?q=a%20b&s=~z&flag` comes back as `?q=a+b&s=%7Ez&flag=` — which corrupts signature-checked or
+   * strictly-parsed query strings on the way back to the app, and the cleaned URI is precisely
+   * what the browser lands on once a ticket has been burned or has failed to consume.
    */
   private parseForwardedUri(uri: string): { ticket: string | null; cleanUri: string } {
-    if (!uri.includes(`${EDGE_SSO_TICKET_PARAM}=`)) {
+    const queryStart = uri.indexOf('?');
+    if (queryStart === -1 || !uri.includes(`${EDGE_SSO_TICKET_PARAM}=`)) {
       return { ticket: null, cleanUri: uri || '/' };
     }
-    try {
-      const url = new URL(uri, 'http://placeholder');
-      // Read the exact param, never the substring: `?xcihub_sso=1` contains the marker but is a
-      // DIFFERENT param, and treating it as a ticket "cleans" to an identical URL — an endless
-      // self-redirect.
-      const ticket = url.searchParams.get(EDGE_SSO_TICKET_PARAM);
-      if (ticket === null) {
-        return { ticket: null, cleanUri: uri };
+
+    // Split the query at the `&` boundaries and hand back every OTHER segment byte-for-byte.
+    // Routing the survivors through URLSearchParams (which is what `searchParams.delete` then
+    // re-serialising does) would rewrite them — `?q=a%20b&s=~z&flag` comes back as
+    // `?q=a+b&s=%7Ez&flag=` — and this cleaned URI is exactly what the browser lands on after a
+    // burned or failed ticket, so that corruption would reach the app.
+    const path = uri.slice(0, queryStart) || '/';
+    const segments = uri.slice(queryStart + 1).split('&');
+    const kept: string[] = [];
+    let ticket: string | null = null;
+
+    for (const segment of segments) {
+      const eq = segment.indexOf('=');
+      // Match the param NAME exactly, never the substring: `?xcihub_sso=1` contains the marker but
+      // is a DIFFERENT param, and treating it as a ticket "cleans" to an identical URL — an
+      // endless self-redirect.
+      if (ticket === null && eq !== -1 && segment.slice(0, eq) === EDGE_SSO_TICKET_PARAM) {
+        const raw = segment.slice(eq + 1);
+        try {
+          ticket = decodeURIComponent(raw);
+        } catch {
+          // Malformed percent-escapes cannot name a minted ticket; keep the raw value so the
+          // lookup below misses instead of throwing a 500 out of the forward-auth hop.
+          ticket = raw;
+        }
+        continue;
       }
-      url.searchParams.delete(EDGE_SSO_TICKET_PARAM);
-      return { ticket, cleanUri: `${url.pathname}${url.search}` };
-    } catch {
-      return { ticket: null, cleanUri: '/' };
+      kept.push(segment);
     }
+
+    if (ticket === null) {
+      return { ticket: null, cleanUri: uri };
+    }
+    return { ticket: ticket || null, cleanUri: kept.length ? `${path}?${kept.join('&')}` : path };
+  }
+
+  /**
+   * Whether the request reached us through the Cloudflare tunnel. Cloudflare stamps `cf-ray` at
+   * its edge, so its presence means the browser is on the public internet — the one signal that
+   * distinguishes a remote visitor from a LAN one, since cloudflared rewrites Host to the same
+   * origin server name for both. One definition, because `/traefik` and `/edge-sso` are two halves
+   * of the same exchange and must agree about which side of the tunnel the visitor is on.
+   */
+  private viaCloudflareTunnel(req: Request): boolean {
+    return Boolean(req.headers['cf-ray']);
   }
 
   /**
@@ -830,16 +874,11 @@ export class AuthController {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
     const rawHost = rawForwardedHost(req.headers['x-forwarded-host']);
     const uri = (req.headers['x-forwarded-uri'] as string | undefined) || '/';
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http';
-    // Cloudflare stamps `cf-ray` at its edge, so its presence means the request reached us
-    // through the tunnel — the one signal distinguishing a remote visitor from a LAN one, since
-    // cloudflared rewrites Host to the same origin server name for both.
-    const viaTunnel = Boolean(req.headers['cf-ray']);
-    // The scheme the BROWSER is on, as opposed to the hop Traefik saw: the tunnel connects to
-    // the plain-HTTP entrypoint, so the forwarded proto is 'http' for every remote visitor even
-    // though their page is https. Redirects the browser must follow have to use its own scheme —
-    // echoing the hop's would bounce a remote visitor to http://<public-host>.
-    const browserProto = viaTunnel ? 'https' : proto;
+    // First hop only, same as the forwarded host: a REPEATED header reaches Node as one
+    // comma-joined string, and `https, http` fed into `new URL()` below is not a scheme — it
+    // throws, and the visitor sees a 500 out of the forward-auth hop.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || 'http';
+    const viaTunnel = this.viaCloudflareTunnel(req);
     const { ticket, cleanUri } = this.parseForwardedUri(uri);
 
     if (req.user) {
@@ -847,15 +886,17 @@ export class AuthController {
       // domain cookie short-circuited the exchange). Burn it — leaving it live would keep a
       // session-planting credential replayable from any browser for the rest of its TTL — and
       // strip it with one extra redirect so the URL never reaches the app's logs or address bar.
-      if (forwardedHost && ticket) {
+      if (ticket) {
         this.cache.del(`${EDGE_SSO_CACHE_PREFIX}${ticket}`);
-        // Strip it on the address the BROWSER is on, not the forwarded one: through the tunnel
-        // `rawHost` is the rewritten `<app>.<localDomain>` origin server name, which a remote
-        // browser cannot resolve. This branch is reachable remotely whenever a ticket-bearing
-        // request finds the cookie already planted — e.g. a second tab entering the flow while
-        // the first tab's consume was in flight — and echoing the LAN name dead-ends it.
-        const publicHost = viaTunnel ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
-        return res.status(302).redirect(`${browserProto}://${publicHost ?? rawHost}${cleanUri}`);
+        // RELATIVE, deliberately: the browser resolves it against the address it is already on,
+        // which is the only address known to be reachable here. Naming a host instead means
+        // guessing which one the browser used — and through the tunnel every candidate we hold is
+        // wrong: `X-Forwarded-Host` is the rewritten `<app>.<localDomain>` origin server name,
+        // which does not resolve off the LAN, and the public name has to be looked up in a map
+        // that can miss (fresh install, router created outside the app lifecycle). A relative
+        // Location has no such failure mode and needs no lookup. Traefik returns this non-2xx
+        // response to the client verbatim, so the browser — not Traefik — does the resolving.
+        return res.status(302).redirect(cleanUri);
       }
 
       // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
@@ -864,7 +905,7 @@ export class AuthController {
       // the resolver maps X-Forwarded-Host to the destination app and signs with the
       // secret that app's env actually holds, so one app can never forge an identity
       // header a sibling accepts. Unknown hosts fall back to the Hub-global secret.
-      const resolved = await this.forwardAuthSecrets.resolveForHost(req.headers['x-forwarded-host']);
+      const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
       this.logger.debug('User authenticated for Traefik forward auth', {
         username: req.user.username,
         secretSource: resolved.source,
@@ -884,7 +925,10 @@ export class AuthController {
       return res.status(401).send();
     }
 
-    this.logger.debug('Unauthenticated Traefik forward auth request', { uri, proto, host: forwardedHost });
+    // `cleanUri`, never the raw one: the raw target carries `cihub_sso=<ticket>`, and a ticket is a
+    // session-planting credential. Writing it to the Hub's own log is the same leak the redirects
+    // below go out of their way to avoid in the app's log and the address bar.
+    this.logger.debug('Unauthenticated Traefik forward auth request', { uri: cleanUri, proto, host: forwardedHost });
 
     // Edge-SSO ticket consume (CI-Engineering#77). The Hub and an app on PUBLIC hostnames are
     // cookie-scope siblings, so a Hub login can never plant a cookie the app host sees. Instead
@@ -971,7 +1015,9 @@ export class AuthController {
       // `.<localDomain>` origin it cannot resolve — a hard dead end with no way back. Send it to
       // the Hub's public login instead: reachable, and retrying the original URL succeeds once
       // the map catches up.
-      this.logger.warn(`[edge-sso] no public hostname for forwarded host ${forwardedHost}; sending the visitor to the Hub login`);
+      // debug, not warn: this endpoint is unauthenticated, so a per-request log write is a flood
+      // amplifier — the same reason the ticket-miss path below does not write on every miss.
+      this.logger.debug(`[edge-sso] no public hostname for forwarded host ${forwardedHost}; sending the visitor to the Hub login`);
       return res.status(302).redirect(new URL('/login', publicHub.origin).toString());
     } else {
       // rawHost, not the normalized key: a LAN visitor reaching Traefik on a nonstandard port
@@ -985,6 +1031,19 @@ export class AuthController {
       }
       hubOrigin = `${proto}://${rootDomain}`;
       target = `${proto}://${rawHost}${cleanUri}`;
+
+      // The edge-SSO hop only accepts a target the resolver's host map vouches for, and answers
+      // anything else with a JSON 400 a browser cannot act on. A forward-auth host the map does
+      // not know — a router created outside the app lifecycle, or an app installed since the last
+      // rebuild (30s TTL) — must therefore keep the historical direct login redirect, which needs
+      // no allowlist. Nothing is lost: on the LAN the Hub cookie is domain-scoped across the whole
+      // root, so the ticket exchange was a no-op here anyway.
+      if (!(await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost))) {
+        const loginUrl = new URL('/login', hubOrigin);
+        loginUrl.searchParams.set('redirect_url', target);
+        loginUrl.searchParams.set('app', rawHost.split('.')[0] ?? '');
+        return res.status(302).redirect(loginUrl.toString());
+      }
     }
 
     const ssoUrl = new URL('/api/auth/edge-sso', hubOrigin);
@@ -1029,7 +1088,7 @@ export class AuthController {
       // browser is on `https`. An http self-URL survives the round trip only to be rejected as
       // cross-origin by the login page's redirect check, silently stranding the visitor on /home.
       const requestOrigin = resolveRequestOriginFallback(req);
-      const origin = req.headers['cf-ray'] ? requestOrigin.replace(/^http:/, 'https:') : requestOrigin;
+      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/, 'https:') : requestOrigin;
       const selfUrl = new URL('/api/auth/edge-sso', origin);
       selfUrl.searchParams.set('redirect', target.toString());
       const loginUrl = new URL('/login', origin);
@@ -1068,7 +1127,11 @@ export class AuthController {
     // port included — instead of trying to reconstruct it from the tunnel-rewritten forwarded
     // host, which names the same app but is unreachable from outside the LAN.
     const targetUrl = target.toString();
-    this.cache.set(`${EDGE_SSO_CACHE_PREFIX}${ticket}`, JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl }), 60);
+    this.cache.set(
+      `${EDGE_SSO_CACHE_PREFIX}${ticket}`,
+      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl }),
+      EDGE_SSO_TICKET_TTL_SECONDS,
+    );
 
     // Appended as a raw query segment rather than via `searchParams.set`: that setter re-serializes
     // the WHOLE query through URLSearchParams, which rewrites `%20`→`+`, `~`→`%7E` and a bare
