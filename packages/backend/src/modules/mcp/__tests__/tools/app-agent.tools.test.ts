@@ -129,12 +129,28 @@ describe('AppAgentTools', () => {
       openapiBridge.listToolInfo.mockResolvedValue([
         { name: 'ci-store_test__listUsers', description: 'List users', source: 'openapi', method: 'get', path: '/api/users' },
       ]);
-      mcpBridge.listToolInfo.mockReturnValue([{ name: 'ci-store_test__custom_tool', description: 'Custom tool', source: 'mcp' }]);
+      mcpBridge.discoverTools.mockResolvedValue([{ name: 'ci-store_test__custom_tool', description: 'Custom tool', source: 'mcp' }]);
 
       const result = await tools.listAppTools({ appUrn: 'ci-store:test' });
       expect(result.tools).toHaveLength(2);
       expect(result.tools[0]?.source).toBe('openapi');
       expect(result.tools[1]?.source).toBe('mcp');
+    });
+
+    it('falls back to cached tool info when discovery fails', async () => {
+      appsService.getApp.mockResolvedValue({ info: { urn: 'ci-store:test' } } as any);
+      agentConfigService.getAgentConfig.mockResolvedValue({
+        skill: { enabled: false, content: null, inline: false },
+        openapi: { enabled: false, specPath: null, config: null },
+        mcp: { enabled: true, config: {} },
+      } as any);
+
+      openapiBridge.listToolInfo.mockResolvedValue([]);
+      mcpBridge.discoverTools.mockRejectedValue(new Error('app not running'));
+      mcpBridge.listToolInfo.mockReturnValue([{ name: 'ci-store_test__cached', description: 'Cached', source: 'mcp' }]);
+
+      const result = await tools.listAppTools({ appUrn: 'ci-store:test' });
+      expect(result.tools).toEqual([{ name: 'ci-store_test__cached', description: 'Cached', source: 'mcp' }]);
     });
 
     it('should return empty when no agent config', async () => {

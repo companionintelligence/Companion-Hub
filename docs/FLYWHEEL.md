@@ -1,5 +1,13 @@
 # App Explorer Test — Handoff Guide
 
+> **Purpose:** Marketplace QA flywheel — explore, diagnose, fix ci-marketplace apps via automated PRs.
+> **Scope:** `e2e/app-explorer.spec.ts`, `agent/`, fleet QA — **not** general Hub feature development.
+> **Key paths:** `agent/fix-agent.ts`, `e2e/app-explorer.spec.ts`, `.claude/skills/run-fleet-qa/`
+> **Commands:** `agent/scripts/run-explorer.sh`, fleet QA skill
+> **Owner persona:** domain (marketplace/apps) — see docs/agent/REVIEW_PERSONAS.md
+> **Last updated:** 2026-07-12
+> **Related:** docs/system/agent-qa.md, docs/agent/AGENT_WORKFLOW.md (general work)
+
 > **Who this is for:** Any agent or engineer picking this up on a new machine to run the App Explorer Test, triage failures, and submit fixes to ci-marketplace via automated PRs.
 
 ---

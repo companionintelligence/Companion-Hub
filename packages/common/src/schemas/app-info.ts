@@ -203,6 +203,56 @@ export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_inte
  */
 export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>['memory']>['url_style']>;
 
+/**
+ * Marketplace MCP listing block (#936). CI-Marketplace ships MCP server apps with a
+ * top-level `mcp` object in config.json describing transport, launch command, required
+ * env, and a manifest of the tools the server exposes. The Hub ingests this block so
+ * installed MCP servers are visible to the agent bridge (`McpBridgeService`) and the
+ * app page can render an access card — without requiring stores to duplicate the
+ * information into the Hub-native `agents.mcp` shape.
+ *
+ * Loose objects throughout: the marketplace owns this contract and extends it over
+ * time (tags, requires, manifest extras); unknown fields must never fail an install.
+ */
+export const MCP_TRANSPORTS = ['stdio', 'http'] as const;
+export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
+export const mcpEnvVarSchema = z.looseObject({
+  key: z.string(),
+  label: z.string().optional(),
+  hint: z.string().optional(),
+  required: z.boolean().optional().default(false),
+  secret: z.boolean().optional().default(false),
+});
+
+export const mcpManifestSchema = z.looseObject({
+  tools: z
+    .array(z.looseObject({ name: z.string(), description: z.string().optional().default('') }))
+    .optional()
+    .default([]),
+  resources: z.array(z.unknown()).optional().default([]),
+  prompts: z.array(z.unknown()).optional().default([]),
+});
+
+export const marketplaceMcpSchema = z.looseObject({
+  transport: z.enum(MCP_TRANSPORTS),
+  /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */
+  command: z.string().optional().default(''),
+  args: z.array(z.string()).optional().default([]),
+  /** Endpoint for http-transport servers, when the listing pins one. */
+  url: z.string().optional(),
+  env: z.array(mcpEnvVarSchema).optional().default([]),
+  requires: z
+    .looseObject({
+      host_software: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+    })
+    .optional(),
+  tags: z.array(z.string()).optional().default([]),
+  manifest: mcpManifestSchema.optional(),
+});
+export type MarketplaceMcp = z.output<typeof marketplaceMcpSchema>;
+
 export const APP_CATEGORIES = [
   'network',
   'media',
@@ -219,6 +269,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'mcp',
   'companion-intelligence',
 ] as const;
 export type AppCategory = (typeof APP_CATEGORIES)[number];
@@ -312,6 +363,8 @@ export const appInfoObjectSchema = z.object({
   /** Host port the workload listens on when `kind` is `port-expose`. */
   upstreamPort: z.number().min(1).max(65535).optional(),
   agents: agentConfigSchema,
+  /** Marketplace MCP server listing block — see marketplaceMcpSchema (#936). */
+  mcp: marketplaceMcpSchema.optional(),
   hub_integration: hubIntegrationSchema,
 });
 

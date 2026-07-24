@@ -20,8 +20,23 @@ import {
   frontmatterSchema,
   hubIntegrationSchema,
   manifestDefaultsEdgeAuthOn,
+  MCP_TRANSPORTS,
+  marketplaceMcpSchema,
+  mcpEnvVarSchema,
+  mcpManifestSchema,
 } from './app-info.js';
-import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, MemoryUrlStyle, RandomEncoding } from './app-info.js';
+import type {
+  AppCategory,
+  AppInfo,
+  AppInfoInput,
+  FieldType,
+  FormField,
+  HubIntegration,
+  MarketplaceMcp,
+  McpTransport,
+  MemoryUrlStyle,
+  RandomEncoding,
+} from './app-info.js';
 import { isPortExposeApp, PORT_EXPOSE_KIND } from './port-expose.js';
 
 import {
@@ -72,6 +87,12 @@ export {
   agentSkillConfigSchema,
   hubIntegrationSchema,
   manifestDefaultsEdgeAuthOn,
+  MCP_TRANSPORTS,
+  marketplaceMcpSchema,
+  mcpEnvVarSchema,
+  mcpManifestSchema,
+  type MarketplaceMcp,
+  type McpTransport,
   sseSchema,
   frontmatterSchema,
   isPortExposeApp,
