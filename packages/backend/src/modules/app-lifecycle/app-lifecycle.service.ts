@@ -1403,7 +1403,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
-    const { exposed, domain, exposedLocal, enableAuth, port } = parsedForm;
+    // Snapshot of what the REQUEST asked for, used by the validation below. Everything written to
+    // the row further down must read `parsedForm` instead: the production-exposed guard, the
+    // non-exposable reset and the edge-auth defaulting all mutate it after this point.
+    const { exposed, domain, port } = parsedForm;
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();
@@ -1525,12 +1528,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const changed = await this.appRepository.updateAppById(app.id, {
-      exposed: exposed ?? false,
+      // `parsedForm`, not the request snapshot: the row must record what was actually applied.
+      // Reading the snapshot here wrote `exposed: true` (and kept the domain) for a request the
+      // production guard or the non-exposable reset had just disabled — disagreeing with the
+      // `config` blob stored in this same call, which does carry the corrected form.
+      exposed: parsedForm.exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
       exposureMode: parsedForm.exposureMode ?? 'local',
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
-      domain: domain ?? null,
+      domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
       config: parsedForm,

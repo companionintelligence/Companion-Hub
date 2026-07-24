@@ -909,6 +909,18 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
 
+    it('persists the RESET exposure state, not what the request asked for', async () => {
+      // The row has to agree with the `config` blob written in the same call. Reading the request
+      // snapshot recorded exposed=true and kept the domain for an app the non-exposable reset had
+      // just cleared, so the columns claimed a public exposure the app never got.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposed: false, domain: null }));
+    });
+
     it('stays silent when a non-exposable app has nothing to reset', async () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
