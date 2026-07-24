@@ -73,6 +73,10 @@ interface CacheEntry {
 @Injectable()
 export class ForwardAuthSecretResolver {
   private hostToUrn = new Map<string, AppUrn>();
+  /** The reverse direction for the SSO redirect: which PUBLIC hostname serves each app. Built in
+   *  the same rebuild pass as hostToUrn — the tunnel-rewritten host identifies the target app, and
+   *  this map answers "what URL should a remote browser be sent back to for it" (#77). */
+  private urnToPublicHost = new Map<AppUrn, string>();
   private hostMapExpiresAt = 0;
   /** The in-flight rebuild, if one is running — concurrent callers await it instead of each
    *  launching their own (single-flight; avoids a thundering herd of repo reads at every TTL). */
@@ -107,6 +111,7 @@ export class ForwardAuthSecretResolver {
   /** Register every hostname an installed app's router could present. */
   private async rebuildHostMap(): Promise<void> {
     const map = new Map<string, AppUrn>();
+    const publicHosts = new Map<AppUrn, string>();
     const [apps, org] = await Promise.all([this.appsRepository.getApps(), this.deviceRegistration.getFirstDeviceRegistration()]);
     // Same precedence as the compose build (app-lifecycle command.ts): operator settings win.
     const cfg = this.config.getConfig();
@@ -134,18 +139,21 @@ export class ForwardAuthSecretResolver {
             localDomain,
           }),
         );
-        register(
-          buildPublicWebIdentity({
-            appSubdomain,
-            publicDomainRoot: resolvePublicDomainRoot({
-              selectedPublicDomain: app.publicDomain ?? undefined,
-              envDomain: undefined,
-              configDomain: domain,
-            }),
-            hubSubdomain: org?.hubSubdomain,
-            orgSlug: org?.slug,
-          }).hostname,
-        );
+        const publicHostname = buildPublicWebIdentity({
+          appSubdomain,
+          publicDomainRoot: resolvePublicDomainRoot({
+            selectedPublicDomain: app.publicDomain ?? undefined,
+            envDomain: undefined,
+            configDomain: domain,
+          }),
+          hubSubdomain: org?.hubSubdomain,
+          orgSlug: org?.slug,
+        }).hostname;
+        register(publicHostname);
+        const normalizedPublic = (publicHostname ?? '').trim().toLowerCase();
+        if (normalizedPublic) {
+          publicHosts.set(appUrn, normalizedPublic);
+        }
         register(app.domain); // operator-entered custom domain
       } catch (err) {
         // One malformed app row must never take forward-auth down for the rest.
@@ -154,9 +162,45 @@ export class ForwardAuthSecretResolver {
     }
 
     this.hostToUrn = map;
+    this.urnToPublicHost = publicHosts;
     this.hostMapExpiresAt = Date.now() + CACHE_TTL_MS;
     this.warnedUrns.clear();
     this.logger.debug(`[ForwardAuthSecretResolver] host map rebuilt (${map.size} hostnames)`);
+  }
+
+  /**
+   * The PUBLIC hostname of the app a forward-auth subrequest targets, or null when the forwarded
+   * host matches no installed app (or the app has no public identity). Used by the edge-SSO
+   * redirect (#77): the tunnel rewrites every visitor's Host to the origin server name, so the
+   * forwarded host can identify the app but must never be echoed back to a REMOTE browser — this
+   * is the address that browser can actually reach. Never throws; shares the host map's TTL,
+   * single-flight rebuild and error backoff.
+   */
+  async resolvePublicHostForHost(forwardedHost: string | string[] | undefined): Promise<string | null> {
+    const appUrn = await this.resolveAppUrnForHost(forwardedHost);
+    if (!appUrn) {
+      return null;
+    }
+    return this.urnToPublicHost.get(appUrn) ?? null;
+  }
+
+  /**
+   * The installed app a hostname belongs to, or null. Doubles as the edge-SSO redirect-target
+   * allowlist: a mint request may only point back at a hostname this map vouches for, which is
+   * exactly "a router hostname of an app installed on THIS appliance" — an exact membership check
+   * rather than a label-pattern heuristic. Never throws.
+   */
+  async resolveAppUrnForHost(forwardedHost: string | string[] | undefined): Promise<AppUrn | null> {
+    const host = this.normalizeHost(forwardedHost);
+    if (!host) {
+      return null;
+    }
+    try {
+      await this.ensureHostMapFresh();
+    } catch {
+      // ensureHostMapFresh swallows rebuild errors itself; this is pure belt-and-suspenders.
+    }
+    return this.hostToUrn.get(host) ?? null;
   }
 
   /**

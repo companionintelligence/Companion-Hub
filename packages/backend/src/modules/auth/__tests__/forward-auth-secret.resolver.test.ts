@@ -205,4 +205,31 @@ describe('ForwardAuthSecretResolver', () => {
     // The second call must not re-issue the failing read — the short backoff suppresses it.
     expect(appsRepository.getApps).toHaveBeenCalledTimes(1);
   });
+
+  // Edge-SSO lookups (CI-Engineering#77): the redirect must translate the tunnel-rewritten
+  // `.ci.lan` host into the app's PUBLIC hostname — the only name a remote browser can reach —
+  // and the mint endpoint uses host-map membership as its redirect-target allowlist.
+  describe('edge-SSO host lookups', () => {
+    it('maps the rewritten LAN origin host to the app public hostname', async () => {
+      await expect(resolver.resolvePublicHostForHost('importer-ci-marketplace-dev-org.ci.lan')).resolves.toBe(
+        'importer-ci-marketplace-dev-org.example.com',
+      );
+    });
+
+    it('normalizes case and port before the lookup', async () => {
+      await expect(resolver.resolvePublicHostForHost('Importer-CI-Marketplace-dev-org.CI.LAN:8443')).resolves.toBe(
+        'importer-ci-marketplace-dev-org.example.com',
+      );
+    });
+
+    it('returns null for a host no installed app claims, and for a missing host', async () => {
+      await expect(resolver.resolvePublicHostForHost('unknown.example.com')).resolves.toBeNull();
+      await expect(resolver.resolvePublicHostForHost(undefined)).resolves.toBeNull();
+    });
+
+    it('vouches for known app hosts and rejects strangers (the mint allowlist)', async () => {
+      await expect(resolver.resolveAppUrnForHost('importer-ci-marketplace-dev-org.example.com')).resolves.toBe('importer:ci-marketplace');
+      await expect(resolver.resolveAppUrnForHost('evil.attacker.example')).resolves.toBeNull();
+    });
+  });
 });

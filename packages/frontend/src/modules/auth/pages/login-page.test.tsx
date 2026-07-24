@@ -77,6 +77,34 @@ vi.mock('../components/totp-form/totp-form', () => ({
   TotpForm: () => <div data-testid="totp-form" />,
 }));
 
+describe('isSafeRedirect', () => {
+  // jsdom's test origin is http://localhost:3000.
+  it('allows a relative path but rejects a protocol-relative one', async () => {
+    const { isSafeRedirect } = await import('./login-page');
+    expect(isSafeRedirect('/home')).toBe(true);
+    expect(isSafeRedirect('/api/auth/edge-sso?redirect=x')).toBe(true);
+    // `//evil.com` is protocol-relative — the browser would leave the origin.
+    expect(isSafeRedirect('//evil.com/phish')).toBe(false);
+  });
+
+  it('allows a same-origin absolute URL (the edge-SSO return address)', async () => {
+    const { isSafeRedirect } = await import('./login-page');
+    expect(isSafeRedirect(`${window.location.origin}/api/auth/edge-sso?redirect=https%3A%2F%2Fapp`)).toBe(true);
+  });
+
+  it('keeps the historical LAN shape: subdomains of the current host', async () => {
+    const { isSafeRedirect } = await import('./login-page');
+    expect(isSafeRedirect(`http://app.${window.location.host}/dashboard`)).toBe(true);
+  });
+
+  it('rejects foreign origins and unparsable values instead of throwing', async () => {
+    const { isSafeRedirect } = await import('./login-page');
+    expect(isSafeRedirect('https://evil.example.com/')).toBe(false);
+    // The old implementation THREW on non-absolute input, taking the login page down.
+    expect(isSafeRedirect('not a url')).toBe(false);
+  });
+});
+
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();

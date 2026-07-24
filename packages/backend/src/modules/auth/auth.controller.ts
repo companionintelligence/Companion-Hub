@@ -57,6 +57,14 @@ import {
   toDesktopRedirectPath,
 } from './portal-sso';
 
+/** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
+const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
+const EDGE_SSO_CACHE_PREFIX = 'edge_sso:';
+const EDGE_SSO_COUNTER_PREFIX = 'edge_sso_mints:';
+/** Mints allowed per (session, app host) per minute before the loop guard breaks the redirect
+ *  cycle a cookie-refusing browser would otherwise ride forever. */
+const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -717,9 +725,78 @@ export class AuthController {
     );
   }
 
+  /** Lowercase, port-stripped view of a forwarded host — the same normalization the secret
+   *  resolver applies, so ticket host-binding and host-map lookups agree on the key. */
+  private normalizeForwardedHost(value: string | string[] | undefined): string {
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (typeof raw !== 'string') {
+      return '';
+    }
+    return raw.trim().toLowerCase().replace(/:\d+$/, '');
+  }
+
+  /**
+   * The forwarded request's URL with any `cihub_sso` ticket removed. The ticket must never
+   * survive past its consume hop: it would linger in the app's logs and the address bar, and a
+   * failed consume falling through to a fresh mint must not stack a second ticket onto the URL.
+   */
+  private cleanForwardedUri(uri: string | undefined): string {
+    try {
+      const url = new URL(uri || '/', 'http://placeholder');
+      url.searchParams.delete(EDGE_SSO_TICKET_PARAM);
+      return `${url.pathname}${url.search}${url.hash}`;
+    } catch {
+      return '/';
+    }
+  }
+
+  /**
+   * Validate an edge-SSO redirect target: a well-formed http(s) URL whose hostname the secret
+   * resolver's host map vouches for — an exact allowlist of "router hostnames of apps installed
+   * on THIS appliance", which is a strictly tighter check than the `-<orgSlug>` label heuristic
+   * the desktop handoff uses (and, unlike it, also works on unregistered LAN-only appliances
+   * whose app hosts carry no org slug). Plain http is allowed only under the appliance's OWN
+   * localDomain: LAN visitors legitimately arrive over http, but a public sibling must never be
+   * handed a downgraded scheme.
+   */
+  private async validateEdgeSsoTarget(redirect: string | undefined): Promise<URL | null> {
+    if (!redirect) {
+      return null;
+    }
+    let url: URL;
+    try {
+      url = new URL(redirect);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return null;
+    }
+    if (url.protocol === 'http:') {
+      const { localDomain } = this.config.getConfig();
+      const host = url.hostname.toLowerCase();
+      if (!localDomain || localDomain === 'example.com' || !host.endsWith(`.${localDomain.toLowerCase()}`)) {
+        return null;
+      }
+    }
+    const appUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(url.hostname);
+    return appUrn ? url : null;
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
+    const forwardedHost = this.normalizeForwardedHost(req.headers['x-forwarded-host']);
+    const uri = (req.headers['x-forwarded-uri'] as string | undefined) || '/';
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http';
+
     if (req.user) {
+      // A ticket that reaches an already-authenticated request was never consumed (the LAN
+      // domain cookie short-circuited the exchange). Strip it with one extra redirect so the
+      // credential-bearing URL never reaches the app's logs or stays in the address bar.
+      if (forwardedHost && uri.includes(`${EDGE_SSO_TICKET_PARAM}=`)) {
+        return res.status(302).redirect(`${proto}://${req.headers['x-forwarded-host']}${this.cleanForwardedUri(uri)}`);
+      }
+
       // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
       // verify it was issued by the Hub and not forged by another container on
       // ci_os_hub_network. The signing secret is PER TARGET APP (CI-Engineering#74):
@@ -740,24 +817,149 @@ export class AuthController {
       return res.status(200).send();
     }
 
-    const uri = req.headers['x-forwarded-uri'] as string;
-    const proto = req.headers['x-forwarded-proto'] as string;
-    const host = req.headers['x-forwarded-host'] as string;
+    // Without a forwarded host there is nothing to route back to — refuse plainly instead of
+    // crashing into a 500 (which Traefik would surface to the visitor as a server error).
+    if (!forwardedHost) {
+      return res.status(401).send();
+    }
 
-    this.logger.debug('Unauthenticated Traefik forward auth request', { uri, proto, host });
+    this.logger.debug('Unauthenticated Traefik forward auth request', { uri, proto, host: forwardedHost });
 
-    const subdomains = host.split('.');
-    const app = subdomains[0] ?? '';
-    const rootDomain = subdomains.slice(1).join('.');
+    // Edge-SSO ticket consume (CI-Engineering#77). The Hub and an app on PUBLIC hostnames are
+    // cookie-scope siblings, so a Hub login can never plant a cookie the app host sees. Instead
+    // /edge-sso redirects back here carrying a single-use ticket, and — because Traefik returns a
+    // forward-auth non-2xx response to the browser verbatim, Set-Cookie included — this exchange
+    // plants the session cookie scoped to the APP host, then retries the clean URL, which now
+    // authenticates. Every failure mode falls through to the login redirect below (which mints a
+    // fresh ticket): the flow can loop back to login, but never dead-ends.
+    const ticket = this.extractEdgeSsoTicket(uri);
+    if (ticket) {
+      const cacheKey = `${EDGE_SSO_CACHE_PREFIX}${ticket}`;
+      const cached = this.cache.get(cacheKey);
+      // A miss is left undeleted deliberately — this endpoint is unauthenticated, and deleting on
+      // every bogus ticket would let a flood force a synchronous store write per request (same
+      // hardening as the browser-handoff consume).
+      if (cached) {
+        this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+        let sessionId = '';
+        let targetHost = '';
+        try {
+          ({ sessionId, targetHost } = JSON.parse(cached) as { sessionId: string; targetHost: string });
+        } catch {
+          // fall through to the login redirect
+        }
+        // Host binding: a ticket minted for one app must not plant a cookie on a sibling. The
+        // session must still resolve — a ticket outliving its session plants nothing.
+        if (sessionId && targetHost === forwardedHost && this.sessionManager.resolveSessionUserId(sessionId)) {
+          await this.setSessionCookie(res, sessionId, req);
+          return res.status(302).redirect(`${proto}://${req.headers['x-forwarded-host']}${this.cleanForwardedUri(uri)}`);
+        }
+      }
+    }
 
-    const redirectUrl = new URL(uri, `${proto}://${host}`);
+    // Where to send the visitor to log in. The tunnel rewrites every visitor's Host to the origin
+    // server name (`<app>.<localDomain>`), so the forwarded host identifies the TARGET APP but
+    // says nothing about the caller — `cf-ray` does: Cloudflare stamps it at the edge, so its
+    // presence means the browser is on the public internet and must be sent to the Hub's PUBLIC
+    // origin with the app's PUBLIC hostname as the return address (the `.ci.lan` names it arrived
+    // under only resolve on the LAN). A LAN client spoofing `cf-ray` merely picks the public login
+    // origin for itself — harmless. Without `cf-ray` (or before registration provides a public
+    // origin) this preserves the historical LAN shape: the Hub is assumed to sit at the root of
+    // the app's domain, and the `.ci.lan`-scoped session cookie makes the ticket exchange a no-op.
+    const cleanUri = this.cleanForwardedUri(uri);
+    const viaTunnel = Boolean(req.headers['cf-ray']);
+    const publicHub = viaTunnel ? await this.resolvePublicHub() : null;
+    const publicAppHost = publicHub ? await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost) : null;
 
-    const loginUrl = new URL('/login', `${proto}://${rootDomain}`);
-    loginUrl.searchParams.set('redirect_url', redirectUrl.toString());
-    loginUrl.searchParams.set('app', app);
+    let hubOrigin: string;
+    let target: string;
+    if (publicHub && publicAppHost) {
+      hubOrigin = publicHub.origin;
+      target = `https://${publicAppHost}${cleanUri}`;
+    } else {
+      const rootDomain = forwardedHost.split('.').slice(1).join('.');
+      hubOrigin = `${proto}://${rootDomain}`;
+      target = `${proto}://${forwardedHost}${cleanUri}`;
+    }
 
-    this.logger.debug('Redirecting to login', { loginUrl: loginUrl.toString(), redirectUrl: redirectUrl.toString(), app });
+    const ssoUrl = new URL('/api/auth/edge-sso', hubOrigin);
+    ssoUrl.searchParams.set('redirect', target);
 
-    return res.status(302).redirect(loginUrl.toString());
+    this.logger.debug('Redirecting to edge SSO', { ssoUrl: ssoUrl.toString(), target, viaTunnel });
+
+    return res.status(302).redirect(ssoUrl.toString());
+  }
+
+  private extractEdgeSsoTicket(uri: string): string | null {
+    try {
+      const url = new URL(uri, 'http://placeholder');
+      return url.searchParams.get(EDGE_SSO_TICKET_PARAM);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Edge-SSO mint (CI-Engineering#77) — the Hub-origin half of the exchange consumed in
+   * `/traefik` above. Reached by the redirect there; sends the visitor through the normal Hub
+   * login when unauthenticated (`redirect_url` loops back HERE, which requires the login page to
+   * accept a same-origin absolute URL), and once a session exists mints a single-use, 60s ticket
+   * bound to the target app's hostname and bounces the browser back to the app carrying it.
+   *
+   * No AuthGuard: this must answer a browser navigation with redirects, never a 401 JSON body.
+   *
+   * Login-CSRF note: unlike the browser-handoff consume, this exchange sits mid-redirect-chain,
+   * where Sec-Fetch-Site reflects the chain's INITIATOR — gating on it would loop every
+   * legitimate cross-site entry (a link to the app from mail or a portal). The mitigations are
+   * the ticket's host binding, single-use burn, 60s TTL, and that minting requires an
+   * authenticated session on this appliance. The residual — an authenticated operator luring
+   * someone into their own session — is the standard IdP-initiated-SSO trade-off.
+   */
+  @Get('/edge-sso')
+  async edgeSso(@Query('redirect') redirect: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const target = await this.validateEdgeSsoTarget(redirect);
+    if (!target) {
+      throw new BadRequestException('Unsupported edge SSO target');
+    }
+    const appLabel = target.hostname.split('.')[0] ?? '';
+
+    const sessionId = req.user ? req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session') : undefined;
+    if (!sessionId) {
+      // Not logged in on this origin (or Bearer-authed, which has no session to hand off): run
+      // the normal login flow and come back here. The redirect_url must be ABSOLUTE — the portal
+      // OIDC callback validates it as same-origin-absolute, and the login page accepts it.
+      const selfUrl = new URL('/api/auth/edge-sso', resolveRequestOriginFallback(req));
+      selfUrl.searchParams.set('redirect', target.toString());
+      const loginUrl = new URL('/login', resolveRequestOriginFallback(req));
+      loginUrl.searchParams.set('redirect_url', selfUrl.toString());
+      loginUrl.searchParams.set('app', appLabel);
+      return res.status(302).redirect(loginUrl.toString());
+    }
+
+    // Loop guard: a browser that refuses the planted cookie would bounce app → here → app
+    // forever, each pass minting a fresh ticket. Cap the mint rate per (session, app host) and
+    // break the loop with an explanation instead of a redirect.
+    const counterKey = `${EDGE_SSO_COUNTER_PREFIX}${sessionId}:${target.hostname.toLowerCase()}`;
+    const mints = Number.parseInt(this.cache.get(counterKey) ?? '0', 10) || 0;
+    if (mints >= EDGE_SSO_MAX_MINTS_PER_MINUTE) {
+      return res
+        .status(409)
+        .type('html')
+        .send(
+          '<!doctype html><html><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
+            '<h1>Cookies required</h1><p>Signing in to this app requires cookies, and your browser ' +
+            'does not appear to be accepting them. Enable cookies for this site and try again.</p>' +
+            '</body></html>',
+        );
+    }
+    this.cache.set(counterKey, String(mints + 1), 60);
+
+    const ticket = crypto.randomUUID();
+    // The ticket is the only value that travels in a URL; the session it resolves to stays
+    // server-side, bound to the one hostname the consume side will accept it for.
+    this.cache.set(`${EDGE_SSO_CACHE_PREFIX}${ticket}`, JSON.stringify({ sessionId, targetHost: target.hostname.toLowerCase() }), 60);
+
+    target.searchParams.set(EDGE_SSO_TICKET_PARAM, ticket);
+    return res.status(302).redirect(target.toString());
   }
 }

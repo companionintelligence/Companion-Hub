@@ -15,13 +15,40 @@ import { LoginForm } from '../components/login-form';
 import { TotpForm } from '../components/totp-form/totp-form';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
+
+/**
+ * Where a post-login redirect may point: a relative path (`/…` but not `//…`, which browsers
+ * treat as protocol-relative and would leave the origin), this exact origin (the edge-SSO mint
+ * endpoint lives at `/api/auth/edge-sso` and loops back through here as an absolute same-origin
+ * URL — CI-Engineering#77), or a subdomain of this host (the historical LAN app shape, where the
+ * Hub sits at the domain root and apps live under it). Anything unparsable is unsafe — the old
+ * bare `new URL(url)` THREW on a relative redirect_url, taking the whole login page down.
+ */
+export const isSafeRedirect = (url: string) => {
+  if (url.startsWith('/') && !url.startsWith('//')) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === window.location.origin || parsed.host.endsWith(`.${window.location.host}`);
+  } catch {
+    return false;
+  }
+};
 
 export async function clientLoader() {
   try {
     const user = await userContext();
 
     if (user.data?.isLoggedIn) {
+      // Honor a safe redirect target instead of dropping it: a visitor who signed in from
+      // another tab mid-flow (e.g. between an edge-SSO bounce and this page) should continue to
+      // where they were headed, not be stranded on /home.
+      const redirectUrl = new URLSearchParams(window.location.search).get('redirect_url');
+      if (redirectUrl && isSafeRedirect(redirectUrl)) {
+        window.location.href = redirectUrl;
+        return null;
+      }
       return redirect('/home');
     }
   } catch {
