@@ -126,6 +126,42 @@ describe('ApiKeyService', () => {
     });
   });
 
+  describe('transient key-store failures (#933)', () => {
+    const eaiAgain = () =>
+      new Error('Failed query: SELECT ... FROM api_keys', {
+        cause: Object.assign(new Error('getaddrinfo EAI_AGAIN ci-hub-db'), { code: 'EAI_AGAIN' }),
+      });
+    const validRow = () => rowFrom({ name: 'k', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: null });
+
+    it('rides out a transient DNS failure and accepts the key on retry', async () => {
+      repo.findByHash.mockRejectedValueOnce(eaiAgain()).mockResolvedValueOnce(validRow());
+      expect(await service.validate('raw', 'mcp')).toBe(true);
+      expect(repo.findByHash).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws ApiKeyStoreUnavailableError when every attempt fails — never a false "invalid key"', async () => {
+      repo.findByHash.mockRejectedValue(eaiAgain());
+      await expect(service.validate('raw', 'mcp')).rejects.toMatchObject({ name: 'ApiKeyStoreUnavailableError' });
+      expect(repo.findByHash).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+    });
+
+    it('rethrows a non-transient query failure immediately without retrying', async () => {
+      const bug = Object.assign(new Error('relation "api_keys" does not exist'), { code: '42P01' });
+      repo.findByHash.mockRejectedValue(bug);
+      await expect(service.validate('raw', 'mcp')).rejects.toBe(bug);
+      expect(repo.findByHash).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the same resilience to resolveManagedAppUrn', async () => {
+      repo.findByHash
+        .mockRejectedValueOnce(eaiAgain())
+        .mockResolvedValueOnce(
+          rowFrom({ name: 'a', prefix: 'p', hashedKey: sha256('raw'), managed: true, ownerAppUrn: 'a:s', expiresAt: null, scopes: ['app'] }),
+        );
+      expect(await service.resolveManagedAppUrn('raw', ['app'])).toBe('a:s');
+    });
+  });
+
   describe('resolveManagedAppUrn', () => {
     const managedRow = (scopes: string[]) =>
       rowFrom({ name: 'a', prefix: 'p', hashedKey: sha256('raw'), managed: true, ownerAppUrn: 'a:s', expiresAt: null, scopes });

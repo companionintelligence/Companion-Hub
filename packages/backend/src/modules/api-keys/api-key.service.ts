@@ -1,11 +1,19 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
 import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
+
+/**
+ * Backoff for transient key-store failures on the auth path (#933). Short and bounded: a client
+ * mid-MCP-initialize should ride out a Docker DNS hiccup (`EAI_AGAIN ci-hub-db`), but a genuinely
+ * down database must fail fast into a 503, not hold requests hostage.
+ */
+export const AUTH_LOOKUP_RETRY_DELAYS_MS: readonly number[] = [150, 400];
 
 /** Operator-facing view of a stored key — never includes the hash or the raw key. */
 export interface ApiKeyInfo {
@@ -76,6 +84,35 @@ export class ApiKeyService {
     return createHash('sha256').update(rawKey).digest('hex');
   }
 
+  /**
+   * Hash lookup that survives transient infrastructure failures (#933). Retries only errors
+   * classified as connectivity trouble (DNS, refused/reset connections, Postgres still starting);
+   * anything else — a real query bug — rethrows immediately. When retries are exhausted this
+   * throws {@link ApiKeyStoreUnavailableError} so auth surfaces can answer 503 ("could not check
+   * your key") instead of 401 ("your key is wrong").
+   */
+  private async findByHashResilient(hashedKey: string): Promise<ApiKeyRow | undefined> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= AUTH_LOOKUP_RETRY_DELAYS_MS.length; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, AUTH_LOOKUP_RETRY_DELAYS_MS[attempt - 1]));
+      }
+      try {
+        return await this.repo.findByHash(hashedKey);
+      } catch (err) {
+        if (!isTransientDbError(err)) {
+          throw err;
+        }
+        lastError = err;
+        this.logger.warn(
+          `API key lookup hit transient database error (attempt ${attempt + 1}/${AUTH_LOOKUP_RETRY_DELAYS_MS.length + 1})`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    throw new ApiKeyStoreUnavailableError(lastError);
+  }
+
   /** Fails closed on an unparseable timestamp: `NaN < now` is false, so a naive comparison would
    *  turn a malformed expiry into a key that never expires — the wrong direction for an expiry
    *  check. An expiry we cannot read is treated as reached. */
@@ -123,7 +160,7 @@ export class ApiKeyService {
     if (!rawKey) {
       return null;
     }
-    const row = await this.repo.findByHash(this.hash(rawKey));
+    const row = await this.findByHashResilient(this.hash(rawKey));
     if (!row?.managed || this.isExpired(row)) {
       return null;
     }
@@ -139,7 +176,7 @@ export class ApiKeyService {
     if (!rawKey) {
       return false;
     }
-    const row = await this.repo.findByHash(this.hash(rawKey));
+    const row = await this.findByHashResilient(this.hash(rawKey));
     if (!row || this.isExpired(row) || !row.scopes.includes(requiredScope)) {
       return false;
     }
