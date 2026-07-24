@@ -147,6 +147,13 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-os-hub-queue,
+    # per-app services) through Docker's embedded DNS, which drops queries under network churn —
+    # every app install/uninstall recreates networks. Default musl/glibc behavior gives up after
+    # 2 attempts and surfaces getaddrinfo EAI_AGAIN. Retry harder before failing.
+    dns_opt:
+      - attempts:5
+      - timeout:2
     networks:
       ci_os_hub_network:
         aliases:

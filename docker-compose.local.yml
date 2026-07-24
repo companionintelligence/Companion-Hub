@@ -125,6 +125,11 @@ services:
       OLLAMA_URL: http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # See docker-compose.prod.yml: retry Docker embedded-DNS lookups instead of failing
+    # with EAI_AGAIN during network churn (#933).
+    dns_opt:
+      - attempts:5
+      - timeout:2
     env_file:
       - path: ${ENV_FILE:-.env}
         required: false
