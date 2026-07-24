@@ -112,25 +112,32 @@ describe('AuthController', () => {
     });
 
     it('strips the port before deriving the cookie domain', async () => {
-      // `getCookieDomain` gates on `validator.isFQDN`, which rejects `ci.lan:8443` outright. The
-      // resulting host-only cookie is not cosmetic on the LAN: the `.ci.lan` domain cookie is what
-      // lets an app subdomain see the session, so SSO silently stops working over the documented
-      // `:8443` tailnet path.
-      authService.getCookieDomain.mockReturnValue('.ci.lan' as never);
+      // `getCookieDomain` gates on `validator.isFQDN`, which rejects `ci.lan:8443` outright, and a
+      // host-only cookie is not cosmetic on the LAN: the whole LAN fast path rests on the Hub
+      // sitting at the domain ROOT, where `.ci.lan` also covers `<app>.ci.lan`. Unstripped, the
+      // port makes that cookie host-only, no app subdomain sees the session, and SSO silently
+      // stops working over the documented `:8443` tailnet path.
+      //
+      // The mock MIRRORS the real implementation — `.` + the whole input host, pinned in
+      // auth.service.test.ts — rather than returning a registrable domain it never produces. A
+      // `.ci.lan` result requires the apex host, which is exactly why the apex is the shape the
+      // LAN design depends on: from `hub.ci.lan` the real function yields `.hub.ci.lan`, which an
+      // app subdomain would NOT see.
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
       const res = cookieRes();
 
       await authController.login(
         { username: 'op', password: 'pw' } as never,
         res,
-        loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'Hub.CI.lan:8443' }),
+        loginReq({ 'x-forwarded-proto': 'https', 'x-forwarded-host': 'CI.lan:8443' }),
       );
 
-      expect(authService.getCookieDomain).toHaveBeenCalledWith('hub.ci.lan');
+      expect(authService.getCookieDomain).toHaveBeenCalledWith('ci.lan');
       expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ domain: '.ci.lan' }));
     });
 
     it('takes the first hop of a comma-joined forwarded host before deriving the cookie domain', async () => {
-      authService.getCookieDomain.mockReturnValue('.example.com' as never);
+      authService.getCookieDomain.mockImplementation(((host?: string) => (host ? `.${host}` : undefined)) as never);
       const res = cookieRes();
 
       await authController.login(
@@ -140,6 +147,7 @@ describe('AuthController', () => {
       );
 
       expect(authService.getCookieDomain).toHaveBeenCalledWith('hub.example.com');
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ domain: '.hub.example.com' }));
     });
 
     it('leaves the cookie unflagged over plain http', async () => {
