@@ -232,7 +232,16 @@ export const InstallForm: React.FC<IProps> = ({
     const appChanged = prevUrnRef.current !== undefined && prevUrnRef.current !== info.urn;
     prevUrnRef.current = info.urn;
 
-    if (initialValues && !isDirty) {
+    // Whether this pass may (re)seed the form. Untouched forms seed normally. A DIRTY form does
+    // not — this effect depends on isDirty, so re-seeding would re-assert defaults over what the
+    // operator just typed and make their input bounce back. The exception is `appChanged`: the
+    // dialog reuses one form instance across apps, and edits made against the PREVIOUS app are
+    // stale by definition, so a switch reseeds as if freshly rendered. Every field in this effect
+    // shares the one condition — seeding some (the exposure mode) while skipping others (port,
+    // openPort, enableAuth) would leave a switched-to app wearing half of its predecessor's config.
+    const shouldSeed = !isDirty || appChanged;
+
+    if (initialValues && shouldSeed) {
       for (const [key, value] of Object.entries(initialValues)) {
         setValue(key, value as string);
       }
@@ -248,30 +257,22 @@ export const InstallForm: React.FC<IProps> = ({
         cloudflareAvailable,
         tailscaleAvailable,
       });
-      // Seed only while the form is untouched, or when it has been reused for a DIFFERENT app.
-      // Same trap as the defaults below: this effect depends on isDirty, so writing
-      // unconditionally re-asserted the resolved default the instant the operator picked a mode
-      // and made their selection bounce back. Keeping `appChanged` means switching apps still
-      // re-resolves the mode against what that app supports, rather than inheriting the previous
-      // app's choice.
-      if (!isDirty || appChanged) {
+      if (shouldSeed) {
         setValue('exposureMode', defaultMode);
         setValue('exposedLocal', true); // backward compat
       }
       // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
-      // unconditionally discarded the operator's choice. Two ways that bites: on an EDIT it reverts
-      // the stored value (guarded by `initialValues?.X === undefined`), and on a FRESH install this
-      // effect re-runs the moment the form goes dirty (isDirty is a dependency) and would re-assert
-      // the default over what the operator just typed — so a first attempt to turn auth off, or set
-      // a custom port, appeared to bounce back. The `!isDirty` guard stops the re-assert once the
-      // operator has touched the form, while still seeding defaults on the untouched initial render.
-      if (!isDirty && initialValues?.openPort === undefined) {
+      // unconditionally discarded the operator's choice — on an EDIT it reverted the stored value,
+      // which is what `initialValues?.X === undefined` still guards. `shouldSeed` covers the other
+      // half: without it this effect re-asserted the default the moment the form went dirty, so a
+      // first attempt to turn auth off, or to set a custom port, appeared to bounce back.
+      if (shouldSeed && initialValues?.openPort === undefined) {
         setValue('openPort', defaultMode === 'local');
       }
-      if (!isDirty && initialValues?.enableAuth === undefined) {
+      if (shouldSeed && initialValues?.enableAuth === undefined) {
         setValue('enableAuth', true);
       }
-      if (!isDirty && info.port && initialValues?.port === undefined) {
+      if (shouldSeed && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
       // Reset publicDomain when switching apps (appChanged) so stale values

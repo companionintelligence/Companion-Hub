@@ -999,6 +999,41 @@ describe('InstallForm', () => {
     expect(isSelected('CLOUDFLARE')).toBe(false);
   });
 
+  it('reseeds every default when a dirty form is reused for a different app', async () => {
+    // The dialog keeps one form instance across apps. Edits made against the PREVIOUS app are
+    // stale, so a switch must reseed the whole form — not just the exposure mode, which would
+    // leave the new app wearing half of its predecessor's config.
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo(3001)} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    // Dirty the form against the first app: switch to Local and turn auth off.
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    });
+    await act(async () => {
+      fireEvent.click(getEnableAuthSwitch());
+    });
+    await waitFor(() => expect(getEnableAuthSwitch()).not.toBeChecked());
+
+    // Now the same instance is handed a different app.
+    const nextApp = { ...exposableInfo(4242), urn: 'other-app:store' } as never;
+    rerender(
+      <MemoryRouter>
+        <InstallForm info={nextApp} onSubmit={vi.fn()} formId="test-form" formFields={[appBaseUrlField]} />
+      </MemoryRouter>,
+    );
+
+    // Both the exposure mode AND the port/auth defaults belong to the new app.
+    await waitFor(() => expect(getEnableAuthSwitch()).toBeChecked());
+    expect(getAppBaseUrlInput()).not.toHaveValue('http://localhost:3001');
+  });
+
   it('keeps a stored custom port when editing, rather than resetting to the manifest default', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 

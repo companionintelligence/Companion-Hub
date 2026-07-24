@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
-import type { ApiKeyScope } from './api-key.scopes';
+import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
@@ -40,7 +40,10 @@ function toInfo(row: ApiKeyRow): ApiKeyInfo {
  * look correctly provisioned in the UI, and fail every authentication with nothing to point at.
  */
 function normalizeScopes(scopes: ApiKeyScope[]): ApiKeyScope[] {
-  const normalized = [...new Set(scopes)];
+  // Ordered by API_KEY_SCOPES, not by the order the caller happened to build the array in, so the
+  // same grant always persists and renders identically no matter which call site produced it.
+  const deduped = new Set(scopes);
+  const normalized = API_KEY_SCOPES.filter((scope) => deduped.has(scope));
   if (normalized.length === 0) {
     throw new Error('An API key must carry at least one scope');
   }
@@ -84,9 +87,9 @@ export class ApiKeyService {
     return Number.isNaN(expiresAtMs) || expiresAtMs < Date.now();
   }
 
-  /** Whether a key still grants access (not expired). The single definition of "usable", so the
-   *  admin "can't revoke the last operator key" guard judges usability with the exact fail-closed
-   *  rule the auth path uses — never a second, subtly-different copy. */
+  /** Whether a key still grants access (not expired). The single definition of "usable", so any
+   *  caller judging a key's state does it with the exact fail-closed rule the auth path uses —
+   *  never a second, subtly-different copy. */
   isUsable(key: { expiresAt: string | null }): boolean {
     return !this.isExpired(key);
   }

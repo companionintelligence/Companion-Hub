@@ -45,9 +45,11 @@ describe('ApiKeyService', () => {
       expect(stored.scopes).toEqual(['mcp']);
     });
 
-    it('dedupes scopes', async () => {
+    it('dedupes scopes and stores them in the canonical API_KEY_SCOPES order', async () => {
+      // Order comes from the scope list, not from however the caller happened to build the array,
+      // so one grant persists and renders identically no matter which call site produced it.
       await service.create('multi', { scopes: ['app', 'app', 'mcp'] });
-      expect(repo.insert.mock.calls[0][0].scopes).toEqual(['app', 'mcp']);
+      expect(repo.insert.mock.calls[0][0].scopes).toEqual(['mcp', 'app']);
     });
 
     it('refuses an empty scope set rather than minting a key that opens nothing', async () => {
