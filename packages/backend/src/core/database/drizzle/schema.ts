@@ -153,7 +153,8 @@ export const portAllocation = pgTable(
 );
 
 // SEC-MCP-8: locally-minted, hashed API keys. One table for ALL inbound key surfaces, discriminated
-// by `audience` ('mcp' today; 'rest' etc. later) so a new surface doesn't need a new table. Only the
+// by `scopes` ('mcp' tools, 'app' callbacks; 'rest' etc. later) so a new surface doesn't need a new
+// table — and so one key can open several at once without holding several secrets. Only the
 // SHA-256 hash is stored (never the raw key); the raw is shown once at creation. `managed` keys are
 // auto-provisioned by the Hub for companion apps (Hermes, OpenClaw, any hub_integration.mcp_client
 // app) and carry the owning app's URN — operators see them but never create/edit them by hand.
@@ -163,7 +164,9 @@ export const apiKey = pgTable(
   'api_key',
   {
     id: serial().primaryKey().notNull(),
-    audience: varchar({ length: 16 }).default('mcp').notNull(), // which surface accepts this key
+    // Which surfaces accept this key ('mcp' tools, 'app' callbacks). One key can open several, so
+    // a companion app holds a single credential and scope grants never rotate its secret.
+    scopes: text().array().default([]).notNull(),
     name: varchar().notNull(),
     prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
     hashedKey: varchar('hashed_key').notNull(),
@@ -173,10 +176,10 @@ export const apiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  // Unique per (audience, hash), not globally: the same secret may legitimately exist under two
-  // surfaces (every lookup is audience-scoped), and a cross-surface collision must never abort an
-  // insert/seed for an unrelated surface.
-  (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
+  // Uniqueness follows the lookup: a key resolves by hash alone (scope membership is then checked on
+  // the resolved row), so the hash must be globally unique — a second row sharing it would make
+  // resolution ambiguous.
+  (table) => [uniqueIndex('api_key_hashed_key_idx').on(table.hashedKey)],
 );
 
 export const deviceRegistration = pgTable('device_registration', {

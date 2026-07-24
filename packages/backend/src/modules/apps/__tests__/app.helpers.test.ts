@@ -13,7 +13,7 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
-import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
@@ -30,7 +30,7 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
-  let mcpApiKeys: MockProxy<McpApiKeyService>;
+  let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
@@ -53,7 +53,7 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
-    mcpApiKeys = moduleRef.get(McpApiKeyService);
+    apiKeys = moduleRef.get(ApiKeyService);
     memoryConnection = moduleRef.get(MemoryConnectionService);
   });
 
@@ -1094,14 +1094,14 @@ describe('AppHelpers', () => {
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-        mcpApiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
+        apiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
 
         // Independent of process.env.MCP_API_KEY now — the app gets its OWN managed key.
         delete process.env.MCP_API_KEY;
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.get('HUB_MCP_API_KEY')).toBe('managed-key-xyz');
-        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
       });
 
       it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
@@ -1110,11 +1110,11 @@ describe('AppHelpers', () => {
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-        mcpApiKeys.provisionManagedKey.mockResolvedValue('old-key');
+        apiKeys.provisionManagedKey.mockResolvedValue('old-key');
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
-        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
       });
 
       it('R-ENV-4: should generate a HUB_WAKE_SECRET', async () => {

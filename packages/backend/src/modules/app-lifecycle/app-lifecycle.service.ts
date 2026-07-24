@@ -2,7 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import messages from '@ci-hub/common/i18n/translations/en.json';
 import type { SSE } from '@ci-hub/common/schemas';
-import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { isPortExposeApp, manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -616,6 +616,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
+    // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
+    // "Require Auth" toggle — the onboarding install path sends no enableAuth at all — an
+    // exposable app that ships `hub_integration.edge_auth.default: true` starts protected.
+    // Fallback only: an explicit operator true/false (form or API) always wins, and a
+    // manifest can never force auth OFF. Placed before the queue publish so compose/labels
+    // and the persisted row all see the resolved value.
+    if (parsedForm.enableAuth === undefined) {
+      parsedForm.enableAuth = manifestDefaultsEdgeAuthOn(appInfo) || undefined;
+    }
+
     if (appInfo.force_expose && !exposed) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
@@ -678,7 +688,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposureMode: parsedForm.exposureMode ?? 'local',
         appStoreSlug: appStoreId,
         isVisibleOnGuestDashboard,
-        enableAuth: enableAuth ?? false,
+        enableAuth: parsedForm.enableAuth ?? false,
       }));
 
     if (existingApp) {
@@ -695,7 +705,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
         isVisibleOnGuestDashboard,
-        enableAuth: enableAuth ?? false,
+        enableAuth: parsedForm.enableAuth ?? false,
       });
     }
 
@@ -1393,7 +1403,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
-    const { exposed, domain, exposedLocal, enableAuth, port } = parsedForm;
+    // Snapshot of what the REQUEST asked for, used by the validation below. Everything written to
+    // the row further down must read `parsedForm` instead: the production-exposed guard, the
+    // non-exposable reset and the edge-auth defaulting all mutate it after this point.
+    const { exposed, domain, port } = parsedForm;
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();
@@ -1417,6 +1430,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+
+    if (!appInfo) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    // Manifest edge-auth default (CI-Engineering#74): when this update does not carry an
+    // enableAuth decision, inherit the app's STORED choice first, and only fall to the manifest
+    // default when the app never had one (an onboarding-era install). "Explicit operator choice
+    // always wins" must survive a PARTIAL update too: a client that PATCHes some other field
+    // without resending enableAuth must not have a prior explicit `false` silently flipped back
+    // to the manifest's `true`. Inheriting the stored value also keeps hasConfigChanged from
+    // seeing a spurious diff (and restarting the app) on such updates.
+    //
+    // This MUST run before the no-change short-circuit below: a version bump re-submits the
+    // stored config verbatim (updateApp → this method); an onboarding install whose stored config
+    // never decided enableAuth then self-heals to the manifest default here, and that resolved
+    // `true` is what makes hasConfigChanged see a difference at all.
+    if (parsedForm.enableAuth === undefined) {
+      const storedEnableAuth = (app.config as { enableAuth?: boolean } | null | undefined)?.enableAuth;
+      parsedForm.enableAuth = storedEnableAuth ?? (manifestDefaultsEdgeAuthOn(appInfo) || undefined);
+    }
+
     const settingsChanged = this.hasConfigChanged(
       normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
       parsedForm as Record<string, unknown>,
@@ -1426,14 +1462,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return { requestId: crypto.randomUUID() };
     }
 
-    const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
-
-    if (!appInfo) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
-    }
-
     if (!appInfo.exposable) {
-      if (exposed || exposedLocal || enableAuth) {
+      // Read from parsedForm, not the destructured copies taken at the top of this method: both
+      // the production-exposed guard above and the edge-auth defaulting have since mutated it, so
+      // the stale copies would make this warning describe the REQUEST rather than what is actually
+      // being reset — announcing a reset that already happened, and staying silent on an
+      // enableAuth the defaulting just resolved.
+      if (parsedForm.exposed || parsedForm.exposedLocal || parsedForm.enableAuth) {
         this.logger.warn(`App ${appUrn} is not exposable, resetting proxy settings`);
       }
       parsedForm.exposed = false;
@@ -1493,12 +1528,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     const changed = await this.appRepository.updateAppById(app.id, {
-      exposed: exposed ?? false,
+      // `parsedForm`, not the request snapshot: the row must record what was actually applied.
+      // Reading the snapshot here wrote `exposed: true` (and kept the domain) for a request the
+      // production guard or the non-exposable reset had just disabled — disagreeing with the
+      // `config` blob stored in this same call, which does carry the corrected form.
+      exposed: parsedForm.exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
       exposureMode: parsedForm.exposureMode ?? 'local',
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
-      domain: domain ?? null,
+      domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
       config: parsedForm,

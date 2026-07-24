@@ -337,6 +337,13 @@
       "when": 1780520000000,
       "tag": "0047_add_memory_connection",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1780530000000,
+      "tag": "0048_api_key_scopes",
+      "breakpoints": true
     }
   ]
 }

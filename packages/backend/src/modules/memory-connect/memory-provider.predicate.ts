@@ -1,6 +1,6 @@
 import type { AppInfo } from '@ci-hub/common/schemas';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
+import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
 
 /**
  * Reserved app-directory name of the first-party Companion Memory app. Combined
@@ -29,13 +29,13 @@ export const CI_MEMORY_APP_ID = 'ci-memory';
  * cloud store occupies that slug on every boot (force-converting any squatter to
  * the first-party type), so a malicious app installs as `ci-memory:<their-slug>`
  * and fails this check. `id`/`source`/`provider` are all manifest fields and are
- * intentionally not consulted.
+ * intentionally not consulted. The store-slug half of the check is the shared
+ * first-party gate `isOfficialStoreApp` (apps/official-store.predicate), which
+ * also guards the generic trust-material provisioning in app.helpers.
  */
 export function isMemoryProviderApp(info: Pick<AppInfo, 'urn'>): boolean {
   try {
-    const { appName, appStoreId } = extractAppUrn(info.urn);
-
-    return appName === CI_MEMORY_APP_ID && appStoreId === CI_MARKETPLACE_STORE_SLUG;
+    return extractAppUrn(info.urn).appName === CI_MEMORY_APP_ID && isOfficialStoreApp(info);
   } catch {
     // Malformed / missing URN → not the provider.
     return false;

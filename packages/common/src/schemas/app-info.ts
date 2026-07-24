@@ -160,10 +160,41 @@ export const hubIntegrationSchema = z
           .optional(),
       })
       .optional(),
+    /**
+     * Edge-auth posture the app ships with (CI-Engineering#74).
+     *
+     * `default: true` asks the Hub to default the install/expose "Require Auth" toggle ON for
+     * this app, so a fresh install sits behind the Hub-session forward-auth middleware without
+     * the operator having to remember the toggle. It only supplies the FALLBACK for an
+     * undecided value: an explicit operator choice (form or API) always wins, and the field can
+     * never force auth OFF (`default: false` and absence are equally no-ops — absence already
+     * means "leave the toggle default alone").
+     *
+     * Deliberately honored from ANY store, unlike the credential provisioning gates: the field
+     * is strictly safety-increasing — the worst a hostile manifest can do is put its own app
+     * behind the Hub login (self-lockout, no privilege gained), while the dangerous direction
+     * is unreachable by construction.
+     */
+    edge_auth: z
+      .object({
+        /** Default the "Require Auth" toggle ON at install/expose time. */
+        default: z.boolean().optional(),
+      })
+      .optional(),
   })
   .optional();
 
 export type HubIntegration = z.output<typeof hubIntegrationSchema>;
+
+/**
+ * Whether a manifest asks for edge auth ON by default. Only exposable apps qualify — the toggle
+ * is meaningless for apps that are never routed — and only an explicit `default: true` counts.
+ * Shared between the backend (which enforces the fallback for formless installs, e.g.
+ * onboarding) and the frontend (which mirrors it in the install form), so the two can't drift.
+ */
+export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {
+  return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
+}
 
 /**
  * How a consumer wants the brokered Companion Memory address shaped. Derived from the

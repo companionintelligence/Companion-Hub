@@ -9,6 +9,7 @@ import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthController } from '../auth.controller';
+import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { SessionManager } from '../session.manager';
@@ -28,6 +29,7 @@ describe('AuthController', () => {
   let authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
   let config: MockProxy<ConfigurationService>;
+  let forwardAuthSecrets: MockProxy<ForwardAuthSecretResolver>;
   let cache: MockProxy<CacheService>;
   let userRepository: MockProxy<UserRepository>;
   let sessionManager: MockProxy<SessionManager>;
@@ -38,6 +40,7 @@ describe('AuthController', () => {
       controllers: [AuthController],
       providers: [
         { provide: AuthService, useValue: mock<AuthService>() },
+        { provide: ForwardAuthSecretResolver, useValue: mock<ForwardAuthSecretResolver>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: CacheService, useValue: mock<CacheService>() },
@@ -50,6 +53,7 @@ describe('AuthController', () => {
 
     authController = moduleRef.get(AuthController);
     authService = moduleRef.get(AuthService);
+    forwardAuthSecrets = moduleRef.get(ForwardAuthSecretResolver);
     logger = moduleRef.get(LoggerService);
     config = moduleRef.get(ConfigurationService);
     cache = moduleRef.get(CacheService);
@@ -64,11 +68,17 @@ describe('AuthController', () => {
 
   describe('traefik', () => {
     it('should return 200 with a signed X-CI-Hub-User header when user is authenticated', async () => {
-      // Arrange
-      config.get.mockImplementation((key: string) => (key === 'forwardAuthSecret' ? 'shared-secret' : undefined) as never);
+      // Arrange: the resolver (not config) is the source of the signing secret —
+      // per-app when the forwarded host maps to an installed app (#74).
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'importer:ci-marketplace' as never,
+        source: 'app-env',
+      });
       const mockUser = { id: 1, username: 'testuser' };
       const req = {
         user: mockUser,
+        headers: { 'x-forwarded-host': 'importer-dev-org.ci.lan' },
       } as unknown as Request;
 
       const setHeader = vi.fn();
@@ -82,20 +92,39 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       // Assert: identity header + signature + timestamp are all set, and the
-      // signature verifies against the shared secret and canonical message.
+      // signature verifies against the RESOLVED per-app secret and canonical message.
+      expect(forwardAuthSecrets.resolveForHost).toHaveBeenCalledWith('importer-dev-org.ci.lan');
       expect(setHeader).toHaveBeenCalledWith('X-CI-Hub-User', 'testuser');
       const headers = Object.fromEntries(setHeader.mock.calls);
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
       expect(Number.isFinite(timestamp)).toBe(true);
-      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('shared-secret', 'testuser', timestamp));
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'testuser', timestamp));
 
       // A signature computed with any other secret must NOT match — this is what
-      // stops a container on ci_os_hub_network forging the identity header.
+      // stops a container on ci_os_hub_network forging the identity header, and what
+      // stops one app's secret validating a header destined for another app.
       expect(headers['X-CI-Hub-User-Signature']).not.toBe(signForwardAuthUser('wrong-secret', 'testuser', timestamp));
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalled();
-      expect(logger.debug).toHaveBeenCalledWith('User authenticated for Traefik forward auth', { username: 'testuser' });
+      expect(logger.debug).toHaveBeenCalledWith(
+        'User authenticated for Traefik forward auth',
+        expect.objectContaining({ username: 'testuser', secretSource: 'app-env', targetApp: 'importer:ci-marketplace' }),
+      );
+    });
+
+    it('falls back to the global secret for a host that maps to no app', async () => {
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'global-secret', source: 'global' });
+      const req = { user: { id: 1, username: 'testuser' }, headers: {} } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('global-secret', 'testuser', timestamp));
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it('should redirect to login when user is not authenticated', async () => {
