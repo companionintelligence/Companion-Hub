@@ -826,7 +826,7 @@ export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
 }
 
-function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
+export function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
   const rootFolderHost = resolveRootFolderHost(envFileName);
   const runtimeEnvPath = join(rootFolderHost, '.env');
   const appDataDir = join(rootFolderHost, 'app-data');
@@ -840,6 +840,21 @@ function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
     CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
     CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
     CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
+    // Backend default is `/app` (the packaged container's root). Source-based local dev
+    // runs the backend bare on the host, where `/app` doesn't exist, breaking anything
+    // that derives from APP_DIR: Cloudflare tunnel file writes (EACCES), the Cloudflare
+    // service's docker-compose-file lookup (falls back to `${APP_DIR}/docker-compose.local.yml`),
+    // and the swagger.json writer. Point it at the repo root, mirroring the CI_HUB_DATA_DIR
+    // treatment above. requireRepoRoot() has already confirmed cwd is the checkout root
+    // by the time this runs (see startHub's 'local-dev' branch).
+    //
+    // Note: FilesystemService#getSafeFilePath allowlists `APP_DIR`, so this makes the whole
+    // checkout (including .env*, .git/) a "safe" root for backend file ops in local dev —
+    // same as prod, where /app is the packaged app's own files. Accepted tradeoff: a local
+    // dev checkout is inherently a superset of the packaged image's /app, and a developer
+    // running this already has equal-or-greater direct filesystem access. Never reachable
+    // from appliance/prod/staging/dev-docker (requireRepoRoot/isApplianceMode gate this).
+    CI_HUB_APP_DIR: sourceVars.CI_HUB_APP_DIR || process.cwd(),
     CI_HUB_VERSION: sourceVars.CI_HUB_VERSION || process.env.CI_HUB_VERSION || packageVersion(),
   };
   const content = Object.entries(runtimeVars)

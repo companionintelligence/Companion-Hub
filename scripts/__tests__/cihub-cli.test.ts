@@ -7,6 +7,7 @@ import {
   BOX_CHARS,
   box,
   buildEnvOverrides,
+  ensureLocalDevRuntimeEnv,
   getComposeFiles,
   isApplianceMode,
   isFirstRun,
@@ -523,6 +524,39 @@ describe('buildEnvOverrides', () => {
     expect(overrides.ENV_FILE).toBe(TMP);
     expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_UID');
     expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_GID');
+  });
+});
+
+describe('ensureLocalDevRuntimeEnv', () => {
+  const TMP = '.env.__vitest_local_dev__';
+  const abs = join(process.cwd(), TMP);
+  let rootFolderHost: string;
+
+  beforeEach(() => {
+    rootFolderHost = mkdtempSync(join(tmpdir(), 'cihub-local-dev-root-'));
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', rootFolderHost);
+  });
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+    rmSync(rootFolderHost, { recursive: true, force: true });
+  });
+
+  it('defaults CI_HUB_APP_DIR to the repo checkout root when unset', () => {
+    const runtimeVars = ensureLocalDevRuntimeEnv(TMP);
+    expect(runtimeVars.CI_HUB_APP_DIR).toBe(process.cwd());
+
+    const written = readFileSync(join(rootFolderHost, '.env'), 'utf-8');
+    expect(written).toContain(`CI_HUB_APP_DIR=${process.cwd()}`);
+  });
+
+  it('honors an explicit CI_HUB_APP_DIR from the source env file', () => {
+    upsertEnvVar(TMP, 'CI_HUB_APP_DIR', '/custom/app/dir');
+    const runtimeVars = ensureLocalDevRuntimeEnv(TMP);
+    expect(runtimeVars.CI_HUB_APP_DIR).toBe('/custom/app/dir');
+
+    const written = readFileSync(join(rootFolderHost, '.env'), 'utf-8');
+    expect(written).toContain('CI_HUB_APP_DIR=/custom/app/dir');
   });
 });
 
