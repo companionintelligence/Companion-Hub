@@ -10,9 +10,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AccessMethodsCard', () => {
-  it('shows the local baseline note and unchecked remote options by default in the card props', () => {
+  it('hides the local-only note when remote access is already selected', () => {
     render(<AccessMethodsCard remoteAccess={['cloudflare']} onToggleAccess={vi.fn()} />);
-    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
+    expect(screen.queryByTestId('access-local-baseline')).not.toBeInTheDocument();
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
     expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();

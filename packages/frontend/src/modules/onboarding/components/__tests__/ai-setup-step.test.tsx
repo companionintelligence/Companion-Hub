@@ -311,7 +311,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
-  it('shows host ROCm ready notice when AMD GPU has host ROCm', async () => {
+  it('hides host ROCm notice when AMD GPU already has host ROCm', async () => {
     api.profile = {
       ...highTierProfile,
       hardware: {
@@ -329,8 +329,9 @@ describe('AiSetupStep', () => {
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument();
-    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-ready')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-hint')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Host ROCm detected/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
   });
 
