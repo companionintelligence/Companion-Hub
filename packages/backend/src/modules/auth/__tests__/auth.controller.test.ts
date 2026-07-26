@@ -716,6 +716,17 @@ describe('AuthController', () => {
       await expect(authController.edgeSso('not a url', { user: undefined } as never, ssoRes())).rejects.toThrow();
     });
 
+    it('rejects loopback targets (local open never uses ticket SSO)', async () => {
+      // ADR 001/002: localhost:{port} open must not mint a session-planting ticket.
+      await expect(authController.edgeSso('http://localhost:3000/', { user: undefined } as never, ssoRes())).rejects.toThrow(
+        'Unsupported edge SSO target',
+      );
+      await expect(authController.edgeSso('http://127.0.0.1:8080/files', { user: undefined } as never, ssoRes())).rejects.toThrow(
+        'Unsupported edge SSO target',
+      );
+      expect(forwardAuthSecrets.resolveAppUrnForHost).not.toHaveBeenCalled();
+    });
+
     it('rejects a repeated redirect param instead of minting for the comma-joined value', async () => {
       // Express hands a repeated query key to `@Query` as an ARRAY despite the `string | undefined`
       // annotation, and an array is truthy. `new URL(['https://app/', 'x'])` stringifies to

@@ -901,6 +901,10 @@ export class AuthController {
    * whose app hosts carry no org slug). Plain http is allowed only under the appliance's OWN
    * localDomain: LAN visitors legitimately arrive over http, but a public sibling must never be
    * handed a downgraded scheme.
+   *
+   * Local open (`localhost` / `127.0.0.1:{port}`) never uses this path — ADR 001 + ADR 002.
+   * Reject those hosts explicitly so a forged redirect cannot mint a session-planting ticket for
+   * the loopback open URL.
    */
   private async validateEdgeSsoTarget(redirect: string | undefined): Promise<URL | null> {
     // `typeof`, not just truthiness: Express hands a REPEATED query key to `@Query` as an array,
@@ -917,6 +921,11 @@ export class AuthController {
       return null;
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return null;
+    }
+    // ADR 002: ticket SSO is for hostname-routed siblings (public / LAN Traefik), never loopback.
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
       return null;
     }
     if (url.protocol === 'http:') {
@@ -1149,11 +1158,19 @@ export class AuthController {
   }
 
   /**
-   * Edge-SSO mint (CI-Engineering#77) — the Hub-origin half of the exchange consumed in
+   * Edge-SSO mint (CI-Engineering#77, ADR 002) — the Hub-origin half of the exchange consumed in
    * `/traefik` above. Reached by the redirect there; sends the visitor through the normal Hub
    * login when unauthenticated (`redirect_url` loops back HERE, which requires the login page to
    * accept a same-origin absolute URL), and once a session exists mints a single-use, 60s ticket
    * bound to the target app's hostname and bounces the browser back to the app carrying it.
+   *
+   * Why tickets exist: public Hub and app hosts are cookie-scope siblings. A Hub session cookie
+   * never reaches the app host. Nested-under-Hub hostnames were rejected (cert/ops surface);
+   * shared-root cookie Domain is forbidden (cross-tenant). See docs/adr/002-sibling-public-hostnames-edge-sso.md.
+   *
+   * Tunnel visitors (`cf-ray`) must use public Hub/app return URLs — cloudflared rewrites Host to
+   * `*.localDomain` origins that only resolve on the LAN. Local `127.0.0.1:{port}` open never
+   * enters this flow (ADR 001).
    *
    * No AuthGuard: this must answer a browser navigation with redirects, never a 401 JSON body.
    *
