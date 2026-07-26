@@ -31,6 +31,10 @@ vi.mock('@/lib/api-fetch', () => ({
   setTauriSessionId: vi.fn(),
 }));
 
+vi.mock('@/lib/safe-redirect', () => ({
+  followSafeRedirect: vi.fn(() => false),
+}));
+
 vi.mock('@/lib/deep-link-auth', () => ({
   takePendingDesktopPortalAuth: vi.fn(async () => null),
 }));

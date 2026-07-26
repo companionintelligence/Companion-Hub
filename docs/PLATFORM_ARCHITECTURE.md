@@ -240,8 +240,8 @@ The `httpHostHeader` is set so that Traefik on the Hub can use hostname-based ro
 
 | Mode | Routing | Auth | Use Case |
 |------|---------|------|----------|
-| **Local only** | Traefik on `{app}.{LOCAL_DOMAIN}` (e.g., `nextcloud.ci.lan`) | Hub session cookie | LAN access only |
-| **Cloudflare Tunnel** | `{app}-{device}-{org}.{domain}` via Cloudflare edge | Cloudflare Zero Trust + Hub forward-auth | Public internet access |
+| **Local only** | `http://127.0.0.1:{port}` (ADR 001); Traefik `*.{LOCAL_DOMAIN}` is tunnel origin only | Direct / host-only session | This computer |
+| **Cloudflare Tunnel** | Sibling `{app}-{device}-{org}.{domain}` via Cloudflare edge | Hub forward-auth + **edge ticket SSO** (ADR 002) when Hub/app cookies cannot span siblings | Public internet access |
 | **Tailscale VPN** | Tailscale IP via Headscale coordination | End-to-end encrypted | Private remote access without public DNS |
 
 ---
