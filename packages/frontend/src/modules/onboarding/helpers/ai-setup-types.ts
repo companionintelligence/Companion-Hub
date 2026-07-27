@@ -57,6 +57,27 @@ export interface CloudProviderInput {
   enabled: boolean;
 }
 
+/**
+ * How the Hub container's hop to host Ollama failed.
+ *
+ * `filtered` means a host firewall is dropping the packets — Ollama itself is
+ * fine, so offering to install it would send the operator the wrong way.
+ */
+export type BridgeFailureMode = 'filtered' | 'refused' | 'dns' | 'none';
+
+export interface OllamaStatus {
+  ready: boolean;
+  running: boolean;
+  endpointUrl: string;
+  bridgeUnreachable?: boolean;
+  failureMode?: BridgeFailureMode;
+  /** Copy-pasteable command that fixes `filtered`. Runs on the host, not in the container. */
+  remediationCommand?: string;
+  displayEndpoint?: string;
+  hint?: string;
+  error?: string;
+}
+
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;

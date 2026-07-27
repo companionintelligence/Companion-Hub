@@ -5,12 +5,17 @@
  * (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
 import { parseEnvFile } from './env-file';
 import { isDirectScriptRun } from './lib/is-direct-run';
+
+interface HostFirewallInfo {
+  kind: 'ufw' | 'firewalld' | 'nftables' | 'iptables' | 'none' | 'unknown';
+  active: boolean;
+}
 
 interface HostMetricsProbeFile {
   schemaVersion: 1;
@@ -27,6 +32,7 @@ interface HostMetricsProbeFile {
     diskUsedGb: number;
     diskMount: string;
   };
+  firewall?: HostFirewallInfo;
 }
 
 function resolveStateDir(): string {
@@ -145,6 +151,67 @@ function probeDarwinDiskGb(): { diskTotalGb: number; diskUsedGb: number; diskMou
   return probeDarwinDiskFromStorageProfiler() ?? probeDarwinDiskFromDf(DARWIN_DATA_MOUNT) ?? probeDarwinDiskFromDf('/');
 }
 
+function runQuiet(command: string, args: string[]): { ok: boolean; stdout: string } {
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 3000 });
+  return { ok: result.status === 0, stdout: (result.stdout ?? '').trim() };
+}
+
+function isSystemdUnitActive(unit: string): boolean {
+  return runQuiet('systemctl', ['is-active', unit]).stdout === 'active';
+}
+
+function hasBinary(name: string): boolean {
+  return runQuiet('sh', ['-c', `command -v ${name}`]).ok;
+}
+
+/**
+ * `ufw status` requires root; ENABLED lives in a world-readable config instead.
+ *
+ * This is the ONLY unprivileged signal that tracks whether ufw is currently
+ * enforcing. `systemctl is-active ufw` must not be used: ufw.service is a
+ * oneshot with RemainAfterExit=yes, so it reports "active" forever once it has
+ * run — including after `ufw disable`, which leaves ENABLED=no here.
+ */
+function isUfwEnabledInConfig(): boolean {
+  try {
+    return /^ENABLED=yes/im.test(readFileSync('/etc/ufw/ufw.conf', 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Identify the host's packet filter.
+ *
+ * The Hub backend runs in a container and cannot see this, so it is captured
+ * here and read back from the probe file. Without it the Hub can only guess at
+ * the syntax when telling an operator how to unblock the Docker bridge.
+ *
+ * Everything here must work unprivileged — this script does not run as root.
+ */
+export function probeHostFirewall(): HostFirewallInfo {
+  if (process.platform !== 'linux') return { kind: 'none', active: false };
+
+  const ufwInstalled = hasBinary('ufw');
+
+  // ufw is a frontend over nftables/iptables, so it is checked first: on a ufw
+  // host the nftables unit may also be active, but ufw syntax is what the
+  // operator should use. Enforcement is read from the config, not systemd — see
+  // isUfwEnabledInConfig for why the unit state lies.
+  if (ufwInstalled && isUfwEnabledInConfig()) {
+    return { kind: 'ufw', active: true };
+  }
+  if (isSystemdUnitActive('firewalld')) return { kind: 'firewalld', active: true };
+  if (isSystemdUnitActive('nftables')) return { kind: 'nftables', active: true };
+
+  // Tooling present but nothing reports as enforcing. Distinguished from
+  // `unknown` so the Hub does not blame a firewall that is switched off.
+  if (ufwInstalled || hasBinary('nft') || hasBinary('iptables')) {
+    return { kind: 'none', active: false };
+  }
+  return { kind: 'unknown', active: false };
+}
+
 export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
   const [mem, cpu, fsSizes] = await Promise.all([si.mem(), si.cpu(), si.fsSize()]);
   const darwinDisk = process.platform === 'darwin' ? probeDarwinDiskGb() : null;
@@ -170,6 +237,7 @@ export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
       diskUsedGb,
       diskMount,
     },
+    firewall: probeHostFirewall(),
   };
 }
 
@@ -180,8 +248,9 @@ export async function initHostProbe(): Promise<HostMetricsProbeFile> {
 
   const probe = await probeHostMetrics();
   writeFileSync(outPath, `${JSON.stringify(probe, null, 2)}\n`, 'utf8');
+  const firewall = probe.firewall?.active ? `, firewall ${probe.firewall.kind} active` : '';
   console.log(
-    `init-host-probe: wrote ${outPath} (${probe.host.totalRamMb} MB RAM, ${probe.host.diskUsedGb}/${probe.host.diskTotalGb} GB disk on ${probe.host.diskMount})`,
+    `init-host-probe: wrote ${outPath} (${probe.host.totalRamMb} MB RAM, ${probe.host.diskUsedGb}/${probe.host.diskTotalGb} GB disk on ${probe.host.diskMount}${firewall})`,
   );
   return probe;
 }
