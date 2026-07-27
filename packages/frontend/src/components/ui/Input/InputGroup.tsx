@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-interface InputGroupProps extends React.InputHTMLAttributes<HTMLInputElement> {
+interface InputGroupProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
   error?: string;
   label?: string | React.ReactNode;
   isInvalid?: boolean;
