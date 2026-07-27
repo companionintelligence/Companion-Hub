@@ -72,4 +72,22 @@ describe('SessionManager', () => {
 
     expect(cache.set).toHaveBeenCalledWith('session:grace:old-session', '7', 60);
   });
+
+  it('destroys every session for a user, including its rotation-grace alias', async () => {
+    cache.getByPrefix.mockReturnValue([
+      { key: 'session:7:aaa', val: 'session:aaa' },
+      { key: 'session:7:bbb', val: 'session:bbb' },
+    ]);
+
+    await manager.destroyAllSessionsByUserId(7);
+
+    expect(cache.getByPrefix).toHaveBeenCalledWith('session:7:');
+    expect(cache.del).toHaveBeenCalledWith('session:7:aaa');
+    expect(cache.del).toHaveBeenCalledWith('session:aaa');
+    // The grace alias is keyed off the session id, so the per-user index never names it —
+    // but `resolveSessionUserId` (and therefore AuthMiddleware) still honours it, which
+    // kept a just-rotated session alive for a minute after "sign out everywhere".
+    expect(cache.del).toHaveBeenCalledWith('session:grace:aaa');
+    expect(cache.del).toHaveBeenCalledWith('session:grace:bbb');
+  });
 });

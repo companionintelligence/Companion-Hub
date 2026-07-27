@@ -35,5 +35,8 @@ function toPathname(requestUrl: string): string {
 /** True when a 401 for this request must NOT trigger the global session-expired logout. */
 export function isSessionExpiryExempt(requestUrl: string): boolean {
   const pathname = toPathname(requestUrl);
-  return SESSION_EXPIRY_EXEMPT_PATHS.some((exempt) => pathname.startsWith(exempt));
+  // Whole path segments only. A bare `startsWith` would also exempt a future
+  // `/api/auth/login-attempts` or `/api/auth/logout-all`, silently swallowing the
+  // sign-out for a route nobody meant to put on this list.
+  return SESSION_EXPIRY_EXEMPT_PATHS.some((exempt) => pathname === exempt || pathname.startsWith(`${exempt}/`));
 }

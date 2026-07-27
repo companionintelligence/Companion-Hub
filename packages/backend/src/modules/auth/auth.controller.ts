@@ -433,6 +433,12 @@ export class AuthController {
         : null;
 
     if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
+      // Re-plant it. `touchSession` pushed the SERVER expiry out to a fresh TTL, but the
+      // browser's cookie keeps the `maxAge` it was issued with — and the two windows are
+      // the same length, so a cookie near its own end-of-life dies part-way through the
+      // consent round-trip we just extended the session for. Same mid-flow logout this
+      // endpoint exists to prevent (#944).
+      await this.setSessionCookie(res, reusableSessionId, req);
       return res.redirect(next);
     }
 

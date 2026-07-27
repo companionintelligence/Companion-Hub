@@ -27,4 +27,12 @@ describe('isSessionExpiryExempt', () => {
   it('treats an unknown request target as non-exempt, so a real expiry still signs out', () => {
     expect(isSessionExpiryExempt('')).toBe(false);
   });
+
+  it.each([
+    '/api/auth/login-attempts',
+    '/api/auth/logout-all',
+    '/api/auth/browser-handoff/mint-status',
+  ])('matches whole path segments, so %s is not exempted by a shorter entry', (path) => {
+    expect(isSessionExpiryExempt(path)).toBe(false);
+  });
 });

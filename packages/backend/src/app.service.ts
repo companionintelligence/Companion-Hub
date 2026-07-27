@@ -17,6 +17,7 @@ import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
+import { SESSION_KEY_PREFIX } from './modules/auth/session.manager';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -102,8 +103,10 @@ export class AppService implements OnApplicationShutdown {
       if (buster !== version) {
         this.logger.info('Clearing cache...');
         // Sessions live in the same store but are not cache: wiping them here signed
-        // every user out of every device on each upgrade (#944).
-        this.cache.clear(['session:']);
+        // every user out of every device on each upgrade (#944). The prefix comes from
+        // the session store itself so a change to its key shape cannot silently
+        // re-introduce that.
+        this.cache.clear([SESSION_KEY_PREFIX]);
         this.cache.set('buster', version, ONE_DAY_IN_SECONDS * 365);
         this.logger.info('Cache cleared');
       }

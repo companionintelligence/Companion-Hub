@@ -11,9 +11,16 @@ export const SESSION_REFRESH_AFTER_SECONDS = 60 * 60 * 24 * 5;
 /** Old session IDs stay valid briefly after rotation so in-flight requests can finish. */
 export const SESSION_ROTATION_GRACE_SECONDS = 60;
 
-const sessionKey = (sessionId: string) => `session:${sessionId}`;
-const sessionGraceKey = (sessionId: string) => `session:grace:${sessionId}`;
-const userSessionKey = (userId: number, sessionId: string) => `session:${userId}:${sessionId}`;
+/**
+ * Every session-store key starts with this. The session store shares the SQLite cache
+ * table, so `AppService` spares this prefix from the version-bump wipe (#944) — exported
+ * so that stays true if the key shape ever changes here.
+ */
+export const SESSION_KEY_PREFIX = 'session:';
+
+const sessionKey = (sessionId: string) => `${SESSION_KEY_PREFIX}${sessionId}`;
+const sessionGraceKey = (sessionId: string) => `${SESSION_KEY_PREFIX}grace:${sessionId}`;
+const userSessionKey = (userId: number, sessionId: string) => `${SESSION_KEY_PREFIX}${userId}:${sessionId}`;
 
 @Injectable()
 export class SessionManager {
@@ -102,13 +109,18 @@ export class SessionManager {
    * @param {number} userId - The user ID
    */
   public destroyAllSessionsByUserId = async (userId: number) => {
-    const sessions = await this.cache.getByPrefix(`session:${userId}:`);
+    const prefix = `${SESSION_KEY_PREFIX}${userId}:`;
+    const sessions = this.cache.getByPrefix(prefix);
 
-    await Promise.all(
-      sessions.map(async (session) => {
-        this.cache.del(session.key);
-        if (session.val) this.cache.del(session.val);
-      }),
-    );
+    for (const session of sessions) {
+      this.cache.del(session.key);
+      if (session.val) this.cache.del(session.val);
+      // The rotation-grace alias is keyed off the session id, not the user, so the
+      // index above never names it — but `resolveSessionUserId` honours it, which is
+      // what `AuthMiddleware` authenticates on. Leaving it behind kept a just-rotated
+      // session alive for up to a minute after a "sign out everywhere" (password or
+      // username change, operator reset).
+      this.cache.del(sessionGraceKey(session.key.slice(prefix.length)));
+    }
   };
 }

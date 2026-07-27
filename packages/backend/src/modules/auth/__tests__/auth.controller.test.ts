@@ -1195,6 +1195,7 @@ describe('AuthController', () => {
 
     it('consume keeps a live session the browser already holds for the same user', async () => {
       mockHubOrigin();
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
       const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
       sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
@@ -1212,7 +1213,9 @@ describe('AuthController', () => {
       // Re-minting on every open would leave a trail of week-long sessions behind.
       expect(sessionManager.createSession).not.toHaveBeenCalled();
       expect(sessionManager.touchSession).toHaveBeenCalledWith('browser-already-here');
-      expect(res.cookie).not.toHaveBeenCalled();
+      // The SAME id is re-planted: `touchSession` moved the server expiry, and the cookie's
+      // own `maxAge` has to move with it or it dies mid-consent.
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-already-here', expect.objectContaining({ httpOnly: true }));
       expect(res.redirect).toHaveBeenCalledWith(next);
     });
 
