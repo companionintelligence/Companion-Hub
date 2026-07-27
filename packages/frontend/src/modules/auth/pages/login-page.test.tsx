@@ -2,14 +2,17 @@ import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
 
-const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm, mockClientGetConfig } = vi.hoisted(() => ({
-  mockUseUserContext: vi.fn(),
-  mockUseMutation: vi.fn(),
-  mockNavigate: vi.fn(),
-  mockSearchParams: vi.fn(),
-  mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
-  mockClientGetConfig: vi.fn(),
-}));
+const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm, mockClientGetConfig, mockToastError, mockToastSuccess } =
+  vi.hoisted(() => ({
+    mockUseUserContext: vi.fn(),
+    mockUseMutation: vi.fn(),
+    mockNavigate: vi.fn(),
+    mockSearchParams: vi.fn(),
+    mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
+    mockClientGetConfig: vi.fn(),
+    mockToastError: vi.fn(),
+    mockToastSuccess: vi.fn(),
+  }));
 
 vi.mock('@/api-client', () => ({
   userContext: vi.fn(),
@@ -53,7 +56,8 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('react-hot-toast', () => ({
   default: {
-    error: vi.fn(),
+    error: mockToastError,
+    success: mockToastSuccess,
   },
 }));
 
@@ -102,6 +106,28 @@ describe('LoginPage', () => {
     render(<LoginPage />);
 
     expect(screen.getByTestId('login-type')).toHaveTextContent('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
+  });
+
+  it('surfaces the reason the client signed itself out, then strips it from the URL', () => {
+    // A password or username change revokes every session, so its confirmation cannot be
+    // shown where it was triggered — the page reloads into a signed-out state. It rides
+    // the URL to here instead.
+    const setSearchParams = vi.fn();
+    mockSearchParams.mockReturnValue([new URLSearchParams('signed_out=password_changed'), setSearchParams]);
+
+    render(<LoginPage />);
+
+    expect(mockToastSuccess).toHaveBeenCalledWith('SETTINGS_SECURITY_PASSWORD_CHANGE_SUCCESS');
+    const strip = setSearchParams.mock.calls[0]?.[0] as (prev: URLSearchParams) => URLSearchParams;
+    expect(strip(new URLSearchParams('signed_out=password_changed')).has('signed_out')).toBe(false);
+  });
+
+  it('says nothing for an unrecognised sign-out reason', () => {
+    mockSearchParams.mockReturnValue([new URLSearchParams('signed_out=nonsense'), vi.fn()]);
+
+    render(<LoginPage />);
+
+    expect(mockToastSuccess).not.toHaveBeenCalled();
   });
 
   it('uses the local backend desktop callback flow in Tauri', () => {

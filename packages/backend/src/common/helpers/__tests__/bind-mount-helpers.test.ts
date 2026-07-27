@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { quarantineStalePath, readTextFileIfExists, writeHealableTextFile } from '../bind-mount-helpers';
 
 describe('bind-mount-helpers', () => {
@@ -8,6 +8,10 @@ describe('bind-mount-helpers', () => {
 
   beforeEach(() => {
     fs.mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
   it('writes a new file in a writable directory', async () => {

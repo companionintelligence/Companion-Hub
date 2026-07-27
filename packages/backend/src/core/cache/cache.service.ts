@@ -86,21 +86,52 @@ export class CacheService implements OnApplicationShutdown {
     stmt.run(key);
   }
 
-  public async getByPrefix(prefix: string) {
+  public getByPrefix(prefix: string) {
     try {
-      const query = this.db.prepare('SELECT * FROM keyv WHERE key LIKE ?');
-      const rows = query.all(`cache:${prefix}%`) as { key: string; value: string }[];
+      // Match the prefix as written. This used to look for `cache:<prefix>%` while
+      // `set()` stores keys verbatim, so it never matched a row — silently turning
+      // its only caller, `SessionManager.destroyAllSessionsByUserId`, into a no-op.
+      // `substr` rather than `LIKE`: SQLite's LIKE is ASCII-case-insensitive and reads
+      // `_`/`%` inside the prefix as wildcards, so a prefix would match keys it does
+      // not own — the opposite failure of the one above, and just as silent.
+      const query = this.db.prepare('SELECT key, value FROM keyv WHERE substr(key, 1, ?) = ?');
+      const rows = query.all(prefix.length, prefix) as { key: string; value: string }[];
 
-      return rows.map((row) => ({ key: row.key, val: JSON.parse(row.value).value }));
+      // Parsed per row, the same way `evictExpired` does it: one unreadable value must
+      // not discard the whole result set, or revocation quietly degrades back to the
+      // no-op this method was just fixed to stop being.
+      const entries: { key: string; val: string }[] = [];
+      for (const row of rows) {
+        try {
+          entries.push({ key: row.key, val: (JSON.parse(row.value) as { value: string }).value });
+        } catch {
+          // Unreadable row — skip it and keep scanning.
+        }
+      }
+
+      return entries;
     } catch (error) {
       console.error(error);
       return [];
     }
   }
 
-  public clear() {
-    const stmt = this.db.prepare('DELETE FROM keyv');
-    stmt.run();
+  /**
+   * Wipe the store. `preservePrefixes` spares keys that are not really cache entries:
+   * the session store shares this table, so the version-bump wipe in `AppService`
+   * would otherwise sign every user out of every device on each upgrade (#944).
+   */
+  public clear(preservePrefixes: string[] = []) {
+    if (preservePrefixes.length === 0) {
+      this.db.prepare('DELETE FROM keyv').run();
+      return;
+    }
+
+    // `substr`, not `LIKE`, for the same reason as `getByPrefix`: LIKE is
+    // ASCII-case-insensitive and treats `_`/`%` in the prefix as wildcards, so a
+    // preserved prefix would spare rows it does not own.
+    const where = preservePrefixes.map(() => 'substr(key, 1, ?) <> ?').join(' AND ');
+    this.db.prepare(`DELETE FROM keyv WHERE ${where}`).run(...preservePrefixes.flatMap((prefix) => [prefix.length, prefix]));
   }
 
   private evictExpired() {

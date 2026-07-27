@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
 import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 
 export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
@@ -153,12 +154,7 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // bare "Load failed". The generated API client already uses this config value.
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
   return fetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
-    if (
-      response.status === 401 &&
-      !path.startsWith('/api/auth/login') &&
-      !path.startsWith('/api/auth/logout') &&
-      !path.startsWith('/api/auth/session/refresh')
-    ) {
+    if (response.status === 401 && !isSessionExpiryExempt(path)) {
       void import('@/lib/session-expired')
         .then(({ handleSessionExpired }) => handleSessionExpired())
         .catch(() => {
