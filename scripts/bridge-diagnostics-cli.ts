@@ -254,14 +254,24 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
   const blocked = results.filter((result) => result.verdict === 'filtered');
   const refused = results.filter((result) => result.verdict === 'refused');
   const unresolved = results.filter((result) => result.verdict === 'dns');
+  const unverified = results.filter((result) => result.verdict === 'unknown');
   const checked = results.filter((result) => result.verdict !== 'absent');
 
   if (checked.length === 0) {
     return { lines: ['Docker bridge            no host services listening'], issueCount: 0, remediationCommands: [] };
   }
 
-  const issueCount = blocked.length + refused.length + unresolved.length;
-  const lines = [`Docker bridge            ${issueCount === 0 ? 'ok' : `${issueCount} port(s) unreachable`}`, ...formatBridgeLines(results)];
+  // `unknown` is not a bridge fault — the probe itself never completed — but the
+  // header must not report `ok` when something went unchecked, and the operator
+  // should see the warning tone either way.
+  const summary = [
+    blocked.length > 0 ? `${blocked.length} blocked` : '',
+    refused.length > 0 ? `${refused.length} refused` : '',
+    unresolved.length > 0 ? `${unresolved.length} unresolved` : '',
+    unverified.length > 0 ? `${unverified.length} unverified` : '',
+  ].filter(Boolean);
+  const issueCount = blocked.length + refused.length + unresolved.length + unverified.length;
+  const lines = [`Docker bridge            ${summary.length === 0 ? 'ok' : summary.join(', ')}`, ...formatBridgeLines(results)];
 
   if (issueCount === 0) {
     return { lines, issueCount: 0, remediationCommands: [] };
@@ -290,6 +300,10 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
 
   if (unresolved.length > 0) {
     lines.push('  host.docker.internal does not resolve in the Hub container — recreate the stack so compose reapplies extra_hosts.');
+  }
+
+  if (unverified.length > 0) {
+    lines.push('  The container probe did not complete for these, so they were NOT checked — this is not evidence of a firewall.');
   }
 
   return { lines, issueCount, remediationCommands };

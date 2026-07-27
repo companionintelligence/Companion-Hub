@@ -218,9 +218,14 @@ describe('bridge-diagnostics-cli', () => {
 
       const section = await runBridgeDoctorSection('.env.prod');
       const text = section.lines.join('\n');
-      expect(section.issueCount).toBe(0);
+      // Counted so the doctor box warns, but reported as unverified rather than
+      // blocked — and the header must not claim `ok` for a check that never ran.
+      expect(section.issueCount).toBe(1);
+      expect(section.lines[0]).toContain('1 unverified');
+      expect(section.lines[0]).not.toMatch(/\bok\b/);
       expect(section.remediationCommands).toEqual([]);
       expect(text).toContain('the container probe did not complete');
+      expect(text).toContain('they were NOT checked');
       expect(text).not.toContain('A host firewall is dropping these');
       expect(text).not.toContain('sudo ufw allow');
     });

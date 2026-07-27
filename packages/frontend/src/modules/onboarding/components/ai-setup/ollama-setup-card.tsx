@@ -20,7 +20,12 @@ interface OllamaSetupCardProps {
 
 type OllamaInstallPhase = 'idle' | 'installing' | 'completed' | 'error';
 
-function isBridgeRefused(status: OllamaStatus): boolean {
+/**
+ * Any classified bridge failure — filtered, refused or dns. Named for the
+ * question it answers ("can the Hub reach it?"), not for one specific cause;
+ * {@link isFirewallBlocked} is the narrower check.
+ */
+function isBridgeUnreachable(status: OllamaStatus): boolean {
   return status.bridgeUnreachable === true;
 }
 
@@ -117,7 +122,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
     );
   }
 
-  const bridgeUnreachable = isBridgeRefused(status);
+  const bridgeUnreachable = isBridgeUnreachable(status);
   const firewallBlocked = isFirewallBlocked(status);
   const title = bridgeUnreachable ? t('ONBOARDING_OLLAMA_NOT_REACHABLE') : t('ONBOARDING_OLLAMA_NOT_DETECTED');
   const description = bridgeUnreachable ? (
