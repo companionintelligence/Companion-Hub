@@ -101,7 +101,9 @@ export class AppService implements OnApplicationShutdown {
       const buster = this.cache.get('buster');
       if (buster !== version) {
         this.logger.info('Clearing cache...');
-        this.cache.clear();
+        // Sessions live in the same store but are not cache: wiping them here signed
+        // every user out of every device on each upgrade (#944).
+        this.cache.clear(['session:']);
         this.cache.set('buster', version, ONE_DAY_IN_SECONDS * 365);
         this.logger.info('Cache cleared');
       }

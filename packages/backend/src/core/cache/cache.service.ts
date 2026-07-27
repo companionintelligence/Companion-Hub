@@ -89,7 +89,10 @@ export class CacheService implements OnApplicationShutdown {
   public async getByPrefix(prefix: string) {
     try {
       const query = this.db.prepare('SELECT * FROM keyv WHERE key LIKE ?');
-      const rows = query.all(`cache:${prefix}%`) as { key: string; value: string }[];
+      // Match the prefix as written. This used to look for `cache:<prefix>%` while
+      // `set()` stores keys verbatim, so it never matched a row — silently turning
+      // its only caller, `SessionManager.destroyAllSessionsByUserId`, into a no-op.
+      const rows = query.all(`${prefix}%`) as { key: string; value: string }[];
 
       return rows.map((row) => ({ key: row.key, val: JSON.parse(row.value).value }));
     } catch (error) {
@@ -98,9 +101,19 @@ export class CacheService implements OnApplicationShutdown {
     }
   }
 
-  public clear() {
-    const stmt = this.db.prepare('DELETE FROM keyv');
-    stmt.run();
+  /**
+   * Wipe the store. `preservePrefixes` spares keys that are not really cache entries:
+   * the session store shares this table, so the version-bump wipe in `AppService`
+   * would otherwise sign every user out of every device on each upgrade (#944).
+   */
+  public clear(preservePrefixes: string[] = []) {
+    if (preservePrefixes.length === 0) {
+      this.db.prepare('DELETE FROM keyv').run();
+      return;
+    }
+
+    const where = preservePrefixes.map(() => 'key NOT LIKE ?').join(' AND ');
+    this.db.prepare(`DELETE FROM keyv WHERE ${where}`).run(...preservePrefixes.map((prefix) => `${prefix}%`));
   }
 
   private evictExpired() {
