@@ -34,12 +34,21 @@ export interface BridgeServiceSpec {
  */
 export type BridgeVerdict = 'ok' | 'filtered' | 'refused' | 'dns' | 'absent' | 'unknown';
 
-/** Exit codes of the injected container probe, mapped back to a verdict. */
+/**
+ * Exit codes of the injected container probe, mapped back to a verdict.
+ *
+ * Deliberately above the codes anything else in this path can produce: node
+ * exits 1 on an uncaught exception, and `docker exec` itself exits 1 when the
+ * daemon rejects the call (a container that stopped between the running-check
+ * and the probe, for instance). Reusing 1 here would report those as `filtered`
+ * — the one verdict that tells the operator to open a firewall port, for a
+ * bridge that was never actually tested.
+ */
 const PROBE_EXIT_VERDICT: Record<number, BridgeVerdict> = {
   0: 'ok',
-  1: 'filtered',
-  2: 'refused',
-  3: 'dns',
+  10: 'filtered',
+  11: 'refused',
+  12: 'dns',
 };
 
 export interface BridgeCheckResult {
@@ -97,14 +106,16 @@ export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS
   const script =
     `const net=require('net');const s=new net.Socket();s.setTimeout(${timeoutMs});` +
     'const end=c=>{s.destroy();process.exit(c)};' +
-    "s.once('connect',()=>end(0));s.once('timeout',()=>end(1));" +
-    "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?2:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?3:1));" +
+    "s.once('connect',()=>end(0));s.once('timeout',()=>end(10));" +
+    "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?11:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?12:10));" +
     `s.connect(${port},'host.docker.internal');`;
   const result = spawnSync('docker', ['exec', HUB_CONTAINER, 'node', '-e', script], {
     encoding: 'utf8',
     timeout: timeoutMs + 7000,
   });
-  // A killed or failed `docker exec` says nothing about the bridge.
+  // A killed or failed `docker exec` says nothing about the bridge. Any code the
+  // probe did not choose for itself (notably 1) falls through to `unknown`
+  // rather than being read as a verdict.
   if (result.status === null) return 'unknown';
   return PROBE_EXIT_VERDICT[result.status] ?? 'unknown';
 }
@@ -183,18 +194,6 @@ function portFromUrl(url: string | undefined): string | undefined {
   }
 }
 
-export async function checkBridgeService(spec: BridgeServiceSpec): Promise<BridgeCheckResult> {
-  const hostReachable = await probeHostPort(spec.port);
-  // Nothing is listening on the host, so there is nothing for the container to
-  // reach. Reporting this as a firewall problem would be a false alarm.
-  if (!hostReachable) {
-    return { ...spec, hostReachable, containerReachable: false, verdict: 'absent' };
-  }
-
-  const verdict = probeFromHubContainer(spec.port);
-  return { ...spec, hostReachable, containerReachable: verdict === 'ok', verdict };
-}
-
 const VERDICT_DETAIL: Record<BridgeVerdict, (port: number) => string> = {
   ok: (port) => `reachable from container (:${port})`,
   filtered: (port) => `BLOCKED — answers on the host but not from the Hub container (:${port})`,
@@ -244,6 +243,8 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
   // when nothing answers, so run them together rather than serially.
   const hostReachable = await Promise.all(services.map((spec) => probeHostPort(spec.port)));
   const results: BridgeCheckResult[] = services.map((spec, index) => {
+    // Nothing is listening on the host, so there is nothing for the container to
+    // reach. Reporting this as a firewall problem would be a false alarm.
     if (!hostReachable[index]) return { ...spec, hostReachable: false, containerReachable: false, verdict: 'absent' };
     // spawnSync blocks the event loop, so these stay sequential.
     const verdict = probeFromHubContainer(spec.port);

@@ -43,7 +43,7 @@ function mockDocker(handlers: { inspect?: string; exec?: (script: string) => num
       const script = String(args[args.length - 1]);
       // The dns lookup probe prints the gateway; the net.connect probe only exits.
       if (script.includes('dns')) return { status: 0, stdout: '172.17.0.1' };
-      return { status: handlers.exec ? handlers.exec(script) : 1, stdout: '' };
+      return { status: handlers.exec ? handlers.exec(script) : 10, stdout: '' };
     }
     return { status: 1, stdout: '' };
   });
@@ -160,7 +160,7 @@ describe('bridge-diagnostics-cli', () => {
     // check exists at all.
     it('flags a host-reachable but container-unreachable port and emits the fix', async () => {
       listeningHostPorts = new Set([11434, 5002]);
-      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 1 });
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 10 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.issueCount).toBe(2);
@@ -173,7 +173,7 @@ describe('bridge-diagnostics-cli', () => {
 
     it('still explains the problem when the rule addresses cannot be derived', async () => {
       listeningHostPorts = new Set([11434]);
-      mockDocker({ ps: 'ci-os-hub', exec: () => 1 });
+      mockDocker({ ps: 'ci-os-hub', exec: () => 10 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.issueCount).toBe(1);
@@ -186,7 +186,7 @@ describe('bridge-diagnostics-cli', () => {
     // rule cannot fix it — so it must not be reported as a firewall block.
     it('reports a loopback-bound service as refused, not as a firewall block', async () => {
       listeningHostPorts = new Set([11434]);
-      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 2 });
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 11 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       const text = section.lines.join('\n');
@@ -200,12 +200,29 @@ describe('bridge-diagnostics-cli', () => {
 
     it('points at the missing host-gateway mapping when the name does not resolve', async () => {
       listeningHostPorts = new Set([11434]);
-      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 3 });
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 12 });
 
       const section = await runBridgeDoctorSection('.env.prod');
       expect(section.issueCount).toBe(1);
       expect(section.lines.join('\n')).toContain('extra_hosts');
       expect(section.remediationCommands).toEqual([]);
+    });
+
+    // Regression: `docker exec` exits 1 when the daemon rejects the call (the
+    // container stopped after the running-check), and node exits 1 on an
+    // uncaught exception. Neither tested the bridge, so neither may surface as
+    // `filtered` — that is the verdict that tells the operator to open a port.
+    it('does not read a failed probe as a firewall block', async () => {
+      listeningHostPorts = new Set([11434]);
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 1 });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      const text = section.lines.join('\n');
+      expect(section.issueCount).toBe(0);
+      expect(section.remediationCommands).toEqual([]);
+      expect(text).toContain('the container probe did not complete');
+      expect(text).not.toContain('A host firewall is dropping these');
+      expect(text).not.toContain('sudo ufw allow');
     });
   });
 });
