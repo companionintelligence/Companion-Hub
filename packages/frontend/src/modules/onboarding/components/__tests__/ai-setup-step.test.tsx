@@ -653,7 +653,8 @@ describe('AiSetupStep', () => {
 
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
+    // Local-only note is reserved for when every remote option is off.
+    expect(screen.queryByTestId('access-local-baseline')).not.toBeInTheDocument();
     expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
@@ -696,6 +697,7 @@ describe('AiSetupStep', () => {
 
     await user.click(screen.getByTestId('access-cloudflare'));
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'local' }));
