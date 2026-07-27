@@ -24,13 +24,13 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('ChangePasswordForm', () => {
-  const reload = vi.fn();
+  const assign = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseMutation.mockReturnValue({ mutate: vi.fn(), isPending: false });
     Object.defineProperty(window, 'location', {
-      value: { ...window.location, reload },
+      value: { ...window.location, assign },
       writable: true,
       configurable: true,
     });
@@ -49,6 +49,6 @@ describe('ChangePasswordForm', () => {
     renderAndCaptureOptions().onSuccess();
 
     expect(clearClientHubState).toHaveBeenCalledWith({ keepPortalEmail: true });
-    expect(reload).toHaveBeenCalled();
+    expect(assign).toHaveBeenCalledWith('/login?signed_out=password_changed');
   });
 });
