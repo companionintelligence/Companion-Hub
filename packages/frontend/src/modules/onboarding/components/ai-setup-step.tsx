@@ -8,6 +8,7 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
+  type OllamaStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
@@ -57,16 +58,6 @@ interface AiSetupStepProps {
   /** Public exposure mode for Companion Memory apps. */
   publicExposureMode?: ExposureMode;
   onCompanionAppsChange?: (apps: import('../helpers/types').OnboardingApp[]) => void;
-}
-
-interface OllamaStatus {
-  ready: boolean;
-  running: boolean;
-  endpointUrl: string;
-  bridgeUnreachable?: boolean;
-  displayEndpoint?: string;
-  hint?: string;
-  error?: string;
 }
 
 // Web is the default path for every Hub. Also seed Private VPN when Tailscale is already connected.
@@ -302,13 +293,38 @@ export const AiSetupStep = ({
   }
 
   if (error || !profile) {
+    // The profile endpoint bundles hardware detection with live probes of the
+    // inference backends, so a blocked host service fails the whole call. Naming
+    // hardware here sent operators after the one component that was working —
+    // report the probe diagnosis instead whenever we have one.
     return (
-      <div className="text-center py-8" data-testid="ai-setup-error">
-        <p className="text-destructive mb-4">
-          {t('ONBOARDING_FAILED_DETECT_HARDWARE')}: {error}
+      <div className="py-8" data-testid="ai-setup-error">
+        <p className="text-destructive mb-4 text-center">
+          {t('ONBOARDING_AI_SETUP_FAILED')}: {error}
         </p>
+        {ollamaStatus?.hint && (
+          <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 p-3">
+            <div className="text-xs text-yellow-800 dark:text-yellow-200">{ollamaStatus.hint}</div>
+            {ollamaStatus.remediationCommand && (
+              <>
+                <div className="mt-2 mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
+                <code className="block overflow-x-auto whitespace-pre rounded bg-yellow-100 dark:bg-yellow-900 px-2 py-1.5 text-xs text-yellow-900 dark:text-yellow-100">
+                  {ollamaStatus.remediationCommand}
+                </code>
+              </>
+            )}
+          </div>
+        )}
         <div className="flex gap-2 justify-center">
-          <Button variant="outline" onClick={() => fetchProfile()}>
+          <Button
+            variant="outline"
+            onClick={() => {
+              // Re-check the probe too, so the diagnostic above reflects the
+              // current state after the operator applies the fix.
+              void checkOllamaStatus();
+              void fetchProfile();
+            }}
+          >
             {t('COMMON_RETRY')}
           </Button>
           <Button variant="ghost" onClick={handleSkip}>

@@ -35,6 +35,7 @@ import { initHubDataDirs } from './init-hub-data-dirs';
 import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase, publicWebRepairHasFailures } from './public-web-cli';
 import { syncPostgresPasswordFromEnv } from './sync-postgres-password';
+import { runBridgeDoctorSection } from './bridge-diagnostics-cli';
 import { runNetworkDoctorSection } from './network-diagnostics-cli';
 import { allowedEnvs, BASE_COMMAND, CI_CLOUD_DEFAULT, type HubEnv } from './lib/cli-types';
 import {
@@ -998,6 +999,10 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   const rootFolderHost = ctx.appliance ? (ctx.dataDir as string) : resolveRootFolderHost(envFileName);
   const composeFiles = ctx.composeFiles;
   const networkSection = await runNetworkDoctorSection(envFileName, { repairNetworks: options?.repairNetworks });
+  // Host services the Hub dials over the Docker bridge. A default-deny host
+  // firewall drops these silently and the failure is invisible from the host,
+  // so it is checked from inside the container.
+  const bridgeSection = await runBridgeDoctorSection(envFileName);
   const lines = [
     `Docker               ${checkDockerAvailable() ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? cliOk('available') : cliFail('unavailable')}`,
@@ -1006,8 +1011,9 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Compose files        ${composeFiles.every((file) => existsSync(resolvePath(file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
     ...networkSection.lines,
+    ...bridgeSection.lines,
   ];
-  const tone = networkSection.issueCount > 0 ? 'yellow' : 'cyan';
+  const tone = networkSection.issueCount + bridgeSection.issueCount > 0 ? 'yellow' : 'cyan';
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 

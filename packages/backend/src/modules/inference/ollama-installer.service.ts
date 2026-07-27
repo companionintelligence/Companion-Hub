@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
-import { buildBridgeConnectionHint, isBridgeConnectionRefused, resolveHostPlatform } from './backends/ollama-host-bridge';
+import {
+  type BridgeFailureMode,
+  buildBridgeRemediation,
+  classifyBridgeFailure,
+  resolveBridgeTopology,
+  resolveHostPlatform,
+} from './backends/ollama-host-bridge';
 import { OllamaBackend } from './backends/ollama.backend';
 
 export interface OllamaInstallStatus {
@@ -10,6 +16,13 @@ export interface OllamaInstallStatus {
   endpointUrl: string;
   /** True when host Ollama is likely installed but unreachable from the Hub container. */
   bridgeUnreachable?: boolean;
+  /**
+   * How the bridge hop failed. `filtered` means a host firewall is dropping the
+   * packets — the operator must fix the firewall, not Ollama.
+   */
+  failureMode?: BridgeFailureMode;
+  /** Copy-pasteable command that fixes `filtered`. Runs on the host, not in the container. */
+  remediationCommand?: string;
   /** User-facing endpoint label when ready. */
   displayEndpoint?: string;
   /** Actionable guidance when not ready. */
@@ -31,10 +44,10 @@ export class OllamaInstallerService {
       const endpointHealth = await this.ollamaBackend.healthCheck();
       const endpointUrl = this.ollamaBackend.getBaseUrl();
       const ready = endpointHealth.running && endpointHealth.healthy;
-      const { bridgeUnreachable, hint } = await this.buildUnreachableHint(ready, endpointHealth.error, endpointUrl);
+      const { bridgeUnreachable, failureMode, hint, remediationCommand } = await this.buildUnreachableHint(ready, endpointHealth.error, endpointUrl);
 
       this.logger.info(
-        `[OllamaInstaller] Health check — ready=${ready} running=${endpointHealth.running} url=${endpointUrl} bridgeUnreachable=${bridgeUnreachable}`,
+        `[OllamaInstaller] Health check — ready=${ready} running=${endpointHealth.running} url=${endpointUrl} bridgeUnreachable=${bridgeUnreachable} failureMode=${failureMode}`,
       );
 
       return {
@@ -42,6 +55,8 @@ export class OllamaInstallerService {
         running: endpointHealth.running,
         endpointUrl,
         bridgeUnreachable,
+        failureMode,
+        remediationCommand,
         displayEndpoint: ready ? endpointUrl : undefined,
         hint,
         error: ready ? undefined : endpointHealth.error,
@@ -50,12 +65,14 @@ export class OllamaInstallerService {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[OllamaInstaller] Health check threw unexpectedly: ${msg}`);
       const endpointUrl = this.ollamaBackend.getBaseUrl();
-      const { bridgeUnreachable, hint } = await this.buildUnreachableHint(false, msg, endpointUrl);
+      const { bridgeUnreachable, failureMode, hint, remediationCommand } = await this.buildUnreachableHint(false, msg, endpointUrl);
       return {
         ready: false,
         running: false,
         endpointUrl,
         bridgeUnreachable,
+        failureMode,
+        remediationCommand,
         hint,
         error: msg,
       };
@@ -66,16 +83,31 @@ export class OllamaInstallerService {
     ready: boolean,
     error: string | undefined,
     endpointUrl: string,
-  ): Promise<{ bridgeUnreachable: boolean; hint?: string }> {
-    if (ready) return { bridgeUnreachable: false, hint: undefined };
-    if (!isBridgeConnectionRefused(error, endpointUrl)) {
-      return { bridgeUnreachable: false, hint: undefined };
+  ): Promise<{ bridgeUnreachable: boolean; failureMode: BridgeFailureMode; hint?: string; remediationCommand?: string }> {
+    if (ready) return { bridgeUnreachable: false, failureMode: 'none', hint: undefined };
+
+    const failureMode = classifyBridgeFailure(error, endpointUrl);
+    if (failureMode === 'none') {
+      return { bridgeUnreachable: false, failureMode, hint: undefined };
     }
 
     const hostProbe = await this.hostMetrics.readHostProbe();
+    // Only the `filtered` path needs the concrete addresses, and resolving them
+    // costs a DNS lookup — skip it otherwise.
+    const topology = failureMode === 'filtered' ? await resolveBridgeTopology(endpointUrl) : undefined;
+    const remediation = buildBridgeRemediation({
+      mode: failureMode,
+      hostPlatform: hostProbe?.platform ?? resolveHostPlatform(),
+      topology,
+      firewall: hostProbe?.firewall,
+      service: 'Ollama',
+    });
+
     return {
       bridgeUnreachable: true,
-      hint: buildBridgeConnectionHint(hostProbe?.platform ?? resolveHostPlatform()),
+      failureMode,
+      hint: remediation.hint,
+      remediationCommand: remediation.command,
     };
   }
 
@@ -94,9 +126,10 @@ export class OllamaInstallerService {
       }
 
       const hint = status.hint ?? 'Install it from ollama.com and start it on the host, then re-check.';
+      const command = status.remediationCommand ? `\n\n    ${status.remediationCommand}\n` : '';
       return {
         success: false,
-        message: `Ollama isn't reachable at ${status.endpointUrl}. ${hint}`,
+        message: `Ollama isn't reachable at ${status.endpointUrl}. ${hint}${command}`,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

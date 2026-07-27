@@ -165,6 +165,8 @@ let api: {
     running: boolean;
     endpointUrl: string;
     bridgeUnreachable?: boolean;
+    failureMode?: 'filtered' | 'refused' | 'dns' | 'none';
+    remediationCommand?: string;
     displayEndpoint?: string;
     hint?: string;
     error?: string;
@@ -219,7 +221,7 @@ describe('AiSetupStep', () => {
     api.profileReject = true;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('renders the system overview with tier badge and GPU for high-tier hardware', async () => {
@@ -849,7 +851,7 @@ describe('AiSetupStep', () => {
     api.rescanOk = false;
     await user.click(screen.getByTestId('rescan-btn'));
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('shows the Ollama setup card when Ollama is not detected on the host', async () => {
@@ -877,6 +879,42 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
     expect(screen.getByText(/may already be installed on this machine/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the firewall command and hides auto-install when the bridge is filtered', async () => {
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      error: 'timeout of 5000ms exceeded',
+      hint: "The Hub container's packets to 172.17.0.1:11434 are being dropped by ufw — this is a host firewall problem, not a problem with Ollama.",
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
+
+    expect(screen.getByTestId('ollama-remediation-command')).toHaveTextContent(
+      'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    );
+    expect(screen.getByText(/not inside the container/i)).toBeInTheDocument();
+    // Ollama is installed and running; offering to install it would mislead.
+    expect(screen.queryByRole('button', { name: /Install Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('surfaces the bridge diagnosis on the profile-failure screen instead of blaming hardware detection', async () => {
+    api.profileReject = true;
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      hint: 'The Hub container’s packets are being dropped by ufw — this is a host firewall problem.',
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
+
+    expect(screen.getByText(/host firewall problem/i)).toBeInTheDocument();
+    expect(screen.getByText(/sudo ufw allow from 172\.18\.0\.0\/16/)).toBeInTheDocument();
   });
 
   it('disables Continue while Ollama is not reachable', async () => {
