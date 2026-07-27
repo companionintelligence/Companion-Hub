@@ -223,6 +223,11 @@ export const GeneralActionsContainer = () => {
     }
 
     if (updateAvailable) {
+      const release = version.releases?.find((r) => r.version === latestVersion) ?? version.releases?.[0];
+      const releaseBody = release?.body?.trim() ?? '';
+      // Backend currently stubs body as "Release <version>"; skip that redundancy.
+      const showBody = Boolean(releaseBody) && releaseBody !== `Release ${release?.version}`;
+
       return (
         <div>
           <Button onClick={handleUpdate} disabled={updating} className="mb-4" data-testid="hub-update-btn">
@@ -237,19 +242,21 @@ export const GeneralActionsContainer = () => {
               t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: latestVersion })
             )}
           </Button>
-          {version.releases?.map((release) => (
-            <Card key={release.version} className="mt-3 relative overflow-hidden w-full md:w-2/3">
-              <div className="absolute -right-6 -top-6 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
-                <Star size={80} fill="currentColor" />
+          {release ? (
+            <Card className="mt-3 relative overflow-hidden w-full max-w-md" data-testid="hub-latest-release-card">
+              <div className="absolute -right-3 -top-3 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
+                <Star size={40} fill="currentColor" />
               </div>
-              <CardHeader>
-                <CardTitle>{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
+              <CardHeader className={showBody ? 'p-3 pb-2' : 'p-3'}>
+                <CardTitle className="text-base">{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
               </CardHeader>
-              <CardContent>
-                <Markdown className="" content={release.body} />
-              </CardContent>
+              {showBody ? (
+                <CardContent className="p-3 pt-0">
+                  <Markdown className="text-sm prose-sm" content={release.body} />
+                </CardContent>
+              ) : null}
             </Card>
-          ))}
+          ) : null}
         </div>
       );
     }

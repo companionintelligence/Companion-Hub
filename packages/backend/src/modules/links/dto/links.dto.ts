@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 
-export const linkSchema = z.object({
+const linkSchema = z.object({
   id: z.number(),
   title: z.string().min(1).max(20),
   description: z.string().max(50).nullable(),

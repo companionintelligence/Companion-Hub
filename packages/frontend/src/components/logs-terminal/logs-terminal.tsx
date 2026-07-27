@@ -52,6 +52,7 @@ export const LogsTerminal = (props: Props) => {
           <div className="w-full sm:w-48">
             <InputGroup
               id="max-lines"
+              size="sm"
               groupPrefix={t('APP_LOGS_TAB_MAX_LINES')}
               type="number"
               min={1}

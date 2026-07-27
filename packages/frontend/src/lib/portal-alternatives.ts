@@ -31,7 +31,7 @@ function normalizeAlternative(a: Partial<AltAlternative> & { name: string }): Al
 }
 
 /** Normalizes portal JSON to onboarding/store types (required string fields). */
-export function normalizeAlternativesPayload(raw: unknown): AltsCategory {
+function normalizeAlternativesPayload(raw: unknown): AltsCategory {
   if (raw === null || typeof raw !== 'object') return {};
   const out: AltsCategory = {};
   for (const [category, entries] of Object.entries(raw as Record<string, unknown>)) {
@@ -63,7 +63,7 @@ export function normalizeAlternativesPayload(raw: unknown): AltsCategory {
   return out;
 }
 
-export async function fetchPortalAlternatives(): Promise<AltsCategory> {
+async function fetchPortalAlternatives(): Promise<AltsCategory> {
   const result = await sdkResult(getStoreAlternatives());
   if (result.ok) {
     return normalizeAlternativesPayload(result.data);
@@ -92,7 +92,7 @@ export async function fetchPortalAlternatives(): Promise<AltsCategory> {
   throw new Error(`Failed to load alternatives (${result.status})${detail}`);
 }
 
-export const portalAlternativesQueryKey = ['portal', 'store-alternatives'] as const;
+const portalAlternativesQueryKey = ['portal', 'store-alternatives'] as const;
 
 export function portalAlternativesQueryOptions() {
   return {

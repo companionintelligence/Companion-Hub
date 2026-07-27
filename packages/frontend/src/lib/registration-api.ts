@@ -11,15 +11,9 @@ import {
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import type { RegistrationStateDrift } from '@/lib/registration-state-drift';
-import { sdkResult, unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
+import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
-export type DeviceRegistrationInfo = {
-  device_id?: string;
-  ci_cloud_url?: string;
-  registration_url?: string | null;
-};
-
-export type PairDeviceResult = {
+type PairDeviceResult = {
   success?: boolean;
   message?: string;
   domain?: string;
@@ -28,12 +22,6 @@ export type PairDeviceResult = {
 
 export async function fetchDeviceRegistrationInfoResult() {
   return sdkResult(getDeviceId());
-}
-
-export async function fetchDeviceRegistrationInfo(): Promise<DeviceRegistrationInfo | null> {
-  const result = await fetchDeviceRegistrationInfoResult();
-  if (!result.ok) return null;
-  return (result.data ?? null) as DeviceRegistrationInfo | null;
 }
 
 export async function fetchRegistrationStatus(): Promise<RegistrationStatus | null> {
@@ -74,16 +62,11 @@ export async function markRegistrationRestoreIntentDetailed(): Promise<{
   return { ok: result.ok, data: (result.data ?? {}) as { success?: boolean; message?: string } };
 }
 
-/** Throws on failure — for callers that need strict error propagation. */
-export async function fetchRegistrationStatusStrict(): Promise<RegistrationStatus> {
-  return (await unwrapSdk(getStatus())) as RegistrationStatus;
-}
-
 export async function fetchRegistrationStatusResult() {
   return sdkResult(getStatus());
 }
 
-export type ReconnectTunnelResult = { recovered: boolean; action?: 're_pair' | 'restart'; reason: string };
+type ReconnectTunnelResult = { recovered: boolean; action?: 're_pair' | 'restart'; reason: string };
 
 /**
  * Ask the Hub to restore public/remote access for a registered but

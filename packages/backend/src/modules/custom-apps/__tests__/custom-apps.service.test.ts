@@ -21,7 +21,7 @@ describe('CustomAppService', () => {
     logger = mock<LoggerService>();
 
     configService.get.mockImplementation((key) => {
-      if (key === 'directories') return { dataDir: '/data' } as any;
+      if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
       if (key === 'demoMode') return false;
       return null;
     });
