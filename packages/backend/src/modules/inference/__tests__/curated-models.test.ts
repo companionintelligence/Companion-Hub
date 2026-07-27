@@ -63,11 +63,17 @@ describe('curated-models (TOON catalog)', () => {
   });
 
   it('includes GLM 5.2 in the large-models browse group', () => {
-    const glm = byId.get('glm-5-2-cloud');
+    const glm = byId.get('glm-5-2');
     expect(glm).toBeDefined();
-    expect(glm?.backendModelId).toBe('glm-5.2:cloud');
+    expect(glm?.backendModelId).toBe('hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL');
     expect(glm?.parameterScale).toBeGreaterThan(70);
     expect(glm?.tiers.high).toBe('recommended');
+  });
+
+  it('never surfaces a cloud-proxy (`:cloud`-tagged) model — this catalog is local-only', () => {
+    for (const m of llms) {
+      expect(m.backendModelId.endsWith(':cloud'), `${m.id} must not be a :cloud proxy`).toBe(false);
+    }
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {

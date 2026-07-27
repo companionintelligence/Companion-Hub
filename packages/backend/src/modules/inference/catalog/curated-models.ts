@@ -9,10 +9,18 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // exceptions: rows whose backendModelId carries a `namespace/model:tag` shape (e.g.
 // `gabegoodhart/minimax-m2`, `bjoernb/gemma4-26b-think`, `jordimurgo/medgemma1.5-thinking`) pull a
 // community quant/fine-tune from an individual publisher rather than the official library — quality and
-// provenance are that publisher's, not vetted the way official-library rows are; and `inkling`, which has
-// no ollama.com/library listing at all, pulls Thinking Machines' Inkling directly from Unsloth's GGUF
-// repack on Hugging Face via Ollama's `hf.co/{repo}:{quant}` pull syntax
+// provenance are that publisher's, not vetted the way official-library rows are; and rows like `inkling`
+// and `glm-5-2`, which have no (or no longer any) ollama.com/library listing, pull the GGUF repack
+// directly from Hugging Face via Ollama's `hf.co/{repo}:{quant}` pull syntax
 // (`ollama pull hf.co/unsloth/inkling-GGUF:UD-Q4_K_XL`).
+//
+// LOCAL ONLY: this catalog must never contain an ollama `:cloud`-tagged backendModelId. Those proxy
+// inference through Ollama Cloud's own API rather than running on the user's hardware, which breaks the
+// hardware-fit recommender (a cloud row's nominal "size" trivially "fits" any budget, so it can silently
+// win every "best local model for this box" comparison — see `isCloudProxyModel` in
+// model-registry.service.ts, added after this exact bug surfaced during the 2026-07-27 audit below). If a
+// model is only available as `:cloud` on Ollama, either find a real local GGUF (as `glm-5-2` does, via
+// `hf.co/unsloth/GLM-5.2-GGUF`) or leave it out of the catalog rather than adding the cloud tag.
 //
 // KNOWN LIMITATION (2026-07-27 audit): the 2026-07-27 audit pass caught the session's own web-research
 // tools fabricating convincing, internally-consistent pages for at least two model names this codebase's
@@ -116,7 +124,7 @@ llms[69|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|14||0|1|1|0|105.3|0.92|5.5
   glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI|||0|0|1|0|||
   minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|28||1|0|1|0|||
-  glm-5-2-cloud|glm-5.2:cloud|GLM 5.2|reasoning|753|1|high|976|Z AI|51||1|0|1|0|||
+  glm-5-2|hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL|GLM 5.2|reasoning|754|467|high|1000|Z AI|51||1|0|1|0|||
   laguna-xs-2-1|laguna-xs-2.1:latest|Laguna XS 2.1|coding|33|20|medium|256|Poolside|||1|0|1|0|||
   laguna-s-2-1|laguna-s-2.1:latest|Laguna S 2.1|coding|118|75|high|256|Poolside|||1|0|1|0|||
   ornith-9b|ornith:9b|Ornith 9B|coding|9|5.6|low|256|Deep Reinforce|||1|0|1|0|||
@@ -188,7 +196,7 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'deepseek-r1-671b': 37, // DeepSeek-R1 (MoE)
   'minimax-m2-community-230b': 10, // MiniMax M2 (MoE) — official ollama.com listing shows retired 2026-06-16;
   // AA suggests MiniMax-M2.1 instead. Kept on the community namespace pending a verified successor row.
-  'glm-5-2-cloud': 40, // GLM-5.2 MoE active params (cloud tag)
+  'glm-5-2': 40, // GLM-5.2 MoE active params (hf.co GGUF pull, not the ollama.com :cloud tag)
   'laguna-xs-2-1': 3, // Laguna XS 2.1 — 33B-A3B MoE (Poolside)
   'laguna-s-2-1': 8, // Laguna S 2.1 — 118B-A8B MoE (Poolside)
   'lfm2-5-8b': 1.5, // LFM2.5 — 8.3B-A1.5B MoE (Liquid AI)
