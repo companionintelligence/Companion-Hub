@@ -1170,11 +1170,13 @@ describe('AuthController', () => {
       expect(cache.set).not.toHaveBeenCalled();
     });
 
-    it('consume plants the session cookie and redirects to the stored next, consuming the ticket', async () => {
+    it('consume plants a DELEGATED session cookie and redirects to the stored next, consuming the ticket', async () => {
       mockHubOrigin();
       config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
       const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      sessionManager.createSession.mockResolvedValue('browser-sess');
 
       // The real desktop flow arrives as a user-initiated navigation (Sec-Fetch-Site: none).
       const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
@@ -1184,8 +1186,70 @@ describe('AuthController', () => {
 
       expect(cache.get).toHaveBeenCalledWith('browser_handoff:ticket-abc');
       expect(cache.del).toHaveBeenCalledWith('browser_handoff:ticket-abc');
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sess-1', expect.objectContaining({ httpOnly: true }));
+      // The browser must NOT receive the minting (desktop) session id: sharing one id
+      // let the browser's first-load rotation delete the desktop's session (#944).
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
       expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it('consume keeps a live session the browser already holds for the same user', async () => {
+      mockHubOrigin();
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+
+      const req = {
+        cookies: { 'ci-hub-sid': 'browser-already-here' },
+        get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      // Re-minting on every open would leave a trail of week-long sessions behind.
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it('consume replaces a session the browser holds for a DIFFERENT user', async () => {
+      mockHubOrigin();
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      sessionManager.resolveSessionUserId.mockImplementation(((id: string) => (id === 'sess-1' ? 7 : 9)) as never);
+      sessionManager.createSession.mockResolvedValue('browser-sess');
+
+      const req = {
+        cookies: { 'ci-hub-sid': 'someone-elses-session' },
+        get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
+      expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it('consume redirects home without delegating when the minting session died inside the ticket window', async () => {
+      mockHubOrigin();
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-gone', next }));
+      sessionManager.resolveSessionUserId.mockReturnValue(null as never);
+
+      const req = { cookies: {}, get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)), headers: {} } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith('/');
     });
 
     it.each([

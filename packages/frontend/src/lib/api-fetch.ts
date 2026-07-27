@@ -157,7 +157,15 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
       response.status === 401 &&
       !path.startsWith('/api/auth/login') &&
       !path.startsWith('/api/auth/logout') &&
-      !path.startsWith('/api/auth/session/refresh')
+      !path.startsWith('/api/auth/session/refresh') &&
+      // The browser-handoff mint is a best-effort bridge on the way to an external
+      // open (`openExternalWithHubSession`), and it is documented as fail-open. Left
+      // to the generic handler its 401 tears the page down mid-click — and because
+      // `openExternal` first awaits a DNS pre-warm, that navigation also aborts the
+      // pending open, so the user gets neither the browser tab nor the flow, just a
+      // login screen. Let it fall through to the plain external open instead; a
+      // genuinely dead session still surfaces on the next polled request.
+      !path.startsWith('/api/auth/browser-handoff/mint')
     ) {
       void import('@/lib/session-expired')
         .then(({ handleSessionExpired }) => handleSessionExpired())

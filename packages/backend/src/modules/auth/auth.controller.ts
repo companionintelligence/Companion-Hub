@@ -311,7 +311,8 @@ export class AuthController {
    * (opening a forward-auth'd app, or the memory-connect consent round-trip), every
    * Hub hop bounces to a second /login. This mints a single-use, 60s ticket bound to
    * the caller's current session. The desktop app then opens the returned Hub URL in
-   * the system browser, which plants the cookie (step 2) before continuing to `next`.
+   * the system browser, which plants a cookie for a delegated session of the same user
+   * (step 2) before continuing to `next`.
    *
    * Returns `{ url: null }` when no public Hub origin is known yet, so the caller
    * fails open to a plain external open rather than dead-ending.
@@ -346,10 +347,11 @@ export class AuthController {
   /**
    * Desktop session handoff — step 2 (consume). No AuthGuard: the single-use ticket
    * IS the credential. Reached as a top-level navigation in the system browser, it
-   * plants the Hub session cookie for the public Hub host (so the subsequent
-   * memory-connect / forward-auth hops authenticate), then redirects to the
-   * server-stored `next`. A missing, expired, or replayed ticket lands on `/`
-   * without setting anything.
+   * mints a DELEGATED session for the ticket's user and plants that as the Hub session
+   * cookie for the public Hub host (so the subsequent memory-connect / forward-auth
+   * hops authenticate), then redirects to the server-stored `next`. A missing,
+   * expired, or replayed ticket — or a minting session that died inside the window —
+   * lands on `/` without setting anything.
    *
    * Login-CSRF hardening: because this plants a session cookie, an actor who can
    * mint a ticket (any authenticated Hub session) could otherwise lure a victim to
@@ -401,7 +403,35 @@ export class AuthController {
       return res.redirect('/');
     }
 
-    await this.setSessionCookie(res, sessionId, req);
+    // Delegate a session, don't hand the desktop's own id over. Re-planting the SAME
+    // id in the browser made the two contexts destroy each other: the handed-off
+    // browser has no `ci-hub-session-issued-at` in its localStorage, so the Hub SPA
+    // treats the session as legacy and rotates it on first load — and `rotateSession`
+    // DELETES the id it rotates. The desktop was left holding a deleted session and
+    // 401'd on its next call, collapsing to /login mid-flow (#944).
+    //
+    // A handoff means "log this browser in as me", so it should behave like any other
+    // browser login: its own session id, its own lifecycle, rotating without reaching
+    // back into the desktop.
+    const userId = this.sessionManager.resolveSessionUserId(sessionId);
+    if (userId === null) {
+      // The minting session died inside the 60s ticket window (logged out, rotated, or
+      // expired). Nothing to delegate — land on the Hub rather than plant a dead id.
+      return res.redirect('/');
+    }
+
+    // This browser may already hold a live session for the SAME user (an earlier
+    // handoff, or a direct login here). Keep it: re-minting on every open would leave a
+    // trail of week-long sessions behind, and there is nothing to improve about a
+    // session that already authenticates. A session belonging to anyone else is
+    // replaced, not reused.
+    const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
+    if (existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId) {
+      return res.redirect(next);
+    }
+
+    const browserSessionId = await this.sessionManager.createSession(userId);
+    await this.setSessionCookie(res, browserSessionId, req);
     return res.redirect(next);
   }
 
