@@ -15,12 +15,12 @@ const displayNameSchema = z
   .max(50)
   .regex(/^\P{Cc}+$/u);
 
-export const createCustomAppSchema = z.object({
+const createCustomAppSchema = z.object({
   name: displayNameSchema,
   config: dynamicComposeSchema,
 });
 
-export const createPortExposeAppSchema = z.object({
+const createPortExposeAppSchema = z.object({
   name: displayNameSchema,
   port: z.number().min(1024).max(65535),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']),
@@ -35,11 +35,11 @@ export class CreateCustomAppDto extends createZodDto(createCustomAppSchema) {}
 
 export class CreatePortExposeAppDto extends createZodDto(createPortExposeAppSchema) {}
 
-export const updatePortExposeAppSchema = createPortExposeAppSchema.omit({ name: true });
+const updatePortExposeAppSchema = createPortExposeAppSchema.omit({ name: true });
 
 export class UpdatePortExposeAppDto extends createZodDto(updatePortExposeAppSchema) {}
 
-export const createCustomAppResponseSchema = z.object({
+const createCustomAppResponseSchema = z.object({
   appUrn: z.string(),
   appName: z.string(),
   storeId: z.string(),
@@ -47,13 +47,13 @@ export const createCustomAppResponseSchema = z.object({
 
 export class CreateCustomAppResponseDto extends createZodDto(createCustomAppResponseSchema) {}
 
-export const updateCustomAppSchema = z.object({
+const updateCustomAppSchema = z.object({
   config: dynamicComposeSchema,
 });
 
 export class UpdateCustomAppDto extends createZodDto(updateCustomAppSchema) {}
 
-export const updateAppMetadataDto = z.object({
+const updateAppMetadataDto = z.object({
   data: z.string(),
 });
 

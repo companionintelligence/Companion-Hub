@@ -313,14 +313,14 @@ const serviceSchemaV2Object = z.object({
   platform: z.string().optional(),
 });
 
-export const serviceSchemaV2 = serviceSchemaV2Object.superRefine((service, ctx) => {
+export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
   assertCustomAppServiceSecurity(service, ctx);
 });
 
-export const dynamicComposeSchemaV2 = z
+export const dynamicComposeSchema = z
   .object({
     schemaVersion: z.literal(2),
-    services: serviceSchemaV2.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+    services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
     overrides: z
       .array(
         z.object({
@@ -338,13 +338,9 @@ export const dynamicComposeSchemaV2 = z
     }
   });
 
-export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchemaV2]);
-
-// Change when introducing breaking changes
-export const serviceSchema = serviceSchemaV2;
-export const dynamicComposeSchema = dynamicComposeSchemaV2;
+export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
 
 export type DynamicCompose = z.output<typeof dynamicComposeSchema>;
-export type DependsOn = z.output<typeof serviceSchemaV2.shape.dependsOn>;
+export type DependsOn = z.output<typeof serviceSchema.shape.dependsOn>;
 export type ServiceInput = z.input<typeof serviceSchema>;
 export type Service = z.output<typeof serviceSchema>;
