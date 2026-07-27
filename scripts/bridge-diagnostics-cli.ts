@@ -25,7 +25,22 @@ export interface BridgeServiceSpec {
   port: number;
 }
 
-export type BridgeVerdict = 'ok' | 'filtered' | 'absent' | 'unknown';
+/**
+ * - `filtered` — the container's connect expired with no answer: a packet filter dropped it.
+ * - `refused`  — an RST came back immediately: the bridge works, the service is bound to
+ *   loopback only (Ollama's default) or listening on a different address. A firewall rule
+ *   cannot fix this, so it must not be reported as a firewall problem.
+ * - `dns`      — `host.docker.internal` did not resolve inside the container.
+ */
+export type BridgeVerdict = 'ok' | 'filtered' | 'refused' | 'dns' | 'absent' | 'unknown';
+
+/** Exit codes of the injected container probe, mapped back to a verdict. */
+const PROBE_EXIT_VERDICT: Record<number, BridgeVerdict> = {
+  0: 'ok',
+  1: 'filtered',
+  2: 'refused',
+  3: 'dns',
+};
 
 export interface BridgeCheckResult {
   label: string;
@@ -50,6 +65,12 @@ function docker(args: string[]): { ok: boolean; stdout: string } {
 /** TCP connect from the host itself. Proves the service is listening. */
 export function probeHostPort(port: number, host = '127.0.0.1', timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
   return new Promise((resolve) => {
+    // net.Socket#connect throws synchronously on an out-of-range port, which
+    // would otherwise reject out of the doctor run and lose the whole report.
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      resolve(false);
+      return;
+    }
     const socket = new net.Socket();
     const done = (reachable: boolean) => {
       socket.destroy();
@@ -67,14 +88,25 @@ export function probeHostPort(port: number, host = '127.0.0.1', timeoutMs = PROB
  * TCP connect from inside the running Hub container, over the same host-gateway
  * path the backend uses. Node is always present in this image, so no extra
  * tooling is required.
+ *
+ * The exit code carries WHY it failed, not just that it did. A refusal is an
+ * instant RST and proves the bridge works, so collapsing it into the timeout
+ * case would blame a firewall for a service that is merely bound to loopback.
  */
-export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS): boolean {
-  const script = `const net=require('net');const s=new net.Socket();s.setTimeout(${timeoutMs});const end=c=>{s.destroy();process.exit(c)};s.once('connect',()=>end(0));s.once('timeout',()=>end(1));s.once('error',()=>end(1));s.connect(${port},'host.docker.internal');`;
+export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS): BridgeVerdict {
+  const script =
+    `const net=require('net');const s=new net.Socket();s.setTimeout(${timeoutMs});` +
+    'const end=c=>{s.destroy();process.exit(c)};' +
+    "s.once('connect',()=>end(0));s.once('timeout',()=>end(1));" +
+    "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?2:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?3:1));" +
+    `s.connect(${port},'host.docker.internal');`;
   const result = spawnSync('docker', ['exec', HUB_CONTAINER, 'node', '-e', script], {
     encoding: 'utf8',
     timeout: timeoutMs + 7000,
   });
-  return result.status === 0;
+  // A killed or failed `docker exec` says nothing about the bridge.
+  if (result.status === null) return 'unknown';
+  return PROBE_EXIT_VERDICT[result.status] ?? 'unknown';
 }
 
 export function isHubContainerRunning(): boolean {
@@ -127,15 +159,11 @@ export function resolveHostGatewayIp(): string | undefined {
  * container is healthy.
  */
 export function resolveBridgeServices(envFileName: string): BridgeServiceSpec[] {
-  let vars: Record<string, string> = {};
-  try {
-    vars = parseEnvFile(envFileName);
-  } catch {
-    vars = {};
-  }
+  // parseEnvFile already treats a missing or unreadable file as empty.
+  const vars = parseEnvFile(envFileName);
   const port = (value: string | undefined, fallback: number) => {
     const parsed = Number(value);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+    return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
   };
 
   return [
@@ -163,26 +191,26 @@ export async function checkBridgeService(spec: BridgeServiceSpec): Promise<Bridg
     return { ...spec, hostReachable, containerReachable: false, verdict: 'absent' };
   }
 
-  const containerReachable = probeFromHubContainer(spec.port);
-  return {
-    ...spec,
-    hostReachable,
-    containerReachable,
-    verdict: containerReachable ? 'ok' : 'filtered',
-  };
+  const verdict = probeFromHubContainer(spec.port);
+  return { ...spec, hostReachable, containerReachable: verdict === 'ok', verdict };
 }
+
+const VERDICT_DETAIL: Record<BridgeVerdict, (port: number) => string> = {
+  ok: (port) => `reachable from container (:${port})`,
+  filtered: (port) => `BLOCKED — answers on the host but not from the Hub container (:${port})`,
+  // The host probe used 127.0.0.1; a refusal over the bridge means the listener
+  // is bound to loopback only, which no firewall rule can fix.
+  refused: (port) => `REFUSED — listening on loopback only, not on the host gateway (:${port})`,
+  dns: (port) => `UNRESOLVED — host.docker.internal does not resolve in the container (:${port})`,
+  unknown: (port) => `unknown — the container probe did not complete (:${port})`,
+  absent: (port) => `not listening on the host (:${port})`,
+};
 
 export function formatBridgeLines(results: BridgeCheckResult[]): string[] {
   const pad = (label: string) => label.padEnd(28, ' ');
   return results
     .filter((result) => result.verdict !== 'absent')
-    .map((result) => {
-      const detail =
-        result.verdict === 'ok'
-          ? `reachable from container (:${result.port})`
-          : `BLOCKED — answers on the host but not from the Hub container (:${result.port})`;
-      return `  ${pad(result.label)} ${detail}`;
-    });
+    .map((result) => `  ${pad(result.label)} ${VERDICT_DETAIL[result.verdict](result.port)}`);
 }
 
 /**
@@ -192,6 +220,17 @@ export function formatBridgeLines(results: BridgeCheckResult[]): string[] {
  * because that is the only vantage point where a firewalled bridge is visible.
  */
 export async function runBridgeDoctorSection(envFileName: string): Promise<BridgeDoctorSection> {
+  try {
+    return await collectBridgeDoctorSection(envFileName);
+  } catch (error) {
+    // Match runNetworkDoctorSection: a failed probe degrades to one line rather
+    // than taking down the whole `cihub doctor` report.
+    const message = error instanceof Error ? error.message : String(error);
+    return { lines: [`Docker bridge            unavailable (${message})`], issueCount: 0, remediationCommands: [] };
+  }
+}
+
+async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDoctorSection> {
   if (!isHubContainerRunning()) {
     return {
       lines: ['Docker bridge            skipped (Hub container not running — start the stack first)'],
@@ -201,35 +240,56 @@ export async function runBridgeDoctorSection(envFileName: string): Promise<Bridg
   }
 
   const services = resolveBridgeServices(envFileName);
-  const results: BridgeCheckResult[] = [];
-  for (const spec of services) {
-    results.push(await checkBridgeService(spec));
-  }
+  // The host-side probes are independent and each waits out PROBE_TIMEOUT_MS
+  // when nothing answers, so run them together rather than serially.
+  const hostReachable = await Promise.all(services.map((spec) => probeHostPort(spec.port)));
+  const results: BridgeCheckResult[] = services.map((spec, index) => {
+    if (!hostReachable[index]) return { ...spec, hostReachable: false, containerReachable: false, verdict: 'absent' };
+    // spawnSync blocks the event loop, so these stay sequential.
+    const verdict = probeFromHubContainer(spec.port);
+    return { ...spec, hostReachable: true, containerReachable: verdict === 'ok', verdict };
+  });
 
   const blocked = results.filter((result) => result.verdict === 'filtered');
+  const refused = results.filter((result) => result.verdict === 'refused');
+  const unresolved = results.filter((result) => result.verdict === 'dns');
   const checked = results.filter((result) => result.verdict !== 'absent');
 
   if (checked.length === 0) {
     return { lines: ['Docker bridge            no host services listening'], issueCount: 0, remediationCommands: [] };
   }
 
-  const lines = [`Docker bridge            ${blocked.length === 0 ? 'ok' : `${blocked.length} port(s) blocked`}`, ...formatBridgeLines(results)];
+  const issueCount = blocked.length + refused.length + unresolved.length;
+  const lines = [`Docker bridge            ${issueCount === 0 ? 'ok' : `${issueCount} port(s) unreachable`}`, ...formatBridgeLines(results)];
 
-  if (blocked.length === 0) {
+  if (issueCount === 0) {
     return { lines, issueCount: 0, remediationCommands: [] };
   }
 
-  const cidr = resolveHubContainerCidr();
-  const gateway = resolveHostGatewayIp();
-  const remediationCommands =
-    cidr && gateway ? blocked.map((result) => `sudo ufw allow from ${cidr} to ${gateway} port ${result.port} proto tcp`) : [];
+  let remediationCommands: string[] = [];
+  if (blocked.length > 0) {
+    const cidr = resolveHubContainerCidr();
+    const gateway = resolveHostGatewayIp();
+    remediationCommands = cidr && gateway ? blocked.map((result) => `sudo ufw allow from ${cidr} to ${gateway} port ${result.port} proto tcp`) : [];
 
-  lines.push(
-    '  A host firewall is dropping these — the services themselves are running.',
-    ...(remediationCommands.length > 0
-      ? ['  Run on the host (ufw shown; adapt for firewalld/nftables):', ...remediationCommands.map((command) => `    ${command}`)]
-      : ['  Allow the Hub container network to reach the host gateway on these ports.']),
-  );
+    lines.push(
+      '  A host firewall is dropping these — the services themselves are running.',
+      ...(remediationCommands.length > 0
+        ? ['  Run on the host (ufw shown; adapt for firewalld/nftables):', ...remediationCommands.map((command) => `    ${command}`)]
+        : ['  Allow the Hub container network to reach the host gateway on these ports.']),
+    );
+  }
 
-  return { lines, issueCount: blocked.length, remediationCommands };
+  if (refused.length > 0) {
+    lines.push(
+      '  These answer on 127.0.0.1 but refuse the host gateway — they are bound to loopback.',
+      '  Rebind them to all interfaces (for Ollama: OLLAMA_HOST=0.0.0.0). A firewall rule will not help.',
+    );
+  }
+
+  if (unresolved.length > 0) {
+    lines.push('  host.docker.internal does not resolve in the Hub container — recreate the stack so compose reapplies extra_hosts.');
+  }
+
+  return { lines, issueCount, remediationCommands };
 }

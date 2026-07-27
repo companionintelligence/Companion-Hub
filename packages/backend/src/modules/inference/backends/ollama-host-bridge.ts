@@ -189,9 +189,8 @@ function resolveContainerCidr(): string | undefined {
 
 /** Gather the real addresses for the failed hop so guidance can name them. */
 export async function resolveBridgeTopology(configuredUrl?: string): Promise<BridgeTopology> {
-  const [gatewayIp] = await Promise.all([resolveGatewayIp(configuredUrl)]);
   return {
-    gatewayIp,
+    gatewayIp: await resolveGatewayIp(configuredUrl),
     containerCidr: resolveContainerCidr(),
     port: parseEndpointPort(configuredUrl),
   };
@@ -223,10 +222,19 @@ export function buildBridgeConnectionHint(hostPlatform?: string): string {
   );
 }
 
-/** Firewall rule that permits the container network to reach the host gateway on one port. */
+/**
+ * Firewall rule that permits the container network to reach the host gateway on
+ * one port.
+ *
+ * Returns undefined when the host probe affirmatively reported no packet filter
+ * (`kind: 'none'`, which is also what a darwin/win32 host records) — emitting a
+ * Linux rule there contradicts the probe and hands a macOS or Windows operator
+ * a command their machine cannot run.
+ */
 export function buildFirewallAllowCommand(topology: BridgeTopology, firewall?: HostFirewallInfo): string | undefined {
   const { containerCidr, gatewayIp, port } = topology;
   if (!containerCidr || !gatewayIp || !port) return undefined;
+  if (firewall?.kind === 'none') return undefined;
 
   switch (firewall?.kind) {
     case 'firewalld':
@@ -236,8 +244,12 @@ export function buildFirewallAllowCommand(topology: BridgeTopology, firewall?: H
         `port port=${port} protocol=tcp accept' && sudo firewall-cmd --reload`
       );
     case 'nftables':
-      return `sudo nft add rule inet filter input ip saddr ${containerCidr} ip daddr ${gatewayIp} tcp dport ${port} accept`;
+      // `insert` rather than `add`: `add` appends past the existing drop rule,
+      // which already matched, so the accept would never be reached.
+      return `sudo nft insert rule inet filter input ip saddr ${containerCidr} ip daddr ${gatewayIp} tcp dport ${port} accept`;
     case 'iptables':
+      // -I inserts at the top of INPUT. Not persisted across reboot — the host
+      // needs iptables-persistent (or equivalent) to keep it.
       return `sudo iptables -I INPUT -s ${containerCidr} -d ${gatewayIp} -p tcp --dport ${port} -j ACCEPT`;
     default:
       // ufw is the common case on Ubuntu hosts, and is the safe default to show
@@ -286,7 +298,11 @@ export function buildBridgeRemediation(input: BridgeRemediationInput): BridgeRem
 
   if (mode === 'filtered') {
     const target = topology?.gatewayIp && topology.port ? `${topology.gatewayIp}:${topology.port}` : 'the host gateway';
-    const command = buildFirewallAllowCommand(topology ?? {}, firewall);
+    // A packet-filter rule is Linux-only. Docker Desktop on macOS/Windows routes
+    // through a VM whose gateway address means nothing to the host's own tooling,
+    // so never hand those operators a ufw/nft/iptables line.
+    const isLinuxHost = hostPlatform !== 'darwin' && hostPlatform !== 'win32';
+    const command = isLinuxHost ? buildFirewallAllowCommand(topology ?? {}, firewall) : undefined;
     const firewallName = firewall?.kind && firewall.kind !== 'none' && firewall.kind !== 'unknown' ? firewall.kind : 'a host firewall';
 
     const detail =
@@ -294,17 +310,21 @@ export function buildBridgeRemediation(input: BridgeRemediationInput): BridgeRem
       `this is a host firewall problem, not a problem with ${service}. ` +
       `${service} can be running and listening correctly and still be unreachable from the container: ` +
       'a stopped service refuses the connection instantly, whereas a firewall DROP produces the silent timeout seen here.';
+    // The probe times the whole request, not just the connect, so a service that
+    // accepted the connection and then took too long to answer looks identical.
+    // Say so rather than asserting the firewall with certainty.
+    const caveat = `If ${service} is up but was merely slow to answer (a large model loading, for example), the same timeout appears — re-check once it is idle.`;
 
     if (!command) {
       return {
         mode,
-        hint: `${detail} Allow the Hub's container network to reach the host gateway on this port, then re-check.`,
+        hint: `${detail} Allow the Hub's container network to reach the host gateway on this port, then re-check. ${caveat}`,
       };
     }
 
     return {
       mode,
-      hint: `${detail} Run this on the host (not inside the container), then re-check.`,
+      hint: `${detail} Run this on the host (not inside the container), then re-check. ${caveat}`,
       command,
     };
   }

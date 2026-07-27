@@ -296,13 +296,14 @@ export const AiSetupStep = ({
     // The profile endpoint bundles hardware detection with live probes of the
     // inference backends, so a blocked host service fails the whole call. Naming
     // hardware here sent operators after the one component that was working —
-    // report the probe diagnosis instead whenever we have one.
+    // report the probe diagnosis instead, but only when the probe actually found
+    // a bridge failure, so an unrelated profile error is not blamed on Ollama.
     return (
       <div className="py-8" data-testid="ai-setup-error">
         <p className="text-destructive mb-4 text-center">
           {t('ONBOARDING_AI_SETUP_FAILED')}: {error}
         </p>
-        {ollamaStatus?.hint && (
+        {ollamaStatus?.bridgeUnreachable && ollamaStatus.hint && (
           <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 p-3">
             <div className="text-xs text-yellow-800 dark:text-yellow-200">{ollamaStatus.hint}</div>
             {ollamaStatus.remediationCommand && (

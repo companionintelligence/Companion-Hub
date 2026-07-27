@@ -125,8 +125,15 @@ describe('ollama-host-bridge', () => {
 
     it('builds firewalld, nftables and iptables equivalents', () => {
       expect(buildFirewallAllowCommand(topology, { kind: 'firewalld', active: true })).toContain('firewall-cmd --permanent --add-rich-rule');
-      expect(buildFirewallAllowCommand(topology, { kind: 'nftables', active: true })).toContain('nft add rule');
+      // `insert`, not `add`: appending puts the accept after the drop that already matched.
+      expect(buildFirewallAllowCommand(topology, { kind: 'nftables', active: true })).toContain('nft insert rule');
       expect(buildFirewallAllowCommand(topology, { kind: 'iptables', active: true })).toContain('iptables -I INPUT');
+    });
+
+    // The probe records `none` when nothing is enforcing — and on darwin/win32,
+    // where ufw does not exist at all. Emitting a rule there contradicts the probe.
+    it('emits nothing when the probe reports no active firewall', () => {
+      expect(buildFirewallAllowCommand(topology, { kind: 'none', active: false })).toBeUndefined();
     });
 
     it('returns undefined when topology is incomplete rather than emitting a placeholder', () => {
@@ -159,6 +166,20 @@ describe('ollama-host-bridge', () => {
       const result = buildBridgeRemediation({ mode: 'filtered' });
       expect(result.hint).toContain('host firewall');
       expect(result.command).toBeUndefined();
+    });
+
+    // Docker Desktop reaches the host through a VM, so the gateway address means
+    // nothing to the host's own tooling — and neither macOS nor Windows has ufw.
+    it.each(['darwin', 'win32'])('never hands a %s host a Linux firewall command', (hostPlatform) => {
+      const result = buildBridgeRemediation({ mode: 'filtered', hostPlatform, topology });
+      expect(result.command).toBeUndefined();
+      expect(result.hint).not.toContain('sudo ufw');
+    });
+
+    // The probe times the whole request, so a slow-but-healthy service produces
+    // the same timeout. The guidance must not assert the firewall unconditionally.
+    it('acknowledges that a slow service produces the same timeout', () => {
+      expect(buildBridgeRemediation({ mode: 'filtered', topology }).hint).toContain('slow to answer');
     });
 
     it('gives service-down guidance for a refused connection', () => {

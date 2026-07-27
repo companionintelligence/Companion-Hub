@@ -897,8 +897,10 @@ describe('AiSetupStep', () => {
       'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
     );
     expect(screen.getByText(/not inside the container/i)).toBeInTheDocument();
-    // Ollama is installed and running; offering to install it would mislead.
-    expect(screen.queryByRole('button', { name: /Install Ollama/i })).not.toBeInTheDocument();
+    // The auto-install button is deliberately NOT asserted here: this suite never
+    // stubs window.__TAURI_INTERNALS__, so it is absent regardless of failureMode
+    // and the assertion would pass with the guard deleted. That behaviour is
+    // covered in ollama-setup-card.test.tsx, which does install a Tauri mock.
   });
 
   it('surfaces the bridge diagnosis on the profile-failure screen instead of blaming hardware detection', async () => {

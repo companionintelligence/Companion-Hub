@@ -164,7 +164,14 @@ function hasBinary(name: string): boolean {
   return runQuiet('sh', ['-c', `command -v ${name}`]).ok;
 }
 
-/** `ufw status` requires root; ENABLED lives in a world-readable config instead. */
+/**
+ * `ufw status` requires root; ENABLED lives in a world-readable config instead.
+ *
+ * This is the ONLY unprivileged signal that tracks whether ufw is currently
+ * enforcing. `systemctl is-active ufw` must not be used: ufw.service is a
+ * oneshot with RemainAfterExit=yes, so it reports "active" forever once it has
+ * run — including after `ufw disable`, which leaves ENABLED=no here.
+ */
 function isUfwEnabledInConfig(): boolean {
   try {
     return /^ENABLED=yes/im.test(readFileSync('/etc/ufw/ufw.conf', 'utf8'));
@@ -185,10 +192,13 @@ function isUfwEnabledInConfig(): boolean {
 export function probeHostFirewall(): HostFirewallInfo {
   if (process.platform !== 'linux') return { kind: 'none', active: false };
 
+  const ufwInstalled = hasBinary('ufw');
+
   // ufw is a frontend over nftables/iptables, so it is checked first: on a ufw
   // host the nftables unit may also be active, but ufw syntax is what the
-  // operator should use.
-  if (hasBinary('ufw') && (isSystemdUnitActive('ufw') || isUfwEnabledInConfig())) {
+  // operator should use. Enforcement is read from the config, not systemd — see
+  // isUfwEnabledInConfig for why the unit state lies.
+  if (ufwInstalled && isUfwEnabledInConfig()) {
     return { kind: 'ufw', active: true };
   }
   if (isSystemdUnitActive('firewalld')) return { kind: 'firewalld', active: true };
@@ -196,7 +206,7 @@ export function probeHostFirewall(): HostFirewallInfo {
 
   // Tooling present but nothing reports as enforcing. Distinguished from
   // `unknown` so the Hub does not blame a firewall that is switched off.
-  if (hasBinary('ufw') || hasBinary('nft') || hasBinary('iptables')) {
+  if (ufwInstalled || hasBinary('nft') || hasBinary('iptables')) {
     return { kind: 'none', active: false };
   }
   return { kind: 'unknown', active: false };

@@ -78,11 +78,9 @@ describe('bridge-diagnostics-cli', () => {
       expect(services[1]).toEqual({ label: 'Ollama', port: 12000 });
     });
 
-    it('survives an unreadable env file', () => {
-      parseEnvFile.mockImplementation(() => {
-        throw new Error('ENOENT');
-      });
-      expect(resolveBridgeServices('.env.missing')).toHaveLength(4);
+    it('falls back when a port is out of range rather than handing net.connect a bad port', () => {
+      parseEnvFile.mockReturnValue({ API_PORT: '99999' });
+      expect(resolveBridgeServices('.env.prod')[0]).toEqual({ label: 'Hub API (cloudflared origin)', port: 5002 });
     });
   });
 
@@ -119,6 +117,15 @@ describe('bridge-diagnostics-cli', () => {
       const [line] = formatBridgeLines([{ label: 'Ollama', port: 11434, hostReachable: true, containerReachable: false, verdict: 'filtered' }]);
       expect(line).toContain('BLOCKED');
       expect(line).toContain('answers on the host but not from the Hub container');
+    });
+
+    // A refusal is an instant RST, so it proves the bridge works. Labelling it
+    // BLOCKED would send the operator after a firewall rule that cannot help.
+    it('distinguishes a refused port from a filtered one', () => {
+      const [line] = formatBridgeLines([{ label: 'Ollama', port: 11434, hostReachable: true, containerReachable: false, verdict: 'refused' }]);
+      expect(line).toContain('REFUSED');
+      expect(line).toContain('loopback only');
+      expect(line).not.toContain('BLOCKED');
     });
   });
 
@@ -172,6 +179,33 @@ describe('bridge-diagnostics-cli', () => {
       expect(section.issueCount).toBe(1);
       expect(section.remediationCommands).toEqual([]);
       expect(section.lines.join('\n')).toContain('Allow the Hub container network to reach the host gateway');
+    });
+
+    // Regression: a service bound to 127.0.0.1 (Ollama's default) answers the
+    // host probe and refuses over the bridge. That is a bind problem, and a ufw
+    // rule cannot fix it — so it must not be reported as a firewall block.
+    it('reports a loopback-bound service as refused, not as a firewall block', async () => {
+      listeningHostPorts = new Set([11434]);
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 2 });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      const text = section.lines.join('\n');
+      expect(section.issueCount).toBe(1);
+      expect(section.remediationCommands).toEqual([]);
+      expect(text).toContain('bound to loopback');
+      expect(text).toContain('OLLAMA_HOST=0.0.0.0');
+      expect(text).not.toContain('A host firewall is dropping these');
+      expect(text).not.toContain('sudo ufw allow');
+    });
+
+    it('points at the missing host-gateway mapping when the name does not resolve', async () => {
+      listeningHostPorts = new Set([11434]);
+      mockDocker({ ps: 'ci-os-hub', inspect: '172.18.0.7/16', exec: () => 3 });
+
+      const section = await runBridgeDoctorSection('.env.prod');
+      expect(section.issueCount).toBe(1);
+      expect(section.lines.join('\n')).toContain('extra_hosts');
+      expect(section.remediationCommands).toEqual([]);
     });
   });
 });
