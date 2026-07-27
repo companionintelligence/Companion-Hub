@@ -169,7 +169,13 @@ export function toNetworkCidr(address: string, netmask: string): string | undefi
   return `${network}/${bits}`;
 }
 
-/** The container's own IPv4 network, used as the firewall rule's source range. */
+/**
+ * The container's own IPv4 network, used as the firewall rule's source range.
+ *
+ * Takes the first non-internal IPv4 interface. The Hub is attached to exactly
+ * one compose network, so that is unambiguous today; if it is ever multi-homed
+ * this would need to pick the interface that routes to the gateway instead.
+ */
 function resolveContainerCidr(): string | undefined {
   for (const entries of Object.values(os.networkInterfaces())) {
     for (const entry of entries ?? []) {

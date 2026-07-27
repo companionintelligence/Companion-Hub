@@ -82,7 +82,12 @@ export function isHubContainerRunning(): boolean {
   return result.ok && result.stdout.split('\n').includes(HUB_CONTAINER);
 }
 
-/** The Hub container's own network in CIDR form — the source range for a firewall rule. */
+/**
+ * The Hub container's own network in CIDR form — the source range for a firewall rule.
+ *
+ * Takes the first network; the Hub is attached to exactly one compose network,
+ * so that is unambiguous today.
+ */
 export function resolveHubContainerCidr(): string | undefined {
   const result = docker(['inspect', HUB_CONTAINER, '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}/{{.IPPrefixLen}} {{end}}']);
   if (!result.ok) return undefined;
