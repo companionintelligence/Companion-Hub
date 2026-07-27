@@ -142,4 +142,27 @@ describe('GeneralActionsContainer', () => {
     });
     expect(screen.getByText('Current version: Unknown')).toBeInTheDocument();
   });
+
+  it('shows only the latest release card when multiple versions are available', async () => {
+    mockIsTauri.mockReturnValue(false);
+    mockUseAppContext.mockReturnValue({
+      version: {
+        current: '0.2.44',
+        latest: '0.2.46',
+        body: '',
+        releases: [
+          { version: '0.2.46', body: 'Release 0.2.46' },
+          { version: '0.2.45', body: 'Release 0.2.45' },
+        ],
+      },
+      refreshAppContext: vi.fn(),
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-latest-release-card')).toBeInTheDocument();
+    expect(screen.getByText('Version 0.2.46')).toBeInTheDocument();
+    expect(screen.queryByText('Version 0.2.45')).not.toBeInTheDocument();
+    expect(screen.queryByText('Release 0.2.46')).not.toBeInTheDocument();
+  });
 });
