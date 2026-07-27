@@ -2,6 +2,7 @@ import { changeUsernameMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { TranslatableError } from '@/types/error.types';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -31,6 +32,11 @@ export const ChangeUsernameForm = ({ username }: Props) => {
     onSuccess: () => {
       toast.success(t('SETTINGS_SECURITY_CHANGE_USERNAME_SUCCESS'));
       changeUsernameDisclosure.close();
+      // Same as the password form: the username change revokes every session for this
+      // user and the endpoint clears the cookie, so finish the sign-out here instead of
+      // leaving the UI to hit a 401 later. The new username is what you sign back in with.
+      clearClientHubState({ keepPortalEmail: true });
+      window.location.reload();
     },
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
