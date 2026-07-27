@@ -101,9 +101,16 @@ describe('api-fetch 401 handling', () => {
     // The handoff mint is a best-effort bridge on the way to an external open and is
     // documented as fail-open: a 401 there must not tear the page down mid-click,
     // which also aborted the pending open and left the user on a login screen (#944).
+    //
+    // The exempt request goes FIRST and a non-exempt control second. The handler is
+    // reached through a dynamic import, so waiting a fixed tick would pass vacuously on
+    // a slow resolve; waiting for the control instead proves the pipeline had time, and
+    // because the exempt call queued its continuation first, anything it was going to
+    // fire has already fired by the time the control's does.
     await apiFetch(path);
+    await apiFetch('/api/apps');
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(handleSessionExpired).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
+    expect(handleSessionExpired).toHaveBeenCalledTimes(1);
   });
 });

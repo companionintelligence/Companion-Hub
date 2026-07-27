@@ -73,21 +73,65 @@ describe('SessionManager', () => {
     expect(cache.set).toHaveBeenCalledWith('session:grace:old-session', '7', 60);
   });
 
-  it('destroys every session for a user, including its rotation-grace alias', async () => {
-    cache.getByPrefix.mockReturnValue([
-      { key: 'session:7:aaa', val: 'session:aaa' },
-      { key: 'session:7:bbb', val: 'session:bbb' },
-    ]);
+  it('destroys every session for a user', async () => {
+    cache.getByPrefix.mockImplementation((prefix: string) =>
+      prefix === 'session:7:'
+        ? [
+            { key: 'session:7:aaa', val: 'session:aaa' },
+            { key: 'session:7:bbb', val: 'session:bbb' },
+          ]
+        : [],
+    );
 
     await manager.destroyAllSessionsByUserId(7);
 
     expect(cache.getByPrefix).toHaveBeenCalledWith('session:7:');
     expect(cache.del).toHaveBeenCalledWith('session:7:aaa');
     expect(cache.del).toHaveBeenCalledWith('session:aaa');
-    // The grace alias is keyed off the session id, so the per-user index never names it —
-    // but `resolveSessionUserId` (and therefore AuthMiddleware) still honours it, which
-    // kept a just-rotated session alive for a minute after "sign out everywhere".
-    expect(cache.del).toHaveBeenCalledWith('session:grace:aaa');
-    expect(cache.del).toHaveBeenCalledWith('session:grace:bbb');
+  });
+});
+
+/**
+ * Driven against a behavioural cache rather than call assertions: the grace-alias gap
+ * only exists because `rotateSession` unlinks the session from the per-user index, so a
+ * test that hands `destroyAllSessionsByUserId` a hand-written index cannot see it.
+ */
+describe('SessionManager sign-out-everywhere against a real key space', () => {
+  function fakeCache() {
+    const store = new Map<string, string>();
+    return {
+      store,
+      get: (key: string) => store.get(key),
+      set: (key: string, value: string) => void store.set(key, value),
+      del: (key: string) => void store.delete(key),
+      getByPrefix: (prefix: string) => [...store.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, val]) => ({ key, val })),
+    } as unknown as MockProxy<CacheService> & { store: Map<string, string> };
+  }
+
+  it('revokes a session that was rotated within the grace window', async () => {
+    const cache = fakeCache();
+    const manager = new SessionManager(cache);
+    const original = await manager.createSession(7);
+    await manager.rotateSession(original);
+
+    // The rotated id still authenticates during the 60s overlap — that is the whole
+    // point of the grace alias, and why a sign-out has to reach it.
+    expect(manager.resolveSessionUserId(original)).toBe(7);
+
+    await manager.destroyAllSessionsByUserId(7);
+
+    expect(manager.resolveSessionUserId(original)).toBeNull();
+    expect([...cache.store.keys()]).toEqual([]);
+  });
+
+  it('leaves a grace alias belonging to a different user alone', async () => {
+    const cache = fakeCache();
+    const manager = new SessionManager(cache);
+    const theirs = await manager.createSession(9);
+    await manager.rotateSession(theirs);
+
+    await manager.destroyAllSessionsByUserId(7);
+
+    expect(manager.resolveSessionUserId(theirs)).toBe(9);
   });
 });

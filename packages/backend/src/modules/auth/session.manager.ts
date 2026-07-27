@@ -18,8 +18,11 @@ export const SESSION_ROTATION_GRACE_SECONDS = 60;
  */
 export const SESSION_KEY_PREFIX = 'session:';
 
+/** Rotation-grace aliases share the session namespace but are keyed by session id alone. */
+const GRACE_KEY_PREFIX = `${SESSION_KEY_PREFIX}grace:`;
+
 const sessionKey = (sessionId: string) => `${SESSION_KEY_PREFIX}${sessionId}`;
-const sessionGraceKey = (sessionId: string) => `${SESSION_KEY_PREFIX}grace:${sessionId}`;
+const sessionGraceKey = (sessionId: string) => `${GRACE_KEY_PREFIX}${sessionId}`;
 const userSessionKey = (userId: number, sessionId: string) => `${SESSION_KEY_PREFIX}${userId}:${sessionId}`;
 
 @Injectable()
@@ -109,18 +112,23 @@ export class SessionManager {
    * @param {number} userId - The user ID
    */
   public destroyAllSessionsByUserId = async (userId: number) => {
-    const prefix = `${SESSION_KEY_PREFIX}${userId}:`;
-    const sessions = this.cache.getByPrefix(prefix);
-
-    for (const session of sessions) {
+    for (const session of this.cache.getByPrefix(`${SESSION_KEY_PREFIX}${userId}:`)) {
       this.cache.del(session.key);
       if (session.val) this.cache.del(session.val);
-      // The rotation-grace alias is keyed off the session id, not the user, so the
-      // index above never names it — but `resolveSessionUserId` honours it, which is
-      // what `AuthMiddleware` authenticates on. Leaving it behind kept a just-rotated
-      // session alive for up to a minute after a "sign out everywhere" (password or
-      // username change, operator reset).
-      this.cache.del(sessionGraceKey(session.key.slice(prefix.length)));
+    }
+
+    // Rotation-grace aliases need their own sweep. `rotateSession` drops the per-user
+    // index entry when it rotates, so a just-rotated session is unreachable from the
+    // loop above — while `resolveSessionUserId` still honours its alias, and that is
+    // what `AuthMiddleware` authenticates on. Without this, a session rotated in the
+    // last 60 seconds stayed usable for the rest of that window after a "sign out
+    // everywhere" (password or username change, operator reset). The alias stores its
+    // owning user id as the value, which is what makes an ownership sweep possible.
+    const owner = String(userId);
+    for (const grace of this.cache.getByPrefix(GRACE_KEY_PREFIX)) {
+      if (grace.val === owner) {
+        this.cache.del(grace.key);
+      }
     }
   };
 }
