@@ -10,8 +10,8 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (60 LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.length).toBe(60);
+  it('decodes the full catalog (69 LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.length).toBe(69);
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(4);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
@@ -45,8 +45,8 @@ describe('curated-models (TOON catalog)', () => {
   it('carries Artificial Analysis metadata for leaderboard models', () => {
     const llama = byId.get('llama3-3-70b');
     expect(llama?.metadata?.creator).toBe('Meta');
-    expect(llama?.metadata?.intelligenceIndex).toBe(14.5);
-    expect(llama?.metadata?.perf?.tokensPerSec).toBe(80);
+    expect(llama?.metadata?.intelligenceIndex).toBe(9);
+    expect(llama?.metadata?.perf?.tokensPerSec).toBe(85.1);
 
     const gemma = byId.get('gemma4-31b');
     expect(gemma?.metadata?.creator).toBe('Google');
@@ -74,6 +74,30 @@ describe('curated-models (TOON catalog)', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
     for (const fake of ['gemma4-300b', 'gemma4-800b', 'gemma4-3t', 'qwen3-6-200b', 'kimi-k2-6', 'deepseek-v4-pro', 'mistral-medium-3.5']) {
       expect(ids.has(fake), `fabricated model ${fake} must not exist`).toBe(false);
+    }
+  });
+
+  // 2026-07-27 audit: these were added on 2026-07-27 from the agent's own "any other modern model" web
+  // research (not a direct user request), then removed the same day after a follow-up audit caught this
+  // session's web tools fabricating convincing, internally-consistent pages for known-fake models (see the
+  // fabrication guard above) and, separately, found one of these rows' fetched description self-referencing
+  // an Anthropic-internal codename it had no legitimate way to know. None of them were confirmed to exist
+  // through a channel independent of this session's own fetch tooling. Do not re-add without that
+  // independent confirmation (a real browser, or an actual successful `ollama pull`).
+  it('does not re-add the 2026-07-27 unverified/likely-fabricated batch', () => {
+    const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    for (const unverified of [
+      'kimi-k3-cloud',
+      'granite4-1-3b',
+      'granite4-1-8b',
+      'granite4-1-30b',
+      'glm-5-1-cloud',
+      'minimax-m3-cloud',
+      'lfm2-24b',
+      'qwen3-fable-4b',
+      'qwen3-fable-8b',
+    ]) {
+      expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
     }
   });
 });
