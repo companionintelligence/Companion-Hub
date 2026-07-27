@@ -440,8 +440,13 @@ export class CloudflareClientService {
       const token = await fs.readFile(tokenPath, 'utf-8');
       const trimmed = token?.trim();
       if (trimmed) {
+        // Periodic registration validation reloads the token every minute. Only log when the
+        // in-memory value actually changes so healthy hubs do not spam WARN forever.
+        const changed = this.tunnelToken !== trimmed;
         this.tunnelToken = trimmed;
-        this.logger.warn(`Loaded tunnel token from disk (${trimmed.length} chars, tunnelId=${tunnelId ?? 'none'})`);
+        if (changed) {
+          this.logger.log(`Loaded tunnel token from disk (${trimmed.length} chars, tunnelId=${this.tunnelId ?? 'none'})`);
+        }
         return true;
       }
       this.logger.warn('Tunnel token file exists but is empty');
