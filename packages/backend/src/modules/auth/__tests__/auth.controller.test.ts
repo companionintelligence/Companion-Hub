@@ -1198,6 +1198,7 @@ describe('AuthController', () => {
       const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
       cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
       sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      sessionManager.touchSession.mockReturnValue(true);
 
       const req = {
         cookies: { 'ci-hub-sid': 'browser-already-here' },
@@ -1210,7 +1211,33 @@ describe('AuthController', () => {
 
       // Re-minting on every open would leave a trail of week-long sessions behind.
       expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(sessionManager.touchSession).toHaveBeenCalledWith('browser-already-here');
       expect(res.cookie).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(next);
+    });
+
+    it('consume replaces a browser session that is only in its rotation-grace window', async () => {
+      mockHubOrigin();
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } } as never);
+      const next = `${hubOrigin}/api/memory-connect/start?app=urn:store:ci-hermes`;
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sess-1', next }));
+      // resolveSessionUserId accepts grace ids; touchSession is what rejects them.
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      sessionManager.touchSession.mockReturnValue(false);
+      sessionManager.createSession.mockResolvedValue('browser-sess');
+
+      const req = {
+        cookies: { 'ci-hub-sid': 'grace-id' },
+        get: vi.fn((h: string) => (h === 'sec-fetch-site' ? 'none' : undefined)),
+        headers: {},
+      } as unknown as Request;
+      const res = { cookie: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.consumeBrowserHandoff('ticket-abc', req, res);
+
+      // Reusing it would hand the flow a cookie that dies part-way through consent.
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'browser-sess', expect.objectContaining({ httpOnly: true }));
       expect(res.redirect).toHaveBeenCalledWith(next);
     });
 

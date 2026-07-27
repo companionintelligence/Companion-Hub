@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
 import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 
 export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
@@ -153,20 +154,7 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // bare "Load failed". The generated API client already uses this config value.
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
   return fetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
-    if (
-      response.status === 401 &&
-      !path.startsWith('/api/auth/login') &&
-      !path.startsWith('/api/auth/logout') &&
-      !path.startsWith('/api/auth/session/refresh') &&
-      // The browser-handoff mint is a best-effort bridge on the way to an external
-      // open (`openExternalWithHubSession`), and it is documented as fail-open. Left
-      // to the generic handler its 401 tears the page down mid-click — and because
-      // `openExternal` first awaits a DNS pre-warm, that navigation also aborts the
-      // pending open, so the user gets neither the browser tab nor the flow, just a
-      // login screen. Let it fall through to the plain external open instead; a
-      // genuinely dead session still surfaces on the next polled request.
-      !path.startsWith('/api/auth/browser-handoff/mint')
-    ) {
+    if (response.status === 401 && !isSessionExpiryExempt(path)) {
       void import('@/lib/session-expired')
         .then(({ handleSessionExpired }) => handleSessionExpired())
         .catch(() => {

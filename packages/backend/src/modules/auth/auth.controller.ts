@@ -422,11 +422,17 @@ export class AuthController {
 
     // This browser may already hold a live session for the SAME user (an earlier
     // handoff, or a direct login here). Keep it: re-minting on every open would leave a
-    // trail of week-long sessions behind, and there is nothing to improve about a
-    // session that already authenticates. A session belonging to anyone else is
-    // replaced, not reused.
+    // trail of week-long sessions behind. `touchSession` is what makes the reuse safe —
+    // it returns false for a 60s rotation-grace id, which `resolveSessionUserId` accepts
+    // but which would expire part-way through the consent round-trip, and it extends the
+    // session we are about to depend on. A session belonging to anyone else is replaced.
     const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
-    if (existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId) {
+    const reusableSessionId =
+      typeof existingSessionId === 'string' && existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId
+        ? existingSessionId
+        : null;
+
+    if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
       return res.redirect(next);
     }
 
