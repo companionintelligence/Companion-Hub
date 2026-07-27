@@ -8,6 +8,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { normalizeForwardedHost } from './utils/forward-auth-host';
 
 /**
  * How long resolved host→secret entries (and the host→app map behind them) are trusted before a
@@ -73,6 +74,10 @@ interface CacheEntry {
 @Injectable()
 export class ForwardAuthSecretResolver {
   private hostToUrn = new Map<string, AppUrn>();
+  /** The reverse direction for the SSO redirect: which PUBLIC hostname serves each app. Built in
+   *  the same rebuild pass as hostToUrn — the tunnel-rewritten host identifies the target app, and
+   *  this map answers "what URL should a remote browser be sent back to for it" (#77). */
+  private urnToPublicHost = new Map<AppUrn, string>();
   private hostMapExpiresAt = 0;
   /** The in-flight rebuild, if one is running — concurrent callers await it instead of each
    *  launching their own (single-flight; avoids a thundering herd of repo reads at every TTL). */
@@ -91,13 +96,10 @@ export class ForwardAuthSecretResolver {
     private readonly logger: LoggerService,
   ) {}
 
-  /** Lowercase and strip any port — Traefik forwards the host exactly as the client sent it. */
+  /** Lowercase and strip any port — Traefik forwards the host exactly as the client sent it.
+   *  Shared with AuthController's edge-SSO ticket binding, which compares against these keys. */
   private normalizeHost(forwardedHost: string | string[] | undefined): string {
-    const raw = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
-    if (typeof raw !== 'string') {
-      return '';
-    }
-    return raw.trim().toLowerCase().replace(/:\d+$/, '');
+    return normalizeForwardedHost(forwardedHost);
   }
 
   private globalSecret(): ResolvedForwardAuthSecret {
@@ -107,6 +109,7 @@ export class ForwardAuthSecretResolver {
   /** Register every hostname an installed app's router could present. */
   private async rebuildHostMap(): Promise<void> {
     const map = new Map<string, AppUrn>();
+    const publicHosts = new Map<AppUrn, string>();
     const [apps, org] = await Promise.all([this.appsRepository.getApps(), this.deviceRegistration.getFirstDeviceRegistration()]);
     // Same precedence as the compose build (app-lifecycle command.ts): operator settings win.
     const cfg = this.config.getConfig();
@@ -118,11 +121,15 @@ export class ForwardAuthSecretResolver {
       // Same construction as the compose/labels build (app-lifecycle command.ts):
       // the router host in cloudflare mode is the origin server name.
       const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-      const register = (hostname: string | null | undefined) => {
-        const normalized = (hostname ?? '').trim().toLowerCase();
+      /** Registers a hostname and returns the key it was stored under (empty when there was none),
+       *  so callers needing the normalized form reuse this one normalization instead of repeating
+       *  it — the two maps can then never disagree about a key's shape. */
+      const register = (hostname: string | null | undefined): string => {
+        const normalized = normalizeForwardedHost(hostname ?? undefined);
         if (normalized) {
           map.set(normalized, appUrn);
         }
+        return normalized;
       };
 
       try {
@@ -134,7 +141,7 @@ export class ForwardAuthSecretResolver {
             localDomain,
           }),
         );
-        register(
+        const publicHostname = register(
           buildPublicWebIdentity({
             appSubdomain,
             publicDomainRoot: resolvePublicDomainRoot({
@@ -146,6 +153,9 @@ export class ForwardAuthSecretResolver {
             orgSlug: org?.slug,
           }).hostname,
         );
+        if (publicHostname) {
+          publicHosts.set(appUrn, publicHostname);
+        }
         register(app.domain); // operator-entered custom domain
       } catch (err) {
         // One malformed app row must never take forward-auth down for the rest.
@@ -154,9 +164,45 @@ export class ForwardAuthSecretResolver {
     }
 
     this.hostToUrn = map;
+    this.urnToPublicHost = publicHosts;
     this.hostMapExpiresAt = Date.now() + CACHE_TTL_MS;
     this.warnedUrns.clear();
     this.logger.debug(`[ForwardAuthSecretResolver] host map rebuilt (${map.size} hostnames)`);
+  }
+
+  /**
+   * The PUBLIC hostname of the app a forward-auth subrequest targets, or null when the forwarded
+   * host matches no installed app (or the app has no public identity). Used by the edge-SSO
+   * redirect (#77): the tunnel rewrites every visitor's Host to the origin server name, so the
+   * forwarded host can identify the app but must never be echoed back to a REMOTE browser — this
+   * is the address that browser can actually reach. Never throws; shares the host map's TTL,
+   * single-flight rebuild and error backoff.
+   */
+  async resolvePublicHostForHost(forwardedHost: string | string[] | undefined): Promise<string | null> {
+    const appUrn = await this.resolveAppUrnForHost(forwardedHost);
+    if (!appUrn) {
+      return null;
+    }
+    return this.urnToPublicHost.get(appUrn) ?? null;
+  }
+
+  /**
+   * The installed app a hostname belongs to, or null. Doubles as the edge-SSO redirect-target
+   * allowlist: a mint request may only point back at a hostname this map vouches for, which is
+   * exactly "a router hostname of an app installed on THIS appliance" — an exact membership check
+   * rather than a label-pattern heuristic. Never throws.
+   */
+  async resolveAppUrnForHost(forwardedHost: string | string[] | undefined): Promise<AppUrn | null> {
+    const host = this.normalizeHost(forwardedHost);
+    if (!host) {
+      return null;
+    }
+    try {
+      await this.ensureHostMapFresh();
+    } catch {
+      // ensureHostMapFresh swallows rebuild errors itself; this is pure belt-and-suspenders.
+    }
+    return this.hostToUrn.get(host) ?? null;
   }
 
   /**

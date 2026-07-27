@@ -55,4 +55,6 @@ export type {
   HostMetricsContainerSection,
   HostMetricsProbeFile,
   HostMetricsDisplayLoad,
+  HostFirewallKind,
+  HostFirewallInfo,
 } from './host-metrics.js';

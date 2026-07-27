@@ -1,8 +1,7 @@
-import { getTrackedModels, startPullModel } from '@/api-client/sdk.gen';
 import { fetchInferenceTrackedModels, startInferenceModelPull } from '@/lib/inference/inference-api';
 import type { TrackedModel } from '@ci-hub/common/types';
 
-export const PULLED_MODEL_STATES = new Set(['pulled', 'loaded', 'pinned']);
+const PULLED_MODEL_STATES = new Set(['pulled', 'loaded', 'pinned']);
 
 export interface ParsedPullProgress {
   progressById: Record<string, number>;
@@ -59,9 +58,6 @@ export function parsePullProgress(modelIds: string[], installedCatalogIds: strin
 export async function ensurePullStarted(modelId: string, bestEffort = true): Promise<void> {
   await startInferenceModelPull(modelId, bestEffort);
 }
-
-// Re-export for tests that mock the SDK layer
-export { getTrackedModels, startPullModel };
 
 export async function ensurePullsStarted(modelIds: string[], bestEffort = true): Promise<void> {
   for (const modelId of modelIds) {

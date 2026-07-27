@@ -14,10 +14,11 @@ import { I18nProvider } from './components/providers/i18n/i18n-provider';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
-import { clearStaleServerSession, getTauriSessionId } from './lib/api-fetch';
-import { refreshHubSessionIfDue } from './lib/hub-session-refresh';
-import { handleSessionExpired } from './lib/session-expired';
-import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from './lib/mobile-connection';
+import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
+import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
+import { handleSessionExpired } from '@/lib/session-expired';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
+import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from '@/lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -116,11 +117,8 @@ client.interceptors.response.use(async (res) => {
     const error = new TranslatableError(normalizeApiErrorMessage(data.message, res.status));
     error.intlParams = data.intlParams ?? {};
 
-    if (res.status === 401) {
-      const url = res.url ?? '';
-      if (!url.includes('/api/auth/login') && !url.includes('/api/auth/logout') && !url.includes('/api/auth/session/refresh')) {
-        await handleSessionExpired();
-      }
+    if (res.status === 401 && !isSessionExpiryExempt(res.url ?? '')) {
+      await handleSessionExpired();
     }
 
     throw error;

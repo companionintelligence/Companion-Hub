@@ -1,4 +1,5 @@
 import { client } from '@/api-client/client.gen';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
 import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
 import { runtimeFetch } from './runtime-fetch';
 
@@ -156,12 +157,7 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // runtimeFetch is window.fetch on web/desktop, and the native Tauri HTTP client
   // on mobile (so a tauri://localhost webview can reach a remote https Hub).
   return runtimeFetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
-    if (
-      response.status === 401 &&
-      !path.startsWith('/api/auth/login') &&
-      !path.startsWith('/api/auth/logout') &&
-      !path.startsWith('/api/auth/session/refresh')
-    ) {
+    if (response.status === 401 && !isSessionExpiryExempt(path)) {
       void import('@/lib/session-expired')
         .then(({ handleSessionExpired }) => handleSessionExpired())
         .catch(() => {

@@ -338,4 +338,17 @@ describe('CloudflareClientService', () => {
       expect(result).toEqual({ available: false, message: 'CI-Cloud unavailable' });
     });
   });
+
+  describe('loadTunnelTokenFromDisk', () => {
+    it('logs only when the in-memory token changes', async () => {
+      const logSpy = vi.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
+      vi.mocked(fs.readFile).mockResolvedValue('tunnel-token-value\n');
+
+      await expect(service.loadTunnelTokenFromDisk('tunnel-1')).resolves.toBe(true);
+      await expect(service.loadTunnelTokenFromDisk('tunnel-1')).resolves.toBe(true);
+
+      expect(service.getTunnelToken()).toBe('tunnel-token-value');
+      expect(logSpy.mock.calls.filter(([message]) => String(message).includes('Loaded tunnel token from disk'))).toHaveLength(1);
+    });
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "ci-hub",
-  "version": "0.2.36",
+  "version": "0.2.47",
   "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
   "packageManager": "pnpm@11.5.1",
   "engines": {
@@ -29,6 +29,8 @@
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
+    "knip": "knip",
+    "knip:ci": "knip",
     "prepare": "husky",
     "version": "echo $npm_package_version",
     "dev:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts --stack-dev",
@@ -65,15 +67,22 @@
   "license": "CI-Commercial-1.0",
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
+    "@hey-api/openapi-ts": "^0.86.12",
     "@playwright/test": "^1.52.0",
+    "cloudflare": "^7.0.0",
+    "dotenv-cli": "^10.0.0",
+    "drizzle-orm": "^0.45.2",
+    "husky": "^9.1.7",
+    "knip": "^6.29.0",
+    "lint-staged": "^16.2.7",
+    "openai": "^6.49.0",
+    "pg": "^8.20.0",
     "pixelmatch": "^7.1.0",
     "pngjs": "^7.0.0",
-    "dotenv-cli": "^10.0.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
     "systeminformation": "^5.31.11",
     "turbo": "^2.9.14",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "zod": "^4.3.6"
   },
   "private": false,
   "peerDependencies": {

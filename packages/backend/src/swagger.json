@@ -2621,6 +2621,20 @@
         ]
       }
     },
+    "/api/auth/edge-sso": {
+      "get": {
+        "operationId": "edgeSso",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/app-lifecycle/rehydrate/plan": {
       "get": {
         "operationId": "getRehydratePlan",

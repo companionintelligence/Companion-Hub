@@ -165,6 +165,8 @@ let api: {
     running: boolean;
     endpointUrl: string;
     bridgeUnreachable?: boolean;
+    failureMode?: 'filtered' | 'refused' | 'dns' | 'none';
+    remediationCommand?: string;
     displayEndpoint?: string;
     hint?: string;
     error?: string;
@@ -219,7 +221,7 @@ describe('AiSetupStep', () => {
     api.profileReject = true;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('renders the system overview with tier badge and GPU for high-tier hardware', async () => {
@@ -311,7 +313,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
-  it('shows host ROCm ready notice when AMD GPU has host ROCm', async () => {
+  it('hides host ROCm notice when AMD GPU already has host ROCm', async () => {
     api.profile = {
       ...highTierProfile,
       hardware: {
@@ -329,8 +331,9 @@ describe('AiSetupStep', () => {
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument();
-    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-ready')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-hint')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Host ROCm detected/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
   });
 
@@ -652,7 +655,8 @@ describe('AiSetupStep', () => {
 
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
+    // Local-only note is reserved for when every remote option is off.
+    expect(screen.queryByTestId('access-local-baseline')).not.toBeInTheDocument();
     expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
@@ -695,6 +699,7 @@ describe('AiSetupStep', () => {
 
     await user.click(screen.getByTestId('access-cloudflare'));
     expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'local' }));
@@ -846,7 +851,7 @@ describe('AiSetupStep', () => {
     api.rescanOk = false;
     await user.click(screen.getByTestId('rescan-btn'));
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('shows the Ollama setup card when Ollama is not detected on the host', async () => {
@@ -874,6 +879,44 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
     expect(screen.getByText(/may already be installed on this machine/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the firewall command and hides auto-install when the bridge is filtered', async () => {
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      error: 'timeout of 5000ms exceeded',
+      hint: "The Hub container's packets to 172.17.0.1:11434 are being dropped by ufw — this is a host firewall problem, not a problem with Ollama.",
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
+
+    expect(screen.getByTestId('ollama-remediation-command')).toHaveTextContent(
+      'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    );
+    expect(screen.getByText(/not inside the container/i)).toBeInTheDocument();
+    // The auto-install button is deliberately NOT asserted here: this suite never
+    // stubs window.__TAURI_INTERNALS__, so it is absent regardless of failureMode
+    // and the assertion would pass with the guard deleted. That behaviour is
+    // covered in ollama-setup-card.test.tsx, which does install a Tauri mock.
+  });
+
+  it('surfaces the bridge diagnosis on the profile-failure screen instead of blaming hardware detection', async () => {
+    api.profileReject = true;
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      hint: 'The Hub container’s packets are being dropped by ufw — this is a host firewall problem.',
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
+
+    expect(screen.getByText(/host firewall problem/i)).toBeInTheDocument();
+    expect(screen.getByText(/sudo ufw allow from 172\.18\.0\.0\/16/)).toBeInTheDocument();
   });
 
   it('disables Continue while Ollama is not reachable', async () => {
