@@ -73,7 +73,7 @@ export { allowedEnvs, BASE_COMMAND, type HubEnv };
 export type { StepStatus };
 export { STEP_ICONS, BOX_CHARS };
 export { stripAnsi, box, printMessageBox, renderStep, renderBanner, renderWizardWelcome, renderHelp, renderManPage };
-export { getComposeFiles, mergeComposeProfilesFromEnvFile, buildEnvOverrides };
+export { getComposeFiles, mergeComposeProfilesFromEnvFile, buildEnvOverrides, ensureLocalDevRuntimeEnv };
 export { parseEnvFile, upsertEnvVar };
 
 type StartMode = 'local-dev' | 'attached' | 'detached';
