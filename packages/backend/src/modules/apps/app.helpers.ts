@@ -6,6 +6,7 @@ import { buildHubLocalOrigin, buildHubPublicOrigin } from '@/common/helpers/hub-
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
 import type { AppInfo, MemoryUrlStyle } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -128,6 +129,7 @@ export class AppHelpers {
     private readonly inferenceEnv: InferenceEnvResolver,
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
+    private readonly portalClient: PortalClientService,
   ) {}
 
   /**
@@ -615,6 +617,30 @@ export class AppHelpers {
         config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
       if (isFirstPartyPortalOidcApp) {
         envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+      }
+    }
+
+    // --- Companion Memory Google Maps / geocoding key (from Portal) ---
+    // Portal holds GOOGLE_MAPS_API_KEY as a wrangler secret and serves it at
+    // GET /api/config/maps. Inject into ci-memory so server geocode + the
+    // Memory frontend runtime maps config both work without baking Vite keys
+    // into images. Best-effort: never fail env generation if Portal is down.
+    const isCompanionMemoryApp =
+      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+    if (isCompanionMemoryApp) {
+      const operatorSetMapsKey = (envMap.get('GOOGLE_MAPS_KEY') ?? '').trim().length > 0 || (envMap.get('GEOCODING_API_KEY') ?? '').trim().length > 0;
+      if (!operatorSetMapsKey) {
+        try {
+          const maps = await this.portalClient.fetchMapsConfig();
+          const apiKey = maps?.configured ? maps.apiKey?.trim() : '';
+          if (apiKey) {
+            envMap.set('GOOGLE_MAPS_KEY', apiKey);
+            envMap.set('GEOCODING_API_KEY', apiKey);
+            this.logger.debug(`[AppHelpers] Injected Portal Google Maps key for ${appUrn}`);
+          }
+        } catch (err) {
+          this.logger.warn(`[AppHelpers] Portal maps-key fetch failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 

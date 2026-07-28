@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { PortalModule } from '@/core/portal/portal.module';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
 import { InferenceModule } from '../inference/inference.module';
@@ -21,6 +22,7 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
   imports: [
     QueueModule,
     EnvModule,
+    PortalModule,
     forwardRef(() => DockerModule),
     forwardRef(() => InferenceModule),
     MarketplaceModule,

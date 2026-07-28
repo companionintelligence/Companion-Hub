@@ -9,6 +9,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -32,6 +33,7 @@ describe('AppHelpers', () => {
   let inferenceEnv = mock<InferenceEnvResolver>();
   let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
+  let portalClient: MockProxy<PortalClientService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -55,6 +57,8 @@ describe('AppHelpers', () => {
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
     apiKeys = moduleRef.get(ApiKeyService);
     memoryConnection = moduleRef.get(MemoryConnectionService);
+    portalClient = moduleRef.get(PortalClientService);
+    portalClient.fetchMapsConfig.mockResolvedValue(null);
   });
 
   describe('generateEnvFile', () => {
@@ -1314,6 +1318,44 @@ describe('AppHelpers', () => {
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
+      });
+    });
+
+    describe('Portal Google Maps key injection (ci-memory)', () => {
+      it('injects GOOGLE_MAPS_KEY and GEOCODING_API_KEY from Portal for ci-memory', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('GOOGLE_MAPS_KEY')).toBe('AIzaSyPortalMapsKey');
+        expect(envMap.get('GEOCODING_API_KEY')).toBe('AIzaSyPortalMapsKey');
+      });
+
+      it('does not overwrite an operator-set GOOGLE_MAPS_KEY', async () => {
+        const envMap = new Map<string, string>([['GOOGLE_MAPS_KEY', 'operator-key']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('GOOGLE_MAPS_KEY')).toBe('operator-key');
+        expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
+      });
+
+      it('skips third-party apps', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('GOOGLE_MAPS_KEY')).toBe(false);
+        expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
       });
     });
   });
