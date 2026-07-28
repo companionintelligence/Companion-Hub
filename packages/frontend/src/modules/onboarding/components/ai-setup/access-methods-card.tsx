@@ -17,7 +17,7 @@ interface AccessMethodsCardProps {
 }
 
 /**
- * Step 1 — How people reach your Hub and its apps.
+ * Step 1 — How to access your Hub.
  * Web is the default path; Private VPN is an optional add-on with inline Tailscale connect.
  * Local access on this computer is always available and is not presented as a competing mode.
  */
@@ -97,9 +97,11 @@ export const AccessMethodsCard = ({
           {tailscaleSetup}
         </div>
 
-        <p className="text-sm text-muted-foreground" data-testid="access-local-baseline">
-          {localOnly ? t('ONBOARDING_ACCESS_LOCAL_ONLY_NOTE') : t('ONBOARDING_ACCESS_LOCAL_BASELINE_NOTE')}
-        </p>
+        {localOnly && (
+          <p className="text-sm text-muted-foreground" data-testid="access-local-baseline">
+            {t('ONBOARDING_ACCESS_LOCAL_ONLY_NOTE')}
+          </p>
+        )}
       </div>
     </StepSection>
   );

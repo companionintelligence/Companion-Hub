@@ -24,6 +24,9 @@ jobs:
       - name: Run biome tests
         run: pnpm run lint:ci
 
+      - name: Run knip (unused files/deps)
+        run: pnpm run knip:ci
+
       - name: Run tsc
         run: pnpm run tsc
 

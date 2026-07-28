@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TAURI_SESSION_STORAGE_KEY, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
+import { TAURI_SESSION_STORAGE_KEY, apiFetch, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
 
 const { isTauriReleaseBuild } = vi.hoisted(() => ({
   isTauriReleaseBuild: vi.fn(() => false),
@@ -8,6 +8,10 @@ const { isTauriReleaseBuild } = vi.hoisted(() => ({
 vi.mock('@/lib/tauri-hub-probe', () => ({
   isTauriReleaseBuild,
 }));
+
+const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn() }));
+
+vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
 
 describe('api-fetch session storage', () => {
   beforeEach(() => {
@@ -66,5 +70,47 @@ describe('api-fetch session storage', () => {
     expect(getTauriSessionId()).toBeNull();
     expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('api-fetch 401 handling', () => {
+  beforeEach(() => {
+    handleSessionExpired.mockClear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(null, { status: 401 }))),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the user to login when a normal request 401s', async () => {
+    await apiFetch('/api/apps');
+
+    await vi.waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
+  });
+
+  it.each([
+    '/api/auth/login',
+    '/api/auth/logout',
+    '/api/auth/session/refresh',
+    '/api/auth/browser-handoff/mint',
+  ])('leaves the session alone when %s 401s', async (path) => {
+    // The handoff mint is a best-effort bridge on the way to an external open and is
+    // documented as fail-open: a 401 there must not tear the page down mid-click,
+    // which also aborted the pending open and left the user on a login screen (#944).
+    //
+    // The exempt request goes FIRST and a non-exempt control second. The handler is
+    // reached through a dynamic import, so waiting a fixed tick would pass vacuously on
+    // a slow resolve; waiting for the control instead proves the pipeline had time, and
+    // because the exempt call queued its continuation first, anything it was going to
+    // fire has already fired by the time the control's does.
+    await apiFetch(path);
+    await apiFetch('/api/apps');
+
+    await vi.waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
+    expect(handleSessionExpired).toHaveBeenCalledTimes(1);
   });
 });

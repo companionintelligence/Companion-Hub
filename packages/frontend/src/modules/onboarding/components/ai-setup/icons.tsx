@@ -91,6 +91,70 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
+/* ── Model labs without an official brand mark (custom marks) ────────────────────────────────── */
+// These labs don't have a sourced SVG in /public/brands (unlike the CREATOR_BRAND set below, which
+// are official marks). Rather than fetch third-party logo files we can't vet the provenance of, these
+// follow the same hand-drawn convention already used for VllmIcon/LemonadeIcon above: a simple,
+// original abstract mark, not a reproduction of any company's actual logo.
+
+/** Z AI (Zhipu) — a bold Z. */
+export function ZAiIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M6 6h12l-9.5 12H18" />
+    </Glyph>
+  );
+}
+
+/** Poolside — water ripples. */
+export function PoolsideIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M3 9c2 1.6 4 1.6 6 0s4-1.6 6 0 4 1.6 6 0" />
+      <path d="M3 14.5c2 1.6 4 1.6 6 0s4-1.6 6 0 4 1.6 6 0" />
+    </Glyph>
+  );
+}
+
+/** Deep Reinforce — a reinforcement-learning feedback loop. */
+export function DeepReinforceIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4.5 12a7.5 7.5 0 0 1 13-5.1M19.5 12a7.5 7.5 0 0 1-13 5.1" />
+      <path d="M17 4.5v3h-3M7 19.5v-3h3" />
+    </Glyph>
+  );
+}
+
+/** Liquid AI — a droplet. */
+export function LiquidAiIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M12 3.5c3.2 4 5.5 7.3 5.5 10.2a5.5 5.5 0 1 1-11 0c0-2.9 2.3-6.2 5.5-10.2Z" />
+    </Glyph>
+  );
+}
+
+/** Cohere — two overlapping circles. */
+export function CohereIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <circle cx="9.5" cy="12" r="6" />
+      <circle cx="14.5" cy="12" r="6" />
+    </Glyph>
+  );
+}
+
+/** Thinking Machines — a spark. */
+export function ThinkingMachinesIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M12 3.5c.9 3.3 2.2 4.6 5.5 5.5-3.3.9-4.6 2.2-5.5 5.5-.9-3.3-2.2-4.6-5.5-5.5 3.3-.9 4.6-2.2 5.5-5.5Z" />
+      <path d="M18.5 15.5c.4 1.4.9 1.9 2.3 2.3-1.4.4-1.9.9-2.3 2.3-.4-1.4-.9-1.9-2.3-2.3 1.4-.4 1.9-.9 2.3-2.3Z" />
+    </Glyph>
+  );
+}
+
 /* ── Models ──────────────────────────────────────────────────────────────────────────────────── */
 
 /** Isometric cube — generic model fallback. */
@@ -127,9 +191,10 @@ function WaveIcon({ className }: IconProps) {
 }
 
 // Brand mark by model creator (from catalog metadata) — preferred, since it's exact. Creators with
-// no official brand SVG in /public/brands (e.g. Z AI, Nomic, Hexgrad) fall through to a modality glyph.
+// no official brand SVG in /public/brands fall through to CREATOR_GLYPH, then a modality glyph.
 const CREATOR_BRAND: Record<string, string> = {
   google: 'gemini',
+  'google (community)': 'gemini',
   alibaba: 'qwen',
   meta: 'meta',
   nvidia: 'nvidia',
@@ -154,16 +219,28 @@ const MODEL_BRAND: Array<{ match: RegExp; brand: string }> = [
   { match: /minimax/, brand: 'minimax' },
 ];
 
+// Custom hand-drawn mark by creator, for labs with no official /public/brands SVG (see the section above).
+const CREATOR_GLYPH: Record<string, (props: IconProps) => ReactNode> = {
+  'z ai': ZAiIcon,
+  poolside: PoolsideIcon,
+  'deep reinforce': DeepReinforceIcon,
+  'liquid ai': LiquidAiIcon,
+  cohere: CohereIcon,
+  'thinking machines': ThinkingMachinesIcon,
+};
+
 /**
  * Icon for a catalog model: the publisher's official brand mark (resolved from the model's creator
- * metadata first, then a name regex), falling back to a modality glyph (embedding / speech) and finally
- * a generic cube.
+ * metadata first, then a name regex), then a custom mark for labs with no sourced official logo,
+ * falling back to a modality glyph (embedding / speech) and finally a generic cube.
  */
 export function ModelIcon({ model, className }: { model: Pick<CuratedModel, 'id' | 'displayName' | 'modality' | 'metadata'>; className?: string }) {
   const creator = model.metadata?.creator?.toLowerCase();
   const key = `${model.displayName ?? ''} ${model.id ?? ''}`.toLowerCase();
   const brand = (creator ? CREATOR_BRAND[creator] : undefined) ?? MODEL_BRAND.find((b) => b.match.test(key))?.brand;
   if (brand) return <BrandLogo name={brand} className={className} />;
+  const CustomMark = creator ? CREATOR_GLYPH[creator] : undefined;
+  if (CustomMark) return <CustomMark className={className} />;
   if (model.modality === 'embedding') return <EmbeddingIcon className={className} />;
   if (model.modality === 'tts' || model.modality === 'stt') return <WaveIcon className={className} />;
   return <CubeIcon className={className} />;

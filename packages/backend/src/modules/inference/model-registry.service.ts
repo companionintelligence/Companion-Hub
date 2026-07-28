@@ -70,6 +70,16 @@ function activeParamsOf(model: CuratedModel): number {
 }
 
 /**
+ * A `:cloud`-tagged catalog row (e.g. `glm-5.2:cloud`) proxies inference through Ollama Cloud rather
+ * than running on the user's own hardware. Its catalog `gb`/footprint is a nominal placeholder, not a
+ * real local memory cost, so it must never compete for "best local model that fits this hardware" —
+ * that comparison is only meaningful between models that actually run on the box being sized.
+ */
+function isCloudProxyModel(model: CuratedModel): boolean {
+  return model.backendModelId.endsWith(':cloud');
+}
+
+/**
  * Order LLM candidates best-first. The primary key is the Artificial Analysis Intelligence Index
  * (higher = smarter) so the best-fit default is the most capable model that fits the hardware — not
  * merely the largest. Models without a measured index score 0 (we can't claim intelligence we haven't
@@ -168,7 +178,9 @@ export class ModelRegistryService implements OnModuleInit {
    */
   getRecommendedVisionModel(tier: HardwareTier): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    const candidates = this.getModelsForTier(tier).filter((m) => m.modality === 'llm' && m.metadata?.capabilities?.vision === true);
+    const candidates = this.getModelsForTier(tier).filter(
+      (m) => m.modality === 'llm' && m.metadata?.capabilities?.vision === true && !isCloudProxyModel(m),
+    );
     if (candidates.length === 0) return null;
     candidates.sort(compareLlmCandidates);
     return candidates[0] ?? null;
@@ -244,6 +256,7 @@ export class ModelRegistryService implements OnModuleInit {
         tierAllowedIds.has(m.id) &&
         m.backend === 'ollama' &&
         m.modality === 'llm' &&
+        !isCloudProxyModel(m) &&
         m.requirements.gpuVendors.includes(budget.vendor) &&
         m.runtime.memoryFootprintMb <= budget.budgetMb &&
         (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE) &&

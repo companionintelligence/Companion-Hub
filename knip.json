@@ -1,0 +1,37 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "exclude": ["exports", "types", "enumMembers", "namespaceMembers", "duplicates", "binaries", "unresolved", "catalog"],
+  "ignore": [
+    "packages/frontend/src/api-client/**",
+    "packages/frontend/public/mockServiceWorker.js",
+    "videos/**",
+    ".claude/**",
+    "e2e/platform-test-app/**"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "bin/**",
+        "worker.ts!",
+        "openapi-ts.config.ts",
+        "playwright.config.ts",
+        "playwright.*.config.ts",
+        "scripts/**/*.{ts,js,cjs,mjs}",
+        "agent/**/*.{ts,js}",
+        "e2e/**/*.{ts,js}"
+      ],
+      "project": ["scripts/**/*.{ts,js,cjs,mjs}", "agent/**/*.{ts,js}", "e2e/**/*.{ts,js}", "bin/**", "worker.ts", "playwright*.config.ts"]
+    },
+    "packages/frontend": {
+      "ignore": ["src/api-client/**", "public/mockServiceWorker.js"]
+    },
+    "packages/backend": {
+      "entry": ["src/main.ts!", "scripts/**/*.{ts,js,cjs}", "vitest*.{ts,mts}"]
+    },
+    "packages/common": {},
+    "packages/openclaw-plugin": {
+      "entry": ["src/index.ts", "scripts/**/*.{js,mjs}"]
+    },
+    "packages/desktop": {}
+  }
+}

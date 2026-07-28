@@ -124,3 +124,6 @@ tunnel.stale-*
 /e2e/screenshots/actual/
 /e2e/screenshots/diff/
 /e2e/screenshots/debug/
+
+# Scratch directories written by unit tests (cwd varies: repo root or the package dir)
+.tmp-bind-mount-helpers-test/

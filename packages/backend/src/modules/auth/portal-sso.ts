@@ -105,8 +105,12 @@ export function buildPortalSsoErrorRedirectUrl(input: {
 }
 
 export function resolveHubRequestOrigin(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
-  const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
+  // First hop only, same as `resolveTrustedReturnOrigin` below: a REPEATED forwarded header reaches
+  // Node as ONE comma-joined string (only `set-cookie` stays an array), so a request through a
+  // second proxy yields `https, http://app.ci.lan, edge.example` — not a URL. Every caller feeds
+  // this origin straight into `new URL()`, where that throws and surfaces as a 500.
+  const proto = ((req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http').split(',')[0]?.trim() || 'http';
+  const host = ((req.headers['x-forwarded-host'] as string | undefined) || req.get('host') || '').split(',')[0]?.trim();
 
   if (!host) {
     throw new Error('Missing host header');

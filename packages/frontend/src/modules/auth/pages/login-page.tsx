@@ -3,7 +3,9 @@ import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-
 import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
+import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
 import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -15,13 +17,22 @@ import { LoginForm } from '../components/login-form';
 import { TotpForm } from '../components/totp-form/totp-form';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
-export async function clientLoader() {
+export async function clientLoader({ request }: { request: Request }) {
   try {
     const user = await userContext();
 
     if (user.data?.isLoggedIn) {
+      // Honor a safe redirect target instead of dropping it: a visitor who signed in from
+      // another tab mid-flow (e.g. between an edge-SSO bounce and this page) should continue to
+      // where they were headed, not be stranded on /home.
+      //
+      // Read from the loader's request, not `window.location`: on a client-side navigation the
+      // address bar still holds the PREVIOUS route while loaders run, so this would pick up that
+      // page's `redirect_url` (or miss this one entirely).
+      if (followSafeRedirect(new URL(request.url).searchParams.get('redirect_url'))) {
+        return null;
+      }
       return redirect('/home');
     }
   } catch {
@@ -39,6 +50,7 @@ export default () => {
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
   const portalError = searchParams.get('portal_error');
+  const signedOutReason = searchParams.get(SIGNED_OUT_PARAM);
 
   const { t } = useTranslation();
   const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
@@ -56,6 +68,24 @@ export default () => {
       { replace: true },
     );
   }, [portalError, setSearchParams, t]);
+
+  useEffect(() => {
+    if (!signedOutReason) return;
+    // Confirmation for an action taken on the page we just reloaded away from — a
+    // password or username change signs every session out, so its toast could not
+    // survive where it was raised. Strip the param either way, so a refresh does not
+    // replay it.
+    const messageKey = signedOutTranslationKey(signedOutReason);
+    if (messageKey) toast.success(t(messageKey));
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete(SIGNED_OUT_PARAM);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [signedOutReason, setSearchParams, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,8 +120,7 @@ export default () => {
         setUserContext({ isLoggedIn: true });
         refreshUserContext();
 
-        if (redirect_url && isSafeRedirect(redirect_url)) {
-          window.location.href = redirect_url;
+        if (followSafeRedirect(redirect_url)) {
           return;
         }
         navigate('/home');
@@ -116,8 +145,7 @@ export default () => {
       setUserContext({ isLoggedIn: true });
       refreshUserContext();
 
-      if (redirect_url && isSafeRedirect(redirect_url)) {
-        window.location.href = redirect_url;
+      if (followSafeRedirect(redirect_url)) {
         return;
       }
       navigate('/home');
@@ -125,8 +153,7 @@ export default () => {
   });
 
   if (isLoggedIn) {
-    if (redirect_url && isSafeRedirect(redirect_url)) {
-      window.location.href = redirect_url;
+    if (followSafeRedirect(redirect_url)) {
       return;
     }
     return <Navigate to="/home" />;

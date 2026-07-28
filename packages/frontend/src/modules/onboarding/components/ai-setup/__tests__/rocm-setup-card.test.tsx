@@ -69,7 +69,7 @@ afterEach(() => {
 });
 
 describe('RocmSetupCard', () => {
-  it('shows ready state when host ROCm is available', async () => {
+  it('hides the card when host ROCm is already available', async () => {
     mockFetchRocmInstallStatus.mockResolvedValue({
       hostRocmAvailable: true,
       hostRocmKfdAvailable: true,
@@ -79,13 +79,17 @@ describe('RocmSetupCard', () => {
       platformHint: 'linux-ubuntu',
     });
 
-    render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: true, hostRocmKfdAvailable: true })} onRescan={vi.fn()} />);
+    const { container } = render(
+      <RocmSetupCard hardware={makeHardware({ hostRocmAvailable: true, hostRocmKfdAvailable: true })} onRescan={vi.fn()} />,
+    );
 
-    await waitFor(() => expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument());
-    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    await waitFor(() => expect(mockFetchRocmInstallStatus).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/Host ROCm detected/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-hint')).not.toBeInTheDocument();
   });
 
-  it('shows ready messaging from status when hardware scan is stale', async () => {
+  it('hides the card from status when hardware scan is stale but ROCm is ready', async () => {
     mockFetchRocmInstallStatus.mockResolvedValue({
       hostRocmAvailable: true,
       hostRocmKfdAvailable: true,
@@ -95,10 +99,10 @@ describe('RocmSetupCard', () => {
       platformHint: 'linux-ubuntu',
     });
 
-    render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: false })} onRescan={vi.fn()} />);
+    const { container } = render(<RocmSetupCard hardware={makeHardware({ hostRocmAvailable: false })} onRescan={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument());
-    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    await waitFor(() => expect(mockFetchRocmInstallStatus).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
     expect(screen.queryByText(/Install ROCm on the host/i)).not.toBeInTheDocument();
   });
 

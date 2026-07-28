@@ -1,7 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { z } from 'zod';
 
-export const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade']);
+const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade']);
 
 export const inferencePreferencesSchema = z.object({
   backend: inferenceBackendSchema,
@@ -16,7 +16,7 @@ export const inferencePreferencesSchema = z.object({
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
 
-export const runtimeModelsQuerySchema = z.object({
+const runtimeModelsQuerySchema = z.object({
   backend: inferenceBackendSchema,
 });
 
@@ -24,7 +24,7 @@ export class RuntimeModelsQueryDto extends createZodDto(runtimeModelsQuerySchema
 
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 
-export const updateRocmInstallStateSchema = z.object({
+const updateRocmInstallStateSchema = z.object({
   phase: rocmInstallPhaseSchema,
   message: z.string().optional(),
 });

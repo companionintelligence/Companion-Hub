@@ -27,9 +27,6 @@ export const ROCM_KFD_MISSING_USER_MESSAGE = 'This app needs AMD ROCm. Set up RO
 export const ROCM_KFD_MISSING_DETAIL =
   'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. Verify that you have a supported AMD GPU and ROCm drivers installed before running this app.';
 
-/** @deprecated Use createRocmKfdMissingError() — kept for tests referencing the long string. */
-export const ROCM_KFD_MISSING_MESSAGE = ROCM_KFD_MISSING_DETAIL;
-
 export class AppLifecycleError extends Error {
   readonly errorCode?: string;
   readonly errorDetail?: string;
