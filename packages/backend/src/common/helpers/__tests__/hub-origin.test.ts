@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildHubLocalOrigin, buildHubPublicOrigin, isLocalDevDomain, isPrivateHostname } from '../hub-origin';
+import {
+  buildHubLocalOrigin,
+  buildHubPublicOrigin,
+  buildHubTailnetOrigin,
+  isLocalDevDomain,
+  isPrivateHostname,
+  isTailnetHostname,
+} from '../hub-origin';
 
 /**
  * The origin builders are load-bearing for the memory-connect flow: the public
@@ -103,6 +110,71 @@ describe('isPrivateHostname', () => {
   it('ignores case and IPv6 brackets', () => {
     expect(isPrivateHostname('HUB.LOCAL')).toBe(true);
     expect(isPrivateHostname('[::1]')).toBe(true);
+  });
+});
+
+describe('buildHubTailnetOrigin', () => {
+  it('builds an https origin from the node FQDN when the VPN is connected and servable', () => {
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBe('https://hub-x.tail1234.ts.net');
+  });
+
+  it('strips the trailing dot MagicDNS reports and lowercases', () => {
+    // `tailscale status` returns DNSName with a trailing dot; an origin carrying
+    // it would fail every URL.origin comparison it feeds.
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'Hub-X.tail1234.ts.net.' })).toBe(
+      'https://hub-x.tail1234.ts.net',
+    );
+  });
+
+  it('returns null when disconnected — a stale FQDN is not an origin', () => {
+    expect(buildHubTailnetOrigin({ connected: false, httpsAvailable: true, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBeNull();
+  });
+
+  it('returns null without tailnet HTTPS — Serve cannot publish the origin', () => {
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: false, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBeNull();
+  });
+
+  it('returns null without a node FQDN', () => {
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: '   ' })).toBeNull();
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: null })).toBeNull();
+  });
+});
+
+describe('isTailnetHostname', () => {
+  it.each([
+    ['hub-x.tail1234.ts.net', true],
+    ['hub-x.tail1234.ts.net.', true],
+    ['HUB-X.TAIL1234.TS.NET', true],
+    // Tailscale assigns from the CGNAT range; a caller arriving from it is on
+    // the VPN even though isPrivateHostname also claims it.
+    ['100.64.0.1', true],
+    ['100.90.154.85', true],
+    ['100.127.255.254', true],
+    // Tailscale's IPv6 assignment range (fd7a:115c:a1e0::/48), including the
+    // bracketed form URL.hostname reports for IPv6 literals.
+    ['fd7a:115c:a1e0::1', true],
+    ['fd7a:115c:a1e0:ab12::2', true],
+    ['[fd7a:115c:a1e0::1]', true],
+  ])('treats %s as tailnet', (host, expected) => {
+    expect(isTailnetHostname(host)).toBe(expected);
+  });
+
+  it.each([
+    // CGNAT boundaries: 100.63/100.128 are ordinary public space.
+    ['100.63.255.255', false],
+    ['100.128.0.1', false],
+    ['192.168.1.9', false],
+    // Generic unique-local IPv6 is private but NOT the tailnet — it stays
+    // `local` via isPrivateHostname.
+    ['fd00::1', false],
+    ['hub-core2-acme.companionintelligence.com', false],
+    // Suffix must match as a label boundary tail, not a lookalike domain.
+    ['evil-ts.net', false],
+    ['', false],
+    [null, false],
+    [undefined, false],
+  ])('treats %s as not tailnet', (host, expected) => {
+    expect(isTailnetHostname(host as string | null | undefined)).toBe(expected);
   });
 });
 

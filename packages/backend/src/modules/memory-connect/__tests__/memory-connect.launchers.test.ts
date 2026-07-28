@@ -18,7 +18,15 @@ const PUBLIC_LAUNCHER = `https://${PUBLIC_HOST}/api/memory-connect/start?app=ci-
 const LOCAL_LAUNCHER = `http://${LAN_HOST}/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace`;
 
 function makeService(
-  options: { tunnelHealth?: string; providerLocalOnly?: boolean; providerStatus?: string; internalIp?: string; hubSubdomain?: string } = {},
+  options: {
+    tunnelHealth?: string;
+    providerLocalOnly?: boolean;
+    providerStatus?: string;
+    internalIp?: string;
+    hubSubdomain?: string;
+    /** Private VPN status the lazily-resolved TailscaleService reports; omit for "no VPN available". */
+    tailscale?: { connected: boolean; httpsAvailable: boolean; nodeFqdn: string | null };
+  } = {},
 ) {
   const resolver = {
     findProvider: vi.fn(),
@@ -49,6 +57,11 @@ function makeService(
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   const tunnelHealth = { getHealth: vi.fn().mockReturnValue(options.tunnelHealth ?? 'up'), invalidate: vi.fn() };
+  // The service resolves TailscaleService lazily through ModuleRef; returning
+  // undefined models a Hub with no Private VPN wired at all.
+  const moduleRef = {
+    get: vi.fn().mockReturnValue(options.tailscale ? { getStatusCached: vi.fn().mockResolvedValue(options.tailscale) } : undefined),
+  };
 
   const service = new MemoryConnectService(
     resolver as never,
@@ -60,7 +73,7 @@ function makeService(
     logger as never,
     { getAppByUrn: vi.fn().mockResolvedValue({ status: 'running' }) } as never,
     tunnelHealth as never,
-    { get: vi.fn() } as never,
+    moduleRef as never,
   );
 
   return { service, resolver, logger, tunnelHealth, connections };
@@ -149,6 +162,77 @@ describe('launcher selection — public route down', () => {
 
     expect(status.connectUrlLocal).toBe(LOCAL_LAUNCHER);
     expect(status.connectable).toBe(true);
+  });
+});
+
+describe('launcher selection — caller on the Private VPN (CI-Engineering#78)', () => {
+  const TS_HOST = 'hub-x.tail1234.ts.net';
+  const VPN = { connected: true, httpsAvailable: true, nodeFqdn: TS_HOST };
+  const TAILNET_LAUNCHER = `https://${TS_HOST}/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace`;
+
+  it('keeps a tailnet caller on the tailnet origin instead of the public one', async () => {
+    // The #78 report verbatim: apps load on the ts.net host, but connect handed
+    // out the remembered Cloudflare origin.
+    const { service } = makeService({ tailscale: VPN });
+
+    const status = await service.getStatus(APP, { host: `${TS_HOST}:18789` });
+
+    expect(status.connectUrl).toBe(TAILNET_LAUNCHER);
+    expect(status.connectUrlLocal).toBeNull();
+    expect(status.connectable).toBe(true);
+  });
+
+  it('serves a tailnet caller even with the tunnel confirmed down', async () => {
+    // The VPN-only deployment: the tailnet origin, like the LAN one, does not
+    // depend on tunnel health.
+    const { service } = makeService({ tunnelHealth: 'down', tailscale: VPN });
+
+    const status = await service.getStatus(APP, { host: TS_HOST });
+
+    expect(status.connectUrl).toBe(TAILNET_LAUNCHER);
+    expect(status.connectable).toBe(true);
+    expect(status.reason).toBeNull();
+  });
+
+  it('classifies a raw Tailscale (CGNAT) IP as tailnet, not LAN', async () => {
+    // 100.64/10 is inside the private set, but a VPN caller may be nowhere near
+    // the appliance's LAN — a 192.168.x.x launcher could strand it.
+    const { service } = makeService({ tunnelHealth: 'down', tailscale: VPN });
+
+    const status = await service.getStatus(APP, { host: '100.90.154.85' });
+
+    expect(status.connectUrl).toBe(TAILNET_LAUNCHER);
+    expect(status.connectUrlLocal).toBeNull();
+  });
+
+  it('does not block a tailnet caller from a locally-exposed ci-memory', async () => {
+    // A tailnet caller is inside the private network by definition — the
+    // provider_local_only guard exists for confirmed REMOTE callers.
+    const { service } = makeService({ providerLocalOnly: true, tailscale: VPN });
+
+    const status = await service.getStatus(APP, { host: TS_HOST });
+
+    expect(status.connectable).toBe(true);
+    expect(status.connectUrl).toBe(TAILNET_LAUNCHER);
+  });
+
+  it('falls back to the ordinary rules when the VPN reports no usable origin', async () => {
+    // A spoofed/stale ts.net Host must degrade, not dead-end: with no tailnet
+    // origin to offer, the healthy public route stays the answer.
+    const { service } = makeService({ tailscale: { connected: false, httpsAvailable: false, nodeFqdn: null } });
+
+    const status = await service.getStatus(APP, { host: TS_HOST });
+
+    expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
+    expect(status.connectable).toBe(true);
+  });
+
+  it('withholds the tailnet launcher when tailnet HTTPS is unavailable — Serve cannot publish it', async () => {
+    const { service } = makeService({ tailscale: { connected: true, httpsAvailable: false, nodeFqdn: TS_HOST } });
+
+    const status = await service.getStatus(APP, { host: TS_HOST });
+
+    expect(status.connectUrl).toBe(PUBLIC_LAUNCHER);
   });
 });
 

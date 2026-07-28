@@ -81,6 +81,18 @@ export class ExposureSyncService {
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
+  /**
+   * HTTPS port the Hub itself is served on over the tailnet — 443, so the
+   * resulting origin is a bare `https://<nodeFqdn>` (what
+   * `buildHubTailnetOrigin` advertises). App serve ports are the apps' own
+   * high ports, so a clash is a misconfiguration — resolved in the Hub's
+   * favour: the tailnet origin is load-bearing for the whole connect
+   * ceremony and is advertised without knowledge of serve state, so leaving
+   * it unserved would hand every VPN caller a dead launcher, while the
+   * evicted app just needs its port changed.
+   */
+  private static readonly HUB_VPN_PORT = 443;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appRepository: AppsRepository,
@@ -149,7 +161,8 @@ export class ExposureSyncService {
         number,
         {
           appName: string;
-          appUrn: AppUrn;
+          /** Absent for the Hub's own entry — failures then log instead of raising a per-app toast. */
+          appUrn?: AppUrn;
           port: number;
           upstreamUrl: string;
         }
@@ -185,6 +198,27 @@ export class ExposureSyncService {
         });
       }
 
+      // The Hub itself is published at `https://<nodeFqdn>/` (port 443) whenever
+      // the VPN is up — without this, the Private VPN exposes apps but not the
+      // Hub, and the memory-connect/login ceremony has no tailnet origin to land
+      // on (CI-Engineering#78). Registered like any other desired port so the
+      // reconcile loop below keeps it alive and never garbage-collects it. An
+      // app configured on 443 is evicted (see HUB_VPN_PORT for why the Hub
+      // wins) — loudly, with the remedy, since its Private VPN URL stays dead
+      // until its port changes.
+      const clashingApp = desiredPorts.get(ExposureSyncService.HUB_VPN_PORT);
+      if (clashingApp) {
+        this.logger.error(
+          `[Tailscale] ${clashingApp.appUrn}: port ${ExposureSyncService.HUB_VPN_PORT} is reserved for the Hub's own Private VPN entry; ` +
+            'skipping this app — assign it a different port to publish it on the Private VPN',
+        );
+      }
+      desiredPorts.set(ExposureSyncService.HUB_VPN_PORT, {
+        appName: 'hub',
+        port: ExposureSyncService.HUB_VPN_PORT,
+        upstreamUrl: await tailscaleService.getHubServeUpstream(),
+      });
+
       const currentlyServedByPort = new Map(
         serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
       );
@@ -198,7 +232,11 @@ export class ExposureSyncService {
               httpsPort: desired.port,
               upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.surfaceTailscaleServeFailure(desired.appUrn, e));
+            .catch((e) =>
+              desired.appUrn
+                ? this.surfaceTailscaleServeFailure(desired.appUrn, e)
+                : this.logger.error(`[Tailscale] Failed to publish the Hub on the Private VPN: ${e instanceof Error ? e.message : String(e)}`),
+            );
         }
       }
 

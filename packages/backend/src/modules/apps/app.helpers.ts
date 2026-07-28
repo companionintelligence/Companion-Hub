@@ -2,12 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
-import { buildHubLocalOrigin, buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
@@ -130,7 +131,37 @@ export class AppHelpers {
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
     private readonly portalClient: PortalClientService,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  /**
+   * The Hub's tailnet origin for the `CI_HUB_ORIGINS` allowlist, or null when
+   * the Private VPN is not connected / cannot be served. Lazy ModuleRef lookup
+   * for the same reason as elsewhere in this module — a static TailscaleService
+   * import would cycle. Env generation is rare, so the uncached status read is
+   * fine here (and wanted: a connect that just happened must be visible).
+   */
+  private async hubTailnetOrigin(): Promise<string | null> {
+    try {
+      const { TailscaleService } = await import('../tailscale/tailscale.service');
+      const tailscale = this.moduleRef?.get(TailscaleService, { strict: false });
+
+      if (!tailscale) {
+        return null;
+      }
+
+      const status = await tailscale.getStatus();
+
+      return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
+    } catch (err) {
+      // Degrade to "no tailnet entry" but leave a trace — a silently missing
+      // origin here means ci-memory rejects every VPN callback with nothing in
+      // the logs to say why.
+      this.logger.debug(`[AppHelpers] tailnet origin unavailable for CI_HUB_ORIGINS: ${err instanceof Error ? err.message : String(err)}`);
+
+      return null;
+    }
+  }
 
   /**
    * This function generates an env file for the provided app.
@@ -739,9 +770,16 @@ export class AppHelpers {
       // can never match a real callback and only bloats the allowlist. The LAN
       // callback leg genuinely cannot work for a listen-all appliance (its real
       // LAN IP is unknown), so there is nothing to preserve.
+      // The tailnet origin joins the list whenever the Private VPN is up: it is
+      // the origin the whole ceremony runs on for a VPN caller, and without it
+      // here ci-memory rejects that caller's callback outright
+      // (CI-Engineering#78). Like the LAN entry, its absence (VPN down at env
+      // generation time) simply means that leg is not offered — reconnecting the
+      // VPN requires regenerating ci-memory's env (a restart) to pick it up.
       const hubOrigins = [
         buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain }),
         buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port }),
+        await this.hubTailnetOrigin(),
       ].filter((origin): origin is string => origin != null && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|\[::1\])(:|$)/.test(origin));
 
       if (hubOrigins.length > 0) {

@@ -66,6 +66,18 @@ export class TailscaleService {
   private strategyCache: { value: ExecStrategy | null; expires: number } | null = null;
   private static readonly STRATEGY_TTL_MS = 30_000;
 
+  /**
+   * Short-lived cache for {@link getStatusCached}. Every read of `getStatus`
+   * shells out (`tailscale status --json`, via `docker exec` in sidecar mode),
+   * which is fine for settings pages but not for the memory-connect status
+   * endpoint — that is hit on every top-level navigation of every
+   * memory-consumer app. Connection state changes through this service's own
+   * `connectWithAuthKey`/`disconnect` (which invalidate), so 30s of staleness
+   * only ever delays noticing an out-of-band change.
+   */
+  private statusCache: { value: TailscaleStatus; expires: number } | null = null;
+  private static readonly STATUS_TTL_MS = 30_000;
+
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile(this.binaryPath, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
@@ -318,6 +330,28 @@ export class TailscaleService {
     return this.getStatusForStrategy(strategy);
   }
 
+  /**
+   * {@link getStatus} behind a {@link TailscaleService.STATUS_TTL_MS} cache.
+   * Request-path callers (memory-connect launcher resolution) MUST use this —
+   * the uncached read shells out per call. Invalidated by this service's own
+   * connect/disconnect so a state change it caused is visible immediately.
+   */
+  async getStatusCached(): Promise<TailscaleStatus> {
+    const now = Date.now();
+    if (this.statusCache && now < this.statusCache.expires) {
+      return this.statusCache.value;
+    }
+
+    const status = await this.getStatus();
+    this.statusCache = { value: status, expires: now + TailscaleService.STATUS_TTL_MS };
+
+    return status;
+  }
+
+  private invalidateStatusCache(): void {
+    this.statusCache = null;
+  }
+
   private async getStatusForStrategy(strategy: ExecStrategy, suppressErrors = true): Promise<TailscaleStatus> {
     const notInstalled: TailscaleStatus = {
       installed: false,
@@ -489,6 +523,7 @@ export class TailscaleService {
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
     await execFn(upArgs, 120_000);
     this.invalidateStrategyCache();
+    this.invalidateStatusCache();
   }
 
   /**
@@ -529,6 +564,7 @@ export class TailscaleService {
       throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
     }
     this.invalidateStrategyCache();
+    this.invalidateStatusCache();
   }
 
   private async getServeUpstreamTarget(localPort: number): Promise<string> {
@@ -538,6 +574,24 @@ export class TailscaleService {
       return sidecarTarget.includes('://') ? sidecarTarget : `http://${sidecarTarget}`;
     }
     return `http://localhost:${localPort}`;
+  }
+
+  /**
+   * Upstream for serving the Hub ITSELF over the tailnet.
+   *
+   * Sidecar mode targets the Hub gateway container directly rather than
+   * `traefik:80`: Traefik routes by Host and has no router for tailnet
+   * hostnames, so proxying through it 404s every request. Host mode targets
+   * this process's own listen port — same `API_PORT || 3000` resolution as
+   * `main.ts`, so the upstream cannot drift from where the gateway actually
+   * listens.
+   */
+  async getHubServeUpstream(): Promise<string> {
+    const strategy = await this.resolveStrategy();
+    if (strategy === 'sidecar') {
+      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-os-hub:5002';
+    }
+    return `http://localhost:${process.env.API_PORT || 3000}`;
   }
 
   /**

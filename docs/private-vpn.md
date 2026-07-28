@@ -53,17 +53,33 @@ The backend **`TailscaleService`** talks to Tailscale via `docker exec hub-tails
 
 Once connected, look in **Settings → Network** for the hostname shown by Tailscale.
 
-The dashboard listens on the configured Hub API port (`5002` by default).
-Typical direct access patterns are:
-
-- **MagicDNS hostname:** `http://<device-name>:5002/`
-- **Tailscale IP:** `http://100.x.y.z:5002/`
-
-Example:
+While the VPN is connected, CI-Hub publishes its own dashboard on the tailnet
+via Tailscale Serve:
 
 ```text
-http://hub-demo:5002/
+https://<device-name>.<tailnet>.ts.net/
 ```
+
+This is also the origin the memory-connect / login ceremony uses for callers
+arriving over the VPN, so it must stay published for those flows to work.
+Publishing requires **MagicDNS** and **HTTPS Certificates** to be enabled for
+the tailnet (Tailscale admin console → DNS) — the same requirement as per-app
+Serve.
+
+When CI-Hub uses a **host** Tailscale client instead of the sidecar (the host
+has a reachable `tailscaled.sock`), the dashboard is additionally reachable on
+the Hub API port directly (`http://<device-name>:5002/`). With the default
+**sidecar** deployment that direct-port form does NOT work — the sidecar is a
+separate container and forwards nothing on its own; only the Serve entries
+above are published.
+
+> **Subnet routes caveat:** the sidecar advertises `172.18.0.0/16` (the Hub's
+> Docker bridge) as a fallback path. Linux clients do not accept subnet routes
+> by default (`--accept-routes`), the route must be approved in the admin
+> console, and any client that itself runs Docker typically owns the same
+> subnet locally — accepting the route there would capture that client's own
+> Docker traffic. Prefer the Serve URLs; treat the subnet route as opt-in for
+> clients that understand the trade-off.
 
 ### Access apps with Tailscale URLs
 
