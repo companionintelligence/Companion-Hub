@@ -245,6 +245,45 @@ describe('InferenceEnvResolver', () => {
     expect(modelRegistry.getCuratedModel).not.toHaveBeenCalledWith('vision-capable');
   });
 
+  it('prefers an installed recommended model over an unpulled higher-ranked one', async () => {
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b'), makeLlm('gemma4-31b', 'gemma4:31b')]);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:31b'] });
+
+    const env = await service.resolve();
+
+    expect(env.CI_CHAT_MODEL).toBe('gemma4:31b');
+  });
+
+  it('falls back from an unpulled preferred model to an installed recommended one', async () => {
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: 'preferred-llm',
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b'), makeLlm('gemma4-31b', 'gemma4:31b')]);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma4:31b'] });
+
+    const env = await service.resolve();
+
+    expect(env.CI_CHAT_MODEL).toBe('gemma4:31b');
+  });
+
+  it('uses the preferred model when it is installed', async () => {
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: 'preferred-llm',
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b')]);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['preferred:latest', 'hermes4:70b'] });
+
+    const env = await service.resolve();
+
+    expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
+  });
+
   it('honors preferred chat and embedding models and falls back for non-vision preferences', async () => {
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: null,
