@@ -79,6 +79,14 @@ export class TailscaleController {
   @ApiResponse({ type: Object })
   async checkAuth() {
     const status = await this.tailscaleService.getStatus();
+    if (status.connected) {
+      // Browser sign-in completes out-of-band (the user finishes on the
+      // Tailscale site), so this poll is the first place the Hub can see the
+      // connection land. Reconcile serve state here — fire-and-forget, the
+      // reconcile is idempotent — so the Hub and Private VPN apps get published
+      // without waiting for the next app lifecycle event.
+      void this.triggerTailscaleExposureSync();
+    }
     return { authenticated: status.connected };
   }
 

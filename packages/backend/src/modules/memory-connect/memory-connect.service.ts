@@ -3,7 +3,7 @@ import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnMo
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { buildHubLocalOrigin, buildHubPublicOrigin, isPrivateHostname } from '@/common/helpers/hub-origin';
+import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -795,6 +795,36 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
+   * The Hub's tailnet origin (`https://<nodeFqdn>`), or null when the Private
+   * VPN is not connected / cannot be served. Served by Tailscale Serve on the
+   * sidecar (see `ExposureSyncService`), so — like the LAN origin — it is
+   * unaffected by tunnel health. Must also appear in ci-memory's
+   * `CI_HUB_ORIGINS` allowlist (see `AppHelpers`) for the callback leg.
+   *
+   * `TailscaleService` is resolved lazily via ModuleRef (same reason as
+   * AppLifecycleService — a static import would cycle through AppsModule), and
+   * the status read is the cached one: this sits on the same hot status-poll
+   * path as the tunnel-health read, where an exec per call is not acceptable.
+   */
+  private async hubTailnetOrigin(): Promise<string | null> {
+    try {
+      const { TailscaleService } = await import('../tailscale/tailscale.service');
+      const tailscale = this.moduleRef.get(TailscaleService, { strict: false });
+
+      if (!tailscale) {
+        return null;
+      }
+
+      const status = await tailscale.getStatusCached();
+
+      return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
+    } catch {
+      // No VPN answer is "no tailnet origin", never a failed status poll.
+      return null;
+    }
+  }
+
+  /**
    * Decide which connect launchers this caller can actually use.
    *
    * The rules, in the order they are applied:
@@ -802,19 +832,29 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    *  1. **ci-memory must be running.** Anything else short-circuits with the
    *     matching reason — a launcher offered while it is absent/starting/offline
    *     would dead-end on `startConnect`'s 400.
-   *  2. **The public launcher is preferred whenever the public route works.**
+   *  2. **A tailnet caller stays on the tailnet.** A caller that reached us over
+   *     the Private VPN gets the tailnet launcher — its own origin family,
+   *     reachable by construction and, like the LAN route, independent of tunnel
+   *     health. Handing it the public launcher is what pinned VPN-only installs
+   *     to a Cloudflare origin they had deliberately stopped using
+   *     (CI-Engineering#78). Falls through when the VPN reports no usable
+   *     origin — a spoofed/stale tailnet Host must degrade to the ordinary
+   *     rules, not block.
+   *  3. **The public launcher is preferred whenever the public route works.**
    *     Tunnel health `up`, `unknown` (no opinion — never suppress on a cold or
    *     inconclusive reading) and a missing-but-configured origin all keep
    *     today's behaviour. Only a confirmed `down` withdraws it.
-   *  3. **The LAN launcher is a fallback, never a preference.** It is offered only
+   *  4. **The LAN launcher is a fallback, never a preference.** It is offered only
    *     when the public route is unusable AND the caller reached us on a private
    *     host — a remote browser cannot route to `192.168.x.x`, so handing it that
    *     URL would swap one dead button for another.
-   *  4. **The provider must be reachable by the same caller.** A locally-exposed
+   *  5. **The provider must be reachable by the same caller.** A locally-exposed
    *     ci-memory publishes a private consent origin, so a caller known to be
    *     off-network cannot complete the ceremony whichever Hub launcher they
    *     start from. Only a *confirmed* remote caller is blocked — see
-   *     {@link callerLocality} for why "cannot tell" has to mean "allow".
+   *     {@link callerLocality} for why "cannot tell" has to mean "allow". A
+   *     tailnet caller is never `remote`: it is inside the private network by
+   *     definition, so a LAN-only or VPN-only provider stays connectable for it.
    *
    * `providerLocalOnly` comes from the provider's `exposureMode` (a DB read), not
    * from an availability probe — so a status poll stays cheap.
@@ -839,7 +879,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       );
     }
 
-    // 4. A LAN-only provider is unusable from off-network, so this is checked
+    // 5. A LAN-only provider is unusable from off-network, so this is checked
     //    before we bother resolving launchers: no Hub launcher can rescue such a
     //    caller, because the consent hop itself lands on a private address.
     //
@@ -860,11 +900,30 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return blocked('provider_local_only');
     }
 
+    // 2. A tailnet caller keeps its own origin family. Resolved only for tailnet
+    //    callers so every other status poll skips the VPN status read entirely.
+    if (locality === 'tailnet') {
+      const tailnetOrigin = await this.hubTailnetOrigin();
+
+      if (tailnetOrigin) {
+        return {
+          connectUrl: this.launcherFor(tailnetOrigin, input.appUrn),
+          connectUrlLocal: null,
+          connectable: true,
+          reason: null,
+        };
+      }
+
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: caller arrived on a tailnet host but the Private VPN reports no usable origin; falling back to the public route`,
+      );
+    }
+
     const publicOrigin = await this.hubOrigin();
     const localOrigin = this.hubLocalOrigin();
     const health = this.tunnelHealth.getHealth();
 
-    // 2. Public route first, unless it is confirmed down. `unknown` deliberately
+    // 3. Public route first, unless it is confirmed down. `unknown` deliberately
     //    counts as usable — a cold Hub must behave exactly as it did before.
     const publicUsable = Boolean(publicOrigin) && health !== 'down';
 
@@ -882,7 +941,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       };
     }
 
-    // 3. Fallback: LAN only, and only for a caller who can route to it.
+    // 4. Fallback: LAN only, and only for a caller who can route to it.
     if (callerIsLocal && localOrigin && this.localOriginReachableBy(localOrigin, input.origin?.host)) {
       this.logger.info(
         `[MemoryConnect] ${input.appUrn}: public origin unusable (tunnel ${health}); offering the LAN launcher ${localOrigin} to a local caller`,
@@ -903,9 +962,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Where the caller that reached us on `callerHost` sits relative to the
    * appliance's own network.
    *
-   * Three answers, not two, because the two decisions that depend on this fail in
-   * opposite directions and a boolean would force one of them to be wrong:
+   * Four answers, because the decisions that depend on this fail in opposite
+   * directions and a coarser type would force one of them to be wrong:
    *
+   *  - `tailnet` — the caller is on the Private VPN: offer the tailnet launcher
+   *                (their own origin family), never the LAN one — a VPN caller
+   *                may be nowhere near the appliance's LAN.
    *  - `local`   — offer the LAN launcher.
    *  - `remote`  — a LAN-only ci-memory is genuinely unusable; block.
    *  - `unknown` — withhold the LAN launcher (it may not route) but do NOT block
@@ -925,11 +987,19 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * into those, so they only appear when the browser really did address the
    * appliance directly.
    */
-  private callerLocality(callerHost: string | undefined): 'local' | 'remote' | 'unknown' {
+  private callerLocality(callerHost: string | undefined): 'tailnet' | 'local' | 'remote' | 'unknown' {
     const hostname = this.hostnameOf(callerHost);
 
     if (!hostname) {
       return 'unknown';
+    }
+
+    // Checked before the private-host test on purpose: Tailscale's CGNAT range
+    // (100.64/10) is inside the private set, but a caller arriving from it is on
+    // the VPN — classifying it `local` used to hand it a `192.168.x.x` launcher
+    // it may not be able to route to (CI-Engineering#78).
+    if (isTailnetHostname(hostname)) {
+      return 'tailnet';
     }
 
     // Read the override first, then the base value — the same precedence
@@ -1044,6 +1114,15 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       allowedOrigins.add(localHubOrigin);
     }
 
+    // The tailnet Hub origin needs no reachability gate: it is only ever
+    // non-null while the Private VPN is connected, and — unlike the listen-all
+    // LAN case — it can never collapse to a loopback an attacker could bounce
+    // a visitor to.
+    const tailnetHubOrigin = await this.hubTailnetOrigin();
+    if (tailnetHubOrigin) {
+      allowedOrigins.add(tailnetHubOrigin);
+    }
+
     for (const candidate of [appAccessUrls.publicUrl, appAccessUrls.localUrl]) {
       if (!candidate) {
         continue;
@@ -1119,8 +1198,11 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const publicOrigin = await this.hubOrigin();
     const localOrigin = this.hubLocalOrigin();
     const requestHostname = this.hostnameOf(origin?.host);
+    // Resolved only when the request host says tailnet — every other start keeps
+    // its existing single-read cost.
+    const tailnetOrigin = requestHostname && isTailnetHostname(requestHostname) ? await this.hubTailnetOrigin() : null;
 
-    for (const candidate of [publicOrigin, localOrigin]) {
+    for (const candidate of [publicOrigin, localOrigin, tailnetOrigin]) {
       if (candidate && requestHostname && this.hostnameOf(candidate) === requestHostname) {
         return candidate;
       }

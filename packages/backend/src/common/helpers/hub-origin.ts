@@ -45,6 +45,13 @@ const LOCAL_DEV_DOMAIN = 'ci.localhost';
 const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdomain', '.localhost'];
 
 /**
+ * MagicDNS suffix of every Tailscale tailnet on the public control plane. A
+ * caller carrying such a host reached the Hub over the Private VPN — no LAN
+ * gateway or tunnel rewrite ever produces a `.ts.net` Host.
+ */
+const TAILNET_HOST_SUFFIX = '.ts.net';
+
+/**
  * The Hub's public origin (`https://<hubSubdomain>.<domain>`), or null when this
  * appliance has no provisioned public route — because it is not registered with
  * an organization (no `hubSubdomain`), or its domain is still the unprovisioned
@@ -94,6 +101,65 @@ export function buildHubLocalOrigin(input: { internalIp?: string | null; port?: 
   const port = input.port ?? 80;
 
   return port === 80 ? `http://${host}` : `http://${host}:${port}`;
+}
+
+/**
+ * The Hub's tailnet origin (`https://<nodeFqdn>`), or null when the Private VPN
+ * is not connected or cannot be served.
+ *
+ * `https` on the default port: the Hub is published via Tailscale Serve on
+ * `:443`, which terminates TLS with the tailnet's own certificate for the node
+ * FQDN. That is also why `httpsAvailable` gates the origin — Serve requires
+ * HTTPS Certificates on the tailnet (the `CertDomains` signal), so advertising
+ * this origin without it would hand out a launcher that cannot be served.
+ *
+ * Like {@link buildHubPublicOrigin}, a null is meaningful rather than an error:
+ * it is how a Hub without a (usable) Private VPN reports "there is no tailnet
+ * address here".
+ */
+export function buildHubTailnetOrigin(input: { connected?: boolean; httpsAvailable?: boolean; nodeFqdn?: string | null }): string | null {
+  if (!input.connected || !input.httpsAvailable) {
+    return null;
+  }
+
+  const nodeFqdn = input.nodeFqdn?.trim().replace(/\.+$/, '');
+
+  if (!nodeFqdn) {
+    return null;
+  }
+
+  return `https://${nodeFqdn.toLowerCase()}`;
+}
+
+/**
+ * Whether a hostname identifies a caller on the Hub's tailnet: a MagicDNS name
+ * (`*.ts.net`) or a Tailscale IPv4 (the CGNAT range 100.64/10, which Tailscale
+ * assigns from).
+ *
+ * Callers MUST check this BEFORE {@link isPrivateHostname}: the CGNAT range is
+ * also part of the private set (it is unroutable from the internet), but a
+ * caller arriving from `100.x` is on the VPN and can reach the Hub's tailnet
+ * origin — while it may well NOT be able to reach the `192.168.x.x` LAN origin
+ * the `local` classification would offer it.
+ */
+export function isTailnetHostname(hostname: string | null | undefined): boolean {
+  const host = hostname?.trim().toLowerCase().replace(/\.+$/, '');
+
+  if (!host) {
+    return false;
+  }
+
+  if (host.endsWith(TAILNET_HOST_SUFFIX)) {
+    return true;
+  }
+
+  if (net.isIP(host) === 4) {
+    const [first = 0, second = 0] = host.split('.').map(Number);
+
+    return first === 100 && second >= 64 && second <= 127;
+  }
+
+  return false;
 }
 
 /**

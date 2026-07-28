@@ -81,6 +81,16 @@ export class ExposureSyncService {
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
+  /**
+   * HTTPS port the Hub itself is served on over the tailnet — 443, so the
+   * resulting origin is a bare `https://<nodeFqdn>` (what
+   * `buildHubTailnetOrigin` advertises). App serve ports are the apps' own
+   * high ports, so a clash is a misconfiguration we log rather than resolve.
+   */
+  private static readonly HUB_VPN_PORT = 443;
+  /** Sentinel urn for the Hub's own serve entry in failure reporting (not a real app). */
+  private static readonly HUB_SERVE_SENTINEL = 'hub:hub' as AppUrn;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appRepository: AppsRepository,
@@ -185,6 +195,24 @@ export class ExposureSyncService {
         });
       }
 
+      // The Hub itself is published at `https://<nodeFqdn>/` (port 443) whenever
+      // the VPN is up — without this, the Private VPN exposes apps but not the
+      // Hub, and the memory-connect/login ceremony has no tailnet origin to land
+      // on (CI-Engineering#78). Registered like any other desired port so the
+      // reconcile loop below keeps it alive and never garbage-collects it.
+      if (desiredPorts.has(ExposureSyncService.HUB_VPN_PORT)) {
+        this.logger.error(
+          `[Tailscale] Port ${ExposureSyncService.HUB_VPN_PORT} is claimed by an app; the Hub cannot be published on the Private VPN`,
+        );
+      } else {
+        desiredPorts.set(ExposureSyncService.HUB_VPN_PORT, {
+          appName: 'hub',
+          appUrn: ExposureSyncService.HUB_SERVE_SENTINEL,
+          port: ExposureSyncService.HUB_VPN_PORT,
+          upstreamUrl: await tailscaleService.getHubServeUpstream(),
+        });
+      }
+
       const currentlyServedByPort = new Map(
         serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
       );
@@ -265,6 +293,12 @@ export class ExposureSyncService {
   private surfaceTailscaleServeFailure(appUrn: AppUrn, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     this.logger.error(`[Tailscale] Failed to serve ${appUrn}: ${message}`);
+
+    // The Hub's own serve entry is not an app: there is no app page to toast on,
+    // so its failures stay in the log.
+    if (appUrn === ExposureSyncService.HUB_SERVE_SENTINEL) {
+      return;
+    }
 
     // Tailscale returns this when HTTPS Certificates / Serve are not enabled for
     // the tailnet. This is the only serve failure the user can fix themselves.
