@@ -224,6 +224,7 @@
   "APP_STORE_ADD_FORM_URL_PLACEHOLDER": "https://github.com/myusername/my-awesome-repo",
   "APP_STORE_ADD_SUCCESS": "Tienda de aplicaciones agregada correctamente",
   "APP_STORE_ALTERNATIVES": "Alternativas",
+  "APP_STORE_ALTERNATIVES_SUBTITLE": "Alternativas de código abierto al software propietario",
   "APP_STORE_CATEGORY_PLACEHOLDER": "Selecciona una categoría",
   "APP_STORE_CHECK_FOR_UPDATES": "Buscar actualizaciones",
   "APP_STORE_CHOOSE_CATEGORY": "Elige una categoría",

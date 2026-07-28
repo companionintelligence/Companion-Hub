@@ -80,14 +80,18 @@ vi.mock('@/lib/hooks/use-infinite-scroll', () => ({
   useInfiniteScroll: () => ({ lastElementRef: vi.fn() }),
 }));
 
-vi.mock('@/lib/hooks/use-portal-catalog', () => ({
-  usePortalCatalog: () => ({
+const mockUsePortalCatalog = vi.hoisted(() =>
+  vi.fn(() => ({
     alternatives: {},
     isLoading: false,
     isError: false,
     alternativesError: undefined,
     refetchAlternatives: vi.fn(),
-  }),
+  })),
+);
+
+vi.mock('@/lib/hooks/use-portal-catalog', () => ({
+  usePortalCatalog: mockUsePortalCatalog,
 }));
 
 vi.mock('@/lib/portal-alternatives', () => ({
@@ -147,6 +151,13 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.category = undefined;
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {},
+      isLoading: false,
+      isError: false,
+      alternativesError: undefined,
+      refetchAlternatives: vi.fn(),
+    });
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {
@@ -177,7 +188,7 @@ describe('AppStorePage — multi-store UX', () => {
     expect(screen.getByTestId('store-label')).toBeInTheDocument();
   });
 
-  it('redirects /app-store/:storeId to /app-store?store=<storeId>', () => {
+  it('redirects /store/:storeId to /store?store=<storeId>', () => {
     setupQueries();
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
@@ -187,7 +198,38 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/app-store?store=community');
+    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
+  });
+
+  it('links curated alternatives (including OnlyOffice) to /store/<slug>/<appSlug>', () => {
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {
+        utilities: [
+          {
+            proprietary: [{ name: 'Microsoft Office', icon: null, url: null }],
+            alternatives: [{ name: 'OnlyOffice', icon: null, url: 'https://www.onlyoffice.com/', appSlug: 'onlyoffice' }],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      alternativesError: undefined,
+      refetchAlternatives: vi.fn(),
+    });
+
+    setupQueries([{ slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' }]);
+    mockStoreState.category = '__alternatives__';
+    mockStoreState.storeId = 'ci-marketplace';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole('link', { name: /OnlyOffice/i });
+    expect(link).toHaveAttribute('href', '/store/ci-marketplace/onlyoffice');
+    expect(screen.queryByText('ONBOARDING_SOON')).not.toBeInTheDocument();
   });
 
   it('syncs URL ?store= param to Zustand on mount', () => {
