@@ -80,6 +80,20 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   netdata: { hostPaths: ['/proc', '/sys', '/var/run/docker.sock'] },
   // System-design lab that orchestrates sibling containers via dockerode.
   torollo: { hostPaths: ['/var/run/docker.sock'] },
+  // Self-hosted developer-workspace platform; needs the host docker socket to
+  // reach the Docker daemon, per upstream's own install docs.
+  coder: { hostPaths: ['/var/run/docker.sock'] },
+  // Digital-human video synthesis: two of three services run privileged per
+  // upstream's own reference docker-compose.yml.
+  'duix-avatar': { privileged: true },
+  // Cloud-native runtime security tool that hooks host syscalls; reads the
+  // host docker socket, /proc, /etc, and kernel tracing, matching Falco's own
+  // official docker quickstart.
+  falco: { hostPaths: ['/var/run/docker.sock', '/proc', '/etc', '/sys/kernel/tracing'] },
+  // Agentic workspace's code-execution sandbox service needs privileged mode
+  // to isolate arbitrary AI-agent-generated code, matching upstream's own
+  // docker-compose.yml.
+  refly: { privileged: true },
 };
 
 export interface ServiceSecurityViolation {
