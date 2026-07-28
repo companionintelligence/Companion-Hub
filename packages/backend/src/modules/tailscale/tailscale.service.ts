@@ -581,15 +581,17 @@ export class TailscaleService {
    *
    * Sidecar mode targets the Hub gateway container directly rather than
    * `traefik:80`: Traefik routes by Host and has no router for tailnet
-   * hostnames, so proxying through it 404s every request. Host mode targets the
-   * gateway's local port.
+   * hostnames, so proxying through it 404s every request. Host mode targets
+   * this process's own listen port — same `API_PORT || 3000` resolution as
+   * `main.ts`, so the upstream cannot drift from where the gateway actually
+   * listens.
    */
   async getHubServeUpstream(): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
       return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-os-hub:5002';
     }
-    return `http://localhost:${process.env.API_PORT || 5002}`;
+    return `http://localhost:${process.env.API_PORT || 3000}`;
   }
 
   /**

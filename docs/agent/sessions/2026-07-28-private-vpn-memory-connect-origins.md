@@ -22,7 +22,7 @@ Make the tailnet a first-class origin for the memory-connect flow. Before this s
 
 1. Adversarially re-verified every CI-Engineering#78 claim against the code and live on core-2 (one correction posted: the subnet-route failure mechanism).
 2. Added `buildHubTailnetOrigin` / `isTailnetHostname` to `hub-origin.ts`.
-3. Published the Hub itself via Tailscale Serve on `:443` in the exposure-sync reconcile (upstream `ci-os-hub:5002` in sidecar mode — Traefik has no router for tailnet hosts) and triggered the reconcile from `auth/check` when browser sign-in lands.
+3. Published the Hub itself via Tailscale Serve on `:443` in the exposure-sync reconcile (upstream `ci-os-hub:5002` in sidecar mode — Traefik has no router for tailnet hosts). Browser sign-in completion already triggers the reconcile client-side (`useTailscaleReadinessSync` fires `POST /tailscale/sync` on the connected transition), so no server-side hook was needed — an earlier `auth/check` hook was removed in review as dead code.
 4. Added a `tailnet` caller locality (`.ts.net` + CGNAT range, checked before the private-host test) and a tailnet launcher branch in `resolveLaunchers`, independent of tunnel health; tailnet origin added to `resolveFlowOrigin`, `resolveSafeNext`, and the `CI_HUB_ORIGINS` allowlist injected into ci-memory.
 5. Added `getStatusCached` (30s TTL) to `TailscaleService` so the hot status-poll path never shells out per request.
 6. Corrected `docs/private-vpn.md` (sidecar deployments serve the dashboard at `https://<node>/`; the `:5002` direct form is host-mode only; subnet-route caveats).

@@ -150,6 +150,11 @@ describe('isTailnetHostname', () => {
     ['100.64.0.1', true],
     ['100.90.154.85', true],
     ['100.127.255.254', true],
+    // Tailscale's IPv6 assignment range (fd7a:115c:a1e0::/48), including the
+    // bracketed form URL.hostname reports for IPv6 literals.
+    ['fd7a:115c:a1e0::1', true],
+    ['fd7a:115c:a1e0:ab12::2', true],
+    ['[fd7a:115c:a1e0::1]', true],
   ])('treats %s as tailnet', (host, expected) => {
     expect(isTailnetHostname(host)).toBe(expected);
   });
@@ -159,6 +164,9 @@ describe('isTailnetHostname', () => {
     ['100.63.255.255', false],
     ['100.128.0.1', false],
     ['192.168.1.9', false],
+    // Generic unique-local IPv6 is private but NOT the tailnet — it stays
+    // `local` via isPrivateHostname.
+    ['fd00::1', false],
     ['hub-core2-acme.companionintelligence.com', false],
     // Suffix must match as a label boundary tail, not a lookalike domain.
     ['evil-ts.net', false],

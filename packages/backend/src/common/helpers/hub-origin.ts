@@ -132,18 +132,31 @@ export function buildHubTailnetOrigin(input: { connected?: boolean; httpsAvailab
 }
 
 /**
+ * Textual prefix of Tailscale's IPv6 assignment range, `fd7a:115c:a1e0::/48`.
+ * A /48 is exactly the first three groups, so a prefix match on the canonical
+ * lowercase form covers every address in the range (the compressed `::` form
+ * still begins with these three groups and a colon).
+ */
+const TAILNET_IPV6_PREFIX = 'fd7a:115c:a1e0:';
+
+/**
  * Whether a hostname identifies a caller on the Hub's tailnet: a MagicDNS name
- * (`*.ts.net`) or a Tailscale IPv4 (the CGNAT range 100.64/10, which Tailscale
- * assigns from).
+ * (`*.ts.net`) or a Tailscale-assigned IP (IPv4 CGNAT 100.64/10, IPv6
+ * fd7a:115c:a1e0::/48).
  *
- * Callers MUST check this BEFORE {@link isPrivateHostname}: the CGNAT range is
- * also part of the private set (it is unroutable from the internet), but a
- * caller arriving from `100.x` is on the VPN and can reach the Hub's tailnet
- * origin — while it may well NOT be able to reach the `192.168.x.x` LAN origin
- * the `local` classification would offer it.
+ * Callers MUST check this BEFORE {@link isPrivateHostname}: both Tailscale
+ * ranges are also part of the private set (CGNAT via the IPv4 branch, the IPv6
+ * range via the unique-local `fd` branch), but a caller arriving from them is
+ * on the VPN and can reach the Hub's tailnet origin — while it may well NOT be
+ * able to reach the `192.168.x.x` LAN origin the `local` classification would
+ * offer it.
  */
 export function isTailnetHostname(hostname: string | null | undefined): boolean {
-  const host = hostname?.trim().toLowerCase().replace(/\.+$/, '');
+  const host = hostname
+    ?.trim()
+    .toLowerCase()
+    .replace(/^\[|]$/g, '')
+    .replace(/\.+$/, '');
 
   if (!host) {
     return false;
@@ -153,10 +166,16 @@ export function isTailnetHostname(hostname: string | null | undefined): boolean 
     return true;
   }
 
-  if (net.isIP(host) === 4) {
+  const ipVersion = net.isIP(host);
+
+  if (ipVersion === 4) {
     const [first = 0, second = 0] = host.split('.').map(Number);
 
     return first === 100 && second >= 64 && second <= 127;
+  }
+
+  if (ipVersion === 6) {
+    return host.startsWith(TAILNET_IPV6_PREFIX);
   }
 
   return false;
