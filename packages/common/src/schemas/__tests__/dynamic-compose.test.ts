@@ -1043,7 +1043,17 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   it('keeps the trusted allowlist tight and self-consistent', () => {
     // Guard against accidental broadening: every allowlisted app must resolve to zero
     // violations for exactly the access it is granted, and nothing else.
-    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual(['coolify', 'home-assistant', 'netdata', 'steam-headless', 'torollo']);
+    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual([
+      'coder',
+      'coolify',
+      'duix-avatar',
+      'falco',
+      'home-assistant',
+      'netdata',
+      'refly',
+      'steam-headless',
+      'torollo',
+    ]);
     expect(
       collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
     ).toHaveLength(0);

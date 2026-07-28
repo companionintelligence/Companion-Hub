@@ -70,6 +70,25 @@ export class PortalClientService {
     return response.data;
   }
 
+  /**
+   * Platform Google Maps key from Portal (`GET /api/config/maps`).
+   * Returns null when Portal is unreachable, unauthenticated, or the
+   * wrangler secret is unset — callers must treat that as best-effort.
+   */
+  async fetchMapsConfig(): Promise<{ configured: boolean; apiKey?: string } | null> {
+    if (!this.publicPortalUrl || !this.configuration.get('ciHubApiKey')) {
+      return null;
+    }
+
+    try {
+      return await this.fetchJson<{ configured: boolean; apiKey?: string }>('/config/maps', {
+        authenticated: true,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async fetchStoreListings(params: PortalStoreListingsParams = {}): Promise<unknown> {
     const query: Record<string, string> = {};
     if (params.category) query.category = params.category;
