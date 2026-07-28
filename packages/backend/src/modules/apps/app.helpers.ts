@@ -153,7 +153,12 @@ export class AppHelpers {
       const status = await tailscale.getStatus();
 
       return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
-    } catch {
+    } catch (err) {
+      // Degrade to "no tailnet entry" but leave a trace — a silently missing
+      // origin here means ci-memory rejects every VPN callback with nothing in
+      // the logs to say why.
+      this.logger.debug(`[AppHelpers] tailnet origin unavailable for CI_HUB_ORIGINS: ${err instanceof Error ? err.message : String(err)}`);
+
       return null;
     }
   }

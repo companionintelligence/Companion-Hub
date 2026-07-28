@@ -818,8 +818,12 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       const status = await tailscale.getStatusCached();
 
       return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
-    } catch {
-      // No VPN answer is "no tailnet origin", never a failed status poll.
+    } catch (err) {
+      // No VPN answer is "no tailnet origin", never a failed status poll — but
+      // leave a trace, or a broken `tailscale status` would silently withhold
+      // the tailnet launcher from every VPN caller.
+      this.logger.debug(`[MemoryConnect] tailnet origin unavailable: ${err instanceof Error ? err.message : String(err)}`);
+
       return null;
     }
   }
