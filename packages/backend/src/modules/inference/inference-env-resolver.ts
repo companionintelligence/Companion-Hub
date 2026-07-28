@@ -6,6 +6,8 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
+import { isCatalogModelInstalled } from './model-availability.util';
+import type { CuratedModel } from '@ci-hub/common/types';
 
 /**
  * Standardized AI environment variables injected into an app's `app.env` when
@@ -100,18 +102,33 @@ export class InferenceEnvResolver {
     const apiKey = 'ollama';
 
     // ── Chat model ────────────────────────────────────────────────────────
-    let chatModel: string | undefined;
-    let chatCurated: ReturnType<ModelRegistryService['getCuratedModel']>;
+    // Prefer a model that is actually present on the Ollama endpoint: this env
+    // is written into an app's app.env with no pre-pull on this path, so naming
+    // a merely-recommended (but unpulled) model would 404 on the app's first
+    // request. Resolution: preference-if-installed → best installed recommended
+    // model → previous behavior (preference, then top recommendation) as a last
+    // resort when nothing is pulled yet.
+    const modelsLoaded = ollamaHealth.modelsLoaded ?? [];
     const preferredId = preferences.preferredModel;
-    if (preferredId) {
-      chatCurated = this.modelRegistry.getCuratedModel(preferredId);
-      chatModel = chatCurated?.backendModelId;
+    const preferredCurated = preferredId ? this.modelRegistry.getCuratedModel(preferredId) : undefined;
+    const llmCandidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.modality === 'llm');
+
+    let chatCurated: CuratedModel | undefined;
+    if (preferredCurated && this.isInstalled(preferredCurated, modelsLoaded)) {
+      chatCurated = preferredCurated;
+    } else {
+      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded));
     }
-    if (!chatModel) {
-      const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
-      chatCurated = recommended.find((m) => m.modality === 'llm');
-      chatModel = chatCurated?.backendModelId;
+    if (!chatCurated) {
+      chatCurated = preferredCurated ?? llmCandidates[0];
+      if (chatCurated) {
+        this.logger.warn(
+          '[InferenceEnvResolver] no recommended chat model is pulled yet; ' +
+            `emitting ${chatCurated.backendModelId} — apps will 404 until it is pulled.`,
+        );
+      }
     }
+    const chatModel = chatCurated?.backendModelId;
 
     // ── Embedding model ───────────────────────────────────────────────────
     let embeddingModel: string | undefined;
@@ -164,5 +181,12 @@ export class InferenceEnvResolver {
     );
 
     return env;
+  }
+
+  /** True when the model is on disk in Ollama or tracked as pulled/loaded/pinned in the registry. */
+  private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
+    const tracked = this.modelRegistry.getTrackedModel(model.id);
+    const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);
   }
 }
