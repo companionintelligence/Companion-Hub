@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
-const STORE_INDEX_PATTERN = /^\/app-store\/?$/;
+const STORE_INDEX_PATTERN = /^\/store\/?$/;
 
 export const AppStoreSidebar = () => {
   const { t } = useTranslation();

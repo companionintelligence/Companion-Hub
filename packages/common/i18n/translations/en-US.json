@@ -1057,6 +1057,7 @@
   "APP_STORE_CHECK_FOR_UPDATES": "Check for Updates",
   "APP_STORE_SEARCH_APPS": "Search apps...",
   "APP_STORE_ALTERNATIVES": "Alternatives",
+  "APP_STORE_ALTERNATIVES_SUBTITLE": "Open source replacements for proprietary software",
   "APP_STORE_FEATURED_SECTION_TITLE": "Featured",
   "APP_STORE_FEATURED_SECTION_SUBTITLE": "Hand-picked apps from the CI App Store",
   "APP_STORE_TRENDING_SECTION_TITLE": "Trending",

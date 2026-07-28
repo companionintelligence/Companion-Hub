@@ -1069,6 +1069,7 @@
   "APP_STORE_CHECK_FOR_UPDATES": "Check for Updates",
   "APP_STORE_SEARCH_APPS": "Search apps...",
   "APP_STORE_ALTERNATIVES": "Alternatives",
+  "APP_STORE_ALTERNATIVES_SUBTITLE": "Open source replacements for proprietary software",
   "COMMON_LOADING": "Loading",
   "COMMON_SUCCESS": "Success",
   "COMMON_ERROR": "Error",
