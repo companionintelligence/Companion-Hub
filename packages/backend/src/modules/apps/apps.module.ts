@@ -22,7 +22,9 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
   imports: [
     QueueModule,
     EnvModule,
-    PortalModule,
+    // forwardRef: PortalModule ↔ RegistrationModule; a hard import here made
+    // CloudflareModule's PortalModule slot undefined during OpenAPI generation.
+    forwardRef(() => PortalModule),
     forwardRef(() => DockerModule),
     forwardRef(() => InferenceModule),
     MarketplaceModule,

@@ -11,7 +11,7 @@ import { CloudflareHostnameService } from './cloudflare-hostname.service';
 import { TunnelHealthService } from './tunnel-health.service';
 
 @Module({
-  imports: [ConfigurationModule, PortalModule, DatabaseModule, forwardRef(() => DockerModule)],
+  imports: [ConfigurationModule, forwardRef(() => PortalModule), DatabaseModule, forwardRef(() => DockerModule)],
   controllers: [CloudflareController],
   providers: [CloudflareClientService, CloudflareHostnameService, TunnelHealthService, AppsRepository, DeviceRegistrationRepository],
   // TunnelHealthService is exported for MemoryConnectModule, which gates the
