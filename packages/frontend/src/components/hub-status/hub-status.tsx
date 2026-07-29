@@ -214,10 +214,10 @@ function DockerDesktopGuide({
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
                 <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
-                  {t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED')}
+                  {t('HUB_STATUS_DOCKER_REQUIRED')}
                 </HintText>
               </div>
-              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED_DESC')}</p>
+              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_REQUIRED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>

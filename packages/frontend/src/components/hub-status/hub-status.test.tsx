@@ -208,12 +208,12 @@ describe('HubStatus Docker guidance', () => {
   it('shows Windows manual guidance with a direct download link and no install button', async () => {
     const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
-    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Docker Required' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toHaveAttribute(
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(screen.getByText(/CI Hub needs Docker Desktop/)).toBeInTheDocument();
+    expect(screen.getByText(/CI Hub needs a Docker engine/)).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
     expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
@@ -226,7 +226,7 @@ describe('HubStatus Docker guidance', () => {
   it('shows the Apple Silicon macOS download link and no install button', async () => {
     renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
 
-    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Docker Required' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download Docker Desktop for Mac' })).toHaveAttribute(
       'href',
       'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
@@ -438,7 +438,7 @@ describe('HubStatus Docker guidance', () => {
     renderWithTauriStatus('Running', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Docker Required' })).not.toBeInTheDocument();
   });
 });
 
