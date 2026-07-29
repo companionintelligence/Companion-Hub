@@ -177,14 +177,17 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"                # scope defaults to 'mcp'
-cihub api-key create --name "agent" --scopes mcp,app
-cihub api-key list                                  # id, name, scopes, prefix
+cihub api-key create --name "laptop"   # operator keys carry the 'mcp' scope
+cihub api-key list                     # id, name, scopes, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
-**Settings → Security**. Names beginning `app:` are reserved for keys the Hub provisions to
-marketplace apps.
+**Settings → Security**.
+
+Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
+installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
+operator key carrying `app` would authenticate nothing. Names beginning `app:` are reserved for the
+same reason.
 
 Connect an external MCP client with:
 

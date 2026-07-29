@@ -1197,7 +1197,21 @@ const API_KEY_DB_USER = 'companion';
 const API_KEY_DB_NAME = 'companiondb';
 const API_KEY_BYTES = 32; // 64 hex chars — mirrors KEY_BYTES in ApiKeyService
 const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
-const API_KEY_SCOPES = ['mcp', 'app'] as const;
+
+/**
+ * Scopes an *operator* key may carry — deliberately narrower than API_KEY_SCOPES in
+ * packages/backend/src/modules/api-keys/api-key.scopes.ts, and the same line ApiKeyAdminService
+ * takes for the UI (it pins operator keys to ['mcp']).
+ *
+ * 'app' is honoured only on a *managed* row: resolveManagedAppUrn requires `managed` and an owning
+ * app URN, both of which only app provisioning sets. An operator key carrying 'app' would list as
+ * correctly provisioned and authenticate nothing — the same "credential that isn't one" this
+ * command exists to retire.
+ */
+const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp'];
+
+/** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
+const MANAGED_ONLY_API_KEY_SCOPES: readonly string[] = ['app'];
 
 /** Escape a value for single-quoted SQL. Names are also validated before they reach here. */
 export function sqlQuote(value: string): string {
@@ -1207,19 +1221,52 @@ export function sqlQuote(value: string): string {
 /**
  * Key names are interpolated into SQL, so the character set is deliberately narrow — quoting alone
  * is not the only line of defence. `app:` is reserved for keys the Hub provisions to marketplace
- * apps; an operator key must not be able to impersonate one.
+ * apps; an operator key must not be able to impersonate one. A leading `-` is refused too: it is
+ * never a sensible label, and it is what `--name --scopes mcp` (a flag whose value was forgotten)
+ * looks like by the time it reaches here.
  */
 export function isValidApiKeyName(name: string): boolean {
-  return /^[\w .:@-]{1,64}$/.test(name) && !name.startsWith('app:');
+  return /^[\w .:@][\w .:@-]{0,63}$/.test(name) && !name.startsWith('app:');
 }
 
-/** Split a `--scopes` value, returning the parsed scopes and any that are not recognised. */
-export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: string[] } {
-  const scopes = input
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return { scopes, invalid: scopes.filter((s) => !API_KEY_SCOPES.includes(s as (typeof API_KEY_SCOPES)[number])) };
+/**
+ * Split a `--scopes` value into the scopes an operator key may hold, the app-only ones, and the
+ * unrecognised ones — the caller refuses the last two with different explanations.
+ *
+ * Deduped and ordered by OPERATOR_API_KEY_SCOPES, mirroring ApiKeyService.normalizeScopes: a row
+ * this command writes should be indistinguishable from one the service wrote for the same grant.
+ */
+export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: string[]; managedOnly: string[] } {
+  const requested = [
+    ...new Set(
+      input
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const allowed = OPERATOR_API_KEY_SCOPES.filter((scope) => requested.includes(scope));
+  const rejected = requested.filter((scope) => !allowed.includes(scope));
+
+  return {
+    scopes: [...allowed, ...rejected],
+    managedOnly: rejected.filter((scope) => MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
+    invalid: rejected.filter((scope) => !MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
+  };
+}
+
+/**
+ * Build the INSERT for a new key. Split out from the command so the one string that actually reaches
+ * the database is unit-testable — the validation above narrows what can get here, but the quoting is
+ * the last line of defence and deserves its own assertions.
+ */
+export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; prefix: string; hashedKey: string }): string {
+  const scopeArray = `ARRAY[${row.scopes.map(sqlQuote).join(',')}]::text[]`;
+
+  return (
+    `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+    `${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+  );
 }
 
 /**
@@ -1251,21 +1298,33 @@ export function formatApiKeyRows(json: string): string[] {
   });
 }
 
-function psql(sql: string): { stdout: string; ok: boolean } {
-  return runCapture('docker', [
-    'exec',
-    API_KEY_DB_CONTAINER,
-    'psql',
-    '-U',
-    API_KEY_DB_USER,
-    '-d',
-    API_KEY_DB_NAME,
-    '-p',
-    API_KEY_DB_PORT,
-    '-At',
-    '-c',
-    sql,
-  ]);
+/**
+ * Run one statement against the Hub database.
+ *
+ * Captures stderr as well as stdout — psql reports *every* failure there (container down, missing
+ * relation, unique violation), so a stdout-only capture like {@link runCapture} would render a
+ * duplicate-key error and a stopped Hub as the same blank "non-zero exit code".
+ */
+function psql(sql: string): { stdout: string; stderr: string; ok: boolean } {
+  const result = spawnSync(
+    'docker',
+    ['exec', API_KEY_DB_CONTAINER, 'psql', '-U', API_KEY_DB_USER, '-d', API_KEY_DB_NAME, '-p', API_KEY_DB_PORT, '-At', '-c', sql],
+    { encoding: 'utf-8', stdio: 'pipe' },
+  );
+
+  return {
+    stdout: (result.stdout || '').trim(),
+    // result.error covers docker itself being absent, where there is no stderr to read.
+    stderr: (result.stderr || '').trim() || (result.error ? String(result.error) : ''),
+    ok: result.status === 0,
+  };
+}
+
+/** psql's own diagnosis, as box lines. Capped so a stack of NOTICEs can't swamp the message. */
+function psqlErrorLines(result: { stdout: string; stderr: string }): string[] {
+  const detail = (result.stderr || result.stdout).split('\n').filter(Boolean).slice(0, 6);
+
+  return detail.length > 0 ? detail : ['psql returned a non-zero exit code'];
 }
 
 /**
@@ -1285,32 +1344,35 @@ export function runApiKeyCommand(args: string[]) {
   if (subcommand === 'create') {
     const nameFlag = args.indexOf('--name');
     const name = nameFlag >= 0 ? args[nameFlag + 1] : undefined;
-    if (!name) usageAndExit(`Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes mcp,app]`);
-    if (!isValidApiKeyName(name as string)) {
+    if (!name) usageAndExit(`Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}]`);
+    if (!isValidApiKeyName(name)) {
       usageAndExit(
-        `Invalid key name. Use 1-64 chars of letters, digits, space, or . : @ _ - and do not start with 'app:' (reserved for managed app keys).`,
+        `Invalid key name. Use 1-64 chars of letters, digits, space, or . : @ _ - starting with anything but '-', and do not start with 'app:' (reserved for managed app keys).`,
       );
     }
 
     const scopesFlag = args.indexOf('--scopes');
-    const { scopes, invalid } = parseApiKeyScopes(scopesFlag >= 0 ? (args[scopesFlag + 1] ?? '') : 'mcp');
-    if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${API_KEY_SCOPES.join(', ')}`);
-    if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${API_KEY_SCOPES.join(', ')}`);
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes(scopesFlag >= 0 ? (args[scopesFlag + 1] ?? '') : 'mcp');
+    if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
+    if (managedOnly.length > 0) {
+      usageAndExit(
+        `The '${managedOnly.join("', '")}' scope is carried only by managed keys the Hub provisions to installed apps — the callback guard checks the key's owning app, so an operator key holding it would authenticate nothing. Use --scopes ${OPERATOR_API_KEY_SCOPES.join(',')}.`,
+      );
+    }
+    if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
 
     const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
-    const hashedKey = createHash('sha256').update(rawKey).digest('hex');
-    const scopeArray = `ARRAY[${scopes.map(sqlQuote).join(',')}]::text[]`;
-    const sql =
-      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(name as string)}, ${scopeArray}, ` +
-      `${sqlQuote(rawKey.slice(0, API_KEY_PREFIX_LEN))}, ${sqlQuote(hashedKey)}) RETURNING id;`;
+    const sql = buildApiKeyInsertSql({
+      name,
+      scopes,
+      prefix: rawKey.slice(0, API_KEY_PREFIX_LEN),
+      hashedKey: createHash('sha256').update(rawKey).digest('hex'),
+    });
 
-    const { stdout, ok } = psql(sql);
+    const result = psql(sql);
+    const { stdout, ok } = result;
     if (!ok) {
-      printMessageBox(
-        'API key creation failed',
-        [stdout || 'psql returned a non-zero exit code', '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`],
-        'red',
-      );
+      printMessageBox('API key creation failed', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
 
@@ -1338,14 +1400,14 @@ export function runApiKeyCommand(args: string[]) {
     // Aggregate to a single JSON document rather than concatenating columns: key names predate this
     // command's validation (the UI accepts any string), so a name containing a newline or the
     // separator would otherwise split into bogus rows.
-    const { stdout, ok } = psql(
+    const result = psql(
       "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
     );
-    if (!ok) {
-      printMessageBox('Could not read API keys', [stdout || 'psql returned a non-zero exit code'], 'red');
+    if (!result.ok) {
+      printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
-    const rows = formatApiKeyRows(stdout);
+    const rows = formatApiKeyRows(result.stdout);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;
   }

@@ -29,6 +29,7 @@ import {
   renderWizardWelcome,
   shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
+  buildApiKeyInsertSql,
   formatApiKeyRows,
   resolveEnvFromArgs,
   resolveUpStartMode,
@@ -753,21 +754,60 @@ describe('api-key name validation', () => {
     expect(isValidApiKeyName('x'.repeat(65))).toBe(false);
     expect(isValidApiKeyName('x'.repeat(64))).toBe(true);
   });
+
+  it('rejects a flag-shaped name, which is what a forgotten --name value looks like', () => {
+    // `api-key create --name --scopes mcp` would otherwise mint a key literally named '--scopes'.
+    expect(isValidApiKeyName('--scopes')).toBe(false);
+    expect(isValidApiKeyName('-laptop')).toBe(false);
+    expect(isValidApiKeyName('ci-runner')).toBe(true); // an interior dash is still fine
+  });
 });
 
 describe('api-key scope parsing', () => {
   it('parses a comma list and tolerates whitespace', () => {
-    expect(parseApiKeyScopes('mcp, app')).toEqual({ scopes: ['mcp', 'app'], invalid: [] });
+    expect(parseApiKeyScopes(' mcp ')).toEqual({ scopes: ['mcp'], invalid: [], managedOnly: [] });
+  });
+
+  it("refuses 'app' separately from an unknown scope — it exists, but only on managed keys", () => {
+    // ApiKeyAdminService pins operator keys to ['mcp'] for the same reason: the callback guard
+    // resolves a key's owning app, which only app provisioning sets, so an operator 'app' key is dead.
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,app');
+    expect(scopes).toEqual(['mcp', 'app']);
+    expect(managedOnly).toEqual(['app']);
+    expect(invalid).toEqual([]);
   });
 
   it('reports unknown scopes rather than silently dropping them', () => {
-    const { scopes, invalid } = parseApiKeyScopes('mcp,admin');
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,admin');
     expect(scopes).toEqual(['mcp', 'admin']);
     expect(invalid).toEqual(['admin']);
+    expect(managedOnly).toEqual([]);
+  });
+
+  it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
+    expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
   });
 
   it('returns no scopes for an empty value so the caller can reject it', () => {
     expect(parseApiKeyScopes('').scopes).toEqual([]);
+  });
+});
+
+describe('buildApiKeyInsertSql', () => {
+  const row = { name: 'laptop', scopes: ['mcp'], prefix: 'abc12345', hashedKey: 'f'.repeat(64) };
+
+  it('writes the columns ApiKeyService writes, leaving managed/created_at to their defaults', () => {
+    expect(buildApiKeyInsertSql(row)).toBe(
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], 'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+  });
+
+  it('quotes a name the validator would have refused, so the SQL survives one layer failing', () => {
+    expect(buildApiKeyInsertSql({ ...row, name: "o'brien" })).toContain("VALUES ('o''brien'");
+  });
+
+  it('renders a multi-scope grant as a text[] literal', () => {
+    expect(buildApiKeyInsertSql({ ...row, scopes: ['mcp', 'app'] })).toContain("ARRAY['mcp','app']::text[]");
   });
 });
 

@@ -26,9 +26,13 @@ export default defineConfig({
   // Base ignores this spec (it is opt-in); clear the inherited list or nothing runs.
   testIgnore: ['**/generated/**', '**/cross-domain/**', '**/platform/**', '**/future/**'],
   fullyParallel: false,
+  // No retries, unlike the other lanes: the describes are ordered (one test creates the app the next
+  // asserts on) and every beforeAll clears the database, so a retried test re-runs against state its
+  // predecessor no longer holds and fails for the wrong reason.
   retries: 0,
   workers: 1,
-  reporter: 'list',
+  // Reporter is inherited: the base picks the HTML reporter under CI, which is what the workflow's
+  // `playwright-report/` artifact upload collects. Overriding to 'list' here made that upload empty.
   timeout: 300_000,
   projects: [
     {
@@ -36,4 +40,9 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
+  // Mock portal + backend only. Every test here drives the API over `fetch` — none opens a page — so
+  // the base config's third server (a full frontend build, then preview) would add minutes to the
+  // nightly lane and a failure surface for something under test never touches. Restore the full
+  // array if a test in this spec ever needs the UI.
+  webServer: Array.isArray(baseConfig.webServer) ? baseConfig.webServer.slice(0, 2) : baseConfig.webServer,
 });
