@@ -1,6 +1,10 @@
 /**
  * Playwright config for MCP integration tests (opt-in, Docker-heavy).
- * Usage: BACKEND_PORT=3333 MCP_API_KEY=test-mcp-api-key-e2e npx playwright test --config=playwright.mcp.config.ts
+ *
+ * Usage: `pnpm e2e:mcp` (override BACKEND_PORT / MCP_API_KEY to point at another stack).
+ *
+ * MCP_API_KEY is not a live credential on its own — SEC-MCP-8 removed the guard's env fallback.
+ * The spec inserts it into the hashed key store itself; see `seedMcpApiKey()`.
  */
 import { defineConfig, devices } from '@playwright/test';
 
