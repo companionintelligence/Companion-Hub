@@ -163,12 +163,34 @@ demo-webui     Exited (1) 2 minutes ago
 ## MCP
 
 ```bash
-cihub mcp setup [env]     # set MCP_ENABLED=true, generate MCP_API_KEY if absent
+cihub mcp setup [env]     # set MCP_ENABLED=true
 cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
 
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
+
+### API keys
+
+The MCP endpoint (`POST /api/mcp`) authenticates with `Authorization: Bearer <key>`, and the key must
+carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_KEY` in the env file is
+**not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
+
+```bash
+cihub api-key create --name "laptop"                # scope defaults to 'mcp'
+cihub api-key create --name "agent" --scopes mcp,app
+cihub api-key list                                  # id, name, scopes, prefix
+```
+
+The raw key is printed **once** at creation; store it immediately. Revoke keys in
+**Settings → Security**. Names beginning `app:` are reserved for keys the Hub provisions to
+marketplace apps.
+
+Connect an external MCP client with:
+
+```json
+{ "mcpServers": { "ci-hub": { "url": "http://<hub-host>:5002/api/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+```
 
 ---
 

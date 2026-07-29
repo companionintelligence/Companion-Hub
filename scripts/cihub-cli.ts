@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path, { join } from 'node:path';
@@ -1182,11 +1182,143 @@ export function runModelsCommand(args: string[]) {
 export function setMcpState(env: HubEnv, enabled: boolean) {
   const envFileName = getEnvFileOrExit(env);
   upsertEnvVar(envFileName, 'MCP_ENABLED', enabled ? 'true' : 'false');
+  const lines = renderConfigLines(env);
   if (enabled) {
-    const vars = parseEnvFile(envFileName);
-    if (!vars.MCP_API_KEY) upsertEnvVar(envFileName, 'MCP_API_KEY', randomBytes(24).toString('hex'));
+    lines.push('', `Create a key with ${bold(`${BASE_COMMAND} api-key create`)} — MCP requires an 'mcp'-scoped key.`);
   }
-  printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', renderConfigLines(env), enabled ? 'green' : 'yellow');
+  printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', lines, enabled ? 'green' : 'yellow');
+}
+
+// --- API keys ---
+
+const API_KEY_DB_CONTAINER = 'ci-hub-db';
+const API_KEY_DB_PORT = '6543';
+const API_KEY_DB_USER = 'companion';
+const API_KEY_DB_NAME = 'companiondb';
+const API_KEY_BYTES = 32; // 64 hex chars — mirrors KEY_BYTES in ApiKeyService
+const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
+const API_KEY_SCOPES = ['mcp', 'app'] as const;
+
+/** Escape a value for single-quoted SQL. Names are also validated before they reach here. */
+export function sqlQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Key names are interpolated into SQL, so the character set is deliberately narrow — quoting alone
+ * is not the only line of defence. `app:` is reserved for keys the Hub provisions to marketplace
+ * apps; an operator key must not be able to impersonate one.
+ */
+export function isValidApiKeyName(name: string): boolean {
+  return /^[\w .:@-]{1,64}$/.test(name) && !name.startsWith('app:');
+}
+
+/** Split a `--scopes` value, returning the parsed scopes and any that are not recognised. */
+export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: string[] } {
+  const scopes = input
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { scopes, invalid: scopes.filter((s) => !API_KEY_SCOPES.includes(s as (typeof API_KEY_SCOPES)[number])) };
+}
+
+function psql(sql: string): { stdout: string; ok: boolean } {
+  return runCapture('docker', [
+    'exec',
+    API_KEY_DB_CONTAINER,
+    'psql',
+    '-U',
+    API_KEY_DB_USER,
+    '-d',
+    API_KEY_DB_NAME,
+    '-p',
+    API_KEY_DB_PORT,
+    '-At',
+    '-c',
+    sql,
+  ]);
+}
+
+/**
+ * Operator API keys from the terminal.
+ *
+ * SEC-MCP-8 made the hashed store the sole auth authority and deliberately removed the guard's env
+ * fallback, so `MCP_API_KEY` authenticates nothing. Until now the only way to obtain a real key was
+ * the browser UI (Settings → Security), which blocks headless and remote setup. The CLI already
+ * holds appliance-level privilege (it owns the env file and drives docker), so it writes the row.
+ *
+ * Columns mirror `api_key` in packages/backend/src/core/database/drizzle/schema.ts; the hash mirrors
+ * ApiKeyService.hash() (sha256 hex). Keep all three in step if the schema moves.
+ */
+export function runApiKeyCommand(args: string[]) {
+  const subcommand = args[0] || 'list';
+
+  if (subcommand === 'create') {
+    const nameFlag = args.indexOf('--name');
+    const name = nameFlag >= 0 ? args[nameFlag + 1] : undefined;
+    if (!name) usageAndExit(`Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes mcp,app]`);
+    if (!isValidApiKeyName(name as string)) {
+      usageAndExit(
+        `Invalid key name. Use 1-64 chars of letters, digits, space, or . : @ _ - and do not start with 'app:' (reserved for managed app keys).`,
+      );
+    }
+
+    const scopesFlag = args.indexOf('--scopes');
+    const { scopes, invalid } = parseApiKeyScopes(scopesFlag >= 0 ? (args[scopesFlag + 1] ?? '') : 'mcp');
+    if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${API_KEY_SCOPES.join(', ')}`);
+    if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${API_KEY_SCOPES.join(', ')}`);
+
+    const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
+    const hashedKey = createHash('sha256').update(rawKey).digest('hex');
+    const scopeArray = `ARRAY[${scopes.map(sqlQuote).join(',')}]::text[]`;
+    const sql =
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(name as string)}, ${scopeArray}, ` +
+      `${sqlQuote(rawKey.slice(0, API_KEY_PREFIX_LEN))}, ${sqlQuote(hashedKey)}) RETURNING id;`;
+
+    const { stdout, ok } = psql(sql);
+    if (!ok) {
+      printMessageBox(
+        'API key creation failed',
+        [stdout || 'psql returned a non-zero exit code', '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`],
+        'red',
+      );
+      process.exit(1);
+    }
+
+    // Even with -At, psql appends its command tag ("INSERT 0 1") after the RETURNING row.
+    const newId = stdout.split('\n')[0]?.trim() ?? '';
+
+    printMessageBox(
+      'API key created',
+      [
+        `${bold('id')}      ${newId}`,
+        `${bold('name')}    ${name}`,
+        `${bold('scopes')}  ${scopes.join(', ')}`,
+        '',
+        `${bold('key')}     ${rawKey}`,
+        '',
+        'This is the only time the key is shown. Store it now.',
+        'Revoke it in Settings → Security.',
+      ],
+      'green',
+    );
+    return;
+  }
+
+  if (subcommand === 'list') {
+    const { stdout, ok } = psql(
+      "SELECT id || '  ' || name || '  [' || array_to_string(scopes, ',') || ']  ' || prefix || '…' FROM api_key ORDER BY id;",
+    );
+    if (!ok) {
+      printMessageBox('Could not read API keys', [stdout || 'psql returned a non-zero exit code'], 'red');
+      process.exit(1);
+    }
+    const rows = stdout ? stdout.split('\n') : [];
+    printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
+    return;
+  }
+
+  usageAndExit(`Unknown api-key subcommand: ${subcommand}. Use: create, list`);
 }
 
 // --- public web ---

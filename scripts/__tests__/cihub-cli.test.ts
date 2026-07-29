@@ -10,6 +10,7 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   isApplianceMode,
+  isValidApiKeyName,
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
@@ -17,6 +18,7 @@ import {
   normalizeCliArgs,
   normalizeRegisterFlags,
   parseAppRuntimeArgs,
+  parseApiKeyScopes,
   parseEnvFile,
   renderBanner,
   renderHelp,
@@ -31,6 +33,7 @@ import {
   resolveUpStartMode,
   resolveWizardActionInput,
   resolveWizardEnvInput,
+  sqlQuote,
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
@@ -720,5 +723,59 @@ describe('resolveHubContext (inside the CI-Hub checkout)', () => {
     expect(ctx.envFile).toBe('.env.prod');
     expect(ctx.composeFiles).toEqual(['docker-compose.prod.yml']);
     expect(ctx.cwd).toBe(process.cwd());
+  });
+});
+
+// --- api-key ---
+
+describe('api-key name validation', () => {
+  it('accepts ordinary operator labels', () => {
+    expect(isValidApiKeyName('laptop')).toBe(true);
+    expect(isValidApiKeyName('Hanzla MacBook')).toBe(true);
+    expect(isValidApiKeyName('ci-runner.01')).toBe(true);
+    expect(isValidApiKeyName('user@host')).toBe(true);
+  });
+
+  it("rejects the 'app:' prefix reserved for Hub-managed app keys", () => {
+    // An operator key named app:* would be indistinguishable from a provisioned managed key in the UI.
+    expect(isValidApiKeyName('app:ci-openclaw')).toBe(false);
+  });
+
+  it('rejects names that could break out of the SQL string literal', () => {
+    expect(isValidApiKeyName("bad'; DROP TABLE api_key; --")).toBe(false);
+    expect(isValidApiKeyName("o'brien")).toBe(false);
+    expect(isValidApiKeyName('multi\nline')).toBe(false);
+  });
+
+  it('rejects empty and over-long names', () => {
+    expect(isValidApiKeyName('')).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(65))).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(64))).toBe(true);
+  });
+});
+
+describe('api-key scope parsing', () => {
+  it('parses a comma list and tolerates whitespace', () => {
+    expect(parseApiKeyScopes('mcp, app')).toEqual({ scopes: ['mcp', 'app'], invalid: [] });
+  });
+
+  it('reports unknown scopes rather than silently dropping them', () => {
+    const { scopes, invalid } = parseApiKeyScopes('mcp,admin');
+    expect(scopes).toEqual(['mcp', 'admin']);
+    expect(invalid).toEqual(['admin']);
+  });
+
+  it('returns no scopes for an empty value so the caller can reject it', () => {
+    expect(parseApiKeyScopes('').scopes).toEqual([]);
+  });
+});
+
+describe('sqlQuote', () => {
+  it('doubles single quotes so a quoted value cannot terminate early', () => {
+    expect(sqlQuote("o'brien")).toBe("'o''brien'");
+  });
+
+  it('wraps plain values', () => {
+    expect(sqlQuote('laptop')).toBe("'laptop'");
   });
 });
