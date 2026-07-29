@@ -138,7 +138,11 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     setTimeout(() => {
       this.logger.info(`Restarting Hub stack with new images (logging to ${updateLogPath})...`);
       const logFd = fs.openSync(updateLogPath, 'a');
-      const cmd = spawn('docker', [...composeBase, 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'], {
+      // composeBase already begins with the `docker` binary — don't prepend it
+      // again, or docker sees `docker docker compose …` and rejects `--env-file`
+      // (which silently killed every stack update since 0.2.44).
+      const [dockerBin, ...composeArgs] = composeBase;
+      const cmd = spawn(dockerBin, [...composeArgs, 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'], {
         detached: true,
         stdio: ['ignore', logFd, logFd],
       });
