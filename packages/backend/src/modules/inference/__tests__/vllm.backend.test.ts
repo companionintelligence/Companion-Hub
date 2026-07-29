@@ -53,9 +53,8 @@ describe('VllmBackend', () => {
       expect(config.runtime).toBe('nvidia');
     });
 
-    it('should include AMD devices', () => {
-      const config = backend.getComposeConfig('amd');
-      expect(config.devices).toContain('/dev/kfd');
+    it('should decline AMD vendor rather than mount devices into the CUDA-only image', () => {
+      expect(() => backend.getComposeConfig('amd')).toThrow(/no reliably maintained ROCm image/);
     });
   });
 });
