@@ -141,10 +141,9 @@ export default () => {
   const ciCloudStore = appStores?.appStores?.find((s) => s.slug === 'ci-marketplace' || s.name === 'CI Marketplace');
   const marketplaceSlug = ciCloudStore?.slug ?? storeId ?? 'ci-marketplace';
 
-  // Portal links any alternative with a curated `appSlug`. Hub's marketplace search is
-  // architecture-filtered (OnlyOffice is amd64-only), so gating on local catalog membership
-  // incorrectly turns live Portal apps into "Soon" / unlinked pills. Trust Portal's slug;
-  // the app detail page surfaces arch incompatibility at install time.
+  // Portal links any alternative with a curated `appSlug`. Catalog listings stay visible
+  // across architectures; install is gated on the app detail page when the Hub arch
+  // is unsupported. Trust Portal's slug for alternative links.
   const isAlternativeInStore = useCallback((alt: AltEntry) => Boolean(alt.appSlug), []);
 
   // Sync ?store= query param to Zustand, or fall back to first available store

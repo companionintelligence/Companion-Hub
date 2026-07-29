@@ -31,6 +31,7 @@ export type UserContextDto = {
 
 export type AppContextDto = {
     appDataRootHostPath?: string | null;
+    architecture: 'amd64' | 'arm64';
     apps: Array<{
         available: boolean;
         categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;

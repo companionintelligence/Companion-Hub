@@ -42,16 +42,26 @@ describe('EnvUtils', () => {
 
   describe('getArchitecture', () => {
     it('should return amd64 for x64', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
       vi.spyOn(os, 'arch').mockReturnValue('x64');
       expect(service.getArchitecture()).toBe('amd64');
     });
 
     it('should return arm64 for arm64', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
       vi.spyOn(os, 'arch').mockReturnValue('arm64');
       expect(service.getArchitecture()).toBe('arm64');
     });
 
+    it('should prefer host probe arch over container os.arch', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify({ cpuArch: 'arm64' }));
+      vi.spyOn(os, 'arch').mockReturnValue('x64');
+      expect(service.getArchitecture()).toBe('arm64');
+    });
+
     it('should throw for unsupported architecture', () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
       vi.spyOn(os, 'arch').mockReturnValue('mips' as any);
       expect(() => service.getArchitecture()).toThrow('Unsupported architecture');
     });

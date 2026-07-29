@@ -9,6 +9,8 @@
   "APP_ACTION_IGNORE_VERSION_SUCCESS": "Version ignored successfully",
   "APP_ACTION_UNIGNORE_VERSION_SUCCESS": "Version unignored successfully",
   "APP_ACTION_RETRY_INSTALL": "Retry install",
+  "APP_ACTION_WRONG_ARCHITECTURE": "Wrong architecture. This app requires {{arches}}, but this Hub is {{arch}}.",
+  "APP_ERROR_KVM_MISSING": "This app needs hardware virtualization (KVM). It is not available on this machine.",
   "APP_ACTION_PREPARING": "Preparing...",
   "APP_ACTION_DOWNLOADING": "Downloading...",
   "APP_ACTION_FINALIZING": "Finalizing install...",

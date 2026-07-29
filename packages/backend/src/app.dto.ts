@@ -82,6 +82,8 @@ const appContextSchema = z.object({
   // Absolute host path of the root app-data folder (parent of every app's data).
   // Used by the Settings "Open app data folder" button; null when unresolved.
   appDataRootHostPath: z.string().nullable().optional(),
+  // Host CPU architecture apps are installed against (from ARCHITECTURE / host probe).
+  architecture: z.enum(['amd64', 'arm64']),
   user: userSchema,
   apps: z.array(simpleAppInfoSchema),
   updatesAvailable: z.number(),
