@@ -19,7 +19,13 @@ export const INFERENCE_VARIABLES = [
 ] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 
-export const inferenceEnvMappingSchema = z.record(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+// `partialRecord`, not `record`: in Zod 4 an enum-keyed `z.record` is *exhaustive* —
+// it requires every INFERENCE_VARIABLES key to be present (a behaviour change from
+// Zod 3, where enum-keyed records were partial). The mapping is opt-in and apps
+// declare only the variables they consume, so `record` rejected every real config
+// (e.g. ci-memory declares 4 of the 7 and was dropped from the store catalog with
+// "expected string, received undefined" for vision_model/ollama_host/num_ctx).
+export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
 
 export const hubIntegrationSchema = z
   .object({

@@ -1,16 +1,36 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const APP_DIR = process.env.CI_HUB_APP_DIR || '/app';
 
-/** Hub state root: `.env`, `state/`, logs. In Docker this is `/data`; locally use CI_HUB_DATA_DIR or the same tree as ROOT_FOLDER_HOST. */
-function resolveDataDir(): string {
-  const explicit = process.env.CI_HUB_DATA_DIR || process.env.TIPI_DATA_DIR;
-  if (explicit) return explicit;
-  // Local `pnpm dev`: dotenv provides ROOT_FOLDER_HOST but not CI_HUB_DATA_DIR — avoid mkdir `/data` (EACCES).
-  if (process.env.NODE_ENV === 'development' && process.env.ROOT_FOLDER_HOST) {
-    return process.env.ROOT_FOLDER_HOST;
+/** True inside the Hub container, where `/data` is the bind-mounted state root. */
+export function detectContainerDataRoot(): boolean {
+  if (fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv')) return true;
+  try {
+    fs.accessSync('/data', fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
   }
-  return '/data';
+}
+
+/**
+ * Hub state root: `.env`, `state/`, logs. In Docker this is `/data`; locally use CI_HUB_DATA_DIR
+ * or the same tree as ROOT_FOLDER_HOST.
+ *
+ * The `/data` default is only correct inside the container. On a host it is unwritable, and the
+ * first `mkdir` during bootstrap dies with EACCES — which is what any host-side run of the backend
+ * without the dotenv wrapper (bare `turbo run dev`, one-off scripts) used to hit. Probing for the
+ * mount instead of trusting NODE_ENV keeps the container path exact while giving host runs a real
+ * directory. ROOT_FOLDER_HOST is set inside the container too (it is the host side of the bind
+ * mounts), so the container probe has to win before we consider it.
+ */
+export function resolveDataDir(env: NodeJS.ProcessEnv = process.env, hasContainerDataRoot: () => boolean = detectContainerDataRoot): string {
+  const explicit = env.CI_HUB_DATA_DIR || env.TIPI_DATA_DIR;
+  if (explicit) return explicit;
+  if (hasContainerDataRoot()) return '/data';
+  return env.ROOT_FOLDER_HOST || path.join(os.homedir(), '.ci-hub');
 }
 
 export const DATA_DIR = resolveDataDir();

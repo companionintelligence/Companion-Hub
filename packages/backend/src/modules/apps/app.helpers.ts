@@ -638,17 +638,63 @@ export class AppHelpers {
       }
     }
 
+    // First-party CI-Server deployments (ci-memory, plus rebuilds from the CI-Server
+    // source). Derived once and shared by the OIDC blocks below and the maps-key block
+    // further down, which each used to recompute the same predicate.
+    const isFirstPartyCiServerApp =
+      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+
+    // Never overwrite a value the operator pinned in the Hub's own .env (envMap is
+    // seeded from it). Mirrors the GOOGLE_MAPS_KEY handling below: Hub-derived
+    // defaults fill gaps, they don't win arguments.
+    const setUnlessOperatorSet = (key: string, value: string) => {
+      if ((envMap.get(key) ?? '').trim().length > 0) {
+        return false;
+      }
+
+      envMap.set(key, value);
+
+      return true;
+    };
+
     // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
     // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
     // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
-    // The first-party check is computed lazily so opted-in apps (the common path going
-    // forward) don't pay for the id/source scan on every env generation.
-    if (!oidcIntegration && normalizedCloudUrl) {
-      const isFirstPartyPortalOidcApp =
-        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-      if (isFirstPartyPortalOidcApp) {
-        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    if (!oidcIntegration && normalizedCloudUrl && isFirstPartyCiServerApp) {
+      envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    }
+
+    // --- Portal Bearer-token verification (CI-Server `auth.portal.*`) ---
+    // Distinct from the issuer injection above, and NOT gated on it: OIDC_ISSUER_URL
+    // feeds CI-Server's `auth.oidc` (the interactive "Sign in with CI-Portal" browser
+    // flow), while these three feed `auth.portal` — the Bearer path in
+    // JwtOrApiKeyAuthGuard that verifies portal-issued JWTs against the portal JWKS.
+    // Two independent config blocks, so an app that later declares
+    // hub_integration.oidc must not silently lose its Bearer config.
+    //
+    // CI-Server ships `auth.portal.enabled: false` with issuer/jwksUri pointing at the
+    // *prod* portal. Paired against any other portal, every Bearer call — the browser
+    // extension's GET /api/devices and POST /api/v1/events — 401s, and
+    // PortalTokenService swallows the verification error, so the cause is invisible.
+    //
+    // The issuer is the BARE origin, not `<origin>/api/auth`: that path is only the
+    // OIDC *discovery* base; the `iss` claim the portal actually stamps is the origin
+    // (confirmed against its published discovery document). The JWKS, however, does
+    // live under the /api/auth mount.
+    if (isFirstPartyCiServerApp && normalizedCloudUrl) {
+      const injected = [
+        setUnlessOperatorSet('PORTAL_OIDC_ENABLED', 'true'),
+        setUnlessOperatorSet('PORTAL_OIDC_ISSUER', normalizedCloudUrl),
+        setUnlessOperatorSet('PORTAL_OIDC_JWKS_URI', `${normalizedCloudUrl}/api/auth/jwks`),
+      ].filter(Boolean).length;
+
+      if (injected > 0) {
+        this.logger.debug(`[AppHelpers] Injected paired Portal Bearer-auth config for ${appUrn} (${injected}/3 keys; issuer=${normalizedCloudUrl})`);
       }
+    } else if (isFirstPartyCiServerApp) {
+      this.logger.warn(
+        `[AppHelpers] ${appUrn} is a first-party CI-Server app but CI_CLOUD_URL is empty; portal Bearer auth will stay disabled and token-authenticated calls will 401.`,
+      );
     }
 
     // --- Companion Memory Google Maps / geocoding key (from Portal) ---
@@ -656,9 +702,7 @@ export class AppHelpers {
     // GET /api/config/maps. Inject into ci-memory so server geocode + the
     // Memory frontend runtime maps config both work without baking Vite keys
     // into images. Best-effort: never fail env generation if Portal is down.
-    const isCompanionMemoryApp =
-      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-    if (isCompanionMemoryApp) {
+    if (isFirstPartyCiServerApp) {
       const operatorSetMapsKey = (envMap.get('GOOGLE_MAPS_KEY') ?? '').trim().length > 0 || (envMap.get('GEOCODING_API_KEY') ?? '').trim().length > 0;
       if (!operatorSetMapsKey) {
         try {
