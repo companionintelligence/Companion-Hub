@@ -24,6 +24,7 @@ import {
   getInstalledDesktopVersion,
   isHubUpdateAvailable,
   isTauri,
+  manualUpdateArtifactKind,
   performStackUpdate,
   performUpdate,
   type UpdateActionResult,
@@ -212,6 +213,63 @@ export const GeneralActionsContainer = () => {
   const displayVersion = desktop ? (desktopVersion ?? t('COMMON_UNKNOWN')) : version.current;
   const latestVersion = desktop ? (desktopUpdate?.latestVersion ?? displayVersion) : version.latest;
 
+  /**
+   * Linux has no in-place desktop update: the button only downloads the
+   * installer, so spell out the remaining steps (tailored to the package
+   * format) right where the user is looking. Rendered alongside both the
+   * button and the post-download message.
+   */
+  const renderManualUpdateInstructions = () => {
+    if (!desktop || !desktopUpdate?.updateAvailable || !desktopUpdate.manualDownload || !desktopUpdate.downloadUrl) {
+      return null;
+    }
+
+    const kind = manualUpdateArtifactKind(desktopUpdate.downloadUrl);
+    if (!kind) return null;
+
+    const steps: { text: string; command?: string }[] =
+      kind === 'appimage'
+        ? [
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'),
+              command: 'chmod +x ~/Downloads/Companion.Hub_*.AppImage',
+            },
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+          ]
+        : [
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REMOVE'),
+              command: kind === 'deb' ? 'sudo apt purge companion-hub -y' : 'sudo rpm -e companion-hub',
+            },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+              command: kind === 'deb' ? 'sudo apt install ./companion-hub_*.deb' : 'sudo rpm -U ./companion-hub-*.rpm',
+            },
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+          ];
+
+    return (
+      <Card className="mt-4 w-full max-w-md" data-testid="manual-update-instructions">
+        <CardHeader className="p-3 pb-1">
+          <CardTitle className="text-base">{t('SETTINGS_ACTIONS_MANUAL_UPDATE_TITLE')}</CardTitle>
+          <CardDescription>{t('SETTINGS_ACTIONS_MANUAL_UPDATE_INTRO')}</CardDescription>
+        </CardHeader>
+        <CardContent className="p-3 pt-1">
+          <ol className="list-decimal list-inside space-y-2 text-sm">
+            {steps.map((step) => (
+              <li key={step.text}>
+                {step.text}
+                {step.command ? <code className="mt-1 block select-all rounded bg-muted px-2 py-1 font-mono text-xs">{step.command}</code> : null}
+              </li>
+            ))}
+          </ol>
+        </CardContent>
+      </Card>
+    );
+  };
+
   const renderUpdateButton = () => {
     if (updateMessage) {
       return (
@@ -293,6 +351,7 @@ export const GeneralActionsContainer = () => {
             {updateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
           </p>
           {renderUpdateButton()}
+          {renderManualUpdateInstructions()}
 
           <div className="mt-6 pt-6 border-t">
             <div className="flex items-center justify-between">
