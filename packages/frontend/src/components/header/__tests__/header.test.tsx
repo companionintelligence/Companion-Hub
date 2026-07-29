@@ -13,6 +13,10 @@ vi.mock('@/context/user-context', () => ({
   useUserContext: () => ({ isLoggedIn: true }),
 }));
 
+vi.mock('@/context/app-context', () => ({
+  useAppContext: () => ({ userSettings: { ciHubDeviceSlug: 'core-2' } }),
+}));
+
 vi.mock('@/components/providers/theme/theme-provider', () => ({
   useTheme: () => ({ setTheme: vi.fn() }),
 }));
