@@ -17,7 +17,7 @@ import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
-import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -38,6 +38,7 @@ const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
+const DEFAULT_STORE_CATEGORY = 'featured';
 
 export const AppStorePageSuspense = () => {
   return (
@@ -58,11 +59,21 @@ export default () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
+  const hasInitializedDefaultCategory = useRef(false);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
 
   useEffect(() => {
     setLocalSearch(search);
   }, [search]);
+
+  useEffect(() => {
+    if (hasInitializedDefaultCategory.current) return;
+    hasInitializedDefaultCategory.current = true;
+
+    if (!category) {
+      setCategory(DEFAULT_STORE_CATEGORY);
+    }
+  }, [category, setCategory]);
 
   const queryClient = useQueryClient();
 

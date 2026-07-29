@@ -96,6 +96,14 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
   const { t } = useTranslation();
 
   const {
+    data: firstParty,
+    isLoading: loadingFirstParty,
+    isError: firstPartyError,
+    refetch: refetchFirstParty,
+  } = useQuery({
+    ...portalStoreListingsQueryOptions({ tags: 'companion-intelligence' }, storeId),
+  });
+  const {
     data: featured,
     isLoading: loadingFeatured,
     isError: featuredError,
@@ -122,6 +130,15 @@ export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: stri
 
   return (
     <div className="w-full space-y-10 pb-10">
+      <AppSection
+        title={t('APP_STORE_FIRST_PARTY_SECTION_TITLE')}
+        subtitle={t('APP_STORE_FIRST_PARTY_SECTION_SUBTITLE')}
+        apps={firstParty}
+        isLoading={loadingFirstParty}
+        isError={firstPartyError}
+        onRetry={() => void refetchFirstParty()}
+        installedAppUrns={installedAppUrns}
+      />
       <AppSection
         title={t('APP_STORE_FEATURED_SECTION_TITLE')}
         subtitle={t('APP_STORE_FEATURED_SECTION_SUBTITLE')}
