@@ -100,6 +100,12 @@ describe('SystemUpdateService', () => {
       expect(pullCall[1]).toContain('ci-os-hub');
 
       const upCall = (spawn as any).mock.calls[1];
+      // The binary must be `docker` exactly once: a duplicated `docker` in argv
+      // makes the CLI reject `--env-file` and the restart never runs (the
+      // 0.2.44–0.2.46 stack-update regression).
+      expect(upCall[0]).toBe('docker');
+      expect(upCall[1][0]).toBe('compose');
+      expect(upCall[1]).not.toContain('docker');
       expect(upCall[1]).toContain('up');
       expect(upCall[1]).toContain('--no-deps');
       expect(upCall[1]).toContain('ci-os-hub');
