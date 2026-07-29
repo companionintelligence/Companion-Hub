@@ -20,6 +20,8 @@ import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
+import { useAppStoreState } from '@/stores/app-store';
+import { useCallback } from 'react';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
@@ -29,6 +31,7 @@ type HeaderProps = {
 export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
   const { setTheme } = useTheme();
+  const { setCategory: setStoreCategory } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
 
@@ -46,6 +49,10 @@ export const Header = (props: HeaderProps) => {
   const handleLogout = () => {
     logout.mutate({});
   };
+
+  const openStoreWithFeaturedDefaults = useCallback(() => {
+    setStoreCategory('featured');
+  }, [setStoreCategory]);
 
   const navButtonBase =
     'cursor-pointer text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
@@ -75,7 +82,7 @@ export const Header = (props: HeaderProps) => {
             <Home className="mr-2 size-4" />
             {t('COMMON_HOME')}
           </NavLink>
-          <NavLink to="/store" className={getNavLinkClass}>
+          <NavLink to="/store" className={getNavLinkClass} onClick={openStoreWithFeaturedDefaults}>
             <Store className="mr-2 size-4" />
             {t('COMMON_APP_STORE')}
           </NavLink>
@@ -144,7 +151,7 @@ export const Header = (props: HeaderProps) => {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link to="/store" className="w-full cursor-pointer flex items-center">
+                  <Link to="/store" className="w-full cursor-pointer flex items-center" onClick={openStoreWithFeaturedDefaults}>
                     <Store className="mr-2 size-4" />
                     {t('COMMON_APP_STORE')}
                   </Link>
