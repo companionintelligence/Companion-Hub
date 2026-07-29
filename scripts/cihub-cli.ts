@@ -1222,6 +1222,35 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
   return { scopes, invalid: scopes.filter((s) => !API_KEY_SCOPES.includes(s as (typeof API_KEY_SCOPES)[number])) };
 }
 
+/**
+ * Render the `api-key list` JSON document as display rows.
+ *
+ * Tolerates a malformed/empty document by returning no rows rather than throwing: the caller has
+ * already handled the psql failure case, and a parse error here should not crash the CLI.
+ */
+export function formatApiKeyRows(json: string): string[] {
+  let parsed: Array<{ id?: number; name?: string; scopes?: string[]; prefix?: string }>;
+
+  try {
+    parsed = JSON.parse(json || '[]');
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed.map((row) => {
+    const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
+
+    // Names are user-supplied and predate validation; keep control characters out of the box render.
+    const name = String(row.name ?? '').replace(/\s+/g, ' ');
+
+    return `${row.id}  ${name}  [${scopes}]  ${row.prefix ?? ''}…`;
+  });
+}
+
 function psql(sql: string): { stdout: string; ok: boolean } {
   return runCapture('docker', [
     'exec',
@@ -1306,14 +1335,17 @@ export function runApiKeyCommand(args: string[]) {
   }
 
   if (subcommand === 'list') {
+    // Aggregate to a single JSON document rather than concatenating columns: key names predate this
+    // command's validation (the UI accepts any string), so a name containing a newline or the
+    // separator would otherwise split into bogus rows.
     const { stdout, ok } = psql(
-      "SELECT id || '  ' || name || '  [' || array_to_string(scopes, ',') || ']  ' || prefix || '…' FROM api_key ORDER BY id;",
+      "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
     );
     if (!ok) {
       printMessageBox('Could not read API keys', [stdout || 'psql returned a non-zero exit code'], 'red');
       process.exit(1);
     }
-    const rows = stdout ? stdout.split('\n') : [];
+    const rows = formatApiKeyRows(stdout);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;
   }

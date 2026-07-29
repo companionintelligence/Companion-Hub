@@ -23,6 +23,7 @@
     "e2e:cross-domain": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=cross-domain pnpm exec playwright test --config playwright.cross-domain.config.ts",
     "e2e:future:onboarding": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=future-onboarding pnpm exec playwright test --config playwright.future-onboarding.config.ts",
     "e2e:mcp": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts",
+    "e2e:mcp:ci": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts --grep-invert \"Full OpenClaw install\"",
     "check": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
     "gen:api-client": "pnpm --filter frontend exec openapi-ts -f openapi-ts.config.ts",
     "gen:swagger": "pnpm --filter backend run gen:swagger",

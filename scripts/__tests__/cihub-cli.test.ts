@@ -29,6 +29,7 @@ import {
   renderWizardWelcome,
   shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
+  formatApiKeyRows,
   resolveEnvFromArgs,
   resolveUpStartMode,
   resolveWizardActionInput,
@@ -777,5 +778,36 @@ describe('sqlQuote', () => {
 
   it('wraps plain values', () => {
     expect(sqlQuote('laptop')).toBe("'laptop'");
+  });
+});
+
+describe('formatApiKeyRows', () => {
+  it('renders id, name, scopes and prefix', () => {
+    const json = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['1  laptop  [mcp]  abc12345…']);
+  });
+
+  it('shows a dash for a full-access key with no scopes', () => {
+    const json = JSON.stringify([{ id: 2, name: 'legacy', scopes: [], prefix: 'def67890' }]);
+
+    expect(formatApiKeyRows(json)[0]).toContain('[-]');
+  });
+
+  it('collapses whitespace in a name so one key cannot span rows', () => {
+    // Names created before this command's validation may contain anything the UI allowed.
+    const json = JSON.stringify([{ id: 3, name: 'multi\nline\tname', scopes: ['app'], prefix: 'aaa' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  aaa…']);
+  });
+
+  it('returns no rows for an empty result', () => {
+    expect(formatApiKeyRows('[]')).toEqual([]);
+  });
+
+  it('returns no rows rather than throwing on malformed output', () => {
+    expect(formatApiKeyRows('not json')).toEqual([]);
+    expect(formatApiKeyRows('')).toEqual([]);
+    expect(formatApiKeyRows('{"not":"an array"}')).toEqual([]);
   });
 });

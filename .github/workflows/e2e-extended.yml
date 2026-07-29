@@ -188,8 +188,11 @@ jobs:
     timeout-minutes: 45
     runs-on: ubuntu-latest
     env:
+      E2E_USE_REAL_PORTAL: 'false'
+      MOCK_PORTAL_PORT: '4444'
       CI: true
       E2E_CLEANUP_PORTS: 'true'
+      # Must match the spec's own default — it calls the API directly, not through baseURL.
       BACKEND_PORT: '3000'
       MCP_API_KEY: test-mcp-api-key-e2e
 
@@ -252,7 +255,11 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
 
       - name: Run MCP E2E
-        run: pnpm e2e:mcp
+        # Excludes the "Full OpenClaw install" layer: it needs a Docker daemon and pulls images to
+        # install a real app, which is too slow and flake-prone unattended. What remains is the part
+        # that guards the documented connect recipe — the protocol handshake and env injection.
+        # The full lane stays available locally as `pnpm e2e:mcp`.
+        run: pnpm e2e:mcp:ci
         env:
           SERVER_IP: localhost
           POSTGRES_HOST: localhost
