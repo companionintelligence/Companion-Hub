@@ -205,9 +205,16 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'gemma4-26b': 3.8, // Gemma 4 26B — 25.2B-A3.8B MoE (confirmed 2026-07-27 re-audit; was missing before)
   'qwen3-6-35b': 3, // Qwen 3.6 35B — 36B-A3B MoE (confirmed 2026-07-27 re-audit; was missing before)
   'gemma4-26b-think': 3.8, // Gemma 4 26B Think — 25.2B-A3.8B MoE, community thinking-mode variant
+  'qwen3-coder-30b-lemonade': 3, // Qwen3-Coder-30B-A3B (Lemonade) — same 30B-A3B MoE arch as qwen3-30b above
 };
 
-const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map((row): CuratedModel => {
+/**
+ * Shared TOON-row → CuratedModel mapper for both the Ollama catalog table and any
+ * per-backend LLM table (e.g. `LEMONADE_LLM_TOON`) that follows the same column schema.
+ * `backend` is a parameter rather than hardcoded so a second backend's table can reuse
+ * every derived-field computation (tiers, footprint, MoE active-params) unchanged.
+ */
+function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedModel {
   const params = Number(row.params);
   const gb = Number(row.gb);
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
@@ -237,7 +244,7 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
 
   return {
     id: row.id ?? '',
-    backend: 'ollama',
+    backend,
     backendModelId: row.backendModelId ?? '',
     modality: 'llm',
     purpose: (row.purpose ?? 'general') as ModelPurpose,
@@ -279,13 +286,38 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
       ...(perf ? { perf } : {}),
     },
   };
-});
+}
+
+const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map((row) => buildLlmModel(row, 'ollama'));
+
+// ─── Lemonade LLM catalog (TOON) ─────────────────────────────────────────────
+// A small, separately-verified set of Lemonade-backend chat/coding/vision models — kept in its own
+// table rather than folded into CATALOG_TOON above so the well-audited Ollama table (see its header
+// comment) is untouched. Every row's `checkpoint`/`size` was cross-checked 2026-07-28 against the raw
+// `src/cpp/resources/server_models.json` fetched directly from github.com/lemonade-sdk/lemonade (not a
+// paraphrased/summarized fetch — see the fabrication-guard precedent above for why that distinction
+// matters in this file). `backendModelId` is the exact registry key Lemonade's `/v1/pull` and
+// `/v1/models` expect. reason/vision/tools flags are taken directly from that file's own `labels`
+// array per model rather than assumed from the base model family, since Lemonade's serving harness
+// (not Ollama's) is what determines what's actually supported through this backend. No intel/agentic/
+// perf figures are included — Artificial Analysis has not benchmarked these specific quantized
+// checkpoints under Lemonade. All five are `recipe: "llamacpp"` in that file, so — like Ollama's own
+// llama.cpp-based serving — they run across nvidia/amd/apple/cpu, not only AMD Ryzen AI NPU hardware.
+const LEMONADE_LLM_TOON = `
+llms[4|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+  llama3-2-3b-lemonade|Llama-3.2-3B-Instruct-GGUF|Llama 3.2 3B (Lemonade)|general|3|2.06|cpu-only||Meta|||0|0|0|0|||
+  qwen3-8b-lemonade|Qwen3-8B-GGUF|Qwen 3 8B (Lemonade)|reasoning|8|5.25|low||Alibaba|||1|0|0|0|||
+  gemma4-12b-lemonade|Gemma-4-12B-it-GGUF|Gemma 4 12B (Lemonade)|general|12|7.29|low||Google|||0|1|1|0|||
+  qwen3-coder-30b-lemonade|Qwen3-Coder-30B-A3B-Instruct-GGUF|Qwen 3 Coder 30B (Lemonade)|coding|30|18.6|medium||Alibaba|||0|0|1|0|||
+`;
+
+const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'lemonade'));
 
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
 // (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
 // Voice models run on the Lemonade backend; embedders on Ollama. cpu=1 means CPU inference is supported.
 const EXTRAS_TOON = `
-extras[7|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,minRamMb,recVramMb,minVramMb,ctx,minTier,cpu,pinned,tierHigh,tierMed,tierLow,tierCpu,desc}:
+extras[8|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,minRamMb,recVramMb,minVramMb,ctx,minTier,cpu,pinned,tierHigh,tierMed,tierLow,tierCpu,desc}:
   kokoro-v1|kokoro-v1|lemonade|tts|Kokoro v1 TTS|Hexgrad|300|350|1024|512|0|0|cpu-only|1|1|recommended|recommended|recommended|recommended|High-quality text-to-speech. Low latency, natural sounding.
   whisper-large-v3-turbo|whisper-large-v3-turbo|lemonade|stt|Whisper Large v3 Turbo|OpenAI|1500|1500|8192|6144|4096|0|medium|0|0|recommended|recommended|not-recommended|not-recommended|OpenAI's speech-to-text model. Fast and accurate transcription.
   whisper-base|whisper-base|lemonade|stt|Whisper Base|OpenAI|150|200|1024|512|0|0|cpu-only|1|0|available|available|recommended|recommended|Lightweight speech-to-text for resource-constrained environments.
@@ -293,6 +325,7 @@ extras[7|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,mi
   embeddinggemma|embeddinggemma|ollama|embedding|EmbeddingGemma|Google|622|700|1536|1024|0|2048|cpu-only|1|0|available|available|available|available|Google's 300M embedding model (768-dim, Matryoshka-truncatable to 512/256/128). Multilingual (100+ languages), 2K context. Drop-in pgvector replacement for Nomic at the same 768 dimensions, with stronger retrieval. Runs on any hardware.
   nomic-embed-text-v2-moe|nomic-embed-text-v2-moe|ollama|embedding|Nomic Embed Text v2 (MoE)|Nomic|900|900|2048|1024|0|512|cpu-only|1|0|available|available|available|available|Nomic Embed v2, a mixture-of-experts embedding model (~305M active / 475M total params, 768-dim). Multilingual (~100 languages) and pgvector-compatible with the 768-dim Nomic default. Runs on any hardware.
   qwen3-embedding|qwen3-embedding|ollama|embedding|Qwen3 Embedding (0.6B)|Alibaba|640|800|2048|1536|0|32768|cpu-only|1|0|available|available|available|available|Qwen3 Embedding 0.6B (1024-dim, 32K context). Tops the multilingual MTEB leaderboard for its size across 100+ languages. Note: 1024-dim — switching from the 768-dim default requires re-embedding existing memories. Runs on any hardware.
+  nomic-embed-text-v1-lemonade|nomic-embed-text-v1-GGUF|lemonade|embedding|Nomic Embed Text v1 (Lemonade)|Nomic|80|150|1024|512|0|8192|cpu-only|1|0|recommended|recommended|recommended|recommended|Local text-embedding model (768-dim) served through Lemonade instead of Ollama, for hosts running Lemonade as their only local backend. Verified 2026-07-28 against lemonade-sdk/lemonade's server_models.json (checkpoint nomic-ai/nomic-embed-text-v1-GGUF:Q4_K_S, 0.0781GB). Runs on any hardware.
 `;
 
 const tierRec = (rec: string | undefined): TierRecommendation => (rec === 'recommended' || rec === 'not-recommended' ? rec : 'available');
@@ -333,4 +366,4 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
   };
 });
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...extraModels];
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...extraModels];
