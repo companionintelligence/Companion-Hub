@@ -58,10 +58,22 @@ export function registrationComplete(status: RegistrationStatusResponse): boolea
   return status.registered && (status.phase === 'publicly_ready' || status.phase === 'locally_ready');
 }
 
+/**
+ * Builds the Hub access URL from the pair response. `subdomain` is normally a bare
+ * label (e.g. "hub-core7-team") that must be joined with the root `domain`
+ * (e.g. "companionintelligence.com"), but full hostnames and URLs are passed through.
+ */
 export function formatHubAccessUrl(domain?: string, subdomain?: string): string | undefined {
-  const host = (subdomain || domain)?.trim();
-  if (!host) return undefined;
-  if (host.startsWith('http://') || host.startsWith('https://')) return host;
+  const hasScheme = (value: string) => value.startsWith('http://') || value.startsWith('https://');
+  const root = domain?.trim();
+  const sub = subdomain?.trim();
+  if (sub && hasScheme(sub)) return sub;
+  if (!sub) {
+    if (!root) return undefined;
+    return hasScheme(root) ? root : `https://${root}`;
+  }
+  if (!root) return `https://${sub}`;
+  const host = sub === root || sub.endsWith(`.${root}`) ? sub : `${sub}.${root}`;
   return `https://${host}`;
 }
 
