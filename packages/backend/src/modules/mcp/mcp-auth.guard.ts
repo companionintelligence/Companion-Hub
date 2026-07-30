@@ -1,7 +1,14 @@
 import { type CanActivate, type ExecutionContext, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyStoreUnavailableError } from '@/modules/api-keys/api-key.errors';
-import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { type ApiKeyContext, ApiKeyService } from '@/modules/api-keys/api-key.service';
+
+/** Where the guard leaves the authenticated key for the controller to pick up. Typed as a property
+ *  on the Express request rather than a header/param so nothing downstream can forge it. */
+export interface McpAuthenticatedRequest {
+  headers?: Record<string, unknown>;
+  mcpApiKey?: ApiKeyContext;
+}
 
 @Injectable()
 export class McpAuthGuard implements CanActivate {
@@ -11,8 +18,8 @@ export class McpAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
-    const authHeader: string | undefined = request.headers?.authorization;
+    const request = context.switchToHttp().getRequest<McpAuthenticatedRequest>();
+    const authHeader = request.headers?.authorization as string | undefined;
 
     if (!authHeader) {
       this.logger.warn('MCP auth failure: missing Authorization header');
@@ -37,9 +44,11 @@ export class McpAuthGuard implements CanActivate {
     // #933: a key store outage (DNS to the DB flaking, Postgres restarting) is not an auth
     // verdict. Answer 503 so clients retry and operators look at infrastructure — a 401 here
     // sent both to the wrong place.
-    let valid: boolean;
+    // Resolved, not merely validated: the key's `capability` decides which tools this request may
+    // list and call, so the tool surface needs the identity behind the token, not a yes/no.
+    let resolved: ApiKeyContext | null;
     try {
-      valid = await this.apiKeys.validate(token, 'mcp');
+      resolved = await this.apiKeys.resolve(token, 'mcp');
     } catch (err) {
       if (err instanceof ApiKeyStoreUnavailableError) {
         this.logger.error('MCP auth unavailable: API key store unreachable', err.cause instanceof Error ? err.cause.message : '');
@@ -48,7 +57,8 @@ export class McpAuthGuard implements CanActivate {
       throw err;
     }
 
-    if (valid) {
+    if (resolved) {
+      request.mcpApiKey = resolved;
       return true;
     }
 

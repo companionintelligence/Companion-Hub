@@ -2,10 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { settingsSchema } from '@/app.dto';
 import { ConfigurationService } from '../configuration.service';
 
-// SECURITY (ISSUE-MCP-2): the general updateUserSettings endpoint must never accept or echo the MCP
-// admin-managed destructive-tool gate (mcpAllowDestructive). It lives in settingsSchema only so the
-// on-disk value survives general settings writes; the dedicated persistMcpSettings path owns it.
-// (There is no mcpApiKey counterpart: SEC-MCP-8 moved MCP credentials to the hashed key store.)
+// No MCP setting reaches settings.json any more. SEC-MCP-8 moved MCP credentials to the hashed key
+// store, and ISSUE-MCP-2's destructive gate became each key's `capability` column — so this endpoint
+// has nothing MCP-related left to strip, and both retirements are asserted by the schema tests below.
 // ConfigurationService's constructor validates the full appliance env, so we build a bare instance
 // via Object.create and stub only what setUserSettings touches (logger, config, mergeSettingsToDisk).
 
@@ -22,26 +21,11 @@ function makeService() {
   return svc;
 }
 
-describe('ConfigurationService.setUserSettings — MCP secret isolation', () => {
+describe('ConfigurationService.setUserSettings', () => {
   let svc: ReturnType<typeof makeService>;
 
   beforeEach(() => {
     svc = makeService();
-  });
-
-  it('strips mcpAllowDestructive from both the disk write and in-memory settings, and warns', async () => {
-    await svc.setUserSettings({ mcpAllowDestructive: true, themeColor: 'blue' });
-
-    // Never forwarded to disk (mergeSettingsToDisk spreads existing on-disk values, so the real gate is preserved).
-    const written = svc.mergeSettingsToDisk.mock.calls[0][0] as Record<string, unknown>;
-    expect(written).not.toHaveProperty('mcpAllowDestructive');
-    expect(written.themeColor).toBe('blue');
-
-    // Never merged into the in-memory userSettings that GET /app-context returns to the browser.
-    expect(svc.config.userSettings).not.toHaveProperty('mcpAllowDestructive');
-    expect(svc.config.userSettings.themeColor).toBe('blue');
-
-    expect(svc.logger.warn).toHaveBeenCalledWith(expect.stringContaining('mcpAllowDestructive'));
   });
 
   it('passes normal settings through unchanged and does not warn', async () => {
@@ -52,12 +36,21 @@ describe('ConfigurationService.setUserSettings — MCP secret isolation', () => 
   });
 });
 
-describe('settingsSchema — retired mcpApiKey', () => {
-  it('strips a stale mcpApiKey, so an older settings.json loses it on the next write', () => {
-    // SEC-MCP-8 removed the field. This one behaviour covers both halves of the retirement: the
-    // write DTO refuses it at the HTTP boundary, and mergeSettingsToDisk re-parses the file through
-    // this schema before writing back, so a value left by an older build is not carried forward.
+describe('settingsSchema — retired MCP fields', () => {
+  // Both retirements have the same shape: the write DTO refuses the field at the HTTP boundary, and
+  // mergeSettingsToDisk re-parses the file through this schema before writing back, so a value left
+  // by an older build is not carried forward.
+  it('strips a stale mcpApiKey (SEC-MCP-8 moved MCP credentials to the hashed key store)', () => {
     const parsed = settingsSchema.partial().safeParse({ mcpApiKey: 'derived-and-dead', themeColor: 'blue' });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({ themeColor: 'blue' });
+  });
+
+  it('strips a stale mcpAllowDestructive, so an appliance that had the gate on cannot keep it', () => {
+    // The gate is now per key. Leaving the old value readable would let a stale 'true' look as if it
+    // still granted something, on exactly the appliances where it used to grant the most.
+    const parsed = settingsSchema.partial().safeParse({ mcpAllowDestructive: true, themeColor: 'blue' });
 
     expect(parsed.success).toBe(true);
     expect(parsed.data).toEqual({ themeColor: 'blue' });

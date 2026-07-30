@@ -6,6 +6,18 @@ import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { AgentConfigService } from '../agents/agent-config.service';
 import { ApiProxyService } from '../agents/api-proxy.service';
 
+/**
+ * Whether a proxied request only reads. One predicate feeds both the destructive gate and the
+ * read/write gate, so the two can never disagree about the same call — a method that is "not
+ * destructive" is exactly a method that is "read-only" here.
+ *
+ * A missing or unrecognised method counts as mutating: the schema requires `method`, so its absence
+ * means the call is malformed, and a malformed call must not be handed the safest classification.
+ */
+function isReadOnlyHttpMethod(params: Record<string, unknown>): boolean {
+  return ['GET', 'HEAD'].includes(String((params as { method?: string }).method ?? '').toUpperCase());
+}
+
 @Injectable()
 export class AppApiProxyTools implements OnModuleInit {
   constructor(
@@ -19,11 +31,17 @@ export class AppApiProxyTools implements OnModuleInit {
     this.registry.register({
       category: 'App API Proxy',
       name: 'hub_call_app_api',
-      // ISSUE-MCP-2: this proxy can mutate app data. A read-only GET/HEAD stays ungated, but any
-      // mutating verb (POST/PUT/PATCH/DELETE) is treated as destructive so it requires
-      // MCP_ALLOW_DESTRUCTIVE (agent) or an operator confirmation (admin runner) — otherwise a
-      // leaked key could DELETE arbitrary app data despite the safe default.
-      isDestructive: (p) => !['GET', 'HEAD'].includes(String((p as { method?: string }).method ?? '').toUpperCase()),
+      // 'write' is the static worst case (a DELETE), which is what tools/list and the annotations
+      // advertise. The real verdict is per call: this is the one tool whose authority genuinely
+      // depends on its arguments, so both axes carry a predicate.
+      access: 'write',
+      // ISSUE-MCP-2: this proxy can mutate app data. Any mutating verb (POST/PUT/PATCH/DELETE) is
+      // treated as destructive so it requires a 'full'-capability key (agent) or an operator
+      // confirmation (admin runner) — otherwise a leaked key could DELETE arbitrary app data.
+      isDestructive: (p) => !isReadOnlyHttpMethod(p),
+      // ...and a GET/HEAD only reads, so a read-only key keeps the half of this tool that is safe
+      // rather than losing the tool entirely because its worst case is a write.
+      isReadOnly: (p) => isReadOnlyHttpMethod(p),
       description:
         "Call an app's API endpoint directly. Acts as an HTTP proxy — the Hub makes the request to the app container and returns the response. " +
         "Useful when generated OpenAPI tools aren't sufficient or when the app has no OpenAPI spec.",

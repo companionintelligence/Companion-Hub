@@ -101,6 +101,9 @@ export class McpBridgeService implements OnModuleDestroy {
     return [
       {
         name: `${prefix}__discover`,
+        // Discovery only: it opens a connection and asks what the app offers, changing nothing on the
+        // appliance, so a read-only key is entitled to see what is there.
+        access: 'read',
         description: `Connect to ${appUrn} MCP server and discover available tools. Call this first to enable direct app integration.`,
         inputSchema: { type: 'object', properties: {}, required: [] },
         handler: async () => {
@@ -409,6 +412,13 @@ export class McpBridgeService implements OnModuleDestroy {
   private bridgeTool(appUrn: AppUrn, prefix: string, tool: McpConnection['tools'][0]): McpToolDefinition {
     return {
       name: `${prefix}__${tool.name}`,
+      // A bridged tool's effect is opaque to the Hub — github-mcp can delete branches, filesystem-mcp
+      // can overwrite files — so it takes the same posture as hub_call_app_tool: assume the worst.
+      // Honouring the upstream tool's own `annotations.readOnlyHint` would let a read-only key use a
+      // well-behaved bridge, but the discovery parser does not carry annotations through today
+      // (McpConnection['tools'] holds name/description/inputSchema only), so that is a follow-up.
+      access: 'write',
+      destructive: true,
       description: tool.description,
       inputSchema: tool.inputSchema,
       handler: async (params) => this.callBridgedTool(appUrn, tool.name, params),

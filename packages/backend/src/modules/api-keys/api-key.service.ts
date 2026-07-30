@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
 import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
+import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
@@ -21,11 +22,23 @@ export interface ApiKeyInfo {
   name: string;
   prefix: string;
   scopes: string[];
+  capability: ApiKeyCapability;
   managed: boolean;
   ownerAppUrn: string | null;
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+}
+
+/**
+ * The authenticated identity behind a validated key — what a guard hands downstream so enforcement
+ * can consult the *calling key*, not an appliance-wide setting. `name` is carried for logging: an
+ * operator reading "denied hub_uninstall_app for 'Laptop CLI' (read)" needs no lookup to act.
+ */
+export interface ApiKeyContext {
+  id: number;
+  name: string;
+  capability: ApiKeyCapability;
 }
 
 function toInfo(row: ApiKeyRow): ApiKeyInfo {
@@ -34,6 +47,7 @@ function toInfo(row: ApiKeyRow): ApiKeyInfo {
     name: row.name,
     prefix: row.prefix,
     scopes: row.scopes,
+    capability: coerceApiKeyCapability(row.capability),
     managed: row.managed,
     ownerAppUrn: row.ownerAppUrn,
     expiresAt: row.expiresAt,
@@ -134,12 +148,20 @@ export class ApiKeyService {
   /** Create a key. Returns the info PLUS the raw key — the only time the raw value is ever exposed. */
   async create(
     name: string,
-    opts: { scopes: ApiKeyScope[]; managed?: boolean; ownerAppUrn?: string | null; expiresAt?: string | null },
+    opts: {
+      scopes: ApiKeyScope[];
+      capability?: ApiKeyCapability;
+      managed?: boolean;
+      ownerAppUrn?: string | null;
+      expiresAt?: string | null;
+    },
   ): Promise<ApiKeyInfo & { key: string }> {
     const scopes = normalizeScopes(opts.scopes);
+    const capability = opts.capability ?? DEFAULT_API_KEY_CAPABILITY;
     const rawKey = randomBytes(KEY_BYTES).toString('hex');
     const row = await this.repo.insert({
       scopes,
+      capability,
       name,
       prefix: rawKey.slice(0, PREFIX_LEN),
       hashedKey: this.hash(rawKey),
@@ -147,7 +169,7 @@ export class ApiKeyService {
       ownerAppUrn: opts.ownerAppUrn ?? null,
       expiresAt: opts.expiresAt ?? null,
     });
-    this.logger.info('API key created', row.id, `[${scopes.join(',')}]`, row.managed ? '(managed)' : '(operator)');
+    this.logger.info('API key created', row.id, `[${scopes.join(',')}]`, capability, row.managed ? '(managed)' : '(operator)');
     return { ...toInfo(row), key: rawKey };
   }
 
@@ -170,19 +192,31 @@ export class ApiKeyService {
     return row.ownerAppUrn;
   }
 
-  /** True if the raw Bearer token matches a stored, non-expired key carrying the required scope.
-   *  Bumps last-used best-effort. */
-  async validate(rawKey: string, requiredScope: ApiKeyScope): Promise<boolean> {
+  /**
+   * Resolve a raw Bearer token to the identity behind it, or null when the key is absent, expired,
+   * or does not carry the required scope. Bumps last-used best-effort.
+   *
+   * The authenticating call: guards use this rather than {@link validate} when downstream code has
+   * to consult the *calling key* — which, for the tool surface, is every call. A boolean answer to
+   * "is this key valid" is not enough once authority is a property of the credential.
+   */
+  async resolve(rawKey: string, requiredScope: ApiKeyScope): Promise<ApiKeyContext | null> {
     if (!rawKey) {
-      return false;
+      return null;
     }
     const row = await this.findByHashResilient(this.hash(rawKey));
     if (!row || this.isExpired(row) || !row.scopes.includes(requiredScope)) {
-      return false;
+      return null;
     }
     // Fire-and-forget: never let a last-used write fail or slow an auth check.
     void this.repo.touchLastUsed(row.id, new Date().toISOString()).catch(() => undefined);
-    return true;
+    return { id: row.id, name: row.name, capability: coerceApiKeyCapability(row.capability) };
+  }
+
+  /** True if the raw Bearer token matches a stored, non-expired key carrying the required scope.
+   *  The yes/no form of {@link resolve}, for surfaces that gate on nothing but validity. */
+  async validate(rawKey: string, requiredScope: ApiKeyScope): Promise<boolean> {
+    return (await this.resolve(rawKey, requiredScope)) !== null;
   }
 
   /** All stored keys (every scope), for the hub-wide admin listing. */
@@ -201,6 +235,26 @@ export class ApiKeyService {
     return scope ? this.repo.countByScope(scope) : this.repo.countAll();
   }
 
+  /** One key by id — metadata only. Lets a caller read the current capability before changing it,
+   *  which is how the admin surface reports what a change actually moved. */
+  async findById(id: number): Promise<ApiKeyInfo | null> {
+    const row = await this.repo.findById(id);
+    return row ? toInfo(row) : null;
+  }
+
+  /**
+   * Change what a key may do. The secret and the scopes are untouched, so tightening a key that is
+   * already deployed does not require re-issuing it — the holder keeps working, with less authority.
+   * Returns false when the id no longer exists (e.g. revoked in another tab).
+   */
+  async setCapability(id: number, capability: ApiKeyCapability): Promise<boolean> {
+    const changed = (await this.repo.updateCapability(id, capability)) > 0;
+    if (changed) {
+      this.logger.info('API key capability changed', id, capability);
+    }
+    return changed;
+  }
+
   async revoke(id: number): Promise<boolean> {
     const removed = await this.repo.deleteById(id);
     if (removed > 0) {
@@ -215,6 +269,11 @@ export class ApiKeyService {
    * preserved across reinstalls) and only its scope set is reconciled in place — a scope change
    * must never rotate a credential the running app already holds. Otherwise any stale managed
    * key for the app is revoked and a fresh one is minted. Returns the raw key to inject.
+   *
+   * Capability is deliberately NOT reconciled here. An operator who tightened an app's key meant it,
+   * and re-provisioning runs on every env regeneration — resetting capability would quietly undo the
+   * decision on the app's next restart, which is exactly when nobody is looking. Only a fresh key
+   * (there was none to preserve) starts at the default.
    */
   async provisionManagedKey(params: { appUrn: string; appName: string; existingRawKey?: string; scopes: ApiKeyScope[] }): Promise<string> {
     const { appUrn, appName, existingRawKey } = params;

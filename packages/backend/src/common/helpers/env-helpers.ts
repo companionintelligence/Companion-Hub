@@ -480,12 +480,10 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // MCP keys live in the hashed store — `cihub api-key create` or Settings → Security.
   envMap.delete('MCP_API_KEY');
   envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
-  // ISSUE-MCP-2: gate for destructive MCP tools. Resolved from settings.json (admin toggle) so it
-  // persists across restarts; the admin endpoint also sets process.env live for immediate effect.
-  envMap.set(
-    'MCP_ALLOW_DESTRUCTIVE',
-    resolve('MCP_ALLOW_DESTRUCTIVE', { envMap, settingsVal: boolStr(settingsData.mcpAllowDestructive), fallback: 'false' }),
-  );
+  // ISSUE-MCP-2's destructive gate is no longer an env value: it is each key's `capability` column
+  // (see api-key.capabilities.ts). Drop any MCP_ALLOW_DESTRUCTIVE left in a data .env written by an
+  // older Hub, so a stale 'true' can't read as if it still granted anything.
+  envMap.delete('MCP_ALLOW_DESTRUCTIVE');
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure

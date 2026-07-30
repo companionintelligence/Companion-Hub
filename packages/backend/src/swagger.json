@@ -1996,6 +1996,37 @@
       }
     },
     "/api/api-keys/{id}": {
+      "patch": {
+        "operationId": "updateKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
       "delete": {
         "operationId": "revokeKey",
         "parameters": [
@@ -4588,30 +4619,6 @@
           "McpAdmin"
         ]
       }
-    },
-    "/api/mcp-admin/settings": {
-      "post": {
-        "operationId": "updateSettings",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/McpAdminSettingsBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
     }
   },
   "info": {
@@ -4725,6 +4732,10 @@
         "properties": {}
       },
       "CreateApiKeyBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdateApiKeyBody": {
         "type": "object",
         "properties": {}
       },
@@ -4913,10 +4924,6 @@
         "properties": {}
       },
       "McpToolCallBody": {
-        "type": "object",
-        "properties": {}
-      },
-      "McpAdminSettingsBody": {
         "type": "object",
         "properties": {}
       }

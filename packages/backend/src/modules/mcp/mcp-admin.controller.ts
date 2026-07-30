@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { McpAdminService } from './mcp-admin.service';
-import { McpAdminSettingsBody, McpToolCallBody } from './mcp-admin.dto';
+import { McpToolCallBody } from './mcp-admin.dto';
 
 /**
  * ENH-MCP-4: operator-facing MCP admin surface, powering the "MCP" Settings screen. Distinct from the
@@ -14,13 +14,13 @@ import { McpAdminSettingsBody, McpToolCallBody } from './mcp-admin.dto';
 export class McpAdminController {
   constructor(private readonly adminService: McpAdminService) {}
 
-  /** Overall status: enabled, server info, negotiated protocol, tool count, live sessions, gate state. */
+  /** Overall status: enabled, server info, negotiated protocol, tool count, live sessions, key count. */
   @Get('status')
   getStatus() {
     return this.adminService.getStatus();
   }
 
-  /** Full tool catalog (name, description, input schema, destructive flag). */
+  /** Full tool catalog (name, description, input schema, destructive + read/write flags). */
   @Get('tools')
   listTools() {
     return { tools: this.adminService.listTools() };
@@ -30,11 +30,5 @@ export class McpAdminController {
   @Post('tools/:name/call')
   callTool(@Param('name') name: string, @Body() body: McpToolCallBody) {
     return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false);
-  }
-
-  /** Toggle the destructive-tool gate (live + persisted). */
-  @Post('settings')
-  updateSettings(@Body() body: McpAdminSettingsBody) {
-    return this.adminService.setDestructiveAllowed(body.allowDestructive);
   }
 }

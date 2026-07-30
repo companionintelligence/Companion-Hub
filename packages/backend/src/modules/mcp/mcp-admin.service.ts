@@ -1,27 +1,32 @@
 import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
-import { McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
+import { McpToolRegistry, isPotentiallyDestructive, toToolDescriptor } from './mcp-tool-registry.service';
 
-/** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate
- *  and a `category` for grouping the catalog). */
+/** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate,
+ *  the read/write `access` so the catalog can show which capability reaches it, and a `category` for
+ *  grouping). */
 export interface McpAdminToolInfo {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
   destructive: boolean;
+  access: 'read' | 'write';
   category: string;
 }
 
 /**
  * ENH-MCP-4: business logic behind the session-authed MCP admin surface. Reads the tool registry and
- * session registry for operator visibility, runs tools server-side (so the browser never holds the
- * agent key), and manages the runtime-effective settings (destructive gate, key rotation) — persisted
- * to settings.json AND applied to process.env immediately so they take effect without a restart.
+ * session registry for operator visibility, and runs tools server-side (so the browser never holds the
+ * agent key).
+ *
+ * It deliberately owns no appliance-wide MCP settings. The destructive-tool gate used to live here as
+ * one switch for every key at once; it is now each key's `capability` (see api-key.capabilities.ts),
+ * managed in Settings → Security, so an operator can grant destructive access to one agent without
+ * granting it to all of them.
  */
 @Injectable()
 export class McpAdminService {
@@ -29,7 +34,6 @@ export class McpAdminService {
     private readonly registry: McpToolRegistry,
     private readonly mcpService: McpService,
     private readonly sessions: McpSessionRegistry,
-    private readonly configuration: ConfigurationService,
     private readonly apiKeys: ApiKeyService,
     private readonly logger: LoggerService,
   ) {}
@@ -43,20 +47,20 @@ export class McpAdminService {
       protocolVersion: LATEST_PROTOCOL_VERSION,
       toolCount: this.registry.listTools().length,
       activeSessions: this.sessions.activeSessions,
-      destructiveAllowed: McpToolRegistry.destructiveAllowedByEnv(),
       // SEC-MCP-8: number of keys accepted by the MCP surface ('mcp' scope, operator + managed).
       activeKeyCount: await this.apiKeys.count('mcp'),
       endpoint: '/api/mcp',
     };
   }
 
-  /** Full tool catalog with descriptions, input schemas, and destructive flags. */
+  /** Full tool catalog with descriptions, input schemas, and destructive/access flags. */
   listTools(): McpAdminToolInfo[] {
     return this.registry.listTools().map((tool) => ({
       ...toToolDescriptor(tool),
       // A tool with an arg-based predicate (e.g. hub_call_app_api) is flagged destructive here so the
       // UI prompts for confirmation; the registry's predicate still decides per-call at execution.
-      destructive: Boolean(tool.destructive) || typeof tool.isDestructive === 'function',
+      destructive: isPotentiallyDestructive(tool),
+      access: tool.access,
       // Grouping for the catalog UI; bridged/untagged tools fall back to 'Other'.
       category: tool.category ?? 'Other',
     }));
@@ -74,26 +78,14 @@ export class McpAdminService {
   ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
     const start = Date.now();
     try {
-      const result = await this.registry.callTool(name, args ?? {}, { allowDestructive: confirmDestructive });
+      // 'full' because this caller is not a key: the operator is session-authed, and the thing standing
+      // between them and a destructive tool is the confirmation they just gave, not a stored capability.
+      const result = await this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive });
       this.logger.info('MCP admin tool call', name, `${Date.now() - start}ms`, 'ok');
       return { ok: true, result };
     } catch (error) {
       this.logger.warn('MCP admin tool call failed', name, `${Date.now() - start}ms`);
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-  }
-
-  /**
-   * Enable/disable destructive MCP tools. Persisted to settings.json (survives restart) and applied
-   * to process.env immediately — the tool registry reads MCP_ALLOW_DESTRUCTIVE per call, so the
-   * change is live with no restart.
-   */
-  async setDestructiveAllowed(allow: boolean): Promise<{ destructiveAllowed: boolean }> {
-    // Disk-only persistence: never routed through the in-memory userSettings that /app-context
-    // returns (see ConfigurationService.persistMcpSettings). Applied live via process.env.
-    await this.configuration.persistMcpSettings({ mcpAllowDestructive: allow });
-    process.env.MCP_ALLOW_DESTRUCTIVE = allow ? 'true' : 'false';
-    this.logger.info('MCP admin: destructive tools', allow ? 'enabled' : 'disabled');
-    return { destructiveAllowed: allow };
   }
 }

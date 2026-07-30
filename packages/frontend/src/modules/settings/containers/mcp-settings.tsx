@@ -6,7 +6,6 @@ import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import { Switch } from '@/components/ui/Switch';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -17,6 +16,10 @@ import { Link } from 'react-router';
 // tool runner executes server-side. Mirrors the existing settings-container pattern (ai-settings).
 // API-key management moved to the hub-wide Settings → Security card (ApiKeysContainer); this tab
 // only links there.
+//
+// The appliance-wide "Destructive tools" switch that used to live here is gone: destructive access is
+// now each key's `capability`, granted one key at a time in Settings → Security. A single switch could
+// only be on or off for every key at once, so enabling it for one agent enabled it for all of them.
 
 interface McpStatus {
   enabled: boolean;
@@ -24,7 +27,6 @@ interface McpStatus {
   protocolVersion: string;
   toolCount: number;
   activeSessions: number;
-  destructiveAllowed: boolean;
   activeKeyCount: number;
   endpoint: string;
 }
@@ -34,6 +36,9 @@ interface McpToolInfo {
   description: string;
   inputSchema: Record<string, unknown>;
   destructive: boolean;
+  /** Which capability level reaches this tool — 'read' tools are callable by every key, 'write' ones
+   *  only by a 'write' or 'full' key (and destructive ones only by 'full'). */
+  access: 'read' | 'write';
   category?: string;
 }
 
@@ -46,9 +51,6 @@ export const McpSettingsContainer = () => {
   const [status, setStatus] = useState<McpStatus | null>(null);
   const [tools, setTools] = useState<McpToolInfo[]>([]);
   const [search, setSearch] = useState('');
-
-  // Destructive-gate toggle state.
-  const [savingDestructive, setSavingDestructive] = useState(false);
 
   // Tool runner state.
   const [runTool, setRunTool] = useState<McpToolInfo | null>(null);
@@ -101,27 +103,6 @@ export const McpSettingsContainer = () => {
       return a.localeCompare(b);
     });
   }, [filteredTools]);
-
-  const toggleDestructive = useCallback(
-    async (allow: boolean) => {
-      setSavingDestructive(true);
-      try {
-        const res = await apiFetch('/api/mcp-admin/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ allowDestructive: allow }),
-        });
-        if (!res.ok) throw new Error('save');
-        setStatus((prev) => (prev ? { ...prev, destructiveAllowed: allow } : prev));
-        toast.success(t('MCP_SETTINGS_DESTRUCTIVE_SAVED'));
-      } catch {
-        toast.error(t('MCP_SETTINGS_DESTRUCTIVE_SAVE_ERROR'));
-      } finally {
-        setSavingDestructive(false);
-      }
-    },
-    [t],
-  );
 
   const openRunner = useCallback((tool: McpToolInfo) => {
     setRunTool(tool);
@@ -232,29 +213,18 @@ export const McpSettingsContainer = () => {
           <CardDescription>{t('API_KEYS_DESC')}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground" data-testid="mcp-active-key-count">
-            {t('MCP_SETTINGS_ACTIVE_KEYS', { count: status.activeKeyCount })}
-          </p>
+          <div className="min-w-0">
+            <p className="text-sm text-muted-foreground" data-testid="mcp-active-key-count">
+              {t('MCP_SETTINGS_ACTIVE_KEYS', { count: status.activeKeyCount })}
+            </p>
+            {/* Where the destructive gate went, said explicitly — an operator who remembers the
+                switch on this tab needs to be told where the decision moved to, not just find it
+                missing. */}
+            <p className="text-xs text-muted-foreground">{t('MCP_SETTINGS_CAPABILITY_HINT')}</p>
+          </div>
           <Button asChild variant="outline" data-testid="mcp-manage-keys">
             <Link to="/settings?tab=security">{t('MCP_SETTINGS_MANAGE_KEYS_LINK')}</Link>
           </Button>
-        </CardContent>
-      </Card>
-
-      {/* Destructive tools gate */}
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('MCP_SETTINGS_DESTRUCTIVE_TITLE')}</CardTitle>
-          <CardDescription>{t('MCP_SETTINGS_DESTRUCTIVE_DESC')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Switch
-            name="mcp-allow-destructive"
-            label={t('MCP_SETTINGS_DESTRUCTIVE_TOGGLE')}
-            checked={status.destructiveAllowed}
-            disabled={savingDestructive}
-            onCheckedChange={(checked) => void toggleDestructive(checked)}
-          />
         </CardContent>
       </Card>
 
@@ -286,10 +256,16 @@ export const McpSettingsContainer = () => {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <code className="text-sm font-medium">{tool.name}</code>
-                            {tool.destructive && (
+                            {/* A tool is badged by the least capability that reaches it: 'destructive'
+                                implies write, so the two badges are alternatives, not a stack. */}
+                            {tool.destructive ? (
                               <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
                                 {t('MCP_SETTINGS_TOOL_DESTRUCTIVE_BADGE')}
                               </span>
+                            ) : (
+                              tool.access === 'write' && (
+                                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{t('MCP_SETTINGS_TOOL_WRITE_BADGE')}</span>
+                              )
                             )}
                           </div>
                           <p className="text-xs text-muted-foreground">{tool.description}</p>

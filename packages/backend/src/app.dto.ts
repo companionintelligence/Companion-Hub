@@ -48,11 +48,10 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
-  // ISSUE-MCP-2: MCP admin-managed setting, persisted so it survives restarts. Gates destructive
-  // MCP tools; resolved into MCP_ALLOW_DESTRUCTIVE. There is deliberately no `mcpApiKey` companion:
-  // SEC-MCP-8 moved MCP credentials into the hashed key store (Settings → Security /
-  // `cihub api-key create`), so a settings-level key would be an unrevocable second authority.
-  mcpAllowDestructive: z.boolean().optional(),
+  // No MCP settings live here. SEC-MCP-8 moved MCP credentials into the hashed key store (Settings →
+  // Security / `cihub api-key create`), and ISSUE-MCP-2's destructive gate became each key's
+  // `capability` column — so neither an unrevocable second credential nor an appliance-wide authority
+  // switch can be introduced through settings.json.
 });
 
 const simpleAppInfoSchema = appInfoObjectSchema.pick({

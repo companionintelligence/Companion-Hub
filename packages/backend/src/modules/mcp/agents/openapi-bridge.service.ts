@@ -234,10 +234,20 @@ export class OpenApiBridgeService {
     const description = op.summary ?? op.description ?? `${op.method.toUpperCase()} ${op.path}`;
     const inputSchema = this.buildInputSchema(op);
 
+    const method = op.method.toUpperCase();
+
     return {
       name,
       description,
       inputSchema,
+      // Derived from the HTTP method rather than guessed from the name: a generated tool's authority is
+      // whatever its operation's verb allows, which the spec states outright. Same structural approach
+      // the app-API proxy takes for hub_call_app_api, applied ahead of time because each generated tool
+      // is pinned to one verb.
+      access: ['GET', 'HEAD', 'OPTIONS'].includes(method) ? 'read' : 'write',
+      // Only DELETE is treated as data loss. PUT/PATCH/POST mutate, which 'write' already covers;
+      // calling them destructive would put ordinary app interactions behind the 'full' capability.
+      destructive: method === 'DELETE',
       handler: async (params: Record<string, unknown>) => {
         return this.apiProxy.proxyOpenApiCall(appUrn, op, params, agentConfig.openapi.config?.auth);
       },
