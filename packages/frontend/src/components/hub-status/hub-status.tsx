@@ -673,6 +673,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [confirmRetry, setConfirmRetry] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -828,13 +829,22 @@ export function HubStatus({ children }: HubStatusProps) {
     return () => clearInterval(interval);
   }, [checkStatus]);
 
+  useEffect(() => {
+    const hasError = typeof status === 'object' && status !== null && 'Error' in status;
+    if (!hasError && confirmRetry) {
+      setConfirmRetry(false);
+    }
+  }, [status, confirmRetry]);
+
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_START'));
   }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_RESTART'));
   }, [startHub, t]);
 
@@ -912,7 +922,7 @@ export function HubStatus({ children }: HubStatusProps) {
 
   return (
     <SetupPageShell title={gateTitle} contentClassName="items-center">
-      <div className="flex flex-col items-center gap-6 w-full">
+      <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' && <DockerInstallGuide />}
 
         {status === 'Stopped' && (
@@ -940,17 +950,45 @@ export function HubStatus({ children }: HubStatusProps) {
         {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
 
         {errorMessage && (
-          <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_ERROR')}</h2>
-            <p className="text-muted-foreground mb-6">{errorMessage}</p>
-            <button
-              type="button"
-              onClick={handleRestartHub}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t('HUB_STATUS_RESTART_HUB')}
-            </button>
-            <div className="flex gap-4 justify-center mt-6">
+          <SetupCard className="max-w-3xl w-full text-left">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" aria-hidden />
+              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_START_FAILED_TITLE')}</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mb-3">{t('HUB_STATUS_START_FAILED_HINT')}</p>
+            <pre className="bg-muted rounded-md p-4 text-xs sm:text-sm font-mono text-foreground/90 mb-6 max-h-72 overflow-auto whitespace-pre-wrap break-words">
+              {errorMessage}
+            </pre>
+            {confirmRetry ? (
+              <div className="rounded-md border border-border bg-muted/40 p-4 space-y-4">
+                <p className="text-sm text-foreground">{t('HUB_STATUS_RETRY_CONFIRM_PROMPT')}</p>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRestartHub}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('HUB_STATUS_RETRY_CONFIRM')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRetry(false)}
+                    className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+                  >
+                    {t('HUB_STATUS_RETRY_CANCEL')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRetry(true)}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t('HUB_STATUS_RETRY_HUB')}
+              </button>
+            )}
+            <div className="flex gap-4 mt-6">
               <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
                 {t('HUB_STATUS_VIEW_LOGS')}
               </button>

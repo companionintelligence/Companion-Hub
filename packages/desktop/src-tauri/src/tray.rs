@@ -427,10 +427,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let cooldown_secs = last_watchdog_start.map(|t| t.elapsed().as_secs());
-                if crate::hub_manager::should_trigger_hub_watchdog(
+                let compose_ready = compose_path_for_watchdog.is_file();
+                if !compose_ready {
+                    // Desktop initialize copies compose into the data dir; don't race it.
+                } else if crate::hub_manager::should_trigger_hub_watchdog(
                     consecutive_failures,
                     cooldown_secs,
                     stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
+                    crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
                 ) {
                     let _ = crate::hub_manager::append_desktop_log(
                         "tray.watchdog",
