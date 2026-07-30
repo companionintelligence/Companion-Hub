@@ -227,23 +227,79 @@ export class ReposHelpers {
   }
 
   /**
-   * True when the locally synced config.json already reflects the published
-   * catalog entry (same app version and availability), meaning the periodic
-   * sync can skip re-downloading this app's description and icon.
+   * True when the locally synced catalog copy already reflects the published
+   * store entry, so the periodic sync can skip re-downloading description/icon.
+   *
+   * Version + availability alone are not enough: marketplace edits often change
+   * compose/config (architectures, runtime_platform, form fields, etc.) while
+   * leaving `version` / `cihub_app_version` unchanged. Also compare `updated_at`,
+   * compose body, and a few config fields that affect install/runtime.
    */
   private async isCiCloudAppUpToDate(appDir: string, app: { [key: string]: unknown }): Promise<boolean> {
     try {
       const raw = await fs.promises.readFile(path.join(appDir, 'config.json'), 'utf-8');
-      const existing = JSON.parse(raw) as { cihub_app_version?: unknown; version?: unknown; available?: unknown };
+      const existing = JSON.parse(raw) as {
+        cihub_app_version?: unknown;
+        version?: unknown;
+        available?: unknown;
+        updated_at?: unknown;
+        supported_architectures?: unknown;
+        runtime_platform?: unknown;
+        hub_integration?: unknown;
+        form_fields?: unknown;
+        exposable?: unknown;
+        port?: unknown;
+      };
 
       const incomingAppVersion =
         typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1;
       const incomingDockerVersion = typeof app.version === 'string' ? app.version : '0.0.1';
       const incomingAvailable = typeof app.available === 'boolean' ? app.available : true;
 
-      return (
-        existing.cihub_app_version === incomingAppVersion && existing.version === incomingDockerVersion && existing.available === incomingAvailable
-      );
+      if (
+        existing.cihub_app_version !== incomingAppVersion ||
+        existing.version !== incomingDockerVersion ||
+        existing.available !== incomingAvailable
+      ) {
+        return false;
+      }
+
+      const incomingUpdatedAt = typeof app.updated_at === 'number' ? app.updated_at : undefined;
+      if (incomingUpdatedAt !== undefined && existing.updated_at !== incomingUpdatedAt) {
+        return false;
+      }
+
+      if (JSON.stringify(existing.supported_architectures ?? null) !== JSON.stringify(app.supported_architectures ?? null)) {
+        return false;
+      }
+      if ((existing.runtime_platform ?? null) !== (app.runtime_platform ?? null)) {
+        return false;
+      }
+      if (JSON.stringify(existing.hub_integration ?? null) !== JSON.stringify(app.hub_integration ?? null)) {
+        return false;
+      }
+      if (JSON.stringify(existing.form_fields ?? null) !== JSON.stringify(app.form_fields ?? null)) {
+        return false;
+      }
+      if (typeof app.exposable === 'boolean' && existing.exposable !== app.exposable) {
+        return false;
+      }
+      if (typeof app.port === 'number' && existing.port !== app.port) {
+        return false;
+      }
+
+      if (typeof app.compose === 'string') {
+        try {
+          const localCompose = await fs.promises.readFile(path.join(appDir, 'docker-compose.json'), 'utf-8');
+          if (localCompose !== app.compose) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
+      }
+
+      return true;
     } catch {
       // Missing or unreadable local config — do a full sync for this app.
       return false;
