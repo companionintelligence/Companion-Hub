@@ -1,12 +1,24 @@
+import { hiddenTypes } from '@/modules/app/components/install-form/form-validators';
 import type { FormField } from '@/types/app.types';
 
 /**
  * Field types whose values must never be written to disk or persistent browser storage in
- * plaintext. Mirrors the switch in `install-form-field.tsx` — only `password` renders a
- * `PasswordInput`/masked control today, so it's the only type treated as a secret. If a new
- * secret-like field type is ever added there, add it here too.
+ * plaintext.
+ *
+ * - `password`: renders a masked `PasswordInput` control in `install-form-field.tsx` — visible
+ *   and editable, but never in cleartext.
+ * - Every type in `hiddenTypes` (currently just `random`): the catalog schema's marker for
+ *   auto-generated credentials (e.g. nextcloud's `NEXTCLOUD_DB_PASSWORD`, keila's
+ *   `SECRET_KEY_BASE`/`POSTGRES_PASSWORD`). The install form never renders or lets an operator
+ *   edit these, so a live value for one is exactly as sensitive as a `password` field even though
+ *   its declared `type` isn't literally `'password'`.
+ *
+ * Reuses `hiddenTypes` from `form-validators.ts` (the CREATE-form's own "don't render/validate
+ * this field" list) instead of hand-rolling a second, independent list of secret types — the two
+ * drifting apart is exactly what let live `random`-type secrets (e.g. database passwords) leak
+ * into the Edit Settings export/"recently used" flows in CI-Hub #972.
  */
-export const SECRET_FIELD_TYPES: readonly string[] = ['password'];
+export const SECRET_FIELD_TYPES: readonly string[] = ['password', ...hiddenTypes];
 
 export function isSecretFieldType(type: string): boolean {
   return SECRET_FIELD_TYPES.includes(type);
