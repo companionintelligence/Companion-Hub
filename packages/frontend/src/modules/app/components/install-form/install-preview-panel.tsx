@@ -3,7 +3,7 @@ import type { FormField } from '@/types/app.types';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { InstallMode } from './install-mode-selector';
-import { formatCpuReadout, formatMemoryReadout } from './resource-limits-helpers';
+import { formatCpuReadout, formatMemoryReadout, parseMemoryLimitToMb } from './resource-limits-helpers';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 
 const isHiddenFieldType = (type: FormField['type']) => HIDDEN_FIELD_TYPES.includes(type as (typeof HIDDEN_FIELD_TYPES)[number]);
@@ -74,7 +74,9 @@ export const InstallPreviewPanel: React.FC<IProps> = ({ appName, installMode, fo
           <div className="flex items-center justify-between gap-2">
             <dt className="text-muted-foreground">{t('APP_INSTALL_FORM_MEMORY_LIMIT')}</dt>
             <dd className="font-medium text-foreground">
-              {memoryLimit ? formatMemoryReadout(Number.parseInt(memoryLimit, 10) || 0) : t('APP_INSTALL_FORM_RESOURCE_AUTO')}
+              {/* Compose-style string (e.g. "2048M", "4g") — parse via the unit-aware helper, not a
+                  bare parseInt, or "4g" would silently read as 4 MB instead of 4096 MB. */}
+              {memoryLimit ? formatMemoryReadout(parseMemoryLimitToMb(memoryLimit) ?? 0) : t('APP_INSTALL_FORM_RESOURCE_AUTO')}
             </dd>
           </div>
         </div>

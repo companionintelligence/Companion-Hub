@@ -2,12 +2,7 @@ import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
-import {
-  getRandomPortMutation,
-  getDomainsOptions,
-  getCustomDomainsOptions,
-  systemResourcesOptions,
-} from '@/api-client/@tanstack/react-query.gen';
+import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions, systemResourcesOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import {
   DropdownMenu,

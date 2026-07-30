@@ -141,16 +141,39 @@ const MOCK_USE_QUERY_RESULT = {
   isLoading: false,
 };
 
+// Mirrors GET /system/resources' runtime shape (ResourceAllocatorService#getResourceOverview) —
+// see the SystemResourcesRuntimeShape comment in install-form.tsx. Mutable so individual tests can
+// opt into realistic Docker-capacity/appDefaults data; defaults to "no data yet" (undefined) so
+// existing tests keep exercising the fallback-constants path they were written against.
+type MockSystemResourcesData =
+  | {
+      docker: { cpuCores: number; memTotalMb: number; serverVersion?: string } | null;
+      appDefaults: { cpuLimit?: string; memoryLimit?: string; autoAllocated: boolean };
+    }
+  | undefined;
+
+const MOCK_SYSTEM_RESOURCES: { data: MockSystemResourcesData } = { data: undefined };
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
-  // Keyed, so the two listings the form reads cannot answer each other's
-  // question — a single shared result had the custom-domain picker reading the
-  // platform domain list.
-  useQuery: (options: { queryKey?: unknown[] }) =>
-    options?.queryKey?.[0] === 'getCustomDomains' ? { data: MOCK_CUSTOM_DOMAINS, isLoading: false } : MOCK_USE_QUERY_RESULT,
+  // Discriminate by queryKey, so none of the three listings the form reads can answer another's
+  // question. A single shared result had the custom-domain picker reading the platform domain
+  // list, and had systemResourcesOptions() resolving to that same "available domains" shape — so
+  // the resource-limits code always fell through to its fixed fallback constants and never
+  // exercised the real Docker-capacity/appDefaults-driven path.
+  useQuery: (options: { queryKey?: unknown[] }) => {
+    const key = Array.isArray(options?.queryKey) ? options.queryKey[0] : undefined;
+    if (key === 'getCustomDomains') {
+      return { data: MOCK_CUSTOM_DOMAINS, isLoading: false };
+    }
+    if (key === 'systemResources') {
+      return { data: MOCK_SYSTEM_RESOURCES.data, isLoading: false };
+    }
+    return MOCK_USE_QUERY_RESULT;
+  },
   queryOptions: (options: unknown) => options,
 }));
 
@@ -167,6 +190,7 @@ describe('InstallForm', () => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
+    MOCK_SYSTEM_RESOURCES.data = undefined;
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -1603,6 +1627,69 @@ describe('InstallForm', () => {
       expect(raw).not.toBeNull();
       expect(raw).not.toContain(SECRET_VALUE);
       expect(raw).not.toContain('DB_PASSWORD');
+    });
+  });
+
+  describe('resource limits wizard — compose-style memory-limit parsing', () => {
+    // GET /system/resources' appDefaults.memoryLimit is a compose-style string (optionalMemoryLimitSchema
+    // in packages/backend/src/common/validation/memory-limit.ts accepts "2048M", "4g", or a bare byte
+    // count) — the same contract the operator's global defaultAppMemoryLimit setting is stored under.
+    // A unit-suffixed value like "4g" must resolve to 4096 MB, not 4.
+    const withSystemResources = (overrides: Partial<NonNullable<MockSystemResourcesData>['appDefaults']> = {}) => {
+      MOCK_SYSTEM_RESOURCES.data = {
+        docker: { cpuCores: 8, memTotalMb: 16384 },
+        appDefaults: { cpuLimit: '2', memoryLimit: '4g', autoAllocated: true, ...overrides },
+      };
+    };
+
+    it('shows the Recommended-mode memory slider at 4096 MB ("4 GB") for a "4g" backend default, not 4 MB', () => {
+      withSystemResources();
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+      render(
+        <MemoryRouter>
+          <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+      // Install Mode defaults to "Recommended", which is not disabled, so the slider readout comes
+      // straight from parsing appDefaults.memoryLimit. The bare-parseInt bug reads "4g" as 4 (MB);
+      // the fix (parseMemoryLimitToMb) reads it as 4096 MB, formatted as "4 GB".
+      expect(screen.getByText('4 GB')).toBeInTheDocument();
+      expect(screen.queryByText('4 MB')).not.toBeInTheDocument();
+    });
+
+    it('carries the same "4g" default correctly into Manual mode and the live preview panel', () => {
+      withSystemResources();
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+      render(
+        <MemoryRouter>
+          <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+      // Switching to Manual seeds the memoryLimit form field from the same "4g" recommended default
+      // (see the install-mode effect in install-form.tsx), which both the slider
+      // (resource-limits-section.tsx) and the live preview panel (install-preview-panel.tsx) then
+      // parse independently — both call sites had the same bare-parseInt bug.
+      fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_MODE_MANUAL/ }));
+
+      expect(screen.getAllByText('4 GB').length).toBeGreaterThanOrEqual(2);
+      expect(screen.queryByText('4 MB')).not.toBeInTheDocument();
+    });
+
+    it('does not regress plain-number CPU-limit parsing (no unit suffix in the backend contract)', () => {
+      withSystemResources({ cpuLimit: '2' });
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+      render(
+        <MemoryRouter>
+          <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByText('2 cores')).toBeInTheDocument();
     });
   });
 });

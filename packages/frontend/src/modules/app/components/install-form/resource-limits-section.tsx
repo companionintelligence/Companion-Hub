@@ -18,6 +18,7 @@ import {
   formatCpuReadout,
   formatMemoryLimitMb,
   formatMemoryReadout,
+  parseMemoryLimitToMb,
 } from './resource-limits-helpers';
 
 export interface ResourceDefaults {
@@ -50,7 +51,9 @@ export const ResourceLimitsSection: React.FC<IProps> = ({ control, mode, default
   const memMax = defaults.memMbAvailable && defaults.memMbAvailable > 0 ? defaults.memMbAvailable : MEMORY_LIMIT_FALLBACK_MAX_MB;
 
   const recommendedCpu = Number(defaults.recommendedCpuLimit) || CPU_LIMIT_FALLBACK_DEFAULT;
-  const recommendedMemMb = Number.parseInt(defaults.recommendedMemoryLimit ?? '', 10) || MEMORY_LIMIT_FALLBACK_DEFAULT_MB;
+  // Compose-style string (e.g. "2048M", "4g") per optionalMemoryLimitSchema — must go through the
+  // unit-aware parser, not a bare parseInt, or "4g" silently becomes 4 (MB instead of 4096 MB).
+  const recommendedMemMb = parseMemoryLimitToMb(defaults.recommendedMemoryLimit) || MEMORY_LIMIT_FALLBACK_DEFAULT_MB;
 
   const disabled = mode === 'appDefaults';
 
@@ -88,8 +91,8 @@ export const ResourceLimitsSection: React.FC<IProps> = ({ control, mode, default
         name="memoryLimit"
         render={({ field: { onChange, value } }) => {
           const stringValue = typeof value === 'string' ? value : undefined;
-          const parsed = Number.parseInt(stringValue ?? '', 10);
-          const numeric = Number.isFinite(parsed) && stringValue ? parsed : recommendedMemMb;
+          const parsed = parseMemoryLimitToMb(stringValue);
+          const numeric = parsed === undefined ? recommendedMemMb : parsed;
           return (
             <Slider
               name="memoryLimit"
