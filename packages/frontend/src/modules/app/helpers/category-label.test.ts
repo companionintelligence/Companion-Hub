@@ -13,6 +13,12 @@ describe('getCategoryLabel', () => {
     expect(getCategoryLabel(t, 'ai')).toBe('AI');
   });
 
+  it('labels agents as its own category, distinct from ai', () => {
+    const t = makeTranslator({ APP_CATEGORY_AGENTS: 'Agents', COMMON_AI: 'AI' });
+    expect(getCategoryLabel(t, 'agents')).toBe('Agents');
+    expect(getCategoryLabel(t, 'ai')).toBe('AI');
+  });
+
   it('falls back to a humanized label for unknown categories', () => {
     const t = makeTranslator();
     expect(getCategoryLabel(t, 'some-unknown-category')).toBe('Some Unknown Category');
