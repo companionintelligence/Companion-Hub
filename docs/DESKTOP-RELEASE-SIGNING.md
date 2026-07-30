@@ -15,24 +15,30 @@ Optional notarization (DMG stapling for Gatekeeper): `APPLE_ID`, `APPLE_PASSWORD
 
 **Important:** Do not pass notarization credentials to `tauri build`. The workflow signs during the Tauri bundle step and notarizes the **DMG afterward** with `xcrun notarytool`. If `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` are exported during `tauri build`, the CLI notarizes the `.app` inline and the release fails when credentials are invalid.
 
-A **green macOS release means a Developer ID signed *and* notarized DMG, in every environment**. The workflow enforces this:
+A **green macOS release means a Developer ID signed *and* notarized DMG**, whether the cloud target is `dev` or `production`. The workflow enforces this:
 
-- A preflight step (`Require macOS signing + notarization secrets`) fails the build before compiling if either the signing secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`) or the notarization secrets (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) are missing for the selected environment.
-- Notarization has **no `continue-on-error`** — a failure fails the job for `dev` and `production` alike.
+- A preflight step (`Require macOS signing + notarization secrets`) fails the build before compiling if either the signing secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`) or the notarization secrets (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) are missing from the **`production` GitHub Environment**.
+- Notarization has **no `continue-on-error`** — a failure fails the job for every cloud target.
 - A `Verify macOS DMG is signed & notarized` step then asserts, via `spctl -a -t open` (must report `source=Notarized Developer ID`) and `xcrun stapler validate`, that the shipped DMG is signed, notarized, and stapled.
 
 This means you can no longer produce a green macOS release with an unsigned, ad-hoc signed, or unnotarized DMG — the job goes red instead.
 
 ## Where to store the secrets
 
-Add these as **GitHub Environment secrets** on the environment you run the release against:
+Code-signing secrets live only on the **`production` GitHub Environment**. The desktop build matrix always uses that Environment for Apple/Azure credentials.
 
-- `production` — required for signed production releases
-- `dev` — optional, only if you want signed prerelease/dev releases
+The workflow `environment` input is the **cloud target**, not the signing secret store:
+
+| Input | Portal (`CI_CLOUD_URL`) | Download CDN | Container channel |
+|---|---|---|---|
+| `dev` | `https://hub.companionintelligence.com` | `https://dl-dev.ci.computer` | `:dev` (+ container deploy to `dev`) |
+| `production` | `https://hub.ci.computer` | `https://dl.ci.computer` | versioned / `:latest` |
+
+R2 upload still selects the `dev` vs `production` Environment for Cloudflare tokens (`CF_R2_DL_API_TOKEN`, etc.).
 
 ## Required Windows signing secrets
 
-Set these exact secret names in the target GitHub Environment:
+Set these exact secret names on the **`production` GitHub Environment**:
 
 - `AZURE_TENANT_ID` — Microsoft Entra tenant (directory) ID GUID
 - `AZURE_CLIENT_ID` — App registration / service principal client ID used by GitHub Actions
@@ -49,8 +55,8 @@ Create a Microsoft Entra app registration + service principal for GitHub Actions
 
 - **Issuer:** `https://token.actions.githubusercontent.com`
 - **Audience:** `api://AzureADTokenExchange`
-- **Subject for production releases:** `repo:companionintelligence/CI-Hub:environment:production`
-- **Subject for dev releases (optional):** `repo:companionintelligence/CI-Hub:environment:dev`
+- **Subject (required):** `repo:companionintelligence/CI-Hub:environment:production`
+  Desktop builds always request this subject, including when the cloud target input is `dev`.
 
 Grant that service principal the **Artifact Signing Certificate Profile Signer** role on the Artifact Signing account (or a parent scope such as the resource group/subscription if that is how you manage access).
 
@@ -58,7 +64,7 @@ Grant that service principal the **Artifact Signing Certificate Profile Signer**
 
 A **green Windows release means Authenticode-signed installers**, matching the macOS guarantee. The workflow enforces this:
 
-- A preflight step (`Require Windows signing secrets`) fails the build before compiling if any of the six Azure signing secrets are missing for the selected environment (so `WINDOWS_SIGNING_CONFIGURED` is false).
+- A preflight step (`Require Windows signing secrets`) fails the build if any of the six Azure signing secrets are missing from the `production` Environment (so `WINDOWS_SIGNING_CONFIGURED` is false).
 - After signing, a `Verify Windows artifacts are signed` step runs `Get-AuthenticodeSignature` on every `.msi` and `-setup.exe` and fails the job unless each reports `Valid`.
 
 This means you can no longer produce a green Windows release with unsigned installers — the job goes red instead.
@@ -68,16 +74,15 @@ This means you can no longer produce a green Windows release with unsigned insta
 Use this path as the default for CI-Hub release builds because it is already wired into `.github/workflows/desktop-release.yml`.
 
 1. **Confirm workflow prerequisites in GitHub**
-   - Run release workflow with `environment=production` (or `dev`).
-   - Verify all six Azure signing secrets exist in that GitHub Environment.
+   - Run release workflow with cloud target `environment=production` or `environment=dev`.
+   - Verify all six Azure signing secrets exist on the **`production`** GitHub Environment.
    - Verify workflow has `id-token: write` permission (required by `azure/login` OIDC).
 2. **Confirm Azure prerequisites**
    - Artifact Signing account exists in the same subscription as `AZURE_SUBSCRIPTION_ID`.
    - Certificate profile exists and matches `AZURE_CERTIFICATE_PROFILE`.
    - Service principal from `AZURE_CLIENT_ID` has `Artifact Signing Certificate Profile Signer` role.
-   - Federated credential subjects exactly match:
+   - Federated credential subject exactly matches:
      - `repo:companionintelligence/CI-Hub:environment:production`
-     - `repo:companionintelligence/CI-Hub:environment:dev` (optional)
 3. **Run and validate signing**
    - Trigger `desktop-release.yml`.
    - In the Windows matrix job, confirm these steps run successfully:
