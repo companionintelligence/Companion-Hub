@@ -16,6 +16,10 @@ const FORM_FIELDS: FormField[] = [
   { type: 'text', label: 'Username', env_variable: 'USERNAME', required: true },
   { type: 'password', label: 'Admin Password', env_variable: 'ADMIN_PASSWORD', required: true },
   { type: 'password', label: 'API Key', env_variable: 'API_KEY', required: false },
+  // Auto-generated credential, like nextcloud's NEXTCLOUD_DB_PASSWORD or keila's
+  // SECRET_KEY_BASE — hidden from the form (hiddenTypes in form-validators.ts), not a literal
+  // `password` type. Regression coverage for CI-Hub #972.
+  { type: 'random', label: 'DB Password', env_variable: 'DB_PASSWORD', required: false },
   { type: 'boolean', label: 'Enable Feature', env_variable: 'ENABLE_FEATURE', required: false },
 ];
 
@@ -23,6 +27,7 @@ const VALUES = {
   USERNAME: 'admin',
   ADMIN_PASSWORD: 'super-secret',
   API_KEY: 'sk-abc123',
+  DB_PASSWORD: 'auto-generated-db-secret',
   ENABLE_FEATURE: true,
   port: '8080',
 };
@@ -32,11 +37,17 @@ describe('isSecretFieldType', () => {
     expect(isSecretFieldType('password')).toBe(true);
   });
 
+  it('flags random as secret (auto-generated credentials, e.g. NEXTCLOUD_DB_PASSWORD) — CI-Hub #972', () => {
+    // `random` is the catalog schema's type for auto-generated secrets. It's excluded from the
+    // CREATE form via `hiddenTypes` in form-validators.ts, and must be treated as a secret here
+    // too so it can never reach an export file or the "recently used" localStorage cache.
+    expect(isSecretFieldType('random')).toBe(true);
+  });
+
   it('does not flag ordinary field types as secret', () => {
     expect(isSecretFieldType('text')).toBe(false);
     expect(isSecretFieldType('number')).toBe(false);
     expect(isSecretFieldType('boolean')).toBe(false);
-    expect(isSecretFieldType('random')).toBe(false);
   });
 });
 
@@ -49,14 +60,25 @@ describe('stripSecretFields', () => {
     expect(result).toMatchObject({ USERNAME: 'admin', ENABLE_FEATURE: true, port: '8080' });
   });
 
+  it('removes every field declared as random type (auto-generated credentials) — CI-Hub #972', () => {
+    const result = stripSecretFields(VALUES, FORM_FIELDS);
+
+    expect(result).not.toHaveProperty('DB_PASSWORD');
+    expect(JSON.stringify(result)).not.toContain('auto-generated-db-secret');
+  });
+
   it('leaves values untouched when no field is a secret', () => {
-    const nonSecretFields = FORM_FIELDS.filter((f) => f.type !== 'password');
+    const nonSecretFields = FORM_FIELDS.filter((f) => !isSecretFieldType(f.type));
     const result = stripSecretFields(VALUES, nonSecretFields);
 
-    // Only fields present in the schema are relevant to stripping — unrelated keys (like `port`)
-    // are never secrets and always pass through untouched.
+    // Stripping is schema-driven, not name-pattern-driven: only fields present in the passed-in
+    // formFields are considered. With every secret-typed field excluded from the schema here,
+    // even ADMIN_PASSWORD/DB_PASSWORD's raw values pass through untouched — unrelated keys (like
+    // `port`) always did.
     expect(result.USERNAME).toBe('admin');
     expect(result.port).toBe('8080');
+    expect(result.ADMIN_PASSWORD).toBe('super-secret');
+    expect(result.DB_PASSWORD).toBe('auto-generated-db-secret');
   });
 });
 
@@ -89,6 +111,13 @@ describe('export / import round-trip', () => {
     expect(exported.values).not.toHaveProperty('API_KEY');
     expect(JSON.stringify(exported)).not.toContain('super-secret');
     expect(JSON.stringify(exported)).not.toContain('sk-abc123');
+  });
+
+  it('never includes random-type (auto-generated credential) fields in the exported payload — CI-Hub #972', () => {
+    const exported = buildInstallConfigExport('nextcloud', VALUES, FORM_FIELDS);
+
+    expect(exported.values).not.toHaveProperty('DB_PASSWORD');
+    expect(JSON.stringify(exported)).not.toContain('auto-generated-db-secret');
   });
 
   it('reports keys that do not match the current app form_fields instead of applying them', () => {
@@ -145,6 +174,16 @@ describe('last-used config cache', () => {
     expect(raw).not.toBeNull();
     expect(raw).not.toContain('super-secret');
     expect(raw).not.toContain('sk-abc123');
+  });
+
+  it('persists a submitted config and excludes random-type (auto-generated credential) fields — CI-Hub #972', () => {
+    const stored = recordLastUsedConfig(SLUG, VALUES, FORM_FIELDS);
+
+    expect(stored[0]?.values).not.toHaveProperty('DB_PASSWORD');
+
+    const raw = localStorage.getItem('ci-hub:last-install-configs:nextcloud');
+    expect(raw).not.toBeNull();
+    expect(raw).not.toContain('auto-generated-db-secret');
   });
 
   it('reads back what was recorded', () => {
