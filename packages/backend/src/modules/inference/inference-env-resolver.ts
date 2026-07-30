@@ -4,20 +4,10 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import type { InferenceBackend } from './backends/backend.interface';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
 import { isCatalogModelInstalled } from './model-availability.util';
-import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
-
-/** Non-secret placeholder API key each backend's OpenAI-compatible surface accepts (none validate it). */
-export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
-  ollama: 'ollama',
-  vllm: 'vllm',
-  lemonade: 'lemonade',
-};
+import type { CuratedModel } from '@ci-hub/common/types';
 
 /**
  * Standardized AI environment variables injected into an app's `app.env` when
@@ -66,21 +56,8 @@ export class InferenceEnvResolver {
     private readonly modelRegistry: ModelRegistryService,
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
     private readonly cloudFallback: CloudFallbackService,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-    }
-  }
 
   /**
    * @param options.minContextLength App-specific floor for the recommended Ollama
@@ -104,56 +81,49 @@ export class InferenceEnvResolver {
       return env;
     }
 
-    const preferences = this.config.getInferencePreferences();
-    const backendType = preferences.preferredBackend ?? 'ollama';
-    const backend = this.getBackend(backendType);
-
-    const backendHealth = await backend.healthCheck().catch((err) => {
+    const ollamaHealth = await this.ollamaBackend.healthCheck().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`[InferenceEnvResolver] ${backendType} health check failed: ${message}`);
+      this.logger.warn(`[InferenceEnvResolver] Ollama health check failed: ${message}`);
       return { running: false, healthy: false, modelsLoaded: [] as string[] };
     });
-    const backendReady = !!(backendHealth.running && backendHealth.healthy);
+    const ollamaReady = !!(ollamaHealth.running && ollamaHealth.healthy);
 
-    if (!backendReady) {
-      this.logger.warn(`[InferenceEnvResolver] ${backendType} unavailable and no cloud provider configured; omitting AI env.`);
+    if (!ollamaReady) {
+      this.logger.warn('[InferenceEnvResolver] Ollama unavailable and no cloud provider configured; omitting AI env.');
       return {};
     }
 
-    const backendBaseUrl = backend.getBaseUrl();
+    const ollamaBaseUrl = this.ollamaBackend.getBaseUrl();
+    const preferences = this.config.getInferencePreferences();
     const profile = await this.hardwareInspector.getProfile();
 
     // ── Base URL + API key ────────────────────────────────────────────────
-    const baseUrl = `${backendBaseUrl}/v1`;
-    const apiKey = BACKEND_API_KEY[backendType];
+    const baseUrl = `${ollamaBaseUrl}/v1`;
+    const apiKey = 'ollama';
 
     // ── Chat model ────────────────────────────────────────────────────────
-    // Prefer a model that is actually present on the active backend: this env is
-    // written into an app's app.env with no pre-pull on this path, so naming a
-    // merely-recommended (but unpulled) model would 404 on the app's first
-    // request. Resolution: preference-if-installed-on-this-backend → best
-    // installed recommended model on this backend → previous behavior
-    // (preference, then top recommendation) as a last resort when nothing on
-    // this backend is pulled yet.
-    const modelsLoaded = backendHealth.modelsLoaded ?? [];
+    // Prefer a model that is actually present on the Ollama endpoint: this env
+    // is written into an app's app.env with no pre-pull on this path, so naming
+    // a merely-recommended (but unpulled) model would 404 on the app's first
+    // request. Resolution: preference-if-installed → best installed recommended
+    // model → previous behavior (preference, then top recommendation) as a last
+    // resort when nothing is pulled yet.
+    const modelsLoaded = ollamaHealth.modelsLoaded ?? [];
     const preferredId = preferences.preferredModel;
     const preferredCurated = preferredId ? this.modelRegistry.getCuratedModel(preferredId) : undefined;
-    const backendPreferredCurated = preferredCurated?.backend === backendType ? preferredCurated : undefined;
-    const llmCandidates = this.modelRegistry
-      .getRecommendedModelsForHardware(profile.tier, profile)
-      .filter((m) => m.modality === 'llm' && m.backend === backendType);
+    const llmCandidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.modality === 'llm');
 
     let chatCurated: CuratedModel | undefined;
-    if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded)) {
-      chatCurated = backendPreferredCurated;
+    if (preferredCurated && this.isInstalled(preferredCurated, modelsLoaded)) {
+      chatCurated = preferredCurated;
     } else {
       chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded));
     }
     if (!chatCurated) {
-      chatCurated = backendPreferredCurated ?? llmCandidates[0];
+      chatCurated = preferredCurated ?? llmCandidates[0];
       if (chatCurated) {
         this.logger.warn(
-          `[InferenceEnvResolver] no recommended ${backendType} chat model is pulled yet; ` +
+          '[InferenceEnvResolver] no recommended chat model is pulled yet; ' +
             `emitting ${chatCurated.backendModelId} — apps will 404 until it is pulled.`,
         );
       }
@@ -164,12 +134,10 @@ export class InferenceEnvResolver {
     let embeddingModel: string | undefined;
     if (preferences.preferredEmbeddingModel) {
       const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
-      if (curated?.backend === backendType) {
-        embeddingModel = curated.backendModelId;
-      }
+      embeddingModel = curated?.backendModelId;
     }
     if (!embeddingModel) {
-      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, backendType);
+      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
       embeddingModel = recommended?.backendModelId;
     }
 
@@ -177,22 +145,20 @@ export class InferenceEnvResolver {
     let visionModel: string | undefined;
     if (preferences.preferredVisionModel) {
       const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
-      if (curated?.backend === backendType && curated?.metadata?.capabilities?.vision) {
+      if (curated?.metadata?.capabilities?.vision) {
         visionModel = curated.backendModelId;
       }
     }
     if (!visionModel) {
-      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType);
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
       visionModel = recommended?.backendModelId;
     }
 
     const env: StandardizedAiEnv = {
       CI_LLM_BASE_URL: baseUrl,
       CI_LLM_API_KEY: apiKey,
+      OLLAMA_HOST: ollamaBaseUrl,
     };
-    // OLLAMA_HOST is Ollama's native (non-OpenAI-compatible) protocol URL — only meaningful,
-    // and only ever populated, when Ollama is the active backend.
-    if (backendType === 'ollama') env.OLLAMA_HOST = backendBaseUrl;
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;
@@ -210,14 +176,14 @@ export class InferenceEnvResolver {
     }
 
     this.logger.info(
-      `[InferenceEnvResolver] backend=${backendType} chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
-        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} backendReady=${backendReady}`,
+      `[InferenceEnvResolver] chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
+        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} ollamaReady=${ollamaReady}`,
     );
 
     return env;
   }
 
-  /** True when the model is on disk on the active backend or tracked as pulled/loaded/pinned in the registry. */
+  /** True when the model is on disk in Ollama or tracked as pulled/loaded/pinned in the registry. */
   private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
     const tracked = this.modelRegistry.getTrackedModel(model.id);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';

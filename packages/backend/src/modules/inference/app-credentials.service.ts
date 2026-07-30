@@ -6,13 +6,9 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import type { InferenceBackend } from './backends/backend.interface';
-import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { isCatalogModelInstalled } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
-import { BACKEND_API_KEY } from './inference-env-resolver';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -36,8 +32,8 @@ export interface AppCredentialsConfig {
   embeddingsModelId: string | null;
   /** True once the recommended local chat model is pulled into Ollama. */
   chatModelReady: boolean;
-  /** Which connection the app was handed: the active local backend, or a cloud provider. */
-  provider: InferenceBackendType | 'cloud';
+  /** Which connection the app was handed: direct Ollama or a cloud provider. */
+  provider: 'ollama' | 'cloud';
   env: Record<string, string>;
   managedKeys: string[];
 }
@@ -88,21 +84,8 @@ export class AppCredentialsService {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-    }
-  }
 
   isSupported(slug: string): slug is AppSlug {
     return (SUPPORTED_APP_SLUGS as readonly string[]).includes(slug);
@@ -142,25 +125,21 @@ export class AppCredentialsService {
     }
 
     const profile = await this.hardwareInspector.getProfile();
-    const preferences = this.configurationService.getInferencePreferences();
-    const backendType = preferences.preferredBackend ?? 'ollama';
-    const backend = this.getBackend(backendType);
+    // Apps talk to Ollama directly via its own OpenAI-compatible surface, not the Hub.
+    const ollamaBaseUrl = this.ollamaBackend.getBaseUrl();
+    const ollamaOpenAiUrl = `${ollamaBaseUrl}/v1`;
 
-    // Apps talk to the active backend directly via its own OpenAI-compatible surface, not the Hub.
-    const backendBaseUrl = backend.getBaseUrl();
-    const backendOpenAiUrl = `${backendBaseUrl}/v1`;
-
-    const endpointHealth = await backend.healthCheck().catch((err) => {
-      this.logger.error(`[AppCredentials] ${backendType} health check threw: ${err instanceof Error ? err.message : String(err)}`);
+    const endpointHealth = await this.ollamaBackend.healthCheck().catch((err) => {
+      this.logger.error(`[AppCredentials] Ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
       return { running: false, healthy: false, modelsLoaded: [] as string[] };
     });
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
-    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
-    const preferredModelId = preferences.preferredModel;
+    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
+    const preferredModelId = this.configurationService.getInferencePreferences().preferredModel;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
     const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded);
-    const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, backendType);
+    const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
 
     const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
 
@@ -175,10 +154,10 @@ export class AppCredentialsService {
 
     const keys = APP_ENV_KEYS[slug];
 
-    // ─── Local (default) connection: app → active backend /v1 directly ───
-    let provider: InferenceBackendType | 'cloud' = backendType;
-    let endpointUrl = backendOpenAiUrl;
-    let apiKey = BACKEND_API_KEY[backendType];
+    // ─── Local (default) connection: app → Ollama /v1 directly ───────────
+    let provider: 'ollama' | 'cloud' = 'ollama';
+    let endpointUrl = ollamaOpenAiUrl;
+    let apiKey = 'ollama';
     let chatModelId = availableLlm?.backendModelId ?? null;
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 
@@ -200,17 +179,16 @@ export class AppCredentialsService {
     if (embeddingsModelId) {
       env[keys.embeddings] = embeddingsModelId;
     }
-    // Always expose the direct native Ollama URL, regardless of which backend is primary or
-    // whether a cloud provider is overriding it, so the app can still reach Ollama's native
-    // protocol if Ollama happens to also be installed alongside the active backend.
-    env.OLLAMA_HOST = this.ollamaBackend.getBaseUrl();
+    // Always expose the direct native Ollama URL so the app can reach Ollama's
+    // native protocol regardless of the OpenAI-compatible / cloud connection above.
+    env.OLLAMA_HOST = ollamaBaseUrl;
 
     // Hardware-aware default context window for the model the app will actually
     // run locally. Cloud providers manage their own context, so this is only
-    // emitted on the direct-local-backend path. Apps cap their token budget / pass
-    // it as the backend's native `num_ctx` so they don't inherit an oversized
+    // emitted on the direct-Ollama path. Apps cap their token budget / pass it
+    // as the native Ollama `num_ctx` so they don't inherit Ollama's oversized
     // memory-based default (e.g. 262144 on unified-memory APUs).
-    if (provider !== 'cloud' && availableLlm) {
+    if (provider === 'ollama' && availableLlm) {
       const minContextLength = appMinContextLength(slug);
       const numCtx = recommendContextLength({
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,

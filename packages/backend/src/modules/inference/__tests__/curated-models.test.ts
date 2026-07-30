@@ -10,12 +10,9 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (69 Ollama LLMs + 4 Lemonade LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(69);
-    expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
-    expect(llms.length).toBe(73);
-    // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
-    expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
+  it('decodes the full catalog (69 LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.length).toBe(69);
+    expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(4);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
   });
@@ -26,14 +23,10 @@ describe('curated-models (TOON catalog)', () => {
       expect(m.requirements.diskMb, `${m.id} diskMb`).toBeGreaterThan(0);
       expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBeGreaterThan(0);
     }
-    // Ollama LLM tags are the bare `family:size` default (the q4_K_M build ollama pulls by default).
-    for (const m of llms.filter((m) => m.backend === 'ollama')) {
+    // LLM tags are the bare `family:size` default (the q4_K_M build ollama pulls by default).
+    for (const m of llms) {
       expect(m.backendModelId, `${m.id} tag`).toContain(':');
       expect(m.runtime.quantization).toBe('q4_K_M');
-    }
-    // Lemonade LLM tags are the exact registry key from server_models.json (no colon-tag convention).
-    for (const m of llms.filter((m) => m.backend === 'lemonade')) {
-      expect(m.backendModelId, `${m.id} tag`).not.toContain(':');
     }
   });
 
