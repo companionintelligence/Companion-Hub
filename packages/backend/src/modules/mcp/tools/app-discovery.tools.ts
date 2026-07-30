@@ -17,6 +17,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_list_installed_apps',
+      access: 'read',
       description: 'List all installed apps with status, ports, domains, and metadata. Use to get an overview of what is running on the Hub.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listInstalledApps(),
@@ -24,6 +25,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_get_app',
+      access: 'read',
       description: 'Get detailed info for a specific app including form fields, description, version, and supported architectures.',
       inputSchema: {
         type: 'object',
@@ -35,6 +37,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_get_app_logs',
+      access: 'read',
       description: 'Retrieve recent container log lines for a running app. Useful for debugging issues.',
       inputSchema: {
         type: 'object',
@@ -49,6 +52,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_check_app_availability',
+      access: 'read',
       description: 'Check whether an app is reachable via its configured URL. Returns availability status and URL.',
       inputSchema: {
         type: 'object',
@@ -60,6 +64,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_resolve_app_availability',
+      access: 'write',
       description: 'Attempt to fix availability issues for an app. Use after hub_check_app_availability returns unavailable.',
       inputSchema: {
         type: 'object',
@@ -71,6 +76,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_get_compose_diff',
+      access: 'read',
       description: 'Get the difference between current and new docker-compose config for an app.',
       inputSchema: {
         type: 'object',
@@ -82,6 +88,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     this.registry.register({
       category: 'App Discovery',
       name: 'hub_get_config_diff',
+      access: 'read',
       description: 'Get the difference between current and new app configuration.',
       inputSchema: {
         type: 'object',

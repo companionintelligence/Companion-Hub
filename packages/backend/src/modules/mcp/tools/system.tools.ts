@@ -17,6 +17,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_system_load',
+      access: 'read',
       description: 'Get current system load: disk, CPU, and memory usage.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getSystemLoad(),
@@ -24,6 +25,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_get_hub_logs',
+      access: 'read',
       description: 'Get recent Hub container log lines. Useful for debugging Hub issues.',
       inputSchema: { type: 'object', properties: { maxLines: { type: 'number', description: 'Max log lines (1-1000, default 100)' } }, required: [] },
       handler: (p) => this.getHubLogs(p as { maxLines?: number }),
@@ -31,6 +33,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_detect_services',
+      access: 'read',
       description: 'Detect Docker services running on the host.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.detectServices(),
@@ -38,6 +41,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_check_for_updates',
+      access: 'read',
       description: 'Check if a Hub update is available.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.checkForUpdates(),
@@ -45,6 +49,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_perform_update',
+      access: 'write',
       destructive: true, // ISSUE-MCP-2: replaces the running Hub with a new version.
       description: 'Update the Hub to a specific or latest version.',
       inputSchema: {
@@ -57,6 +62,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_get_auto_updates',
+      access: 'read',
       description: 'Check whether automatic Hub updates are enabled.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getAutoUpdates(),
@@ -64,6 +70,7 @@ export class SystemTools implements OnModuleInit {
     this.registry.register({
       category: 'System',
       name: 'hub_set_auto_updates',
+      access: 'write',
       description: 'Enable or disable automatic Hub updates.',
       inputSchema: {
         type: 'object',

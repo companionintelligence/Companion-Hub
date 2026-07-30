@@ -262,52 +262,21 @@ export class ConfigurationService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    // SECURITY (ISSUE-MCP-2): mcpAllowDestructive is MCP admin-managed with a dedicated, admin-only
-    // path ({@link persistMcpSettings} + McpAdminService). It lives in settingsSchema ONLY so that
-    // general settings writes preserve it on disk (the merge below spreads the existing on-disk
-    // values). It must never be settable through this general endpoint: accepting it here would let
-    // any authenticated caller open the destructive-tool gate. Strip it before both the disk write
-    // and the in-memory merge.
-    const { mcpAllowDestructive, ...safeSettings } = settings;
-    if (mcpAllowDestructive !== undefined) {
-      this.logger.warn('Ignoring mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
-    }
-
     try {
-      await this.mergeSettingsToDisk(safeSettings);
+      await this.mergeSettingsToDisk(settings);
 
-      this.config.userSettings = { ...this.config.userSettings, ...safeSettings };
+      this.config.userSettings = { ...this.config.userSettings, ...settings };
 
-      // Update in-memory config for runtime changes. Use safeSettings (not the raw settings) so this
-      // stays correct if the stripped-key set ever grows; ciHub* are not stripped today.
-      if (safeSettings.ciHubApiKey) {
-        (this.config as Record<string, unknown>).ciHubApiKey = safeSettings.ciHubApiKey;
+      // Update in-memory config for runtime changes.
+      if (settings.ciHubApiKey) {
+        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
       }
-      if (safeSettings.ciHubOrganizationId) {
-        (this.config as Record<string, unknown>).ciHubOrganizationId = safeSettings.ciHubOrganizationId;
+      if (settings.ciHubOrganizationId) {
+        (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
       }
     } catch (error) {
-      this.logger.error(
-        `Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(safeSettings).join(',') || '(none)'}`,
-      );
+      this.logger.error(`Failed to set user settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(settings).join(',') || '(none)'}`);
       throw new InternalServerErrorException('Failed to set user settings');
-    }
-  }
-
-  /**
-   * ISSUE-MCP-2: persist the MCP admin-managed destructive-tool gate to settings.json ONLY —
-   * without merging it into the in-memory `userSettings` object that GET /app-context returns to
-   * every browser session. The caller (McpAdminService) applies the live value to `process.env` for
-   * immediate effect; this write is purely for persistence across restarts (env-helpers re-reads
-   * settings.json at boot). Key rotation no longer comes through here: SEC-MCP-8 moved MCP
-   * credentials to the hashed key store, where creating and revoking are the rotation.
-   */
-  public async persistMcpSettings(settings: { mcpAllowDestructive?: boolean }): Promise<void> {
-    try {
-      await this.mergeSettingsToDisk(settings as UserSettingsBody);
-    } catch (error) {
-      this.logger.error('Failed to persist MCP settings', error);
-      throw new InternalServerErrorException('Failed to persist MCP settings');
     }
   }
 

@@ -1213,6 +1213,19 @@ const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp'];
 /** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
 const MANAGED_ONLY_API_KEY_SCOPES: readonly string[] = ['app'];
 
+/**
+ * What a key may DO on the surfaces its scopes reach — mirrors API_KEY_CAPABILITIES in
+ * packages/backend/src/modules/api-keys/api-key.capabilities.ts.
+ *
+ * 'read' is offered here, not just in the UI, because the headless case is where it matters most: a
+ * key minted over ssh for a third-party MCP client should be mintable read-only in the same breath,
+ * not created wide and tightened later in a browser.
+ */
+const API_KEY_CAPABILITIES: readonly string[] = ['read', 'write', 'full'];
+
+/** Mirrors DEFAULT_API_KEY_CAPABILITY: what a key can do when nobody said. */
+const DEFAULT_API_KEY_CAPABILITY = 'write';
+
 /** Escape a value for single-quoted SQL. Names are also validated before they reach here. */
 export function sqlQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -1260,12 +1273,12 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
  * the database is unit-testable — the validation above narrows what can get here, but the quoting is
  * the last line of defence and deserves its own assertions.
  */
-export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; prefix: string; hashedKey: string }): string {
+export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; capability: string; prefix: string; hashedKey: string }): string {
   const scopeArray = `ARRAY[${row.scopes.map(sqlQuote).join(',')}]::text[]`;
 
   return (
-    `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
-    `${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+    `INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+    `${sqlQuote(row.capability)}, ${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
   );
 }
 
@@ -1290,7 +1303,7 @@ export function sanitizeForBox(value: string): string {
  * already handled the psql failure case, and a parse error here should not crash the CLI.
  */
 export function formatApiKeyRows(json: string): string[] {
-  let parsed: Array<{ id?: number; name?: string; scopes?: string[]; prefix?: string }>;
+  let parsed: Array<{ id?: number; name?: string; scopes?: string[]; capability?: string; prefix?: string }>;
 
   try {
     parsed = JSON.parse(json || '[]');
@@ -1304,6 +1317,9 @@ export function formatApiKeyRows(json: string): string[] {
 
   return parsed.map((row) => {
     const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
+    // Shown for every key, including ones minted before the column existed (which read as 'write',
+    // the column default) — a listing that omitted it would make a read-only key look unrestricted.
+    const capability = typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY;
 
     // Names reach this box unfiltered from the key store, and the store does not constrain them:
     // the UI's create body is `z.string().trim().min(1).max(100)`, so a name may hold ANSI escapes
@@ -1312,7 +1328,7 @@ export function formatApiKeyRows(json: string): string[] {
     // the terminal, and they count toward string length, which also skews the box width.
     const name = sanitizeForBox(String(row.name ?? ''));
 
-    return `${row.id}  ${name}  [${scopes}]  ${row.prefix ?? ''}…`;
+    return `${row.id}  ${name}  [${scopes}]  ${capability}  ${row.prefix ?? ''}…`;
   });
 }
 
@@ -1362,7 +1378,11 @@ export function runApiKeyCommand(args: string[]) {
   if (subcommand === 'create') {
     const nameFlag = args.indexOf('--name');
     const name = nameFlag >= 0 ? args[nameFlag + 1] : undefined;
-    if (!name) usageAndExit(`Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}]`);
+    if (!name)
+      usageAndExit(
+        `Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}] ` +
+          `[--capability ${API_KEY_CAPABILITIES.join('|')}]`,
+      );
     if (!isValidApiKeyName(name)) {
       usageAndExit(
         `Invalid key name. Use 1-64 chars of letters, digits, space, or . : @ _ - starting with anything but '-', and do not start with 'app:' (reserved for managed app keys).`,
@@ -1379,10 +1399,20 @@ export function runApiKeyCommand(args: string[]) {
     }
     if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
 
+    const capabilityFlag = args.indexOf('--capability');
+    const capability = capabilityFlag >= 0 ? (args[capabilityFlag + 1] ?? '') : DEFAULT_API_KEY_CAPABILITY;
+    if (!API_KEY_CAPABILITIES.includes(capability)) {
+      usageAndExit(
+        `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
+          "'read' calls read-only tools, 'write' also mutates (install/start/stop/reconfigure), 'full' also runs destructive tools (uninstall/reset/delete).",
+      );
+    }
+
     const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
     const sql = buildApiKeyInsertSql({
       name,
       scopes,
+      capability,
       prefix: rawKey.slice(0, API_KEY_PREFIX_LEN),
       hashedKey: createHash('sha256').update(rawKey).digest('hex'),
     });
@@ -1403,11 +1433,12 @@ export function runApiKeyCommand(args: string[]) {
         `${bold('id')}      ${newId}`,
         `${bold('name')}    ${name}`,
         `${bold('scopes')}  ${scopes.join(', ')}`,
+        `${bold('can')}     ${capability}`,
         '',
         `${bold('key')}     ${rawKey}`,
         '',
         'This is the only time the key is shown. Store it now.',
-        'Revoke it in Settings → Security.',
+        'Change what it can do, or revoke it, in Settings → Security.',
       ],
       'green',
     );
@@ -1419,7 +1450,7 @@ export function runApiKeyCommand(args: string[]) {
     // command's validation (the UI accepts any string), so a name containing a newline or the
     // separator would otherwise split into bogus rows.
     const result = psql(
-      "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
+      "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'capability', capability, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
     );
     if (!result.ok) {
       printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');

@@ -10,11 +10,3 @@ const mcpToolCallSchema = z.object({
 });
 
 export class McpToolCallBody extends createZodDto(mcpToolCallSchema) {}
-
-/** ENH-MCP-4: body for the MCP settings endpoint (currently the destructive-tool gate). */
-const mcpAdminSettingsSchema = z.object({
-  /** Enable/disable destructive tools over the agent-facing MCP endpoint. */
-  allowDestructive: z.boolean(),
-});
-
-export class McpAdminSettingsBody extends createZodDto(mcpAdminSettingsSchema) {}

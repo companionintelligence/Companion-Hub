@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeysContainer } from '../api-keys';
 
 // Hub-wide API-key card (Settings → Security), exercised against a mocked /api/api-keys surface.
+// This card is also where destructive access is granted now, one key at a time — the MCP tab's
+// appliance-wide switch is gone — so the capability controls are exercised here too.
 
 const mockApiFetch = vi.fn();
 vi.mock('@/lib/api-fetch', () => ({ apiFetch: (...args: unknown[]) => mockApiFetch(...args) }));
@@ -52,6 +54,7 @@ const KEYS = {
       name: 'Laptop CLI',
       prefix: 'a1b2c3d4',
       scopes: ['mcp'],
+      capability: 'write',
       managed: false,
       ownerAppUrn: null,
       expiresAt: null,
@@ -63,6 +66,7 @@ const KEYS = {
       name: 'openclaw',
       prefix: 'ff00aa11',
       scopes: ['mcp', 'app'],
+      capability: 'full',
       managed: true,
       ownerAppUrn: 'openclaw:ci-store',
       expiresAt: null,
@@ -126,14 +130,17 @@ describe('ApiKeysContainer', () => {
     await user.click(screen.getByTestId('api-key-create-submit'));
 
     await waitFor(() =>
-      expect(mockApiFetch).toHaveBeenCalledWith('/api/api-keys', expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'n8n' }) })),
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/api-keys',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'n8n', capability: 'write' }) }),
+      ),
     );
     // The raw key is surfaced exactly once, in the "copy it now" panel.
     await waitFor(() => expect(screen.getByTestId('api-key-created').textContent).toContain('deadbeefRAWKEY'));
     expect(toast.success).toHaveBeenCalledWith('API_KEYS_CREATED');
   });
 
-  it('states the fixed MCP scope when creating, without offering a selector', async () => {
+  it('states the fixed MCP scope when creating, without offering a scope selector', async () => {
     const user = userEvent.setup();
     render(<ApiKeysContainer />);
     await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
@@ -145,14 +152,40 @@ describe('ApiKeysContainer', () => {
     expect(within(dialog).getByTestId('api-key-create-scope').textContent).toContain('API_KEYS_SCOPE_MCP');
     expect(within(dialog).getByText('API_KEYS_CREATE_SCOPE_HINT')).toBeTruthy();
 
-    // ...but it is not a choice: no 'app' option and no scope controls of any kind.
-    // An operator-created 'app' key would have no owning app URN and could never
-    // authenticate anything, so it must never be offered here.
+    // ...but WHICH scope is not a choice: an operator-created 'app' key would have no owning app URN
+    // and could never authenticate anything, so it must never be offered here.
     expect(within(dialog).getByTestId('api-key-new-name')).toBeTruthy();
     expect(within(dialog).queryByText('API_KEYS_SCOPE_APP')).toBeNull();
-    expect(within(dialog).queryByRole('checkbox')).toBeNull();
-    expect(within(dialog).queryByRole('combobox')).toBeNull();
-    expect(within(dialog).queryByRole('radio')).toBeNull();
+
+    // What the key may DO on that scope IS a choice — the only radio group in the dialog.
+    expect(within(dialog).getAllByRole('radio')).toHaveLength(3);
+    expect(within(dialog).getByTestId('api-key-new-capability-read')).toBeTruthy();
+  });
+
+  it('mints at the chosen capability, so a read-only key is never wide open in between', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/api-keys' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 3, key: 'raw' }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+    await user.click(screen.getByTestId('api-key-create'));
+    await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'recall' } });
+    await user.click(screen.getByTestId('api-key-new-capability-read'));
+    await user.click(screen.getByTestId('api-key-create-submit'));
+
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/api-keys',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'recall', capability: 'read' }) }),
+      ),
+    );
   });
 
   it('renders no create affordance inside managed rows (one global create button only)', async () => {
@@ -161,11 +194,131 @@ describe('ApiKeysContainer', () => {
 
     const managedRow = screen.getByText('openclaw').closest('li') as HTMLElement;
     expect(within(managedRow).queryByText('API_KEYS_CREATE')).toBeNull();
-    // The only button on a managed row is Revoke.
-    expect(within(managedRow).getAllByRole('button')).toHaveLength(1);
+    // A managed row offers exactly the two actions that apply to a key the Hub owns: change what it
+    // can do, and revoke it. Creating is never one of them.
+    expect(within(managedRow).getAllByRole('button')).toHaveLength(2);
     expect(within(managedRow).getByRole('button', { name: 'API_KEYS_REVOKE' })).toBeTruthy();
+    expect(within(managedRow).getByRole('button', { name: 'API_KEYS_CAPABILITY_CHANGE' })).toBeTruthy();
     // Exactly one create button, outside the list.
     expect(screen.getAllByText('API_KEYS_CREATE')).toHaveLength(1);
+  });
+
+  describe('capability', () => {
+    const APP_ONLY_KEY = {
+      id: 3,
+      name: 'ci-import-tools',
+      prefix: 'cafe0001',
+      scopes: ['app'],
+      capability: 'write',
+      managed: true,
+      ownerAppUrn: 'import-tools:ci-marketplace',
+      expiresAt: null,
+      lastUsedAt: null,
+      createdAt: '2026-01-03T00:00:00Z',
+    };
+
+    it('badges each key with what it can do', async () => {
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+      const operatorRow = screen.getByText('Laptop CLI').closest('li') as HTMLElement;
+      expect(within(operatorRow).getByTestId('api-key-capability-write')).toBeTruthy();
+      const managedRow = screen.getByText('openclaw').closest('li') as HTMLElement;
+      expect(within(managedRow).getByTestId('api-key-capability-full')).toBeTruthy();
+    });
+
+    it('shows neither badge nor control for a key that cannot reach the tool surface', async () => {
+      // Capability gates MCP tools only. An 'app'-scoped callback key is identity-checked against its
+      // owning app instead, so a level shown here would read as a guarantee nothing enforces.
+      mockApiFetch.mockImplementation((url: string) =>
+        url === '/api/api-keys' ? Promise.resolve({ ok: true, json: async () => ({ keys: [APP_ONLY_KEY] }) }) : mockGet(url),
+      );
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+      const row = screen.getByText('ci-import-tools').closest('li') as HTMLElement;
+      expect(within(row).queryByTestId('api-key-capability-write')).toBeNull();
+      expect(within(row).queryByRole('button', { name: 'API_KEYS_CAPABILITY_CHANGE' })).toBeNull();
+    });
+
+    it('demotes without a confirmation, since narrowing a key only ever removes authority', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys/1' && init?.method === 'PATCH') {
+          return Promise.resolve({ ok: true, json: async () => ({ changed: true, capability: 'read', previousCapability: 'write' }) });
+        }
+        return mockGet(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-1'));
+
+      await user.click(await screen.findByTestId('api-key-change-capability-read'));
+      await user.click(screen.getByTestId('api-key-change-submit'));
+
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/api/api-keys/1',
+          expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ capability: 'read' }) }),
+        ),
+      );
+      expect(toast.success).toHaveBeenCalledWith('API_KEYS_CAPABILITY_SAVED');
+    });
+
+    it('requires a confirmation naming the key before granting destructive access', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys/1' && init?.method === 'PATCH') {
+          return Promise.resolve({ ok: true, json: async () => ({ changed: true, capability: 'full', previousCapability: 'write' }) });
+        }
+        return mockGet(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-1'));
+
+      await user.click(await screen.findByTestId('api-key-change-capability-full'));
+      await user.click(screen.getByTestId('api-key-change-submit'));
+
+      // Nothing is written yet — Save on a promotion opens the confirmation instead.
+      expect(mockApiFetch).not.toHaveBeenCalledWith('/api/api-keys/1', expect.objectContaining({ method: 'PATCH' }));
+      // The destructive wording, not the generic one, because 'full' is what is being granted.
+      expect(screen.getByText('API_KEYS_CAPABILITY_CONFIRM_FULL_TITLE')).toBeTruthy();
+
+      await user.click(screen.getByTestId('api-key-change-confirm'));
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/api/api-keys/1',
+          expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ capability: 'full' }) }),
+        ),
+      );
+    });
+
+    it('backing out of the confirmation writes nothing', async () => {
+      const user = userEvent.setup();
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-1'));
+
+      await user.click(await screen.findByTestId('api-key-change-capability-full'));
+      await user.click(screen.getByTestId('api-key-change-submit'));
+      await user.click(screen.getByText('COMMON_BACK'));
+
+      expect(screen.getByTestId('api-key-change-submit')).toBeTruthy(); // back on the picker
+      expect(mockApiFetch).not.toHaveBeenCalledWith('/api/api-keys/1', expect.objectContaining({ method: 'PATCH' }));
+    });
+
+    it('warns which app a managed key belongs to before narrowing it', async () => {
+      const user = userEvent.setup();
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+      await user.click(screen.getByTestId('api-key-change-2'));
+      expect(await screen.findByTestId('api-key-change-managed-warning')).toBeTruthy();
+    });
   });
 
   it('revokes a key via DELETE and refreshes the list so the row disappears', async () => {

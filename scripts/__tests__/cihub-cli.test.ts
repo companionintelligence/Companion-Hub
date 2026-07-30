@@ -794,12 +794,17 @@ describe('api-key scope parsing', () => {
 });
 
 describe('buildApiKeyInsertSql', () => {
-  const row = { name: 'laptop', scopes: ['mcp'], prefix: 'abc12345', hashedKey: 'f'.repeat(64) };
+  const row = { name: 'laptop', scopes: ['mcp'], capability: 'write', prefix: 'abc12345', hashedKey: 'f'.repeat(64) };
 
   it('writes the columns ApiKeyService writes, leaving managed/created_at to their defaults', () => {
     expect(buildApiKeyInsertSql(row)).toBe(
-      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], 'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+      "INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], " +
+        `'write', 'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
     );
+  });
+
+  it('writes the capability it was given, so a read-only key is minted read-only', () => {
+    expect(buildApiKeyInsertSql({ ...row, capability: 'read' })).toContain("::text[], 'read',");
   });
 
   it('quotes a name the validator would have refused, so the SQL survives one layer failing', () => {
@@ -822,10 +827,18 @@ describe('sqlQuote', () => {
 });
 
 describe('formatApiKeyRows', () => {
-  it('renders id, name, scopes and prefix', () => {
-    const json = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+  it('renders id, name, scopes, capability and prefix', () => {
+    const json = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
 
-    expect(formatApiKeyRows(json)).toEqual(['1  laptop  [mcp]  abc12345…']);
+    expect(formatApiKeyRows(json)).toEqual(['1  laptop  [mcp]  read  abc12345…']);
+  });
+
+  it("falls back to 'write' for a row predating the column, rather than showing a blank", () => {
+    // A listing that omitted the level would make an unrestricted key look restricted, or the
+    // reverse — both worse than naming the column default the database would have applied.
+    const json = JSON.stringify([{ id: 9, name: 'legacy', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['9  legacy  [mcp]  write  abc12345…']);
   });
 
   it('shows a dash for a full-access key with no scopes', () => {
@@ -836,9 +849,9 @@ describe('formatApiKeyRows', () => {
 
   it('collapses whitespace in a name so one key cannot span rows', () => {
     // Names created before this command's validation may contain anything the UI allowed.
-    const json = JSON.stringify([{ id: 3, name: 'multi\nline\tname', scopes: ['app'], prefix: 'aaa' }]);
+    const json = JSON.stringify([{ id: 3, name: 'multi\nline\tname', scopes: ['app'], capability: 'write', prefix: 'aaa' }]);
 
-    expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  aaa…']);
+    expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  write  aaa…']);
   });
 
   it('strips terminal escapes from a name rather than writing them to the terminal', () => {
@@ -847,13 +860,13 @@ describe('formatApiKeyRows', () => {
     // screen, recolour output, or forge box rows.
     const esc = String.fromCharCode(27);
     const json = JSON.stringify([
-      { id: 4, name: `${esc}[31mred${esc}[0m`, scopes: ['mcp'], prefix: 'bbb' },
-      { id: 5, name: `wipe${esc}[2J${esc}`, scopes: ['mcp'], prefix: 'ccc' },
+      { id: 4, name: `${esc}[31mred${esc}[0m`, scopes: ['mcp'], capability: 'write', prefix: 'bbb' },
+      { id: 5, name: `wipe${esc}[2J${esc}`, scopes: ['mcp'], capability: 'write', prefix: 'ccc' },
     ]);
 
     const rows = formatApiKeyRows(json);
 
-    expect(rows).toEqual(['4  red  [mcp]  bbb…', '5  wipe[2J  [mcp]  ccc…']);
+    expect(rows).toEqual(['4  red  [mcp]  write  bbb…', '5  wipe[2J  [mcp]  write  ccc…']);
     expect(rows.join('')).not.toContain(esc);
   });
 

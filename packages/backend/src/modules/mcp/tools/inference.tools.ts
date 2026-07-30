@@ -33,6 +33,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_get_hardware_profile',
+      access: 'read',
       description:
         'Get detected hardware capabilities (GPU, VRAM, RAM, NPU) and computed tier. Returns the full hardware profile used for model selection.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -46,6 +47,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_list_inference_backends',
+      access: 'read',
       description: 'List available inference backends (Ollama, vLLM, Lemonade) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
@@ -77,6 +79,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_start_inference_backend',
+      access: 'write',
       description:
         'Report the live status of an inference backend ("ollama", "vllm", or "lemonade"). NOTE: this does NOT ' +
         'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
@@ -95,6 +98,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_stop_inference_backend',
+      access: 'write',
       description:
         'Report the live status of an inference backend. NOTE: this does NOT stop a container — inference ' +
         'backends are managed by the Hub runtime/compose stack, not stopped on demand via MCP.',
@@ -112,6 +116,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_list_models',
+      access: 'read',
       description:
         'List all models: curated catalog entries, pulled/loaded models, and cloud models. Shows state (available, pulling, pulled, loaded, pinned, error).',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -125,6 +130,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_pull_model',
+      access: 'write',
       description: 'Pull/download a model from the curated catalog to the local backend. Long-running operation.',
       inputSchema: {
         type: 'object',
@@ -144,6 +150,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_load_model',
+      access: 'write',
       description: 'Load a pulled model into memory for inference.',
       inputSchema: {
         type: 'object',
@@ -163,6 +170,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_unload_model',
+      access: 'write',
       description: 'Unload a model from memory.',
       inputSchema: {
         type: 'object',
@@ -182,6 +190,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_pin_model',
+      access: 'write',
       description: 'Pin a model in memory (prevent eviction while the backend is running). Pinning is not persisted across backend restarts.',
       inputSchema: {
         type: 'object',
@@ -210,6 +219,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_unpin_model',
+      access: 'write',
       description: 'Unpin a model (allow eviction when memory is needed).',
       inputSchema: {
         type: 'object',
@@ -229,6 +239,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_get_inference_status',
+      access: 'read',
       description:
         'Get full inference router status: hardware tier, backend health, loaded models, memory budget, and cloud providers. Used by OpenClaw and agents to discover inference capabilities.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -241,6 +252,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_get_memory_budget',
+      access: 'read',
       description: 'Get current memory budget breakdown: VRAM, RAM, system reserved, app containers, model usage, pinned.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
@@ -253,6 +265,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_set_cloud_provider',
+      access: 'write',
       description: 'Configure a cloud fallback provider (OpenAI, Anthropic, Google, GitHub Copilot).',
       inputSchema: {
         type: 'object',
@@ -281,6 +294,7 @@ export class InferenceTools implements OnModuleInit {
     this.registry.register({
       category: 'Inference & Models',
       name: 'hub_get_cloud_providers',
+      access: 'read',
       description: 'List configured cloud fallback providers.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {

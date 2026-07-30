@@ -8,6 +8,9 @@ import type { ApiKeyScope } from './api-key.scopes';
 export interface ApiKeyRow {
   id: number;
   scopes: string[];
+  /** 'read' | 'write' | 'full' — validated on read via coerceApiKeyCapability, since the column is
+   *  a plain varchar and a row could hold anything a future/rolled-back writer put there. */
+  capability: string;
   name: string;
   prefix: string;
   hashedKey: string;
@@ -94,6 +97,18 @@ export class ApiKeyRepository {
   /** Rewrite a key's scopes in place, leaving the secret untouched. */
   async updateScopes(id: number, scopes: string[]): Promise<void> {
     await this.db.update(apiKey).set({ scopes }).where(eq(apiKey.id, id)).execute();
+  }
+
+  /** Change what a key may do, leaving the secret and its scopes untouched — so tightening or
+   *  widening a key never forces the holder to be re-issued one. Returns the number of rows hit so
+   *  the caller can tell "changed" from "no such key". */
+  async updateCapability(id: number, capability: string): Promise<number> {
+    const result = await this.db.update(apiKey).set({ capability }).where(eq(apiKey.id, id)).returning().execute();
+    return result.length;
+  }
+
+  async findById(id: number): Promise<ApiKeyRow | undefined> {
+    return this.db.query.apiKey.findFirst({ where: eq(apiKey.id, id) }) as Promise<ApiKeyRow | undefined>;
   }
 
   async touchLastUsed(id: number, whenIso: string): Promise<void> {

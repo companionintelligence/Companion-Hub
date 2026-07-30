@@ -17,6 +17,7 @@ export class CustomAppTools implements OnModuleInit {
     this.registry.register({
       category: 'Custom Apps',
       name: 'hub_create_custom_app',
+      access: 'write',
       description: 'Create a custom app from a dynamic docker-compose config. Returns the new app URN.',
       inputSchema: {
         type: 'object',
@@ -31,6 +32,7 @@ export class CustomAppTools implements OnModuleInit {
     this.registry.register({
       category: 'Custom Apps',
       name: 'hub_update_custom_app',
+      access: 'write',
       destructive: true, // ISSUE-MCP-2: rewrites the app's raw docker-compose (can change/remove volume mounts).
       description: 'Update a custom app docker-compose configuration.',
       inputSchema: {
@@ -43,6 +45,7 @@ export class CustomAppTools implements OnModuleInit {
     this.registry.register({
       category: 'Custom Apps',
       name: 'hub_update_app_metadata',
+      access: 'write',
       description: 'Update an app frontmatter metadata string.',
       inputSchema: {
         type: 'object',

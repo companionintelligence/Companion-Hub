@@ -16,6 +16,7 @@ export class RegistrationTools implements OnModuleInit {
     this.registry.register({
       category: 'Registration',
       name: 'hub_registration_status',
+      access: 'read',
       description: 'Get the live registration status including phase and degraded reasons.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getRegistrationStatus(),
@@ -23,6 +24,7 @@ export class RegistrationTools implements OnModuleInit {
     this.registry.register({
       category: 'Registration',
       name: 'hub_cloudflare_status',
+      access: 'read',
       description: 'Get Cloudflare tunnel and DNS status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.getCloudflareStatus(),
@@ -30,6 +32,7 @@ export class RegistrationTools implements OnModuleInit {
     this.registry.register({
       category: 'Registration',
       name: 'hub_probe_domain',
+      access: 'read',
       description: 'Probe whether a URL is reachable and responding OK.',
       inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to probe (http or https only)' } }, required: ['url'] },
       handler: (p) => this.probeDomain(p as { url: string }),
@@ -37,6 +40,7 @@ export class RegistrationTools implements OnModuleInit {
     this.registry.register({
       category: 'Registration',
       name: 'hub_check_url_availability',
+      access: 'read',
       description: 'Check URL availability with detailed error info including DNS status.',
       inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to check (http or https only)' } }, required: ['url'] },
       handler: (p) => this.checkUrlAvailability(p as { url: string }),
