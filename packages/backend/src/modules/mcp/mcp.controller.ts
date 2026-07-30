@@ -12,8 +12,9 @@ import { McpSessionRegistry } from './mcp-session.registry';
  * responses in the POST body and never streamed). A single MCP endpoint handles POST (JSON-RPC in),
  * GET (server→client SSE stream) and DELETE (session teardown); sessions are tracked by the
  * `Mcp-Session-Id` header the SDK assigns at `initialize`. Session state lives in
- * {@link McpSessionRegistry}; this controller is the thin HTTP layer. Auth stays the Bearer
- * `MCP_API_KEY` ({@link McpAuthGuard}); the endpoint is rate-limited ({@link ThrottlerGuard}).
+ * {@link McpSessionRegistry}; this controller is the thin HTTP layer. Auth is a Bearer key from the
+ * hashed key store carrying the `mcp` scope ({@link McpAuthGuard} — no env credential); the endpoint
+ * is rate-limited ({@link ThrottlerGuard}).
  * Mirrors the CI-Server MCP controller for cross-repo consistency.
  */
 @Controller('mcp')

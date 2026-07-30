@@ -37,7 +37,9 @@ import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate
  *   the forward-auth identity header. The Hub-global value is re-injected below for
  *   the memory provider ONLY; first-party consumers receive a PER-APP secret minted
  *   further down, never this one — which is the whole point of the provider gate.
- * - `JWT_SECRET` / `MCP_API_KEY` — the Hub's own signing key and admin API key.
+ * - `JWT_SECRET` — the Hub's own signing key. `MCP_API_KEY` stays on this list even though the Hub
+ *   no longer derives one (SEC-MCP-8): an appliance upgraded from an older build can still have the
+ *   dead value in its env file, and an app has no business receiving it either way.
  * - `POSTGRES_PASSWORD` — the Hub's database password. Note the stock `postgres`
  *   image reads this from its environment, so leaking it does not merely disclose
  *   the secret, it seeds other databases with it.

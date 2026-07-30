@@ -149,11 +149,13 @@ describe('env-helpers — resolve() priority chain', () => {
     expect(process.env.JWT_SECRET).toBe('runtime-jwt-secret');
   });
 
-  it('MUST keep process.env MCP_API_KEY when set, even if data .env differs', async () => {
-    process.env.MCP_API_KEY = 'runtime-mcp-key';
+  it('MUST NOT carry MCP_API_KEY into the resolved env, even when an older .env still has one', async () => {
+    // SEC-MCP-8: the value authenticates nothing (McpAuthGuard has no env fallback and nothing seeds
+    // the key store), so it is no longer derived and a stale one is dropped rather than republished
+    // into state/.env.resolved. Real MCP keys live in the hashed store.
     setupMocks({ dataEnv: 'MCP_API_KEY=from-data' });
-    await generateSystemEnvFile();
-    expect(process.env.MCP_API_KEY).toBe('runtime-mcp-key');
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.has('MCP_API_KEY')).toBe(false);
   });
 
   it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {

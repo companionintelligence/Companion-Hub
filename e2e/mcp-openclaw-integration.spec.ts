@@ -11,18 +11,20 @@
  *   7. GitHub Copilot LLM provider is configured via form fields
  *
  * Prerequisites:
- *   - Hub backend running with MCP_API_KEY set — and present in the Hub's key store. SEC-MCP-8: the
- *     store (Settings → MCP) is the sole auth authority; the env value is only auto-seeded into it
- *     as the "Default" key when the store is empty at boot (i.e. a freshly-migrated DB). Against a
- *     Hub whose store already has other keys, either boot it fresh or create a key matching
- *     MCP_API_KEY first, or every request here 401s.
+ *   - Hub backend running
  *   - PostgreSQL + RabbitMQ available
  *   - Docker daemon accessible (for full install tests)
  *
+ * Auth (SEC-MCP-8): the hashed key store is the *sole* authority. Nothing is seeded at boot and the
+ * guard has no env fallback, so `process.env.MCP_API_KEY` on its own authenticates nothing — this
+ * spec inserts its own `mcp`-scoped row via `seedMcpApiKey()` before the suites that need it.
+ * Without that insert every request here 401s.
+ *
  * Run standalone (opt-in — excluded from default `test:e2e:ci`):
- *   MCP_API_KEY=test-mcp-api-key-e2e npx playwright test --config=playwright.mcp.config.ts
+ *   pnpm e2e:mcp
  */
 
+import { createHash } from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { db, deleteAppByName, seedOrganization } from './helpers/db';
 import { testUser } from './helpers/constants';
@@ -38,6 +40,23 @@ async function clearDatabaseOnly() {
   await db.delete(schema.app);
   await db.delete(schema.appStore);
   await db.delete(schema.deviceRegistration);
+}
+
+/**
+ * Install MCP_API_KEY into the hashed key store as an `mcp`-scoped operator key.
+ *
+ * SEC-MCP-8 deliberately removed the env fallback from McpAuthGuard: a value derived from the
+ * appliance seed would be a credential no revoke could retire. Nothing seeds the store at boot
+ * either, so a spec that only sets the env var authenticates nothing. Insert the row explicitly.
+ */
+async function seedMcpApiKey() {
+  await db.delete(schema.apiKey);
+  await db.insert(schema.apiKey).values({
+    name: 'e2e-mcp',
+    scopes: ['mcp'],
+    prefix: MCP_API_KEY.slice(0, 8), // PREFIX_LEN in ApiKeyService
+    hashedKey: createHash('sha256').update(MCP_API_KEY).digest('hex'),
+  });
 }
 
 // OpenClaw custom app with hub_integration.mcp_client enabled
@@ -207,6 +226,7 @@ test.describe('MCP Protocol (OpenClaw client simulation)', () => {
   test.beforeAll(async () => {
     await clearDatabaseOnly();
     await seedOrganization();
+    await seedMcpApiKey();
   });
 
   test('Hub health check confirms backend is ready', async () => {
@@ -323,6 +343,7 @@ test.describe('OpenClaw app creation and MCP integration config', () => {
   test.beforeAll(async () => {
     await clearDatabaseOnly();
     await seedOrganization();
+    await seedMcpApiKey();
     sessionId = await loginToHub();
   });
 
@@ -404,6 +425,7 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
 
     await clearDatabaseOnly();
     await seedOrganization();
+    await seedMcpApiKey();
     sessionId = await loginToHub();
   });
 

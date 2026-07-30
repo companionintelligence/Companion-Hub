@@ -262,16 +262,15 @@ export class ConfigurationService {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    // SECURITY (ISSUE-MCP-2 / ENH-MCP-4): mcpApiKey and mcpAllowDestructive are MCP admin-managed
-    // secrets with a dedicated, admin-only path ({@link persistMcpSettings} + McpAdminService). They
-    // live in settingsSchema ONLY so that general settings writes preserve them on disk (the merge
-    // below spreads the existing on-disk values). They must never be settable or readable through
-    // this general endpoint: accepting them here would let any authenticated caller overwrite the
-    // agent-facing API key on disk, or leak it into the in-memory userSettings that GET /app-context
-    // returns to every browser session. Strip them before both the disk write and the in-memory merge.
-    const { mcpApiKey, mcpAllowDestructive, ...safeSettings } = settings;
-    if (mcpApiKey !== undefined || mcpAllowDestructive !== undefined) {
-      this.logger.warn('Ignoring mcpApiKey/mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
+    // SECURITY (ISSUE-MCP-2): mcpAllowDestructive is MCP admin-managed with a dedicated, admin-only
+    // path ({@link persistMcpSettings} + McpAdminService). It lives in settingsSchema ONLY so that
+    // general settings writes preserve it on disk (the merge below spreads the existing on-disk
+    // values). It must never be settable through this general endpoint: accepting it here would let
+    // any authenticated caller open the destructive-tool gate. Strip it before both the disk write
+    // and the in-memory merge.
+    const { mcpAllowDestructive, ...safeSettings } = settings;
+    if (mcpAllowDestructive !== undefined) {
+      this.logger.warn('Ignoring mcpAllowDestructive on the general settings endpoint; use the MCP admin endpoints');
     }
 
     try {
@@ -296,14 +295,14 @@ export class ConfigurationService {
   }
 
   /**
-   * ISSUE-MCP-2 / ENH-MCP-4: persist MCP admin-managed settings (a rotated agent API key, the
-   * destructive-tool gate) to settings.json ONLY — without merging them into the in-memory
-   * `userSettings` object that GET /app-context returns. This is what prevents the plaintext MCP
-   * API key from being disclosed to every authenticated browser session after a rotation. The
-   * caller (McpAdminService) applies the live value to `process.env` for immediate effect; this
-   * write is purely for persistence across restarts (env-helpers re-reads settings.json at boot).
+   * ISSUE-MCP-2: persist the MCP admin-managed destructive-tool gate to settings.json ONLY —
+   * without merging it into the in-memory `userSettings` object that GET /app-context returns to
+   * every browser session. The caller (McpAdminService) applies the live value to `process.env` for
+   * immediate effect; this write is purely for persistence across restarts (env-helpers re-reads
+   * settings.json at boot). Key rotation no longer comes through here: SEC-MCP-8 moved MCP
+   * credentials to the hashed key store, where creating and revoking are the rotation.
    */
-  public async persistMcpSettings(settings: { mcpApiKey?: string; mcpAllowDestructive?: boolean }): Promise<void> {
+  public async persistMcpSettings(settings: { mcpAllowDestructive?: boolean }): Promise<void> {
     try {
       await this.mergeSettingsToDisk(settings as UserSettingsBody);
     } catch (error) {
