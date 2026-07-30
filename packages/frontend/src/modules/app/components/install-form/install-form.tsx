@@ -464,7 +464,17 @@ export const InstallForm: React.FC<IProps> = ({
     const shouldSeed = !isDirty || appChanged;
 
     if (initialValues && shouldSeed) {
+      // `HIDDEN_FIELD_TYPES` fields (currently `type: 'random'`, e.g. an app's auto-generated DB
+      // password) are never rendered or editable by this form — the defaults loop right below
+      // and the field renderer both skip them for that reason. `initialValues` on the Edit
+      // Settings flow is the app's live config (`update-settings-dialog.tsx` passes the real
+      // env values), so seeding one of these into RHF state would put a live secret into
+      // getValues() and therefore into Export config / the "recently used" cache, even though
+      // stripSecretFields() strips it again downstream. Skipping it here means it never enters
+      // form state at all — see CI-Hub #972.
+      const hiddenEnvVars = new Set(formFields.filter((field) => isHiddenFieldType(field.type)).map((field) => field.env_variable));
       for (const [key, value] of Object.entries(initialValues)) {
+        if (hiddenEnvVars.has(key)) continue;
         setValue(key, value as string);
       }
     }
