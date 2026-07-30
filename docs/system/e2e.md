@@ -27,8 +27,14 @@ Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/
 |----------|---------|-----------|
 | `ci.yml` | Every PR | lint, tsc, unit tests (not e2e) |
 | `e2e.yml` | Release / manual | Default Playwright |
-| `e2e-extended.yml` | Nightly / label | Cross-domain + future + MCP |
+| `e2e-extended.yml` | Nightly / label | Cross-domain + future |
+| `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
 | `agent-gates.yml` | PR (optional) | Visual + benchmark gates |
+
+`e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
+when the MCP surface, its auth, or the connect docs change. Run it with
+`gh workflow run e2e-mcp.yml --ref <branch>`, or `pnpm e2e:mcp` locally for the full 18-test lane
+including the Docker-heavy install layer.
 
 ## Visual regression
 

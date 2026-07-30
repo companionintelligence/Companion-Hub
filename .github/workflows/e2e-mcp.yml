@@ -1,80 +1,26 @@
-name: E2E Extended
+name: E2E MCP
 
+# On-demand only. This lane guards the externally-documented connect recipe (Streamable HTTP on
+# /api/mcp with a Bearer key from the hashed key store) — the thing whose absence let our published
+# docs drift to a transport the server no longer speaks. It is deliberately NOT wired to pull_request
+# or schedule: it boots a full backend and is worth minutes of runner time only when the MCP surface,
+# its auth, or the connect docs actually change. Run it from the Actions tab, or:
+#
+#   gh workflow run e2e-mcp.yml --ref <branch>
+#
+# Runs `pnpm e2e:mcp:ci` (12 tests: protocol handshake + app env injection). The "Full OpenClaw
+# install" layer is excluded — it needs a Docker daemon and pulls images to install a real app, which
+# is slow and flake-prone unattended. That full 18-test lane stays available locally as `pnpm e2e:mcp`.
+# Refs companionintelligence/CI-Engineering#79.
 on:
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
-  pull_request:
-    types: [labeled, synchronize, opened, reopened]
 
 concurrency:
-  group: e2e-extended-${{ github.event.pull_request.number || github.ref }}
+  group: e2e-mcp-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  cross-domain:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && contains(toJSON(github.event.pull_request.labels.*.name), 'e2e-extended'))
-    timeout-minutes: 60
-    runs-on: ubuntu-latest
-    env:
-      PORTAL_DIR: ${{ github.workspace }}/ci-portal
-      PORTAL_PORT: '8012'
-      CI: true
-      E2E_CLEANUP_PORTS: 'true'
-
-    steps:
-      - name: Checkout CI-Hub
-        uses: actions/checkout@v6
-
-      - name: Checkout CI-Portal
-        uses: actions/checkout@v6
-        with:
-          repository: companionintelligence/ci-portal
-          path: ci-portal
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-
-      - uses: pnpm/action-setup@v6
-
-      - name: Install Hub dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Portal dependencies
-        working-directory: ci-portal
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare Portal web assets
-        working-directory: ci-portal
-        run: mkdir -p apps/web-app/dist
-
-      - name: Cache Playwright
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - run: pnpm exec playwright install --with-deps chromium
-
-      - name: Run cross-domain E2E
-        run: pnpm e2e:cross-domain
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: playwright-report-cross-domain
-          path: playwright-report/
-          retention-days: 7
-
-  future-onboarding:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && contains(toJSON(github.event.pull_request.labels.*.name), 'e2e-extended'))
+  mcp:
     timeout-minutes: 45
     runs-on: ubuntu-latest
     env:
@@ -82,6 +28,11 @@ jobs:
       MOCK_PORTAL_PORT: '4444'
       CI: true
       E2E_CLEANUP_PORTS: 'true'
+      # Must match the spec's own default — it calls the API directly, not through baseURL.
+      BACKEND_PORT: '3000'
+      # Not a credential: SEC-MCP-8 removed the guard's env fallback. This is the raw value the spec
+      # inserts into the hashed key store itself (see seedMcpApiKey) and then presents as a Bearer.
+      MCP_API_KEY: test-mcp-api-key-e2e
 
     services:
       postgres:
@@ -141,13 +92,8 @@ jobs:
 
       - run: pnpm exec playwright install --with-deps chromium
 
-      # The mock portal is owned by Playwright's webServer — this config spreads
-      # the base playwright.config.ts webServer array. Do NOT pre-start it here:
-      # with reuseExistingServer:false under CI a second instance collides on
-      # MOCK_PORTAL_PORT and Playwright aborts the whole run. See CI-Hub#890.
-
-      - name: Run future onboarding E2E
-        run: pnpm e2e:future:onboarding
+      - name: Run MCP E2E
+        run: pnpm e2e:mcp:ci
         env:
           SERVER_IP: localhost
           POSTGRES_HOST: localhost
@@ -160,7 +106,6 @@ jobs:
           RABBITMQ_USERNAME: companion
           RABBITMQ_PASSWORD: admin
           JWT_SECRET: e2e-test-secret
-          CI_CLOUD_URL: http://localhost:4444
           DOMAIN: ci.computer
           LOCAL_DOMAIN: ci.lan
           ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
@@ -173,6 +118,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: playwright-report-future-onboarding
+          name: playwright-report-mcp
           path: playwright-report/
           retention-days: 7
