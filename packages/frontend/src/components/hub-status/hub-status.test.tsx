@@ -485,6 +485,56 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.getByRole('button', { name: 'Open Logs Folder' })).toBeInTheDocument();
   });
 
+  it('keeps a sticky start-failure screen and requires confirm before retry', async () => {
+    const rateLimitError = "Docker Hub rate-limited image pulls from this machine's IP (HTTP 429). Wait several minutes.";
+    let callCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      if (cmd === 'get_hub_status_command') {
+        callCount += 1;
+        // Polling must keep returning Error — not flash back to Stopped.
+        return { Error: { message: rateLimitError } };
+      }
+      if (cmd === 'start_hub_command') {
+        return 'Hub started successfully';
+      }
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'available', detail: null };
+      }
+      if (cmd === 'get_startup_progress_command') {
+        return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+      }
+      throw new Error(`Unexpected invoke command: ${cmd}`);
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Hub failed to start' })).toBeInTheDocument();
+    expect(screen.getByText(/Docker Hub rate-limited/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Start' }));
+    expect(screen.getByText(/Retry starting the Hub now/)).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    expect(screen.queryByText(/Retry starting the Hub now/)).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+
+    // Still sticky after more polls would have run
+    expect(callCount).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('heading', { name: 'Hub failed to start' })).toBeInTheDocument();
+  });
+
   it('View Logs button fetches log content and shows it inline', async () => {
     const fakeLog = 'line1\nline2\nline3';
     const { invoke } = mockMacTauriWithStatus(['Stopped'], {

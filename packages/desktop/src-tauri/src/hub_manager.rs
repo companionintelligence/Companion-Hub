@@ -2072,6 +2072,8 @@ pub fn get_hub_status() -> HubStatus {
         return HubStatus::DockerNotAvailable;
     }
 
+    let data_dir = get_hub_data_dir();
+
     // Check ci-os-hub container specifically
     let status = docker_command()
         .args([
@@ -2085,6 +2087,9 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+        if let Some(message) = read_start_failed(&data_dir) {
+            return HubStatus::Error { message };
+        }
         return HubStatus::Stopped;
     }
 
@@ -2093,7 +2098,11 @@ pub fn get_hub_status() -> HubStatus {
     let health = parts.get(1).copied().unwrap_or("");
 
     match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
+        ("running", "healthy") => {
+            // Recovered after a prior failed start — drop the sticky failure marker.
+            clear_start_failed(&data_dir);
+            HubStatus::Running
+        }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -2135,7 +2144,13 @@ pub fn get_hub_status() -> HubStatus {
                 }
             }
         }
-        ("created", _) | ("exited", _) => HubStatus::Stopped,
+        ("created", _) | ("exited", _) => {
+            if let Some(message) = read_start_failed(&data_dir) {
+                HubStatus::Error { message }
+            } else {
+                HubStatus::Stopped
+            }
+        }
         _ => HubStatus::Starting,
     }
 }
@@ -2578,6 +2593,8 @@ pub fn logs_open_target() -> PathBuf {
 // The marker is removed when the user explicitly starts the Hub again.
 
 const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+const START_FAILED_MARKER_FILENAME: &str = ".start-failed";
+const START_FAILED_MARKER_MAX_BYTES: usize = 4 * 1024;
 const LAUNCH_MODE_FILENAME: &str = ".launch-mode";
 
 /// How the Hub was last launched — used to relaunch in the same mode after an update.
@@ -2619,6 +2636,93 @@ pub fn read_launch_mode(data_dir: &Path) -> PersistedLaunchMode {
 
 fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
+}
+
+fn start_failed_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(START_FAILED_MARKER_FILENAME)
+}
+
+/// Truncate a failure string for the sticky UI / marker file.
+fn truncate_start_failure_message(message: &str, max_chars: usize) -> String {
+    let trimmed = message.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn is_compose_missing_race_error(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.contains("no such file or directory")
+        && (trimmed.contains("docker-compose") || trimmed.contains("compose"))
+}
+
+/// Whether a start failure should stick until the user confirms Retry.
+/// Transient setup races (compose not copied yet) must not block the real auto-start.
+pub fn should_persist_start_failure(raw: &str) -> bool {
+    !is_compose_missing_race_error(raw)
+}
+
+/// Turn raw docker/compose failures into a sticky, user-facing message.
+pub fn format_start_failure_message(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // Already normalized (e.g. retry path wrote the sticky message back through).
+    if trimmed.starts_with("Docker Hub rate-limited")
+        || trimmed.starts_with("Hub start ran before desktop setup finished")
+    {
+        return truncate_start_failure_message(trimmed, START_FAILED_MARKER_MAX_BYTES);
+    }
+
+    let detail = truncate_start_failure_message(trimmed, 900);
+
+    if trimmed.contains("429 Too Many Requests") || trimmed.contains("Too Many Requests") {
+        return format!(
+            "Docker Hub rate-limited image pulls from this machine's IP (HTTP 429). Wait several minutes, optionally run `docker login` for higher pull limits, then confirm Retry.\n\n{}",
+            detail
+        );
+    }
+
+    if is_compose_missing_race_error(trimmed) {
+        return format!(
+            "Hub start ran before desktop setup finished copying the compose file. Setup will continue momentarily.\n\n{}",
+            detail
+        );
+    }
+
+    detail
+}
+
+/// Persist the last start failure so the UI stays on Error and auto-start/watchdog stop retrying.
+/// Returns the normalized message written to disk.
+pub fn mark_start_failed(data_dir: &Path, message: &str) -> String {
+    let formatted = format_start_failure_message(message);
+    let bytes = truncate_start_failure_message(&formatted, START_FAILED_MARKER_MAX_BYTES);
+    let _ = std::fs::write(start_failed_marker_path(data_dir), &bytes);
+    bytes
+}
+
+/// Clear sticky start-failure state (user confirmed retry, or Hub reached healthy).
+pub fn clear_start_failed(data_dir: &Path) {
+    let _ = std::fs::remove_file(start_failed_marker_path(data_dir));
+}
+
+/// Returns the sticky start-failure message, if any.
+pub fn read_start_failed(data_dir: &Path) -> Option<String> {
+    let path = start_failed_marker_path(data_dir);
+    let content = std::fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// True when a prior start failed and the user has not confirmed a retry yet.
+pub fn is_start_failed(data_dir: &Path) -> bool {
+    start_failed_marker_path(data_dir).exists()
 }
 
 fn stack_dev_mode_enabled() -> bool {
@@ -2663,8 +2767,10 @@ pub fn should_trigger_hub_watchdog(
     consecutive_health_failures: u32,
     cooldown_elapsed_secs: Option<u64>,
     user_stopped: bool,
+    start_failed: bool,
 ) -> bool {
-    if user_stopped {
+    // Respect intentional stop and sticky start failures — both require explicit user action.
+    if user_stopped || start_failed {
         return false;
     }
     if consecutive_health_failures < HUB_WATCHDOG_FAILURE_THRESHOLD {
@@ -4795,7 +4901,30 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     }
     let _guard = StartGuard;
 
-    start_hub_inner(compose_path, env_path, data_dir)
+    // Clear sticky failure only once this call owns the start lock — UI can show Starting.
+    clear_start_failed(data_dir);
+
+    match start_hub_inner(compose_path, env_path, data_dir) {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            let formatted = format_start_failure_message(&error);
+            if should_persist_start_failure(&error) {
+                let _ = mark_start_failed(data_dir, &error);
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Start failed (sticky failure state set): {}", formatted),
+                );
+            } else {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Start failed (transient, not sticky): {}", formatted),
+                );
+            }
+            Err(formatted)
+        }
+    }
 }
 
 /// Inner start logic, called under the `START_IN_PROGRESS` guard.
@@ -8800,11 +8929,42 @@ mod tests {
 
     #[test]
     fn hub_watchdog_decision() {
-        assert!(!super::should_trigger_hub_watchdog(2, None, false));
-        assert!(super::should_trigger_hub_watchdog(3, None, false));
-        assert!(!super::should_trigger_hub_watchdog(3, None, true));
-        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false));
-        assert!(super::should_trigger_hub_watchdog(3, Some(301), false));
+        assert!(!super::should_trigger_hub_watchdog(2, None, false, false));
+        assert!(super::should_trigger_hub_watchdog(3, None, false, false));
+        assert!(!super::should_trigger_hub_watchdog(3, None, true, false));
+        assert!(!super::should_trigger_hub_watchdog(3, None, false, true));
+        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false, false));
+        assert!(super::should_trigger_hub_watchdog(3, Some(301), false, false));
+    }
+
+    #[test]
+    fn format_start_failure_message_rate_limit() {
+        let msg = super::format_start_failure_message(
+            "Database bootstrap failed. Error response from daemon: unexpected status from HEAD request: 429 Too Many Requests",
+        );
+        assert!(msg.contains("Docker Hub rate-limited"));
+        assert!(msg.contains("429"));
+    }
+
+    #[test]
+    fn compose_missing_race_is_not_sticky() {
+        let err = "docker compose pull failed. open /home/ci/.local/share/companion-hub/docker-compose.prod.yml: no such file or directory";
+        assert!(!super::should_persist_start_failure(err));
+        assert!(super::should_persist_start_failure(
+            "Database bootstrap failed. 429 Too Many Requests"
+        ));
+    }
+
+    #[test]
+    fn start_failed_marker_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!super::is_start_failed(dir.path()));
+        super::mark_start_failed(dir.path(), "429 Too Many Requests on postgres:14");
+        assert!(super::is_start_failed(dir.path()));
+        let stored = super::read_start_failed(dir.path()).expect("message");
+        assert!(stored.contains("Docker Hub rate-limited"));
+        super::clear_start_failed(dir.path());
+        assert!(!super::is_start_failed(dir.path()));
     }
 
     #[cfg(any(test, target_os = "macos"))]

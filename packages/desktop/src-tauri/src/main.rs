@@ -655,9 +655,10 @@ pub fn run() {
                         // "Stop Hub" last time, don't auto-restart on the next launch until they
                         // explicitly click "Start Hub" again.
                         let user_stopped = hub_manager::is_user_stopped(&data_for_decision);
+                        let start_failed = hub_manager::is_start_failed(&data_for_decision);
                         let needs_runtime_recovery = hub_manager::hub_needs_runtime_recovery();
 
-                        let should_start = if user_stopped {
+                        let should_start = if user_stopped || start_failed {
                             false
                         } else if !containers_exist {
                             true
@@ -673,6 +674,9 @@ pub fn run() {
 
                         let reason = if user_stopped {
                             "user intentionally stopped the Hub — respecting decision across relaunch"
+                                .to_string()
+                        } else if start_failed {
+                            "previous start failed — waiting for explicit user retry"
                                 .to_string()
                         } else if !containers_exist {
                             "containers are missing".to_string()
