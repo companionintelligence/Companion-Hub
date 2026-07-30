@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Star,
   Users,
+  Waypoints,
   Wrench,
 } from 'lucide-react';
 
@@ -34,6 +35,7 @@ export const colorSchemeForCategory: Record<string, string> = {
   finance: 'dark',
   gaming: 'pink',
   ai: 'muted',
+  agents: 'violet',
   mcp: 'violet',
 };
 
@@ -44,6 +46,9 @@ type AppCategoryEntry = {
 
 export const iconForCategory: AppCategoryEntry[] = [
   { id: 'featured', icon: Star },
+  // Waypoints, not a Bot variant: Automation already owns Bot and AI owns Brain,
+  // and the bot-family glyphs are indistinguishable at the 16px sidebar size.
+  { id: 'agents', icon: Waypoints },
   { id: 'ai', icon: Brain },
   { id: 'automation', icon: Bot },
   { id: 'books', icon: Book },

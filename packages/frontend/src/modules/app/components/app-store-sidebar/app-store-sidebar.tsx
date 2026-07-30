@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
+import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
@@ -108,7 +109,7 @@ export const AppStoreSidebar = () => {
                 onClick={() => handleCategoryClick(cat.id)}
               >
                 {Icon && <Icon className="h-4 w-4" />}
-                <span className="truncate">{cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}</span>
+                <span className="truncate">{getCategoryLabel(t, cat.id)}</span>
               </Button>
             );
           })}

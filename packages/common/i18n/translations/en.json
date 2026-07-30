@@ -44,6 +44,7 @@
   "INSTALL_QUEUE_ACTIVE_ONLY": "Installing {{name}}",
   "INSTALL_QUEUE_WAITING_ONLY": "{{count}} installs waiting in queue",
   "INSTALL_QUEUE_WAITING_NAMES": "Waiting: {{names}}",
+  "APP_CATEGORY_AGENTS": "Agents",
   "APP_CATEGORY_AUTOMATION": "Automation",
   "APP_CATEGORY_BOOKS": "Books",
   "APP_CATEGORY_DATA": "Data",

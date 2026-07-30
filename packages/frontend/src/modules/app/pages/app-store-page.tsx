@@ -12,6 +12,7 @@ import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
+import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -318,7 +319,7 @@ export default () => {
                 onClick={() => setCategory(cat.id)}
               >
                 {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
-                {cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}
+                {getCategoryLabel(t, cat.id)}
               </Button>
             );
           })}

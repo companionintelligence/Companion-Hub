@@ -273,6 +273,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'agents',
   'mcp',
   'companion-intelligence',
 ] as const;
