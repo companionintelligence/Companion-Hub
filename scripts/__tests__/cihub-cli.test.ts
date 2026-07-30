@@ -841,6 +841,22 @@ describe('formatApiKeyRows', () => {
     expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  aaa…']);
   });
 
+  it('strips terminal escapes from a name rather than writing them to the terminal', () => {
+    // The UI's create body is `z.string().trim().min(1).max(100)` — no character restriction — so a
+    // stored name can carry ANSI/control characters. Rendering them would let a key name clear the
+    // screen, recolour output, or forge box rows.
+    const esc = String.fromCharCode(27);
+    const json = JSON.stringify([
+      { id: 4, name: `${esc}[31mred${esc}[0m`, scopes: ['mcp'], prefix: 'bbb' },
+      { id: 5, name: `wipe${esc}[2J${esc}`, scopes: ['mcp'], prefix: 'ccc' },
+    ]);
+
+    const rows = formatApiKeyRows(json);
+
+    expect(rows).toEqual(['4  red  [mcp]  bbb…', '5  wipe[2J  [mcp]  ccc…']);
+    expect(rows.join('')).not.toContain(esc);
+  });
+
   it('returns no rows for an empty result', () => {
     expect(formatApiKeyRows('[]')).toEqual([]);
   });

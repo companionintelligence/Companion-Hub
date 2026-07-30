@@ -115,10 +115,11 @@ export function renderConfigLines(env: HubEnv) {
   const rootFolder = resolveRootFolderHost(envFileName);
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
   const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
-  // Deliberately no `mcp api key` line. MCP_API_KEY is derived into the env file at boot
-  // (env-helpers.ts) and reaches the container, but SEC-MCP-8 removed the guard's env fallback, so
-  // nothing reads it — reporting it as `<set>` told operators they held a credential they did not.
-  // The real keys live in the hashed store: `cihub api-key list`.
+  // Deliberately no `mcp api key` line. Nothing derives MCP_API_KEY any more (env-helpers deletes it
+  // rather than minting one) and McpAuthGuard has no env fallback, so the variable authenticates
+  // nothing. An appliance upgraded from an older build can still have the dead value sitting in its
+  // source env file — printing it as `<set>` is exactly what told operators they held a credential
+  // they did not. The real keys live in the hashed store: `cihub api-key list`.
   return [
     `${bold('environment')}      ${env}`,
     `${bold('env file')}         ${envFileName}`,

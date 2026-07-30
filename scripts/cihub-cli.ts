@@ -1270,6 +1270,20 @@ export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; pref
 }
 
 /**
+ * Make an untrusted string safe to print inside a message box: whitespace runs collapse to a single
+ * space (so a value cannot span rows) and every control character is dropped.
+ *
+ * `stripAnsi` is not enough on its own — it only removes SGR colour sequences, so `ESC[2J`, a bare
+ * ESC, or any other C0 character would survive and be handed to the terminal verbatim.
+ */
+export function sanitizeForBox(value: string): string {
+  return [...stripAnsi(value).replace(/\s+/g, ' ')]
+    .filter((char) => char >= ' ' && char !== '\u007f') // >= space keeps printables; \u007f is DEL
+    .join('')
+    .trim();
+}
+
+/**
  * Render the `api-key list` JSON document as display rows.
  *
  * Tolerates a malformed/empty document by returning no rows rather than throwing: the caller has
@@ -1291,8 +1305,12 @@ export function formatApiKeyRows(json: string): string[] {
   return parsed.map((row) => {
     const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
 
-    // Names are user-supplied and predate validation; keep control characters out of the box render.
-    const name = String(row.name ?? '').replace(/\s+/g, ' ');
+    // Names reach this box unfiltered from the key store, and the store does not constrain them:
+    // the UI's create body is `z.string().trim().min(1).max(100)`, so a name may hold ANSI escapes
+    // or other control characters. Collapse whitespace first (so one key still cannot span rows),
+    // then drop every remaining control character — unstripped they would be written straight to
+    // the terminal, and they count toward string length, which also skews the box width.
+    const name = sanitizeForBox(String(row.name ?? ''));
 
     return `${row.id}  ${name}  [${scopes}]  ${row.prefix ?? ''}…`;
   });
