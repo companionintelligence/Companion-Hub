@@ -1349,7 +1349,7 @@
   "API_KEYS_CAPABILITY_LABEL": "What this key can do with Hub tools",
   "API_KEYS_CAPABILITY_READ": "Read-only",
   "API_KEYS_CAPABILITY_WRITE": "Read & write",
-  "API_KEYS_CAPABILITY_FULL": "Full access",
+  "API_KEYS_CAPABILITY_FULL": "Read, write & delete",
   "API_KEYS_CAPABILITY_READ_HINT": "See apps, logs, models and status. Cannot install, change or remove anything.",
   "API_KEYS_CAPABILITY_WRITE_HINT": "Also install, start, stop, update and reconfigure apps.",
   "API_KEYS_CAPABILITY_FULL_HINT": "Also uninstall apps, delete backups, reset app data and act on every app at once.",

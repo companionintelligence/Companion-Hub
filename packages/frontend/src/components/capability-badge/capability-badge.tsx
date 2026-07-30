@@ -24,12 +24,22 @@ export const CAPABILITY_HINT_KEYS: Record<ApiKeyCapability, string> = {
   full: 'API_KEYS_CAPABILITY_FULL_HINT',
 };
 
-/** Colour carries the same meaning as everywhere else in the Hub: muted = inert, primary = ordinary
- *  action, destructive = can lose data. So 'full' looks like the Revoke button, not like a feature. */
+/**
+ * Three steps of one escalating scale, so a row's authority is legible at a glance rather than by
+ * reading the word: inert → ordinary → caution.
+ *
+ * Amber, not destructive red, for 'full'. Red is this UI's colour for the destructive *action*
+ * (Revoke sits on the same row), and a key an operator deliberately granted delete rights is not an
+ * error state — rendering it identically to a danger button trains people to ignore the colour where
+ * it does mean danger. Amber says "can lose data" without claiming something is wrong.
+ *
+ * Every level gets a ring so all three read as the same kind of object at different intensities; a
+ * level with no styling at all would look like a missing value rather than the lowest rung.
+ */
 const CAPABILITY_CLASSES: Record<ApiKeyCapability, string> = {
-  read: 'bg-muted text-muted-foreground',
-  write: 'bg-primary/10 text-primary',
-  full: 'bg-destructive/10 text-destructive',
+  read: 'bg-muted text-muted-foreground ring-1 ring-inset ring-border',
+  write: 'bg-primary/10 text-primary ring-1 ring-inset ring-primary/20',
+  full: 'bg-amber-500/10 text-amber-700 ring-1 ring-inset ring-amber-500/30 dark:text-amber-400',
 };
 
 /** True when moving to `to` grants authority `from` did not have — the test for whether a change
