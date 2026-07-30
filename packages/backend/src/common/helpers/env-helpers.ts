@@ -51,9 +51,36 @@ const generateSeed = async () => {
 };
 
 /**
- * Returns the architecture of the current system
+ * Prefer the physical host CPU arch from init-host-probe over the container's
+ * `os.arch()`. On Docker Desktop (esp. Apple Silicon) the Hub image may be
+ * amd64-emulated while Docker pulls/runs for arm64 — using the container arch
+ * lets amd64-only apps install, then fail mid-pull with
+ * "no matching manifest for linux/arm64/v8".
+ */
+const readHostProbeArchitecture = (): 'arm64' | 'amd64' | null => {
+  const candidates = [path.join(DATA_DIR, 'state', 'hardware', 'host_metrics.json'), path.join(DATA_DIR, 'state', 'hardware', 'host_system.json')];
+
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { cpuArch?: string };
+      if (parsed.cpuArch === 'arm64') return 'arm64';
+      if (parsed.cpuArch === 'x86_64' || parsed.cpuArch === 'amd64') return 'amd64';
+    } catch {
+      // Best-effort: fall through to os.arch().
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Returns the architecture apps should target on this Hub.
  */
 const getArchitecture = () => {
+  const fromHost = readHostProbeArchitecture();
+  if (fromHost) return fromHost;
+
   const arch = os.arch();
 
   if (arch === 'arm64') return 'arm64';

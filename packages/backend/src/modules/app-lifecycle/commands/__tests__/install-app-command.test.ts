@@ -24,6 +24,7 @@ vi.mock('node:fs', async () => ({
   default: {
     constants: {
       F_OK: 0,
+      R_OK: 4,
     },
     promises: {
       mkdir: vi.fn(),
@@ -273,6 +274,45 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(true);
+  });
+
+  it('SHOULD fail fast before compose up when /dev/kvm is required but missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'windows', image: 'docker.io/dockurr/windows:latest', devices: ['/dev/kvm:/dev/kvm'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('windows:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('kvm_missing');
+    expect(result.message).toContain('hardware virtualization');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+    expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
+  });
+
+  it('SHOULD return friendly guidance when /dev/kvm is missing at compose up', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'windows', image: 'docker.io/dockurr/windows:latest', devices: ['/dev/kvm:/dev/kvm'] }],
+      overrides: [],
+    } as any);
+    // Preflight thinks KVM exists; Docker then fails when attaching the device.
+    vi.mocked(fs.promises.access).mockResolvedValueOnce(undefined as any);
+
+    dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+      if (args.includes('up --detach')) {
+        throw new Error(
+          'Error response from daemon: error gathering device information while adding custom device "/dev/kvm": no such file or directory',
+        );
+      }
+    });
+
+    const result = await command.execute('windows:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('kvm_missing');
+    expect(result.message).toContain('hardware virtualization');
   });
 
   it('SHOULD fail fast before compose up when /dev/kfd is required but missing', async () => {
