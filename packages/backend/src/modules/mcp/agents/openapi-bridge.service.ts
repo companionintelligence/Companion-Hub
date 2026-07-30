@@ -4,6 +4,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
+import { isReadOnlyHttpMethod } from '../http-method-access';
 import { ApiProxyService } from './api-proxy.service';
 
 interface OpenApiOperation {
@@ -241,10 +242,10 @@ export class OpenApiBridgeService {
       description,
       inputSchema,
       // Derived from the HTTP method rather than guessed from the name: a generated tool's authority is
-      // whatever its operation's verb allows, which the spec states outright. Same structural approach
-      // the app-API proxy takes for hub_call_app_api, applied ahead of time because each generated tool
-      // is pinned to one verb.
-      access: ['GET', 'HEAD', 'OPTIONS'].includes(method) ? 'read' : 'write',
+      // whatever its operation's verb allows, which the spec states outright. Literally the same list the
+      // app-API proxy uses for hub_call_app_api, applied ahead of time because each generated tool is
+      // pinned to one verb — sharing it is what stops the two paths classifying a verb differently.
+      access: isReadOnlyHttpMethod(method) ? 'read' : 'write',
       // Only DELETE is treated as data loss. PUT/PATCH/POST mutate, which 'write' already covers;
       // calling them destructive would put ordinary app interactions behind the 'full' capability.
       destructive: method === 'DELETE',

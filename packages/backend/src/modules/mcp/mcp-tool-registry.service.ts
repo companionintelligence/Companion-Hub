@@ -182,7 +182,15 @@ export class McpToolRegistry {
     const readOnly = tool.isReadOnly ? tool.isReadOnly(params) : tool.access === 'read';
 
     if (destructive && !(opts.allowDestructive ?? capability === 'full')) {
-      throw new DestructiveToolDisabledError(name, capability);
+      // Two different refusals wear the same exception. An agent was stopped by its key's capability
+      // and needs the level raised; the admin runner was stopped by an operator not confirming, and
+      // its caller is already 'full' — telling that operator to "grant the key 'full' capability"
+      // names a remedy they have and an actor that isn't involved. `allowDestructive` being set at
+      // all is what distinguishes them: only the runner passes it.
+      throw new DestructiveToolDisabledError(
+        name,
+        opts.allowDestructive === undefined ? { reason: 'capability', capability } : { reason: 'unconfirmed' },
+      );
     }
     // Checked after the destructive gate so a read-only key calling a destructive tool is told the
     // stronger fact (it is destructive), not just that it mutates.
@@ -209,11 +217,19 @@ export class McpToolNotFoundError extends Error {
  * reads "disabled" has no way to tell a policy from a bug.
  */
 export class DestructiveToolDisabledError extends Error {
-  constructor(toolName: string, capability: ApiKeyCapability = 'read') {
+  constructor(
+    toolName: string,
+    cause: { reason: 'capability'; capability: ApiKeyCapability } | { reason: 'unconfirmed' } = {
+      reason: 'capability',
+      capability: 'read',
+    },
+  ) {
     super(
-      `Tool '${toolName}' is destructive and this API key's capability is '${capability}'. Grant the ` +
-        "key the 'full' capability in Settings → Security to allow destructive tools, or run it from " +
-        'the Hub UI with explicit confirmation.',
+      cause.reason === 'unconfirmed'
+        ? `Tool '${toolName}' is destructive and was run without confirmation. Confirm the prompt in the ` + 'Hub UI to run it.'
+        : `Tool '${toolName}' is destructive and this API key's capability is '${cause.capability}'. Grant ` +
+            "the key the 'full' capability in Settings → Security to allow destructive tools, or run it " +
+            'from the Hub UI with explicit confirmation.',
     );
     this.name = 'DestructiveToolDisabledError';
   }

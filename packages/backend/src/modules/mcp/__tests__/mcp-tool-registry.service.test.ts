@@ -143,6 +143,15 @@ describe('McpToolRegistry', () => {
       // ...and refuses when the operator did not confirm, even at 'full'.
       await expect(registry.callTool('danger', {}, { capability: 'full', allowDestructive: false })).rejects.toThrow(DestructiveToolDisabledError);
     });
+
+    it('tells each caller the remedy that is actually theirs', async () => {
+      // One exception, two refusals. An agent needs its key raised; the admin runner's operator needs
+      // to confirm — and is already at 'full', so telling them to grant 'full' names a remedy they
+      // hold and an actor not involved. The distinction is only useful if the wording carries it.
+      await expect(registry.callTool('danger', {}, { capability: 'write' })).rejects.toThrow(/capability is 'write'/);
+      await expect(registry.callTool('danger', {}, { capability: 'full', allowDestructive: false })).rejects.toThrow(/without confirmation/);
+      await expect(registry.callTool('danger', {}, { capability: 'full', allowDestructive: false })).rejects.not.toThrow(/Settings → Security/);
+    });
   });
 
   // hub_call_app_api is the one tool whose authority genuinely depends on its arguments: a GET only
