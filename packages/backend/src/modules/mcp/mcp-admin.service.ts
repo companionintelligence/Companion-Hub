@@ -4,7 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { McpService } from './mcp.service';
 import { McpSessionRegistry } from './mcp-session.registry';
-import { McpToolRegistry, isPotentiallyDestructive, toToolDescriptor } from './mcp-tool-registry.service';
+import { McpToolRegistry, isPotentiallyDestructive } from './mcp-tool-registry.service';
 
 /** Operator-facing view of a single MCP tool (adds the `destructive` flag for the UI confirm gate,
  *  the read/write `access` so the catalog can show which capability reaches it, and a `category` for
@@ -53,10 +53,19 @@ export class McpAdminService {
     };
   }
 
-  /** Full tool catalog with descriptions, input schemas, and destructive/access flags. */
+  /**
+   * Full tool catalog with descriptions, input schemas, and destructive/access flags.
+   *
+   * Projected field by field rather than by spreading the MCP wire descriptor. The two shapes now
+   * answer different questions — the wire carries `annotations` for a client, this carries flags for
+   * an operator screen — and spreading would quietly ship whatever the wire shape gains next in an
+   * admin response whose interface does not mention it.
+   */
   listTools(): McpAdminToolInfo[] {
     return this.registry.listTools().map((tool) => ({
-      ...toToolDescriptor(tool),
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
       // A tool with an arg-based predicate (e.g. hub_call_app_api) is flagged destructive here so the
       // UI prompts for confirmation; the registry's predicate still decides per-call at execution.
       destructive: isPotentiallyDestructive(tool),
