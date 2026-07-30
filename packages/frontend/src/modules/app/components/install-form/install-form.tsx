@@ -2,7 +2,12 @@ import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
-import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import {
+  getRandomPortMutation,
+  getDomainsOptions,
+  getCustomDomainsOptions,
+  systemResourcesOptions,
+} from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import {
   DropdownMenu,
@@ -43,10 +48,14 @@ import {
 } from '@/modules/app/lib/install-config-storage';
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
+import { AdvancedConfigDisclosure } from './advanced-config-disclosure';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
 import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
+import { InstallModeSelector, type InstallMode } from './install-mode-selector';
+import { InstallPreviewPanel } from './install-preview-panel';
+import { ResourceLimitsSection } from './resource-limits-section';
 import { useDnsAvailability } from './use-dns-availability';
 
 /**
@@ -104,11 +113,25 @@ export type FormValues = {
   enableAuth: boolean;
   maxBackups?: number;
   cpuLimit?: string;
+  memoryLimit?: string;
   [key: string]: unknown;
 };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 const EMPTY_CUSTOM_DOMAINS: AvailableCustomDomainsResponseDto['domains'] = [];
+
+/**
+ * GET /system/resources' actual runtime shape (see packages/backend/src/modules/system/dto/system.dto.ts
+ * and resource-allocator.service.ts#getResourceOverview). The generated `SystemResourcesDto` in
+ * api-client/types.gen.ts is stale — most `createZodDto`-based responses serialize to an empty
+ * `{ properties: {} }` schema in the committed swagger.json (a pre-existing, codebase-wide gap
+ * between zod-dto and the swagger reflection, not something introduced or fixable here) — so this
+ * mirrors the real backend contract by hand rather than trusting the generated type.
+ */
+interface SystemResourcesRuntimeShape {
+  docker: { cpuCores: number; memTotalMb: number; serverVersion?: string } | null;
+  appDefaults: { cpuLimit?: string; memoryLimit?: string; autoAllocated: boolean };
+}
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
   const cleanNodeFqdn = nodeFqdn?.trim();
@@ -245,8 +268,18 @@ export const InstallForm: React.FC<IProps> = ({
   const { data: customDomainsData } = useQuery(getCustomDomainsOptions());
   const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
 
+  // Powers the "Recommended (auto)" install mode and the resource sliders' bounds/defaults —
+  // GET /system/resources already surfaces ResourceAllocatorService#getEffectiveAppDefaults()
+  // and #getDockerCapacity(), so no new backend endpoint is needed for this.
+  const { data: systemResourcesData } = useQuery(systemResourcesOptions());
+  const systemResources = systemResourcesData as unknown as SystemResourcesRuntimeShape | undefined;
+  const dockerCapacity = systemResources?.docker ?? undefined;
+  const recommendedAppDefaults = systemResources?.appDefaults;
+
   const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
   const _watchedRequiredValues = watch(requiredFieldNames);
+  const watchCpuLimit = watch('cpuLimit');
+  const watchMemoryLimit = watch('memoryLimit');
 
   // Track the previously-rendered app URN so the init effect can detect when
   // the form is reused for a different app and force-reset stale field values.
@@ -254,9 +287,18 @@ export const InstallForm: React.FC<IProps> = ({
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [isRepairingPublicWeb, setIsRepairingPublicWeb] = useState(false);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
+  /*
+   * An MCP install whose every field is optional still has to show those fields, or the
+   * operator is handed a dialog with nothing in it. Upstream did this by seeding
+   * `showAdvancedSettings` true and hiding its toggle; the advanced Switch is gone now
+   * (replaced by AdvancedConfigDisclosure), so the same intent is carried by rendering
+   * the disclosure permanently open for these installs — see `alwaysOpen` below.
+   */
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
+  // Subscribes to every field: drives both the submit-mirroring validity effect and the
+  // live preview panel, which must re-render as the operator types (getValues() alone
+  // would not, since it doesn't subscribe).
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -341,6 +383,38 @@ export const InstallForm: React.FC<IProps> = ({
     },
     [applyImportedValues, t],
   );
+
+  const [installMode, setInstallMode] = useState<InstallMode>('recommended');
+  const prevInstallModeRef = useRef<InstallMode>('recommended');
+
+  // Keep cpuLimit/memoryLimit in sync with the active Install Mode. "Recommended" and "App
+  // defaults" both submit nothing by default — the backend's own precedence chain
+  // (ResourceAllocatorService#getEffectiveAppDefaults, applied in compose.builder.ts) already
+  // resolves to the same numbers we display, so leaving the fields unset keeps them in lockstep.
+  // Dragging a "Recommended" slider still overrides it (see ResourceLimitsSection), since that
+  // write goes through RHF directly. Switching into "Manual" seeds a sensible starting point
+  // instead of leaving the sliders at the fallback minimum.
+  useEffect(() => {
+    const previousMode = prevInstallModeRef.current;
+    prevInstallModeRef.current = installMode;
+    if (previousMode === installMode) return;
+
+    if (installMode === 'appDefaults' || installMode === 'recommended') {
+      setValue('cpuLimit', undefined, { shouldDirty: true });
+      setValue('memoryLimit', undefined, { shouldDirty: true });
+      return;
+    }
+
+    // installMode === 'manual'
+    if (!getValues('cpuLimit')) {
+      const seedCpu = globalCpuLimit || recommendedAppDefaults?.cpuLimit;
+      if (seedCpu) setValue('cpuLimit', seedCpu, { shouldDirty: true });
+    }
+    if (!getValues('memoryLimit')) {
+      const seedMemory = recommendedAppDefaults?.memoryLimit;
+      if (seedMemory) setValue('memoryLimit', seedMemory, { shouldDirty: true });
+    }
+  }, [installMode, getValues, setValue, globalCpuLimit, recommendedAppDefaults?.cpuLimit, recommendedAppDefaults?.memoryLimit]);
 
   const checkDnsAvailability = useCallback(
     async (subdomain: string, selectedDomain?: string) => {
@@ -841,8 +915,10 @@ export const InstallForm: React.FC<IProps> = ({
     );
   };
 
+  // Visibility for simple-mode operators is now handled by the AdvancedConfigDisclosure wrapper
+  // this is rendered inside (see the form JSX below); advanced-mode operators see it unwrapped.
   const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
+    if (!info.exposable) return null;
 
     return (
       <Controller
@@ -970,125 +1046,150 @@ export const InstallForm: React.FC<IProps> = ({
     toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
   };
 
-  const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
-  const hasAdvancedSimpleModeOptions = hasOptionalFields || (info.exposable && info.dynamic_config);
-  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions && !mcpOptionalOnly;
-  const visibleFields =
-    isAdvancedMode || showAdvancedSettings || mcpOptionalOnly
-      ? formFields.filter(typeFilter)
-      : formFields.filter((field) => field.required && typeFilter(field));
-  const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
+  const requiredVisibleFields = formFields.filter((field) => field.required && typeFilter(field));
+  const optionalVisibleFields = formFields.filter((field) => !field.required && typeFilter(field));
+  const hasAdvancedSimpleModeOptions = optionalVisibleFields.length > 0 || (info.exposable && info.dynamic_config);
+  const hasAdvancedContent = hasAdvancedSimpleModeOptions || (guestDashboard && isAdvancedMode) || isAdvancedMode;
+  const hasConfigSection = requiredVisibleFields.length > 0 || hasAdvancedContent;
+  /*
+   * The advanced fields are shown unwrapped — no toggle, nothing to expand — when the operator's
+   * global Advanced Mode already opts them into everything, and for an MCP install whose fields
+   * are all optional, which would otherwise open on an empty-looking dialog.
+   */
+  const advancedAlwaysOpen = isAdvancedMode || mcpOptionalOnly;
+  // Mirrors upstream's `visibleFields.length > 0`: the heading belongs over any field the
+  // operator can see without expanding anything, required or (for mcpOptionalOnly) optional.
+  const showSettingsHeading = requiredVisibleFields.length > 0 || (mcpOptionalOnly && optionalVisibleFields.length > 0);
 
-  return (
-    <form className="flex flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        {recentConfigs.length > 0 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="outline" size="sm">
-                <History className="me-1.5 size-3.5" />
-                {t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuLabel>{t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {recentConfigs.map((entry) => (
-                <DropdownMenuItem key={entry.id} onSelect={() => handleApplyRecentConfig(entry)}>
-                  {new Date(entry.savedAt).toLocaleString()}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          <span />
-        )}
-        <div className="flex items-center gap-2">
-          <input ref={importFileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFileChange} />
-          <Button type="button" variant="outline" size="sm" onClick={handleImportButtonClick}>
-            <Upload className="me-1.5 size-3.5" />
-            {t('APP_INSTALL_FORM_IMPORT_CONFIG', { defaultValue: 'Import config' })}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={handleExportConfig}>
-            <Download className="me-1.5 size-3.5" />
-            {t('APP_INSTALL_FORM_EXPORT_CONFIG', { defaultValue: 'Export config' })}
-          </Button>
-        </div>
+  /*
+   * Export / Import / "Recently used" toolbar (CI-Hub #972). It stays the form's first child, above
+   * the Install Mode selector: "start from a config I already have" logically precedes "pick how
+   * this install sizes itself", and an imported config can itself carry cpuLimit/memoryLimit. It
+   * lives in the left (form) column of the grid below, so `flex-wrap` is load-bearing — at the `lg`
+   * breakpoint that column is narrower than the full dialog by the width of InstallPreviewPanel.
+   */
+  const renderConfigToolbar = () => (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      {recentConfigs.length > 0 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="sm">
+              <History className="me-1.5 size-3.5" />
+              {t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuLabel>{t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {recentConfigs.map((entry) => (
+              <DropdownMenuItem key={entry.id} onSelect={() => handleApplyRecentConfig(entry)}>
+                {new Date(entry.savedAt).toLocaleString()}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        <span />
+      )}
+      <div className="flex items-center gap-2">
+        <input ref={importFileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFileChange} />
+        <Button type="button" variant="outline" size="sm" onClick={handleImportButtonClick}>
+          <Upload className="me-1.5 size-3.5" />
+          {t('APP_INSTALL_FORM_IMPORT_CONFIG', { defaultValue: 'Import config' })}
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={handleExportConfig}>
+          <Download className="me-1.5 size-3.5" />
+          {t('APP_INSTALL_FORM_EXPORT_CONFIG', { defaultValue: 'Export config' })}
+        </Button>
       </div>
+    </div>
+  );
 
-      {/* Exposure mode selector — always shown when applicable, even in simple mode */}
-      {info.exposable && info.dynamic_config && renderExposureModeSelector()}
-      {renderHostnameSettings()}
-
-      {/* Configuration section — scrollable when in a dialog */}
-      {hasConfigSection && (
-        <ConfigSection scrollable={scrollable}>
-          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
-          {shouldShowAdvancedSettingsToggle && (
+  const renderAdvancedContent = () => (
+    <>
+      {optionalVisibleFields.map(renderField)}
+      {guestDashboard && isAdvancedMode && (
+        <Controller
+          control={control}
+          name="isVisibleOnGuestDashboard"
+          defaultValue={false}
+          render={({ field: { onChange, value, ref, ...props } }) => (
             <Switch
               className="mb-3"
-              checked={showAdvancedSettings}
-              onCheckedChange={setShowAdvancedSettings}
-              label={t('APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS')}
+              ref={ref}
+              checked={value}
+              onCheckedChange={onChange}
+              {...props}
+              label={t('APP_INSTALL_FORM_DISPLAY_ON_GUEST_DASHBOARD')}
             />
           )}
-          {visibleFields.map(renderField)}
-          {guestDashboard && isAdvancedMode && (
-            <Controller
-              control={control}
-              name="isVisibleOnGuestDashboard"
-              defaultValue={false}
-              render={({ field: { onChange, value, ref, ...props } }) => (
-                <Switch
-                  className="mb-3"
-                  ref={ref}
-                  checked={value}
-                  onCheckedChange={onChange}
-                  {...props}
-                  label={t('APP_INSTALL_FORM_DISPLAY_ON_GUEST_DASHBOARD')}
-                />
-              )}
-            />
-          )}
-          {info.exposable && info.dynamic_config && renderAdvancedExposureOptions()}
-          {renderExposeForm()}
-          {isAdvancedMode && (
-            <div className="mb-3">
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                {...register('maxBackups', {
-                  valueAsNumber: true,
-                  setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
-                  min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
-                  max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
-                })}
-                label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
-                error={errors.maxBackups?.message}
-                placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
-              />
-              <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
-            </div>
-          )}
-          {isAdvancedMode && (
-            <div className="mb-3">
-              <Input
-                type="number"
-                step="0.1"
-                min="0.1"
-                {...register('cpuLimit', {
-                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
-                })}
-                label={t('APP_INSTALL_FORM_CPU_LIMIT')}
-                error={errors.cpuLimit?.message}
-                placeholder={globalCpuLimit || '1.0'}
-              />
-              <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CPU_LIMIT_HINT')}</span>
-            </div>
-          )}
-        </ConfigSection>
+        />
       )}
-    </form>
+      {info.exposable && info.dynamic_config && renderAdvancedExposureOptions()}
+      {isAdvancedMode && (
+        <div className="mb-3">
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            {...register('maxBackups', {
+              valueAsNumber: true,
+              setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
+              min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
+              max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
+            })}
+            label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
+            error={errors.maxBackups?.message}
+            placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
+          />
+          <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <div className={clsx('grid gap-4', 'lg:grid-cols-[minmax(0,1fr)_260px] lg:items-start')}>
+      <form className="flex min-w-0 flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>
+        {renderConfigToolbar()}
+
+        {/* Install mode selector — drives where the resource sliders below pull their bounds/defaults from. */}
+        <InstallModeSelector value={installMode} onChange={setInstallMode} disabled={loading} />
+
+        {/* Exposure mode selector — always shown when applicable, even in simple mode */}
+        {info.exposable && info.dynamic_config && renderExposureModeSelector()}
+        {renderHostnameSettings()}
+
+        <ResourceLimitsSection
+          control={control}
+          mode={installMode}
+          defaults={{
+            cpuCoresAvailable: dockerCapacity?.cpuCores,
+            memMbAvailable: dockerCapacity?.memTotalMb,
+            recommendedCpuLimit: recommendedAppDefaults?.cpuLimit,
+            recommendedMemoryLimit: recommendedAppDefaults?.memoryLimit,
+          }}
+        />
+
+        {/* Configuration section — scrollable when in a dialog */}
+        {hasConfigSection && (
+          <ConfigSection scrollable={scrollable}>
+            {showSettingsHeading && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
+            {requiredVisibleFields.map(renderField)}
+            {renderExposeForm()}
+            {hasAdvancedContent && <AdvancedConfigDisclosure alwaysOpen={advancedAlwaysOpen}>{renderAdvancedContent()}</AdvancedConfigDisclosure>}
+          </ConfigSection>
+        )}
+      </form>
+
+      <InstallPreviewPanel
+        appName={info.name}
+        installMode={installMode}
+        formFields={formFields}
+        values={watchedFormValues as Record<string, unknown>}
+        cpuLimit={watchCpuLimit}
+        memoryLimit={watchMemoryLimit}
+      />
+    </div>
   );
 };

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo, FormField } from '@/types/app.types';
@@ -159,6 +159,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getRandomPortMutation: () => ({ mutationFn: vi.fn() }),
   getDomainsOptions: () => ({ queryKey: ['getDomains'], queryFn: vi.fn() }),
   getCustomDomainsOptions: () => ({ queryKey: ['getCustomDomains'], queryFn: vi.fn() }),
+  systemResourcesOptions: () => ({ queryKey: ['systemResources'], queryFn: vi.fn() }),
 }));
 
 describe('InstallForm', () => {
@@ -330,7 +331,7 @@ describe('InstallForm', () => {
     ]);
   });
 
-  it('shows advanced settings toggle in simple mode when optional fields exist', () => {
+  it('shows the Advanced Configuration disclosure in simple mode when optional fields exist, collapsed by default', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
     const formFields = [
@@ -348,18 +349,23 @@ describe('InstallForm', () => {
       },
     ] as never[];
 
-    render(
+    const { container } = render(
       <MemoryRouter>
         <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
       </MemoryRouter>,
     );
+    // Scoped to the <form> itself — the live preview panel alongside it also echoes field
+    // labels (by design, see install-preview-panel.tsx), so unscoped queries would be ambiguous.
+    const form = within(container.querySelector('form') as HTMLElement);
 
-    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
-    expect(screen.getByText('Required field')).toBeInTheDocument();
-    expect(screen.queryByText('Optional field')).not.toBeInTheDocument();
+    const disclosureToggle = screen.getByRole('button', { name: 'APP_INSTALL_FORM_ADVANCED_CONFIGURATION' });
+    expect(disclosureToggle).toBeInTheDocument();
+    expect(disclosureToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(form.getByText('Required field')).toBeInTheDocument();
+    expect(form.queryByText('Optional field')).not.toBeInTheDocument();
   });
 
-  it('reveals optional fields when advanced settings toggle is enabled in simple mode', () => {
+  it('reveals optional fields when the Advanced Configuration disclosure is opened in simple mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
     const formFields = [
@@ -371,16 +377,17 @@ describe('InstallForm', () => {
       },
     ] as never[];
 
-    render(
+    const { container } = render(
       <MemoryRouter>
         <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
       </MemoryRouter>,
     );
 
-    const toggle = screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' });
-    fireEvent.click(toggle);
+    const disclosureToggle = screen.getByRole('button', { name: 'APP_INSTALL_FORM_ADVANCED_CONFIGURATION' });
+    fireEvent.click(disclosureToggle);
 
-    expect(screen.getByText('Optional field')).toBeInTheDocument();
+    const form = within(container.querySelector('form') as HTMLElement);
+    expect(form.getByText('Optional field')).toBeInTheDocument();
   });
 
   it('surfaces the full hostname from the DNS availability response', async () => {
@@ -524,7 +531,7 @@ describe('InstallForm', () => {
     expect(fetchDnsAvailability).toHaveBeenCalledTimes(1);
   });
 
-  it('shows optional fields by default and hides toggle in advanced mode', () => {
+  it('shows optional fields by default and hides the disclosure toggle in advanced mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
 
     const formFields = [
@@ -536,14 +543,15 @@ describe('InstallForm', () => {
       },
     ] as never[];
 
-    render(
+    const { container } = render(
       <MemoryRouter>
         <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
       </MemoryRouter>,
     );
 
-    expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
-    expect(screen.getByText('Optional field')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'APP_INSTALL_FORM_ADVANCED_CONFIGURATION' })).not.toBeInTheDocument();
+    const form = within(container.querySelector('form') as HTMLElement);
+    expect(form.getByText('Optional field')).toBeInTheDocument();
   });
 
   it('does not run DNS availability checks for Private VPN exposure mode', async () => {
@@ -1133,7 +1141,7 @@ describe('InstallForm', () => {
     });
   });
 
-  it('does not show advanced settings toggle when there are no optional fields', () => {
+  it('does not show the Advanced Configuration disclosure when there are no optional fields', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
     const formFields = [
@@ -1145,17 +1153,18 @@ describe('InstallForm', () => {
       },
     ] as never[];
 
-    render(
+    const { container } = render(
       <MemoryRouter>
         <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
       </MemoryRouter>,
     );
 
-    expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
-    expect(screen.getByText('Required field')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'APP_INSTALL_FORM_ADVANCED_CONFIGURATION' })).not.toBeInTheDocument();
+    const form = within(container.querySelector('form') as HTMLElement);
+    expect(form.getByText('Required field')).toBeInTheDocument();
   });
 
-  it('shows advanced settings toggle for exposable apps without optional fields in simple mode', () => {
+  it('shows the Advanced Configuration disclosure for exposable apps without optional fields in simple mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
 
     const exposableInfo = {
@@ -1179,7 +1188,7 @@ describe('InstallForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'APP_INSTALL_FORM_ADVANCED_CONFIGURATION' })).toBeInTheDocument();
   });
 
   it('renders the public domain selector inside the subdomain field in simple mode', () => {
