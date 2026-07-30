@@ -246,6 +246,18 @@ export const InstallForm: React.FC<IProps> = ({
         setValue(key, value as string);
       }
     }
+    // Seed catalog form_field defaults into RHF so empty installs submit working env values
+    // (uncontrolled defaultValue alone is easy to miss on validate/submit).
+    if (shouldSeed) {
+      for (const field of formFields) {
+        if (hiddenTypes.includes(field.type)) continue;
+        if (field.default === undefined || field.default === null || String(field.default) === '') continue;
+        const current = getValues(field.env_variable);
+        if (current !== undefined && current !== null && current !== '') continue;
+        if (initialValues?.[field.env_variable] !== undefined) continue;
+        setValue(field.env_variable, field.default as string | boolean | number);
+      }
+    }
     if (info.force_expose) {
       setValue('exposed', true);
       setValue('openPort', false);
@@ -288,6 +300,7 @@ export const InstallForm: React.FC<IProps> = ({
     isDirty,
     getValues,
     setValue,
+    formFields,
     info.urn,
     info.force_expose,
     info.exposable,
@@ -583,12 +596,21 @@ export const InstallForm: React.FC<IProps> = ({
 
   const validate = async (values: FormValues) => {
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const withFieldDefaults: FormValues = { ...values };
+    for (const field of formFields) {
+      if (hiddenTypes.includes(field.type)) continue;
+      if (field.default === undefined || field.default === null || String(field.default) === '') continue;
+      const current = withFieldDefaults[field.env_variable];
+      if (current === undefined || current === null || current === '') {
+        withFieldDefaults[field.env_variable] = field.default;
+      }
+    }
     const formValues = {
-      ...values,
+      ...withFieldDefaults,
       exposureMode,
       exposedLocal: exposureMode === 'cloudflare', // backward compat
-      enableAuth: values.enableAuth ?? true,
-      port: values.port || (info.port ? info.port.toString() : undefined),
+      enableAuth: withFieldDefaults.enableAuth ?? true,
+      port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 
     // Set default subdomain if not provided and app is exposable

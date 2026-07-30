@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { FormField } from '@/types/app.types';
 
-import { validateField } from './form-validators';
+import { validateAppConfig, validateField } from './form-validators';
 
 const baseField = (type: FormField['type'], env_variable = 'TEST_VAR'): FormField =>
   ({
@@ -32,5 +32,25 @@ describe('validateField URL types', () => {
 
   it('accepts public URLs for generic url fields', () => {
     expect(validateField(baseField('url'), 'https://example.com')).toBeUndefined();
+  });
+});
+
+describe('validateField password + defaults', () => {
+  it('accepts long password/token values by default (up to 4096)', () => {
+    const field = { ...baseField('password'), required: true } as FormField;
+    const longToken = 'x'.repeat(250);
+    expect(validateField(field, longToken)).toBeUndefined();
+  });
+
+  it('treats catalog defaults as satisfying required fields', () => {
+    const field = {
+      ...baseField('text', 'ALLOWED_PATH'),
+      required: true,
+      default: '/data',
+    } as FormField;
+    expect(validateField(field, '')).toBeUndefined();
+    expect(validateField(field, undefined)).toBeUndefined();
+    const errors = validateAppConfig({}, [field]);
+    expect(errors.ALLOWED_PATH).toBeUndefined();
   });
 });

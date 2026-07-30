@@ -118,6 +118,28 @@ describe('PortalCatalogService', () => {
     });
   });
 
+  it('preserves MCP listing metadata and keeps MCP apps non-exposable without a fake port', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'filesystem-mcp',
+        name: 'Filesystem MCP',
+        short_desc: 'Filesystem tools',
+        categories: ['mcp'],
+        no_gui: true,
+        exposable: false,
+        form_fields: [{ type: 'text', label: 'Root', env_variable: 'ALLOWED_PATH', required: true, default: '/data' }],
+        mcp: { transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] },
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('filesystem-mcp:ci-marketplace' as any)).resolves.toMatchObject({
+      no_gui: true,
+      exposable: false,
+      mcp: { transport: 'stdio', command: 'npx' },
+      form_fields: [{ env_variable: 'ALLOWED_PATH', default: '/data' }],
+    });
+  });
+
   it('returns update info from the warmed portal catalog cache', async () => {
     portalClient.fetchStoreCatalog.mockResolvedValue([
       {
