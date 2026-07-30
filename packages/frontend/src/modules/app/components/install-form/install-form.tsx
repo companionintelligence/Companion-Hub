@@ -4,6 +4,14 @@ import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/DropdownMenu';
 import { Input } from '@/components/ui/Input';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
@@ -12,6 +20,7 @@ import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
+import { Download, History, Upload } from 'lucide-react';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -24,6 +33,14 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
+import {
+  type LastUsedInstallConfig,
+  installConfigFilename,
+  parseInstallConfigJson,
+  readLastUsedConfigs,
+  recordLastUsedConfig,
+  serializeInstallConfig,
+} from '@/modules/app/lib/install-config-storage';
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
@@ -241,6 +258,89 @@ export const InstallForm: React.FC<IProps> = ({
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
   const watchedFormValues = watch();
+
+  // Client-side install-config export/import + "recently used" list (no backend involved — see
+  // packages/frontend/src/modules/app/lib/install-config-storage.ts for the sanitization rules).
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+  const [recentConfigs, setRecentConfigs] = useState<LastUsedInstallConfig[]>(() => readLastUsedConfigs(info.id));
+
+  useEffect(() => {
+    setRecentConfigs(readLastUsedConfigs(info.id));
+  }, [info.id]);
+
+  const applyImportedValues = useCallback(
+    (values: Record<string, unknown>) => {
+      for (const [key, value] of Object.entries(values)) {
+        setValue(key, value as string, { shouldDirty: true, shouldValidate: true });
+      }
+    },
+    [setValue],
+  );
+
+  const handleExportConfig = useCallback(() => {
+    const json = serializeInstallConfig(info.id, getValues(), formFields);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = installConfigFilename(info.id);
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }, [getValues, formFields, info.id]);
+
+  const handleImportButtonClick = useCallback(() => {
+    importFileInputRef.current?.click();
+  }, []);
+
+  const handleImportFileChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+
+      let text: string;
+      try {
+        text = await file.text();
+      } catch {
+        toast.error(t('APP_INSTALL_FORM_IMPORT_CONFIG_ERROR', { defaultValue: 'Could not read that file.' }));
+        return;
+      }
+
+      const result = parseInstallConfigJson(text, formFields);
+      if (!result.ok) {
+        toast.error(t('APP_INSTALL_FORM_IMPORT_CONFIG_ERROR', { defaultValue: 'That file is not a valid install config.' }));
+        return;
+      }
+
+      applyImportedValues(result.values);
+
+      if (result.unrecognizedKeys.length > 0) {
+        toast.error(
+          t('APP_INSTALL_FORM_IMPORT_CONFIG_UNRECOGNIZED', {
+            defaultValue: `Ignored ${result.unrecognizedKeys.length} field(s) that don't apply to this app: ${result.unrecognizedKeys.join(', ')}`,
+            count: result.unrecognizedKeys.length,
+            fields: result.unrecognizedKeys.join(', '),
+          }),
+        );
+      } else {
+        toast.success(t('APP_INSTALL_FORM_IMPORT_CONFIG_SUCCESS', { defaultValue: 'Config imported.' }));
+      }
+    },
+    [formFields, applyImportedValues, t],
+  );
+
+  const handleApplyRecentConfig = useCallback(
+    (entry: LastUsedInstallConfig) => {
+      applyImportedValues(entry.values);
+      toast.success(t('APP_INSTALL_FORM_RECENTLY_USED_APPLIED', { defaultValue: 'Applied recently used config.' }));
+    },
+    [applyImportedValues, t],
+  );
 
   const checkDnsAvailability = useCallback(
     async (subdomain: string, selectedDomain?: string) => {
@@ -838,6 +938,10 @@ export const InstallForm: React.FC<IProps> = ({
     }
 
     if (Object.keys(validationErrors).length === 0) {
+      // Client-side "recently used" cache — mirrors community-scripts.org/generator's "Last used"
+      // list. Recorded at submission time (not after a backend round-trip), same as its export/copy
+      // actions. Secrets are stripped inside recordLastUsedConfig before anything touches storage.
+      setRecentConfigs(recordLastUsedConfig(info.id, formValues, formFields));
       onSubmit(formValues);
     } else {
       const failingLabels = formFields
@@ -867,6 +971,41 @@ export const InstallForm: React.FC<IProps> = ({
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        {recentConfigs.length > 0 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="outline" size="sm">
+                <History className="me-1.5 size-3.5" />
+                {t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuLabel>{t('APP_INSTALL_FORM_RECENTLY_USED', { defaultValue: 'Recently used' })}</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {recentConfigs.map((entry) => (
+                <DropdownMenuItem key={entry.id} onSelect={() => handleApplyRecentConfig(entry)}>
+                  {new Date(entry.savedAt).toLocaleString()}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-2">
+          <input ref={importFileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFileChange} />
+          <Button type="button" variant="outline" size="sm" onClick={handleImportButtonClick}>
+            <Upload className="me-1.5 size-3.5" />
+            {t('APP_INSTALL_FORM_IMPORT_CONFIG', { defaultValue: 'Import config' })}
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={handleExportConfig}>
+            <Download className="me-1.5 size-3.5" />
+            {t('APP_INSTALL_FORM_EXPORT_CONFIG', { defaultValue: 'Export config' })}
+          </Button>
+        </div>
+      </div>
+
       {/* Exposure mode selector — always shown when applicable, even in simple mode */}
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
       {renderHostnameSettings()}
