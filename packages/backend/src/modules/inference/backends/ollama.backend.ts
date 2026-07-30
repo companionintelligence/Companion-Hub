@@ -249,13 +249,29 @@ export class OllamaBackend implements InferenceBackend {
     }
   }
 
-  getDockerImage(): string {
-    return 'ollama/ollama:latest';
+  /**
+   * `options.rocmReady` selects the AMD GPU-runtime variant: the `:rocm` tag when /dev/kfd
+   * passthrough is confirmed working, otherwise the default tag. The default tag isn't CPU-only
+   * on AMD — Ollama bundles a Vulkan (RADV/Mesa) ggml backend in it that auto-activates whenever
+   * GPU devices are passed through (no separate "vulkan" tag exists), so it's the correct choice
+   * for AMD hosts where ROCm isn't ready yet. See https://docs.ollama.com/docker#vulkan-support.
+   */
+  getDockerImage(options?: { rocmReady?: boolean }): string {
+    return options?.rocmReady ? 'ollama/ollama:rocm' : 'ollama/ollama:latest';
   }
 
-  getComposeConfig(gpuVendor: string): Record<string, unknown> {
+  /**
+   * `options.rocmReady` mirrors HardwareProfile.gpu.hostRocmKfdAvailable — pass it through so the
+   * `amd` branch below picks the matching image (see getDockerImage). `options.unifiedMemory`
+   * mirrors HardwareProfile.gpu.unifiedMemory (true for the Strix Halo APU): when set alongside a
+   * not-ready rocmReady, it forces llama.cpp's Vulkan backend to allocate from GTT/system RAM
+   * instead of the small carved-out VRAM window unified-memory APUs expose by default — mirroring
+   * the community amd-strix-halo-toolboxes / llama-vulkan-strix setups. Discrete AMD GPUs have
+   * real dedicated VRAM, so this must NOT be set for them.
+   */
+  getComposeConfig(gpuVendor: string, options?: { rocmReady?: boolean; unifiedMemory?: boolean }): Record<string, unknown> {
     const base: Record<string, unknown> = {
-      image: this.getDockerImage(),
+      image: this.getDockerImage(options),
       container_name: 'ci-hub-ollama',
       restart: 'unless-stopped',
       ports: ['11434:11434'],
@@ -272,6 +288,9 @@ export class OllamaBackend implements InferenceBackend {
     } else if (gpuVendor === 'amd') {
       base.devices = ['/dev/kfd', '/dev/dri'];
       base.group_add = ['video', 'render'];
+      if (!options?.rocmReady && options?.unifiedMemory) {
+        base.environment = { GGML_VK_PREFER_HOST_MEMORY: '1' };
+      }
     }
 
     return base;
