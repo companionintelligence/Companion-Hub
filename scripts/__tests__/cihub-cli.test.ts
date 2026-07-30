@@ -10,6 +10,7 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   isApplianceMode,
+  isValidApiKeyName,
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
@@ -17,6 +18,7 @@ import {
   normalizeCliArgs,
   normalizeRegisterFlags,
   parseAppRuntimeArgs,
+  parseApiKeyScopes,
   parseEnvFile,
   renderBanner,
   renderHelp,
@@ -27,10 +29,13 @@ import {
   renderWizardWelcome,
   shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
+  buildApiKeyInsertSql,
+  formatApiKeyRows,
   resolveEnvFromArgs,
   resolveUpStartMode,
   resolveWizardActionInput,
   resolveWizardEnvInput,
+  sqlQuote,
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
@@ -720,5 +725,145 @@ describe('resolveHubContext (inside the CI-Hub checkout)', () => {
     expect(ctx.envFile).toBe('.env.prod');
     expect(ctx.composeFiles).toEqual(['docker-compose.prod.yml']);
     expect(ctx.cwd).toBe(process.cwd());
+  });
+});
+
+// --- api-key ---
+
+describe('api-key name validation', () => {
+  it('accepts ordinary operator labels', () => {
+    expect(isValidApiKeyName('laptop')).toBe(true);
+    expect(isValidApiKeyName('Hanzla MacBook')).toBe(true);
+    expect(isValidApiKeyName('ci-runner.01')).toBe(true);
+    expect(isValidApiKeyName('user@host')).toBe(true);
+  });
+
+  it("rejects the 'app:' prefix reserved for Hub-managed app keys", () => {
+    // An operator key named app:* would be indistinguishable from a provisioned managed key in the UI.
+    expect(isValidApiKeyName('app:ci-openclaw')).toBe(false);
+  });
+
+  it('rejects names that could break out of the SQL string literal', () => {
+    expect(isValidApiKeyName("bad'; DROP TABLE api_key; --")).toBe(false);
+    expect(isValidApiKeyName("o'brien")).toBe(false);
+    expect(isValidApiKeyName('multi\nline')).toBe(false);
+  });
+
+  it('rejects empty and over-long names', () => {
+    expect(isValidApiKeyName('')).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(65))).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(64))).toBe(true);
+  });
+
+  it('rejects a flag-shaped name, which is what a forgotten --name value looks like', () => {
+    // `api-key create --name --scopes mcp` would otherwise mint a key literally named '--scopes'.
+    expect(isValidApiKeyName('--scopes')).toBe(false);
+    expect(isValidApiKeyName('-laptop')).toBe(false);
+    expect(isValidApiKeyName('ci-runner')).toBe(true); // an interior dash is still fine
+  });
+});
+
+describe('api-key scope parsing', () => {
+  it('parses a comma list and tolerates whitespace', () => {
+    expect(parseApiKeyScopes(' mcp ')).toEqual({ scopes: ['mcp'], invalid: [], managedOnly: [] });
+  });
+
+  it("refuses 'app' separately from an unknown scope — it exists, but only on managed keys", () => {
+    // ApiKeyAdminService pins operator keys to ['mcp'] for the same reason: the callback guard
+    // resolves a key's owning app, which only app provisioning sets, so an operator 'app' key is dead.
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,app');
+    expect(scopes).toEqual(['mcp', 'app']);
+    expect(managedOnly).toEqual(['app']);
+    expect(invalid).toEqual([]);
+  });
+
+  it('reports unknown scopes rather than silently dropping them', () => {
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,admin');
+    expect(scopes).toEqual(['mcp', 'admin']);
+    expect(invalid).toEqual(['admin']);
+    expect(managedOnly).toEqual([]);
+  });
+
+  it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
+    expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
+  });
+
+  it('returns no scopes for an empty value so the caller can reject it', () => {
+    expect(parseApiKeyScopes('').scopes).toEqual([]);
+  });
+});
+
+describe('buildApiKeyInsertSql', () => {
+  const row = { name: 'laptop', scopes: ['mcp'], prefix: 'abc12345', hashedKey: 'f'.repeat(64) };
+
+  it('writes the columns ApiKeyService writes, leaving managed/created_at to their defaults', () => {
+    expect(buildApiKeyInsertSql(row)).toBe(
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], 'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+  });
+
+  it('quotes a name the validator would have refused, so the SQL survives one layer failing', () => {
+    expect(buildApiKeyInsertSql({ ...row, name: "o'brien" })).toContain("VALUES ('o''brien'");
+  });
+
+  it('renders a multi-scope grant as a text[] literal', () => {
+    expect(buildApiKeyInsertSql({ ...row, scopes: ['mcp', 'app'] })).toContain("ARRAY['mcp','app']::text[]");
+  });
+});
+
+describe('sqlQuote', () => {
+  it('doubles single quotes so a quoted value cannot terminate early', () => {
+    expect(sqlQuote("o'brien")).toBe("'o''brien'");
+  });
+
+  it('wraps plain values', () => {
+    expect(sqlQuote('laptop')).toBe("'laptop'");
+  });
+});
+
+describe('formatApiKeyRows', () => {
+  it('renders id, name, scopes and prefix', () => {
+    const json = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['1  laptop  [mcp]  abc12345…']);
+  });
+
+  it('shows a dash for a full-access key with no scopes', () => {
+    const json = JSON.stringify([{ id: 2, name: 'legacy', scopes: [], prefix: 'def67890' }]);
+
+    expect(formatApiKeyRows(json)[0]).toContain('[-]');
+  });
+
+  it('collapses whitespace in a name so one key cannot span rows', () => {
+    // Names created before this command's validation may contain anything the UI allowed.
+    const json = JSON.stringify([{ id: 3, name: 'multi\nline\tname', scopes: ['app'], prefix: 'aaa' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  aaa…']);
+  });
+
+  it('strips terminal escapes from a name rather than writing them to the terminal', () => {
+    // The UI's create body is `z.string().trim().min(1).max(100)` — no character restriction — so a
+    // stored name can carry ANSI/control characters. Rendering them would let a key name clear the
+    // screen, recolour output, or forge box rows.
+    const esc = String.fromCharCode(27);
+    const json = JSON.stringify([
+      { id: 4, name: `${esc}[31mred${esc}[0m`, scopes: ['mcp'], prefix: 'bbb' },
+      { id: 5, name: `wipe${esc}[2J${esc}`, scopes: ['mcp'], prefix: 'ccc' },
+    ]);
+
+    const rows = formatApiKeyRows(json);
+
+    expect(rows).toEqual(['4  red  [mcp]  bbb…', '5  wipe[2J  [mcp]  ccc…']);
+    expect(rows.join('')).not.toContain(esc);
+  });
+
+  it('returns no rows for an empty result', () => {
+    expect(formatApiKeyRows('[]')).toEqual([]);
+  });
+
+  it('returns no rows rather than throwing on malformed output', () => {
+    expect(formatApiKeyRows('not json')).toEqual([]);
+    expect(formatApiKeyRows('')).toEqual([]);
+    expect(formatApiKeyRows('{"not":"an array"}')).toEqual([]);
   });
 });

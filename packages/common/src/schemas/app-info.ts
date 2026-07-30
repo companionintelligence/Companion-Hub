@@ -19,12 +19,10 @@ export const INFERENCE_VARIABLES = [
 ] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 
-// `partialRecord`, not `record`: in Zod 4 an enum-keyed `z.record` is *exhaustive* —
-// it requires every INFERENCE_VARIABLES key to be present (a behaviour change from
-// Zod 3, where enum-keyed records were partial). The mapping is opt-in and apps
-// declare only the variables they consume, so `record` rejected every real config
-// (e.g. ci-memory declares 4 of the 7 and was dropped from the store catalog with
-// "expected string, received undefined" for vision_model/ollama_host/num_ctx).
+// Zod 4's `z.record(z.enum(...), …)` requires every enum key. Apps opt into a
+// subset of inference vars (e.g. ci-memory declares llm_* only), so this must
+// be a partial record — otherwise marketplace config fails safeParse and the
+// Hub reports "App ci-memory:ci-marketplace not found".
 export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
 
 export const hubIntegrationSchema = z

@@ -1,6 +1,4 @@
-import type { Architecture } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -71,7 +69,6 @@ export class PortalCatalogService {
 
   constructor(
     private readonly portalClient: PortalClientService,
-    private readonly configuration: ConfigurationService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -109,13 +106,9 @@ export class PortalCatalogService {
     };
   }
 
-  private filterForArchitecture(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
-    const { architecture } = this.configuration.getConfig();
-    return apps.filter((app) => {
-      if (app.deprecated || !app.available) return false;
-      if (!app.supported_architectures?.length) return true;
-      return app.supported_architectures.includes(architecture as Architecture);
-    });
+  /** Drop deprecated/unavailable apps only — wrong-arch apps stay browseable. */
+  private filterCatalogEntries(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
+    return apps.filter((app) => !app.deprecated && app.available);
   }
 
   async getCatalogEntries(force = false): Promise<PortalCatalogEntry[]> {
@@ -134,7 +127,7 @@ export class PortalCatalogService {
         const raw = await this.portalClient.fetchStoreCatalog();
         const list = Array.isArray(raw) ? raw : [];
         const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-        this.cache = this.filterForArchitecture(mapped);
+        this.cache = this.filterCatalogEntries(mapped);
         this.cacheUpdatedAt = Date.now();
         return this.cache;
       } catch (error) {

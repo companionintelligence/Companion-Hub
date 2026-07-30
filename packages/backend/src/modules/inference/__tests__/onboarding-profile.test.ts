@@ -137,7 +137,7 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
-  it('should recommend vllm for AMD GPU with runtime', async () => {
+  it('should recommend ollama (not vllm) for AMD GPU with runtime — vLLM has no maintained ROCm image', async () => {
     const amdProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'amd' as const } };
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
@@ -146,7 +146,19 @@ describe('InferenceController — onboarding-profile', () => {
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
-    expect(result.backends.recommended).toBe('vllm');
+    expect(result.backends.recommended).toBe('ollama');
+  });
+
+  it('should recommend ollama for AMD GPU without runtime (Vulkan fallback, no ROCm passthrough)', async () => {
+    const amdProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'amd' as const, runtimeAvailable: false } };
+    hardwareInspector.getProfile.mockResolvedValue(amdProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile();
+    expect(result.backends.recommended).toBe('ollama');
   });
 
   it('should recommend ollama for nvidia without runtime', async () => {

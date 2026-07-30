@@ -20,6 +20,7 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
   apps: [],
   updatesAvailable: 0,
   isProduction: true,
+  architecture: 'amd64',
   cloudflareAvailable: false,
   tailscaleAvailable: false,
   tailscaleNodeFqdn: null,

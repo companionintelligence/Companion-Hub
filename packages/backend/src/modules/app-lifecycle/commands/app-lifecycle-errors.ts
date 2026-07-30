@@ -2,6 +2,8 @@ import { extractOverlapCidrsFromError, isDockerNetworkOverlapError } from '@/mod
 
 export const ROCM_KFD_MISSING_CODE = 'rocm_kfd_missing';
 
+export const KVM_MISSING_CODE = 'kvm_missing';
+
 export const NETWORK_OVERLAP_CODE = 'network_overlap';
 
 export const NETWORK_OVERLAP_USER_MESSAGE = 'App network range conflict — Hub is reassigning a new internal network. Retry install or start.';
@@ -53,6 +55,19 @@ export function createRocmKfdMissingError(): AppLifecycleError {
     code: ROCM_KFD_MISSING_CODE,
     detail: ROCM_KFD_MISSING_DETAIL,
     settingsPath: ROCM_KFD_MISSING_SETTINGS_PATH,
+  });
+}
+
+/** Short user-facing message for apps that require /dev/kvm (QEMU VMs). */
+export const KVM_MISSING_USER_MESSAGE = 'This app needs hardware virtualization (KVM). It is not available on this machine.';
+
+export const KVM_MISSING_DETAIL =
+  'This app requires /dev/kvm on the host (QEMU/KVM). KVM is typically available only on Linux hosts with nested virtualization enabled — not on Docker Desktop for macOS/Windows.';
+
+export function createKvmMissingError(): AppLifecycleError {
+  return new AppLifecycleError(KVM_MISSING_USER_MESSAGE, {
+    code: KVM_MISSING_CODE,
+    detail: KVM_MISSING_DETAIL,
   });
 }
 
@@ -111,6 +126,23 @@ export function translateRocmKfdInstallMessage(message: string): AppLifecycleErr
 
   if (message === ROCM_KFD_MISSING_DETAIL || message === ROCM_KFD_MISSING_USER_MESSAGE) {
     return createRocmKfdMissingError();
+  }
+
+  return null;
+}
+
+export function translateKvmInstallMessage(message: string): AppLifecycleError | null {
+  const normalizedMessage = message.toLowerCase();
+  const referencesKvm = normalizedMessage.includes('/dev/kvm');
+  const missingDevice = normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
+  const blockedPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
+
+  if (referencesKvm && (missingDevice || blockedPath)) {
+    return createKvmMissingError();
+  }
+
+  if (message === KVM_MISSING_DETAIL || message === KVM_MISSING_USER_MESSAGE) {
+    return createKvmMissingError();
   }
 
   return null;

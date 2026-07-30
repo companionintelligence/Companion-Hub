@@ -100,6 +100,52 @@ describe('GeneralActionsContainer', () => {
     expect(screen.queryByText('Current version: 4.7.0')).not.toBeInTheDocument();
   });
 
+  it('shows manual update instructions matching the installer format on linux', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
+    mockCheckForUpdates.mockResolvedValue({
+      currentVersion: '0.2.23',
+      latestVersion: '0.2.24',
+      downloadUrl: 'https://dl.ci.computer/v0.2.24/linux/deb/x64/Companion%20Hub_0.2.24_amd64.deb',
+      updateAvailable: true,
+      platform: 'linux',
+      manualDownload: true,
+    });
+
+    render(<GeneralActionsContainer />);
+
+    const instructions = await screen.findByTestId('manual-update-instructions');
+    expect(instructions).toHaveTextContent('Finish the update manually');
+    expect(instructions).toHaveTextContent('sudo apt purge companion-hub -y');
+    expect(instructions).toHaveTextContent('sudo apt install ./companion-hub_*.deb');
+    expect(instructions).not.toHaveTextContent('rpm');
+  });
+
+  it('keeps manual update instructions visible after opening the installer download', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
+    mockCheckForUpdates.mockResolvedValue({
+      currentVersion: '0.2.23',
+      latestVersion: '0.2.24',
+      downloadUrl: 'https://dl.ci.computer/v0.2.24/linux/deb/x64/Companion%20Hub_0.2.24_amd64.deb',
+      updateAvailable: true,
+      platform: 'linux',
+      manualDownload: true,
+    });
+    mockPerformUpdate.mockResolvedValue({
+      ok: true,
+      messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
+      defaultMessage: 'Installer download opened in your browser.',
+    });
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('hub-update-btn'));
+
+    expect(await screen.findByText('Installer download opened in your browser.')).toBeInTheDocument();
+    expect(screen.getByTestId('manual-update-instructions')).toHaveTextContent('sudo apt purge companion-hub -y');
+  });
+
   it('surfaces the manual download message after opening the linux installer', async () => {
     mockIsTauri.mockReturnValue(true);
     mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');

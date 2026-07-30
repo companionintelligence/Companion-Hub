@@ -29,9 +29,18 @@ export interface InferenceBackend {
   /** Check if a specific model is loaded */
   isModelLoaded(modelId: string): Promise<boolean>;
 
-  /** Get the Docker image for this backend */
-  getDockerImage(): string;
+  /**
+   * Get the Docker image for this backend. Some implementations accept additional GPU-runtime
+   * hints beyond the base signature — e.g. OllamaBackend's `{ rocmReady, unifiedMemory }` selects
+   * between its ROCm and Vulkan-fallback tags for AMD GPUs — see the implementing class.
+   */
+  getDockerImage(options?: { rocmReady?: boolean; unifiedMemory?: boolean }): string;
 
-  /** Get Docker compose service configuration for deploying this backend */
-  getComposeConfig(gpuVendor: string): Record<string, unknown>;
+  /**
+   * Get Docker compose service configuration for deploying this backend. `options` carries the
+   * same optional GPU-runtime hints as getDockerImage(); backends that don't need them ignore the
+   * parameter. Backends without a viable image for a given `gpuVendor` (e.g. VllmBackend for
+   * `'amd'` — see that class for why) throw rather than returning a broken config.
+   */
+  getComposeConfig(gpuVendor: string, options?: { rocmReady?: boolean; unifiedMemory?: boolean }): Record<string, unknown>;
 }

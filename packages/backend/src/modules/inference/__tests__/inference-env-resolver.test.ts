@@ -7,6 +7,8 @@ import { InferenceEnvResolver } from '../inference-env-resolver';
 import { ModelRegistryService } from '../model-registry.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { OllamaBackend } from '../backends/ollama.backend';
+import { VllmBackend } from '../backends/vllm.backend';
+import { LemonadeBackend } from '../backends/lemonade.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
@@ -93,6 +95,8 @@ describe('InferenceEnvResolver', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let vllmBackend: MockProxy<VllmBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
 
   beforeEach(async () => {
@@ -101,6 +105,8 @@ describe('InferenceEnvResolver', () => {
     modelRegistry = mock<ModelRegistryService>();
     hardwareInspector = mock<HardwareInspectorService>();
     ollamaBackend = mock<OllamaBackend>();
+    vllmBackend = mock<VllmBackend>();
+    lemonadeBackend = mock<LemonadeBackend>();
     cloudFallback = mock<CloudFallbackService>();
 
     config.getInferencePreferences.mockReturnValue({
@@ -132,6 +138,8 @@ describe('InferenceEnvResolver', () => {
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: VllmBackend, useValue: vllmBackend },
+        { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: CloudFallbackService, useValue: cloudFallback },
       ],
     }).compile();

@@ -10,17 +10,24 @@ The Hub exposes a platform MCP server (not the per-app stdio bridge):
 | ---------- | -------------------------- | --------------------------------- |
 | `/api/mcp` | POST/GET (Streamable HTTP) | `Authorization: Bearer <API key>` |
 
-`cihub mcp setup` writes an initial `MCP_API_KEY` into the Hub env; on the Hub's **first boot** that
-value is seeded into the key store as the revocable **Default** key (SEC-MCP-8). After that, keys are
-created / revoked / rotated in **Settings → MCP** (create the new key, roll it out, then revoke the
-old one) — the env value itself is no longer a live credential.
+The hashed key store is the **sole** auth authority (SEC-MCP-8). Nothing is seeded at boot: every key
+in the store was either created by an operator or provisioned to an app, so revoking one really
+retires it. The guard deliberately has **no `MCP_API_KEY` env fallback** — that value is derived from
+the appliance seed, and a live env compare would be a credential no revoke could retire.
+
+Create a key one of two ways:
+
+- **CLI** — `cihub api-key create --name "<label>"`. Prints the raw key once; store it immediately.
+- **UI** — **Settings → Security**. Rotate by creating the new key, rolling it out, then revoking the old one.
+
+`cihub mcp setup` only toggles `MCP_ENABLED`; it does not mint or install a credential.
 
 At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 | Env var           | Purpose                                                                         |
 | ----------------- | ------------------------------------------------------------------------------- |
 | `HUB_URL`         | Hub base URL (health, inference REST)                                           |
-| `HUB_MCP_URL`     | MCP base (often same as `HUB_URL`)                                              |
+| `HUB_MCP_URL`     | Streamable HTTP MCP endpoint — `<HUB_URL>/api/mcp`                              |
 | `HUB_MCP_API_KEY` | Per-app **managed** MCP key, minted by the Hub key store (revoked on uninstall) |
 | `HUB_WAKE_SECRET` | Validates inbound wake webhooks (OpenClaw)                                      |
 | `HUB_MCP_ENABLED` | Set `false` to skip MCP wiring                                                  |
@@ -38,15 +45,16 @@ Boot order (`entrypoint.sh` / `gateway-entrypoint.sh`):
 ```yaml
 mcp_servers:
   hub:
-    url: "http://ci-hub:5002/api/mcp/sse"
-    transport: sse
+    url: "http://ci-hub:5002/api/mcp"
     headers:
       Authorization: "Bearer <HUB_MCP_API_KEY>"
     timeout: 180
     connect_timeout: 60
 ```
 
-Hermes agents then reach Hub tools through the native MCP client (SSE transport).
+There is deliberately **no `transport:` line** — omitting it leaves the Hermes agent on its default
+Streamable HTTP client, which is what `/api/mcp` speaks. Hermes reaches Hub tools through that native
+client; no hand-rolled protocol code is on the hot path.
 
 **Tests:** `ci-hermes/tests/configure-hub-mcp.test.sh`, `ci-hermes/tests/hub-mcp-smoke.sh`
 
@@ -66,9 +74,12 @@ The bundled plugin lives at `openclaw-context/plugins/ci-hub/`:
 
 Plugin behavior:
 
-- Connects to Hub MCP, registers all Hub tools on the OpenClaw agent.
 - Exposes `POST /hooks/hub-wake` for Hub → agent wake notifications.
-- Auto-configures local inference provider from Hub status / Ollama.
+- Optional SSE listener (off by default).
+
+It does **not** register Hub tools or an inference provider. Tools load through OpenClaw's own MCP
+client via the `mcp.servers.ci-hub` entry in `openclaw.json`; provider registration was removed
+deliberately (CI-Hub#895) and must not be reintroduced.
 
 Re-bundle after plugin source changes:
 
@@ -93,9 +104,9 @@ Intent catalog plugins (`companionintelligence`) from upstream master are orthog
 
 ### Hub
 
-- [ ] `MCP_API_KEY` set (`cihub mcp setup`)
+- [ ] MCP enabled (`cihub mcp setup`) and an `mcp`-scoped key created (`cihub api-key create`)
 - [ ] `GET /api/health` OK
-- [ ] `scripts/qa-mcp-bridge.ts` or e2e `e2e/mcp-openclaw-integration.spec.ts` passes
+- [ ] `scripts/qa-mcp-bridge.ts` or e2e `pnpm e2e:mcp` passes
 
 ### Install / restart agents
 
@@ -104,13 +115,13 @@ Intent catalog plugins (`companionintelligence`) from upstream master are orthog
 
 ### Hermes
 
-- [ ] `config.yaml` contains `mcp_servers.hub` with correct SSE URL and Bearer header
+- [ ] `config.yaml` contains `mcp_servers.hub` with the `/api/mcp` URL, Bearer header, and no `transport:` line
 - [ ] Agent can list/call a Hub tool (e.g. `hub_get_inference_status`)
 
 ### OpenClaw
 
-- [ ] `openclaw.json` has `plugins.entries.ci-hub.enabled: true`
-- [ ] Gateway logs show `Registered N Hub MCP tools`
+- [ ] `openclaw.json` has `plugins.entries.ci-hub.enabled: true` and an `mcp.servers.ci-hub` entry
+- [ ] Gateway logs show `Hub MCP tools served via native OpenClaw mcp.servers.ci-hub config`
 - [ ] `POST /hooks/hub-wake` accepts signed payloads when wake is configured
 
 ### Frontend (ci-hub)

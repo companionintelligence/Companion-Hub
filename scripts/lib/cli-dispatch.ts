@@ -26,6 +26,7 @@ import {
   resetHub,
   resolveEnvFromArgs,
   restartHub,
+  runApiKeyCommand,
   runAppCommand,
   runHostUpdate,
   runModelsCommand,
@@ -176,6 +177,11 @@ export async function runCli(rawArgs: string[]) {
     if (sub === 'shutdown') return setMcpState(env, false);
     if (sub === 'config') return printConfig(env);
     usageAndExit(`Usage: ${BASE_COMMAND} mcp <setup|shutdown|config> [env]`);
+  }
+
+  if (first === 'api-key') {
+    runApiKeyCommand(args.slice(1));
+    return;
   }
 
   if (first === 'app') {

@@ -115,7 +115,11 @@ export function renderConfigLines(env: HubEnv) {
   const rootFolder = resolveRootFolderHost(envFileName);
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
   const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
-  const mcpApiKey = process.env.MCP_API_KEY || fileVars.MCP_API_KEY;
+  // Deliberately no `mcp api key` line. Nothing derives MCP_API_KEY any more (env-helpers deletes it
+  // rather than minting one) and McpAuthGuard has no env fallback, so the variable authenticates
+  // nothing. An appliance upgraded from an older build can still have the dead value sitting in its
+  // source env file — printing it as `<set>` is exactly what told operators they held a credential
+  // they did not. The real keys live in the hashed store: `cihub api-key list`.
   return [
     `${bold('environment')}      ${env}`,
     `${bold('env file')}         ${envFileName}`,
@@ -123,7 +127,6 @@ export function renderConfigLines(env: HubEnv) {
     `${bold('cloud url')}        ${process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
     `${bold('compose profiles')} ${composeProfiles || '(none)'}`,
     `${bold('mcp enabled')}      ${mcpEnabled}`,
-    `${bold('mcp api key')}      ${mcpApiKey ? '<set>' : '<not set>'}`,
   ];
 }
 

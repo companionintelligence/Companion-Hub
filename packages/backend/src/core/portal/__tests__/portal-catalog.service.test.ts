@@ -1,4 +1,3 @@
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -8,17 +7,14 @@ import { PortalClientService } from '../portal-client.service';
 describe('PortalCatalogService', () => {
   let service: PortalCatalogService;
   let portalClient: MockProxy<PortalClientService>;
-  let configuration: MockProxy<ConfigurationService>;
   let logger: MockProxy<LoggerService>;
 
   beforeEach(() => {
     portalClient = mock<PortalClientService>();
-    configuration = mock<ConfigurationService>();
     logger = mock<LoggerService>();
-    configuration.getConfig.mockReturnValue({ architecture: 'amd64' } as any);
     portalClient.getPublicPortalUrl.mockReturnValue('https://portal.example.com');
     portalClient.fetchStoreMetadataText.mockResolvedValue(null);
-    service = new PortalCatalogService(portalClient, configuration, logger);
+    service = new PortalCatalogService(portalClient, logger);
   });
 
   it('maps portal store apps with id matching slug for onboarding lookups', async () => {
