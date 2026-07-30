@@ -13,8 +13,14 @@
 -- existing value outside the set is a real defect and failing here is the correct way to surface it.
 DO $$
 BEGIN
+  -- Scoped to this table, not just the name: constraint names are unique per table, not per
+  -- database, so a same-named check on any other relation would make this skip silently and leave
+  -- api_key unconstrained — the one outcome the migration exists to prevent, reached by appearing
+  -- to succeed.
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'api_key_capability_check'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'api_key_capability_check'
+      AND conrelid = 'api_key'::regclass
   ) THEN
     ALTER TABLE "api_key"
       ADD CONSTRAINT "api_key_capability_check"
