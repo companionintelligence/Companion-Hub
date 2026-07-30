@@ -18,6 +18,7 @@
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -709,7 +710,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           deadReason = `container ${st}`;
           break;
         }
-        if (restarts >= 4) {
+        // Must stay ABOVE the compose restart policy's MaximumRetryCount (on-failure:10), or we
+        // fail an app mid-recovery: miniflux legitimately needs ~4 restarts to outlast postgres
+        // initdb, then serves HTTP 200. A genuinely dead app is still caught immediately below —
+        // once the policy is exhausted the container settles in `exited`, which fail-fasts above.
+        if (restarts > 10) {
           deadReason = `restart loop (${restarts} restarts)`;
           break;
         }
@@ -729,6 +734,23 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       } catch {
         // not serving yet
+      }
+    }
+
+    // (4) LAST-RESORT: non-HTTP wire-protocol services. If we exhausted the ceiling without an HTTP
+    // or healthcheck signal, but the container is still alive and its port ACCEPTS TCP, the service
+    // is up and simply doesn't speak HTTP there (mysql:3306, mongodb:27017, geth:30303 — all of
+    // which QA previously scored as false `timeout`s while the DB was verifiably serving queries).
+    // Deliberately only consulted after the loop, so a genuine web app still has to satisfy (1)/(2)
+    // — this can only ever convert a would-be false failure, never mask a real one.
+    if (!ready && !deadReason) {
+      const alive = await execAsync(`docker inspect ${statsName} --format '{{.State.Status}}'`, 8_000);
+      if (alive.ok && (alive.out || '').trim() === 'running' && (await tcpAccepts(hostPort))) {
+        ready = true;
+        readyVia = 'tcp';
+        result.notes = [result.notes, `ready via raw TCP on :${hostPort} — no HTTP listener (non-HTTP service)`]
+          .filter(Boolean)
+          .join(' | ');
       }
     }
 
@@ -1072,13 +1094,36 @@ async function prepull(appIds: string[]): Promise<void> {
  * password referenced by both the app and its db service) gets the SAME value everywhere —
  * that's what lets multi-service apps actually connect under a standalone smoke test.
  */
+/**
+ * Raw TCP-connect probe. Used as a LAST-RESORT readiness signal for apps that never speak HTTP on
+ * their declared port — databases (mysql:3306, mongodb:27017), P2P nodes (geth:30303) and other
+ * wire-protocol services. Those can never satisfy the HTTP poll no matter how healthy they are, so
+ * without this they always score a false `timeout`. Resolves true iff the port accepts a connection.
+ */
+function tcpAccepts(port: number, timeoutMs = 4000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect({ host: '127.0.0.1', port });
+    const done = (ok: boolean) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+  });
+}
+
 function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
   if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
-  else if (/EMAIL/.test(name)) v = 'ci@ci.localhost';
+  // `.localhost` is a reserved TLD that strict validators reject (directus's UsersService.validateEmail
+  // rejects it outright, crashing `cli.js bootstrap` before the app ever binds its port). RFC 2606
+  // reserves example.com precisely for this, and it passes every validator we've hit.
+  else if (/EMAIL/.test(name)) v = 'ci@example.com';
   else if (/DATA_DIR$|_DIR$/.test(name)) {
     v = join(scratchBase, `var_${name.toLowerCase()}`);
     mkdirSync(v, { recursive: true });
@@ -1194,7 +1239,13 @@ async function composeUp(
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
-    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: "no"\n`;
+    // `restart: "no"` diverged from the appliance, which runs apps under a restart policy. Manifests
+    // routinely declare `dependsOn` with no health condition, so on a cold boot the app connects while
+    // its DB is still running initdb, takes one refused connection and exits. In production it restarts
+    // and comes up fine; under `"no"` it stayed dead and QA scored a false `fail` (miniflux, hasura,
+    // langfuse). Bounded on-failure restarts let that transient race self-heal while the readiness
+    // ceiling and the exited/restart-loop fail-fast still bail out on a genuinely broken app.
+    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: on-failure:10\n`;
     // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set). Applied per service so a
     // multi-service stack stays bounded when several apps run concurrently on one node. These are
     // Compose v2 top-level keys (`mem_limit`/`cpus`) — honored by `docker compose up` without swarm.
