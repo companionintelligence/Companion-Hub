@@ -19,7 +19,11 @@ export const INFERENCE_VARIABLES = [
 ] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 
-export const inferenceEnvMappingSchema = z.record(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+// Zod 4's `z.record(z.enum(...), …)` requires every enum key. Apps opt into a
+// subset of inference vars (e.g. ci-memory declares llm_* only), so this must
+// be a partial record — otherwise marketplace config fails safeParse and the
+// Hub reports "App ci-memory:ci-marketplace not found".
+export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
 
 export const hubIntegrationSchema = z
   .object({
