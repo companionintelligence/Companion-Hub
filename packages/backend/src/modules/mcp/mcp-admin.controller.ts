@@ -5,8 +5,9 @@ import { McpAdminSettingsBody, McpToolCallBody } from './mcp-admin.dto';
 
 /**
  * ENH-MCP-4: operator-facing MCP admin surface, powering the "MCP" Settings screen. Distinct from the
- * agent-facing `/api/mcp` endpoint (Bearer `MCP_API_KEY`): this is session-authed ({@link AuthGuard})
- * so the browser never handles the agent key, and the tool runner proxies calls server-side.
+ * agent-facing `/api/mcp` endpoint (Bearer key from the hashed store): this is session-authed
+ * ({@link AuthGuard}) so the browser never handles an agent key, and the tool runner proxies calls
+ * server-side.
  */
 @Controller('mcp-admin')
 @UseGuards(AuthGuard)

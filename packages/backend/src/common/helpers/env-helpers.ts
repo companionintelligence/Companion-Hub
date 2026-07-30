@@ -413,7 +413,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // --- Resolve all values using the standard priority chain ---
 
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
-  const mcpApiKey = resolve('MCP_API_KEY', { envMap, settingsVal: settingsData.mcpApiKey, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
   // Dedicated Hub<->consumer forward-auth secret (Traefik identity header + the
   // memory-connect server-to-server calls). Derived from its OWN entropy label —
   // NEVER JWT_SECRET — so injecting it into a consumer container (e.g. ci-memory)
@@ -473,7 +472,13 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  envMap.set('MCP_API_KEY', mcpApiKey);
+  // SEC-MCP-8: MCP_API_KEY is not a credential and is no longer derived. The guard has no env
+  // fallback and nothing seeds the key store, so every value this used to mint authenticated
+  // nothing while reading as a secret in the env file, the config box, and our own docs. Deleted
+  // rather than merely not-set: an appliance upgraded from an older build still carries the derived
+  // value in its .env, and republishing it into state/.env.resolved would keep the fiction alive.
+  // MCP keys live in the hashed store — `cihub api-key create` or Settings → Security.
+  envMap.delete('MCP_API_KEY');
   envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
   // ISSUE-MCP-2: gate for destructive MCP tools. Resolved from settings.json (admin toggle) so it
   // persists across restarts; the admin endpoint also sets process.env live for immediate effect.

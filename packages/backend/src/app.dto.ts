@@ -48,13 +48,11 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
-  // ISSUE-MCP-2 / ENH-MCP-4: MCP admin-managed settings, persisted so they survive restarts.
-  // mcpAllowDestructive gates destructive MCP tools. mcpApiKey overrides the derived MCP_API_KEY
-  // (see env-helpers) that seeds the key store's "Default" key on FIRST boot only — after that,
-  // keys are managed in Settings → MCP (SEC-MCP-8) and the env value is not a live credential.
-  // Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
+  // ISSUE-MCP-2: MCP admin-managed setting, persisted so it survives restarts. Gates destructive
+  // MCP tools; resolved into MCP_ALLOW_DESTRUCTIVE. There is deliberately no `mcpApiKey` companion:
+  // SEC-MCP-8 moved MCP credentials into the hashed key store (Settings → Security /
+  // `cihub api-key create`), so a settings-level key would be an unrevocable second authority.
   mcpAllowDestructive: z.boolean().optional(),
-  mcpApiKey: z.string().trim().optional(),
 });
 
 const simpleAppInfoSchema = appInfoObjectSchema.pick({
