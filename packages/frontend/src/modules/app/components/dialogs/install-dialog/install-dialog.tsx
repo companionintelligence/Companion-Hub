@@ -93,7 +93,14 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           onValidityChange={handleValidityChange}
           scrollable
         />
-        <DialogFooter>
+        <DialogFooter className="flex-col items-stretch gap-2 sm:flex-col">
+          {!isFormValid && (
+            <p className="text-sm text-muted-foreground text-left">
+              {t('APP_INSTALL_FORM_COMPLETE_REQUIRED', {
+                defaultValue: 'Fill every required field before installing. Fields with defaults can stay as-is.',
+              })}
+            </p>
+          )}
           <InstallFormButtons loading={installMutation.isPending} formId={formId} disabled={!isFormValid} />
         </DialogFooter>
       </DialogContent>
