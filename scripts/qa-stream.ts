@@ -751,9 +751,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       if (alive.ok && (alive.out || '').trim() === 'running' && (await tcpAccepts(hostPort))) {
         ready = true;
         readyVia = 'tcp';
-        result.notes = [result.notes, `ready via raw TCP on :${hostPort} — no HTTP listener (non-HTTP service)`]
-          .filter(Boolean)
-          .join(' | ');
+        result.notes = [result.notes, `ready via raw TCP on :${hostPort} — no HTTP listener (non-HTTP service)`].filter(Boolean).join(' | ');
       }
     }
 
