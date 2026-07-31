@@ -1127,7 +1127,7 @@ function tcpAccepts(port: number, timeoutMs = 4000): Promise<boolean> {
  * QA run while a real Hub install was fine. That is the harness testing something the product
  * never does.
  */
-type FieldSpec = { min?: number; max?: number; type?: string };
+type FieldSpec = { min?: number; max?: number; type?: string; def?: string };
 let FIELD_SPECS: Map<string, FieldSpec> = new Map();
 
 function loadFieldSpecs(config: Record<string, unknown>): void {
@@ -1141,6 +1141,7 @@ function loadFieldSpecs(config: Record<string, unknown>): void {
       min: typeof f.min === 'number' ? f.min : undefined,
       max: typeof f.max === 'number' ? f.max : undefined,
       type: typeof f.type === 'string' ? f.type : undefined,
+      def: f.default !== undefined && f.default !== null ? String(f.default) : undefined,
     });
   }
 }
@@ -1166,6 +1167,26 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     v = hexOfLength(spec.min);
     cache.set(name, v);
     return v;
+  }
+  // Same principle one step further: when the manifest states the VALUE (a default) or a non-string
+  // TYPE, the name-based guesses below are strictly worse than what the app itself declares — and
+  // for typed config they are actively wrong. homebox declares HBOX_OPTIONS_ALLOW_REGISTRATION as
+  // boolean/default true; no name pattern matches it, so it fell to the trailing random-hex branch,
+  // Go panicked with `ParseBool: parsing "f7d277beb051bafb": invalid syntax`, and QA recorded the
+  // app as genuinely broken. With the declared default it serves HTTP 200 in 3.0s.
+  // Deliberately AFTER the `random` branch above: a `random` field's default (if any) is a
+  // placeholder, not a usable secret.
+  if (spec?.def !== undefined) {
+    cache.set(name, spec.def);
+    return spec.def;
+  }
+  if (spec?.type === 'boolean') {
+    cache.set(name, 'true');
+    return 'true';
+  }
+  if (spec?.type === 'number') {
+    cache.set(name, '1');
+    return '1';
   }
   if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
