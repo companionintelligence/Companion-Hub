@@ -732,9 +732,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       }
       if (ready) break;
-      // (2) HTTP probe
+      // (2) HTTP probe. `redirect: 'manual'` is load-bearing, not a detail: Node's fetch defaults
+      // to redirect:'follow', so an app answering / with a 302 to its own configured hostname sends
+      // us chasing a host this machine cannot resolve, and fetch THROWS ECONNREFUSED instead of
+      // reporting the 302 we already had. The app is up and serving — we just never see it, at ANY
+      // timeout. nextcloud declares a 20-minute ceiling and still never passed; jdownloader2,
+      // inkscape, medusa and mixpost all serve in 10-40s standalone yet timed out on the fleet.
+      // A 3xx is itself proof of a live HTTP server, so it counts as ready.
       try {
-        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(4000),
+        });
         httpStatus = res.status;
         if (httpStatus < 500) {
           ready = true;
