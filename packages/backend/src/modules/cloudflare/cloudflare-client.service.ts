@@ -261,12 +261,23 @@ export class CloudflareClientService {
   }
 
   private async syncStateOnce(organizationId: string, apps: AppInfo[]): Promise<CloudflareSyncResult> {
+    const tunnelId = this.tunnelId;
+    if (!tunnelId) {
+      return {
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Tunnel not initialized',
+      };
+    }
+
     try {
-      this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
-      this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
+      this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${tunnelId})...`);
+      this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId, apps }, null, 2)}`);
       const responseData = await this.portalClient.postTunnelState({
         organizationId,
-        tunnelId: this.tunnelId!,
+        tunnelId,
         apps,
       });
       const response = { data: responseData };

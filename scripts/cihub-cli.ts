@@ -74,13 +74,7 @@ export { allowedEnvs, BASE_COMMAND, type HubEnv };
 export type { StepStatus };
 export { STEP_ICONS, BOX_CHARS };
 export { stripAnsi, box, printMessageBox, renderStep, renderBanner, renderWizardWelcome, renderHelp, renderManPage };
-export {
-  getComposeFiles,
-  mergeComposeProfilesFromEnvFile,
-  buildEnvOverrides,
-  ensureLocalDevRuntimeEnv,
-  setTailscalePersistedStateProbeForTests,
-} from './lib/cli-compose-env';
+export { getComposeFiles, mergeComposeProfilesFromEnvFile, buildEnvOverrides, ensureLocalDevRuntimeEnv };
 export { parseEnvFile, upsertEnvVar };
 
 type StartMode = 'local-dev' | 'attached' | 'detached';

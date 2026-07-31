@@ -14,7 +14,6 @@ import {
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
-  setTailscalePersistedStateProbeForTests,
   resolveHubContext,
   normalizeCliArgs,
   normalizeRegisterFlags,
@@ -40,6 +39,7 @@ import {
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
+import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env';
 
 // --- banner ---
 
