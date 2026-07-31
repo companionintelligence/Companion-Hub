@@ -393,6 +393,7 @@ export class ExposureSyncService {
         const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
         const hubHostname = `${hubSub}.${defaultPublicDomain}`;
 
+        const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
         exposedApps.unshift({
           name: 'OS Hub',
           subdomain: deviceName,
@@ -402,6 +403,7 @@ export class ExposureSyncService {
           hostname: 'traefik',
           originServerName: hubHostname,
           privilegedKind: 'hub',
+          hubListenPort,
         });
       }
 
@@ -447,8 +449,11 @@ export class ExposureSyncService {
             return toToastTarget(dbApp);
           })
           .filter((target): target is PublicDnsToastTarget => target !== null);
+        const cause = [result.errorStatus && `HTTP ${result.errorStatus}`, result.errorMessage].filter(Boolean).join(': ');
         this.surfacePublicDnsFailure(
-          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
+          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).${
+            cause ? ` Cause: ${cause}.` : ''
+          }`,
           appEntries.map((entry) => entry.name),
           toastTargets,
         );

@@ -35,6 +35,7 @@ import { initHubDataDirs } from './init-hub-data-dirs';
 import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase, publicWebRepairHasFailures } from './public-web-cli';
 import { syncPostgresPasswordFromEnv } from './sync-postgres-password';
+import { syncRabbitmqPasswordFromEnv } from './sync-rabbitmq-password';
 import { runBridgeDoctorSection } from './bridge-diagnostics-cli';
 import { runNetworkDoctorSection } from './network-diagnostics-cli';
 import { allowedEnvs, BASE_COMMAND, CI_CLOUD_DEFAULT, type HubEnv } from './lib/cli-types';
@@ -73,7 +74,13 @@ export { allowedEnvs, BASE_COMMAND, type HubEnv };
 export type { StepStatus };
 export { STEP_ICONS, BOX_CHARS };
 export { stripAnsi, box, printMessageBox, renderStep, renderBanner, renderWizardWelcome, renderHelp, renderManPage };
-export { getComposeFiles, mergeComposeProfilesFromEnvFile, buildEnvOverrides, ensureLocalDevRuntimeEnv };
+export {
+  getComposeFiles,
+  mergeComposeProfilesFromEnvFile,
+  buildEnvOverrides,
+  ensureLocalDevRuntimeEnv,
+  setTailscalePersistedStateProbeForTests,
+} from './lib/cli-compose-env';
 export { parseEnvFile, upsertEnvVar };
 
 type StartMode = 'local-dev' | 'attached' | 'detached';
@@ -330,7 +337,7 @@ function buildComposeBaseArgs(envFileName: string, files: string[]): string[] {
   return args;
 }
 
-/** Start Postgres (and queue), then align the DB role password with POSTGRES_PASSWORD in the env file. */
+/** Start Postgres (and queue), then align DB/broker passwords with the env file. */
 async function ensurePostgresInfraAndSyncPassword(
   envFileName: string,
   composeFiles: string[],
@@ -339,6 +346,7 @@ async function ensurePostgresInfraAndSyncPassword(
 ) {
   run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides, cwd);
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
+  await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(envFileName), envOverrides);
 }
 
 export function shouldRetryApkMirrorWithHostNetwork(

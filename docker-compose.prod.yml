@@ -41,7 +41,7 @@ services:
       - "${RABBITMQ_PORT:-5001}:5672"
     environment:
       RABBITMQ_DEFAULT_USER: companion
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
       # Disable khepri_db to speed up startup (uses classic Mnesia instead)
       RABBITMQ_FEATURE_FLAGS: ""
     healthcheck:
@@ -93,6 +93,7 @@ services:
         SENTRY_RELEASE: ${SENTRY_RELEASE:-}
         VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
         VITE_SENTRY_RELEASE: ${VITE_SENTRY_RELEASE:-}
+        # Must match DOCKER_PLATFORM (linux/arm64 → arm64). Desktop/CLI write both.
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
     depends_on:
@@ -197,7 +198,7 @@ services:
       POSTGRES_DBNAME: companiondb
       POSTGRES_PORT: 6543
       RABBITMQ_USERNAME: companion
-      RABBITMQ_PASSWORD: admin
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ci-os-hub-queue
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}

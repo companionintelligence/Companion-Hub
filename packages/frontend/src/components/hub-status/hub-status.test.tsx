@@ -614,18 +614,40 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
   });
 
-  it('revalidates routes instead of reloading when the user refreshed while the hub was waking up', async () => {
+  it('keeps the app mounted across a brief API probe miss after the hub is steady', async () => {
     vi.useFakeTimers();
     sessionStorage.setItem('ci-hub-steady-running', '1');
     const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
-    const navEntry = { type: 'reload' } as PerformanceNavigationTiming;
-    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([navEntry]);
     probeMocks.probeHealthyHubApiPort.mockResolvedValueOnce(null).mockResolvedValue(5002);
 
-    mockMacTauriWithStatus(['Starting', 'Starting']);
+    mockMacTauriWithStatus(['Running', 'Running']);
 
     await flushAsyncWork();
-    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('revalidates routes after the hub becomes healthy without a full window reload', async () => {
+    vi.useFakeTimers();
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(null);
+
+    mockMacTauriWithStatus(['Stopped', 'Running']);
+
+    await flushAsyncWork();
+    expect(screen.getByRole('heading', { name: /not running/i })).toBeInTheDocument();
+
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(5002);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);

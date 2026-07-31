@@ -74,19 +74,26 @@ export class AppService implements OnApplicationShutdown {
       // Validate data directory integrity
       await this.validateDataDirectories();
 
-      try {
-        await this.docker.pruneNetworks();
-        this.logger.info('Docker networks pruned');
-      } catch (error) {
-        if (!this.isDockerBootstrapPermissionIssue(error)) {
-          throw error;
-        }
-        this.logger.warn(
-          `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+      // Do not block listen on Docker prune — a hung dockerode call on Desktop can
+      // starve the event loop before /api/health/live is reachable.
+      void Promise.race([
+        this.docker.pruneNetworks(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Docker network prune timed out after 15s')), 15_000);
+        }),
+      ])
+        .then(() => this.logger.info('Docker networks pruned'))
+        .catch((error) => {
+          if (this.isDockerBootstrapPermissionIssue(error)) {
+            this.logger.warn(
+              `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            return;
+          }
+          this.logger.warn(`Docker network prune skipped: ${error instanceof Error ? error.message : String(error)}`);
+        });
 
       const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
@@ -207,7 +214,8 @@ export class AppService implements OnApplicationShutdown {
       await this.filesystem.createDirectory(traefikConfigDest);
 
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
-        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com');
+        // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
+        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
         // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
         // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
         // dashboard for explicit local development — never in production/staging/test,

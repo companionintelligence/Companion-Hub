@@ -14,6 +14,7 @@ import {
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
+  setTailscalePersistedStateProbeForTests,
   resolveHubContext,
   normalizeCliArgs,
   normalizeRegisterFlags,
@@ -461,31 +462,43 @@ describe('mergeComposeProfilesFromEnvFile', () => {
   const TMP = '.env.__vitest_vpn__';
   const abs = join(process.cwd(), TMP);
 
+  beforeEach(() => {
+    setTailscalePersistedStateProbeForTests(() => false);
+  });
+
   afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
     if (existsSync(abs)) rmSync(abs);
     delete process.env.COMPOSE_PROFILES;
   });
 
-  it('adds private-vpn by default when the env file has values but no opt-out', () => {
+  it('does not add private-vpn without Tailscale auth key or persisted state', () => {
     upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/x');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
+  it('adds private-vpn when TAILSCALE_AUTHKEY is set', () => {
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/x');
+    upsertEnvVar(TMP, 'TAILSCALE_AUTHKEY', 'tskey-auth-test');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
-  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true', () => {
+  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true even with an auth key', () => {
+    upsertEnvVar(TMP, 'TAILSCALE_AUTHKEY', 'tskey-auth-test');
     upsertEnvVar(TMP, 'PRIVATE_VPN_USER_DISABLED', 'true');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
   });
 
-  it('keeps private-vpn when legacy PRIVATE_VPN_ENABLED=false is present', () => {
+  it('does not treat legacy PRIVATE_VPN_ENABLED=false as an enable signal', () => {
     upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
-    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
   });
 
-  it('preserves existing COMPOSE_PROFILES from the file', () => {
+  it('preserves existing COMPOSE_PROFILES from the file without forcing private-vpn', () => {
     upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'gpu');
     const profiles = mergeComposeProfilesFromEnvFile(TMP).split(',');
     expect(profiles).toContain('gpu');
-    expect(profiles).toContain('private-vpn');
+    expect(profiles).not.toContain('private-vpn');
   });
 
   it('adds cloudflare profile when tunnel/token exists under ROOT_FOLDER_HOST', () => {

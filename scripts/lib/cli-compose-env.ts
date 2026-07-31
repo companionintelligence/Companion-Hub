@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { parseEnvFile } from '../env-file.js';
@@ -60,6 +61,40 @@ function hasCloudflareTunnelToken(envFileName: string): boolean {
   }
 }
 
+function hasTailscaleAuthKey(vars: Record<string, string>): boolean {
+  return Boolean(vars.TAILSCALE_AUTHKEY?.trim() || vars.HEADSCALE_PREAUTH_KEY?.trim());
+}
+
+/** Best-effort: Tailscale login already persisted in the named Docker volume. */
+function probeTailscalePersistedState(): boolean {
+  try {
+    const result = spawnSync(
+      'docker',
+      ['run', '--rm', '-v', 'hub_tailscale_state:/state:ro', 'alpine:3.21', 'sh', '-c', 'test -s /state/tailscaled.state'],
+      { encoding: 'utf-8' },
+    );
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Test override so unit tests do not depend on a real `hub_tailscale_state` volume. */
+let tailscalePersistedStateProbe: () => boolean = probeTailscalePersistedState;
+
+export function setTailscalePersistedStateProbeForTests(probe: (() => boolean) | null): void {
+  tailscalePersistedStateProbe = probe ?? probeTailscalePersistedState;
+}
+
+function hasTailscalePersistedState(): boolean {
+  return tailscalePersistedStateProbe();
+}
+
+function privateVpnShouldRun(vars: Record<string, string>): boolean {
+  if (vars.PRIVATE_VPN_USER_DISABLED === 'true') return false;
+  return hasTailscaleAuthKey(vars) || hasTailscalePersistedState();
+}
+
 export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const hasEnvFile = Object.keys(vars).length > 0;
@@ -70,11 +105,14 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
         .map((s) => s.trim())
         .filter(Boolean),
     );
-    set.add('private-vpn');
+    // No env file yet — only enable Private VPN when the process env already has a key.
+    if (hasTailscaleAuthKey(process.env as Record<string, string>) || hasTailscalePersistedState()) {
+      set.add('private-vpn');
+    }
     if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
     return [...set].join(',');
   }
-  const vpnOn = vars.PRIVATE_VPN_USER_DISABLED !== 'true';
+  const vpnOn = privateVpnShouldRun(vars);
   const set = new Set<string>([
     ...(vars.COMPOSE_PROFILES || '')
       .split(',')
