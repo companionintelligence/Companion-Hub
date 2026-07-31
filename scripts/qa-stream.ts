@@ -16,7 +16,7 @@
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { homedir } from 'node:os';
@@ -647,9 +647,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set) — keep one runaway app
       // from starving its neighbours now that apps run concurrently on a node.
       const capFlags = (QA_MEM_LIMIT ? ` --memory ${QA_MEM_LIMIT}` : '') + (QA_CPU_LIMIT ? ` --cpus ${QA_CPU_LIMIT}` : '');
-      // Bind a Docker-assigned host port (host side :0) so we never collide with the
-      // Hub/Traefik (commonly on :80) or another app under test on the same node.
-      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
+      // Reserve a concrete free port rather than publishing `0:<port>`. An ephemeral binding is
+      // reassigned on every container restart, while everything downstream (readiness poll,
+      // screenshot, TCP probe) keeps using the port resolved once here — so a restart silently
+      // moves the app and we probe a dead port for the rest of the ceiling. Still avoids colliding
+      // with the Hub/Traefik (commonly :80) or a peer app on the same node.
+      const reserved = await reserveHostPort();
+      const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
+      const run = execQuiet(`docker run -d --name ${containerName} -p ${publishFlag}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
       if (!run.ok) {
         result.score = 'error';
         result.failKind = 'start';
@@ -748,10 +753,27 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // — this can only ever convert a would-be false failure, never mask a real one.
     if (!ready && !deadReason) {
       const alive = await execAsync(`docker inspect ${statsName} --format '{{.State.Status}}'`, 8_000);
+      // Docker's userland proxy ACCEPTS the handshake on any published port, even with nothing
+      // listening inside the container — so tcpAccepts() alone cannot tell "non-HTTP service" from
+      // "dead app", and on its own this branch mints false PASSES as readily as it removes false
+      // failures (hindsight published :9999 but its control plane never bound; the proxy accepted
+      // anyway and the app scored a pass while serving nothing). Require a real in-container
+      // listener on the INTERNAL port before trusting it.
       if (alive.ok && (alive.out || '').trim() === 'running' && (await tcpAccepts(hostPort))) {
-        ready = true;
-        readyVia = 'tcp';
-        result.notes = [result.notes, `ready via raw TCP on :${hostPort} — no HTTP listener (non-HTTP service)`].filter(Boolean).join(' | ');
+        if (await hasInternalListener(statsName, result.port)) {
+          ready = true;
+          readyVia = 'tcp';
+          result.notes = [result.notes, `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}, no HTTP (non-HTTP service)`]
+            .filter(Boolean)
+            .join(' | ');
+        } else {
+          result.notes = [
+            result.notes,
+            `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
+          ]
+            .filter(Boolean)
+            .join(' | ');
+        }
       }
     }
 
@@ -1151,6 +1173,31 @@ function hexOfLength(chars: number): string {
     .slice(0, chars);
 }
 
+/**
+ * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
+ * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
+ * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
+ * /proc parse is the one that works on distroless/alpine. Returns false only when we positively
+ * determine there is no listener; an image where every probe is unavailable returns true rather
+ * than manufacturing a failure we cannot substantiate.
+ */
+async function hasInternalListener(container: string, port: number): Promise<boolean> {
+  const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN.
+  const procProbe = `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="0A"{split($2,a,":"); if (a[2]=="${hex}") found=1} END{exit found?0:1}'`;
+  const probes = [`ss -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, `netstat -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, procProbe];
+  for (const p of probes) {
+    const r = await execAsync(`docker exec ${container} sh -c ${JSON.stringify(p)}`, 8_000);
+    // exit 0 => listener found. A non-zero exit can mean "no listener" OR "tool missing"; only the
+    // /proc probe can distinguish, so treat it as authoritative and the others as best-effort.
+    if (r.ok) return true;
+  }
+  const proc = await execAsync(`docker exec ${container} sh -c ${JSON.stringify('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
+  // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
+  if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
+  return false;
+}
+
 function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
@@ -1185,6 +1232,24 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   if (spec?.type === 'number') {
     cache.set(name, '1');
     return '1';
+  }
+  // A field wanting an RSA/EC PRIVATE KEY needs a real PEM, not opaque hex — and it must be tested
+  // BEFORE the generic secret branch below, which would otherwise swallow it on "KEY". nofx asks for
+  // RSA_PRIVATE_KEY, got 32 hex chars, and fataled with "invalid PEM format" on every fleet run;
+  // with a genuine key (either real newlines or the \n-escaped single line its manifest hint
+  // prescribes) the backend boots and serves /api/health 200 on the same image.
+  if (/(^|_)(RSA_|EC_)?PRIVATE_KEY$|_PEM$|PRIVKEY/.test(name)) {
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    // Emit the escaped single-line form: env values cross docker/compose as one line, and apps that
+    // accept a PEM here document exactly this encoding. Apps reading real newlines still parse it
+    // once the runtime unescapes, and both forms were confirmed to boot nofx.
+    v = String(privateKey).trim().replace(/\n/g, '\\n');
+    cache.set(name, v);
+    return v;
   }
   if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
@@ -1294,13 +1359,23 @@ async function composeUp(
   const mainPort = main?.internalPort ?? 80;
   // Apps like Penpot embed ${APP_BASE_URL} as PENPOT_PUBLIC_URI — it must match the browser URL
   // including the host port. Reserve the publish port up front so substitution is correct.
-  let reservedHostPort = 0;
-  if (composeReferencesVar(services, 'APP_BASE_URL')) {
-    reservedHostPort = await reserveHostPort();
-    if (reservedHostPort > 0) cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
+  // Reserve UNCONDITIONALLY. Publishing `0:<port>` lets Docker pick an ephemeral host port, and it
+  // picks a NEW one every time the container restarts — while the readiness loop, the screenshot and
+  // the TCP probe all keep using the port resolved once at startup. Any app that restarts before it
+  // settles (a first-boot DB race, which `restart: on-failure:10` now makes MORE likely) therefore
+  // gets probed on a dead port for the rest of its ceiling and scores a bogus `timeout`: hasura,
+  // miniflux and langfuse all hit this. A fixed reservation survives restarts and matches what the
+  // appliance actually does in production (`hostPort: '${APP_PORT}'`).
+  const reservedHostPort = await reserveHostPort();
+  if (reservedHostPort > 0 && composeReferencesVar(services, 'APP_BASE_URL')) {
+    cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
   }
   const subst = (s: string) =>
     s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+  // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
+  // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
+  const sharedMounts = new Map<string, string>();
+  const seededMounts = new Set<string>();
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
@@ -1372,7 +1447,27 @@ async function composeUp(
       y += '    volumes:\n';
       for (const v of vols) {
         const cp = v.containerPath as string;
-        const sc = join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
+        // Key the scratch dir on the manifest's hostPath, so two services declaring the SAME
+        // hostPath share one directory — which is what the appliance does, and what these manifests
+        // rely on. Keying per (service, containerPath) silently gave each service its own private
+        // dir: route96 has an init sidecar that writes config.toml to a shared hostPath, the main
+        // service mounted a DIFFERENT empty dir, found no config, and exited. Falls back to the old
+        // per-service path only when no hostPath is declared (a purely ephemeral runtime dir).
+        const hp = subst(String(v.hostPath ?? ''));
+        const sc = hp
+          ? (sharedMounts.get(hp) ??
+            (() => {
+              const d = join(scratchBase, '_shared', hp.replace(/[^a-zA-Z0-9]/g, '_'));
+              sharedMounts.set(hp, d);
+              return d;
+            })())
+          : join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
+        // Seed/chmod a shared dir once, not once per service that mounts it.
+        if (hp && seededMounts.has(sc)) {
+          y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
+          continue;
+        }
+        if (hp) seededMounts.add(sc);
         // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir) so config
         // FILE targets and initdb scripts exist before compose up; otherwise an empty dir is mounted.
         const seed = seedSourceFor(appId, v.hostPath);
