@@ -412,6 +412,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     }
 
     const config: AppConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    // Per-app; must be loaded before any ${VAR} substitution so generated secrets match the
+    // lengths this manifest actually declares (see loadFieldSpecs).
+    loadFieldSpecs(config as unknown as Record<string, unknown>);
     result.name = config.name ?? appId;
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
@@ -1114,10 +1117,56 @@ function tcpAccepts(port: number, timeoutMs = 4000): Promise<boolean> {
   });
 }
 
+/**
+ * The manifest's own declared constraints for a generated env var, keyed by env_variable.
+ * Built per-app from config.json `form_fields` so QA honours the SAME contract the Hub does
+ * (packages/backend/src/modules/apps/app.helpers.ts reads field.min when it mints `random`
+ * fields). Without this the harness fabricates a value of its own fixed length and can violate
+ * the app's stated requirement — pds declares min/max 64 for its secp256k1 PLC rotation key, we
+ * minted 32 hex chars (16 bytes) where atproto demands 32 BYTES, and the app crashed on every
+ * QA run while a real Hub install was fine. That is the harness testing something the product
+ * never does.
+ */
+type FieldSpec = { min?: number; max?: number; type?: string };
+let FIELD_SPECS: Map<string, FieldSpec> = new Map();
+
+function loadFieldSpecs(config: Record<string, unknown>): void {
+  FIELD_SPECS = new Map();
+  const fields = config?.form_fields;
+  if (!Array.isArray(fields)) return;
+  for (const f of fields as Array<Record<string, unknown>>) {
+    const env = typeof f?.env_variable === 'string' ? f.env_variable : '';
+    if (!env) continue;
+    FIELD_SPECS.set(env, {
+      min: typeof f.min === 'number' ? f.min : undefined,
+      max: typeof f.max === 'number' ? f.max : undefined,
+      type: typeof f.type === 'string' ? f.type : undefined,
+    });
+  }
+}
+
+/** Hex string of exactly `chars` characters (randomBytes yields 2 hex chars per byte). */
+function hexOfLength(chars: number): string {
+  return randomBytes(Math.ceil(chars / 2))
+    .toString('hex')
+    .slice(0, chars);
+}
+
 function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
+  // Honour the declared length, but ONLY for `random` fields — those are the ones the Hub itself
+  // mints as opaque strings (app.helpers.ts createRandomString), so length is the whole contract.
+  // Typed fields (fqdnip, password, email, text) carry a FORMAT the length alone can't satisfy:
+  // pds declares PDS_HOSTNAME as fqdnip min=4, and a 4-char hex blob is a valid length but not a
+  // valid hostname — zod rejects it and the app dies. Those keep the name-based heuristics below.
+  const spec = FIELD_SPECS.get(name);
+  if (spec?.type === 'random' && spec.min && spec.min > 0) {
+    v = hexOfLength(spec.min);
+    cache.set(name, v);
+    return v;
+  }
   if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
   // `.localhost` is a reserved TLD that strict validators reject (directus's UsersService.validateEmail
