@@ -19,8 +19,8 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
     // The `web` entrypoint is the one the Cloudflare tunnel connects to. Leaving it unguarded
     // let every remote request reach the app unauthenticated while the TLS entrypoint — the
     // one an operator would curl from the appliance — looked correctly gated.
-    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace-insecure.middlewares']).toBe('ci-hub@docker');
-    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace.middlewares']).toBe('ci-hub@docker');
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace-insecure.middlewares']).toBe('ci-hub@file');
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace.middlewares']).toBe('ci-hub@file');
   });
 
   it('guards every router it creates, so no entrypoint is left open', () => {
@@ -34,7 +34,7 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
         .filter((name): name is string => Boolean(name)),
     );
     for (const router of routers) {
-      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe('ci-hub@docker');
+      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe('ci-hub@file');
     }
   });
 

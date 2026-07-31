@@ -37,7 +37,7 @@ services:
       - 5672:5672
     environment:
       RABBITMQ_DEFAULT_USER: companion
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
     networks:
       - ci_os_hub_network
 
@@ -117,7 +117,7 @@ services:
       POSTGRES_USERNAME: companion
       POSTGRES_DBNAME: companiondb
       RABBITMQ_USERNAME: companion
-      RABBITMQ_PASSWORD: admin
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ci-os-hub-queue
       INTERNAL_IP: 127.0.0.1
       CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}

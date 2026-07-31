@@ -5,16 +5,15 @@ ARG TARGETPLATFORM
 ARG TARGETARCH=amd64
 ARG DOCKER_PLATFORM=linux/amd64
 
+# JS build stages run on BUILDPLATFORM for speed. Runtime stages MUST use
+# TARGETPLATFORM so multi-arch CI (ubuntu-latest building linux/arm64) does not
+# bake amd64 Node/native modules into the arm64 manifest slot.
 FROM --platform=${BUILDPLATFORM:-${DOCKER_PLATFORM:-linux/amd64}} node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
 
-# ---- BUILDER BASE ----
+# ---- BUILDER BASE (build host arch) ----
 FROM node_base AS builder_base
 
 WORKDIR /deps
-
-ARG TARGETARCH
-ARG DOCKER_COMPOSE_VERSION="v2.40.0"
-ENV TARGETARCH=${TARGETARCH}
 
 RUN set -eux; \
     apk add --no-cache curl python3 make g++ git || { \
@@ -23,22 +22,8 @@ RUN set -eux; \
       apk add --no-cache curl python3 make g++ git; \
     }
 
-RUN echo "Building for ${TARGETARCH:-amd64}"
-RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
-    elif [ "${TARGETARCH}" = "amd64" ] || [ -z "${TARGETARCH}" ]; then \
-      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
-    else \
-      echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
-    fi
-
-RUN chmod +x docker-binary && \
-    ls -lh docker-binary && \
-    ./docker-binary version && \
-    echo "docker-compose binary verified for ${TARGETARCH:-amd64}"
-
-# ---- RUNNER BASE ----
-FROM node_base AS runner_base
+# ---- RUNNER BASE (target arch — native Node, apk, and later native npm modules) ----
+FROM --platform=${TARGETPLATFORM:-${DOCKER_PLATFORM:-linux/amd64}} node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS runner_base
 
 # tzdata is required, not cosmetic: compose bind-mounts the host's /etc/localtime into
 # this container. Without a zoneinfo db, ICU cannot map that tzfile back to an IANA name
@@ -159,8 +144,12 @@ RUN --mount=type=secret,id=sentry_auth_token \
     fi; \
     find packages/frontend/dist/client -name '*.map' -delete || true
 
-# ---- RUNNER ----
+# ---- RUNNER (target arch) ----
 FROM runner_base AS runner
+
+ARG TARGETARCH
+ARG DOCKER_COMPOSE_VERSION="v2.40.0"
+ENV TARGETARCH=${TARGETARCH}
 
 ENV NODE_ENV="production"
 ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
@@ -176,17 +165,36 @@ ENV SENTRY_RELEASE=${SENTRY_RELEASE}
 
 WORKDIR /app
 
+# Install native modules and docker-compose on the TARGET platform so the arm64
+# image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
 RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
-COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
-RUN chmod +x /usr/local/bin/docker-compose && \
-    ls -lh /usr/local/bin/docker-compose
+RUN set -eux; \
+    echo "Installing docker-compose for ${TARGETARCH:-amd64}"; \
+    if [ "${TARGETARCH}" = "arm64" ]; then \
+      curl -fL --retry 3 --retry-delay 5 -o /usr/local/bin/docker-compose \
+        "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-aarch64"; \
+    elif [ "${TARGETARCH}" = "amd64" ] || [ -z "${TARGETARCH}" ]; then \
+      curl -fL --retry 3 --retry-delay 5 -o /usr/local/bin/docker-compose \
+        "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"; \
+    else \
+      echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
+    fi; \
+    chmod +x /usr/local/bin/docker-compose; \
+    /usr/local/bin/docker-compose version; \
+    node -p "process.arch" | grep -E '^(arm64|x64)$'; \
+    case "${TARGETARCH:-amd64}" in \
+      arm64) node -p "process.arch" | grep -qx arm64 ;; \
+      amd64|"") node -p "process.arch" | grep -qx x64 ;; \
+      *) echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
+    esac
+
 COPY --from=builder /app/package.json ./
 
-    # Assets - copy built artifacts
-    COPY --from=builder /app/packages/backend/dist ./
-    COPY --from=builder /app/packages/backend/assets ./assets
+# Assets - copy built artifacts
+COPY --from=builder /app/packages/backend/dist ./
+COPY --from=builder /app/packages/backend/assets ./assets
 COPY --from=builder /app/packages/backend/src/core/database/drizzle ./assets/migrations
 COPY --from=builder /app/packages/common/i18n/translations ./assets/translations
 COPY --from=builder /app/packages/backend/src/swagger.json ./packages/backend/src/swagger.json
@@ -194,16 +202,16 @@ COPY --from=builder /app/packages/frontend/dist/client ./assets/frontend
 
 EXPOSE 3000
 
-    # Ensure Node treats .js as ESM (esbuild outputs ESM format)
-    RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
+# Ensure Node treats .js as ESM (esbuild outputs ESM format)
+RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
 
-    # Entrypoint starts as root, heals bind-mount ownership (notably /app/tunnel),
-    # then drops to CI_HUB_CONTAINER_UID:GID with the DOCKER_GID supplementary
-    # group. This replaces the compose `user:` directive so the tunnel token can
-    # always be written. See docker-entrypoint.sh.
-    COPY docker-entrypoint.sh /usr/local/bin/hub-entrypoint.sh
-    RUN chmod +x /usr/local/bin/hub-entrypoint.sh
-    ENTRYPOINT ["/usr/local/bin/hub-entrypoint.sh"]
+# Entrypoint starts as root, heals bind-mount ownership (notably /app/tunnel),
+# then drops to CI_HUB_CONTAINER_UID:GID with the DOCKER_GID supplementary
+# group. This replaces the compose `user:` directive so the tunnel token can
+# always be written. See docker-entrypoint.sh.
+COPY docker-entrypoint.sh /usr/local/bin/hub-entrypoint.sh
+RUN chmod +x /usr/local/bin/hub-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/hub-entrypoint.sh"]
 
-    # Hub runs as host UID/GID. /data/cache and /data/.docker are host bind mounts (init-hub-data-dirs.ts).
-    CMD ["sh", "-c", "ln -sf /usr/local/bin/docker-compose /data/.docker/cli-plugins/docker-compose 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]
+# Hub runs as host UID/GID. /data/cache and /data/.docker are host bind mounts (init-hub-data-dirs.ts).
+CMD ["sh", "-c", "ln -sf /usr/local/bin/docker-compose /data/.docker/cli-plugins/docker-compose 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]

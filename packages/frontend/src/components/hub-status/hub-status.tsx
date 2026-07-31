@@ -95,6 +95,8 @@ export function isUserInitiatedPageReload(): boolean {
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
+/** Probe misses required before leaving the Running UI after the hub has been steady. */
+const HUB_STEADY_PROBE_FAILURE_THRESHOLD = 3;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -688,12 +690,21 @@ export function HubStatus({ children }: HubStatusProps) {
   const hasReloadedRef = useRef(false);
   /** Once the hub has reached Running, ignore transient Starting (e.g. Tailscale sidecar or health blips). */
   const hubSteadyRunningRef = useRef(readHubSteadySession());
+  const consecutiveProbeFailuresRef = useRef(0);
 
   const checkHealthFallback = useCallback(async () => {
     const port = await probeHealthyHubApiPort(true);
     if (port !== null) {
+      consecutiveProbeFailuresRef.current = 0;
       setStatus('Running');
       return;
+    }
+    if (hubSteadyRunningRef.current) {
+      consecutiveProbeFailuresRef.current += 1;
+      if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+        setStatus('Running');
+        return;
+      }
     }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
@@ -759,6 +770,7 @@ export function HubStatus({ children }: HubStatusProps) {
             result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
 
           if (isHardNonRunning) {
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -772,12 +784,23 @@ export function HubStatus({ children }: HubStatusProps) {
           if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
             if (alivePort !== null) {
+              consecutiveProbeFailuresRef.current = 0;
               configureHubApiPort(alivePort);
               setStatus('Running');
               return;
             }
 
-            // API probe failed — treat as non-running even if we were steady before.
+            // After steady, tolerate brief probe misses so Tailscale/Docker blips do not
+            // flash the loading gate or force a full window reload on recovery.
+            if (hubSteadyRunningRef.current) {
+              consecutiveProbeFailuresRef.current += 1;
+              if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+                setStatus('Running');
+                return;
+              }
+            }
+
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -850,22 +873,14 @@ export function HubStatus({ children }: HubStatusProps) {
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React
-  // Router's cache. Reload once so clientLoader runs against the healthy backend.
+  // Router's cache. Prefer revalidate over a full window reload so a brief API
+  // blip after steady does not flash the loading gate.
   useEffect(() => {
     if (!isTauri || status !== 'Running' || !sawNonRunningRef.current || hasReloadedRef.current) {
       return;
     }
     hasReloadedRef.current = true;
-    // User reload already re-ran clientLoader — revalidate routes instead of reloading again.
-    if (isUserInitiatedPageReload()) {
-      void revalidate();
-      return;
-    }
-    try {
-      reloadCurrentWindow();
-    } catch {
-      // JSDOM in tests doesn't support navigation; ignore safely.
-    }
+    void revalidate();
   }, [status, isTauri, revalidate]);
 
   const handleViewLogs = useCallback(async () => {
