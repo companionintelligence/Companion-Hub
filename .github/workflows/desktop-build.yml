@@ -1,15 +1,19 @@
 name: Desktop Build
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#   push:
+#     branches:
+#       - dev
+#     paths:
+#       - 'packages/desktop/**'
+#       - 'packages/frontend/**'
+#       - 'packages/common/**'
+#       - '.github/workflows/desktop-build.yml'
+# <<< ci-local:gated
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'packages/desktop/**'
-      - 'packages/frontend/**'
-      - 'packages/common/**'
-      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -170,6 +174,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-dmg
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
@@ -178,6 +183,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-app
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           if-no-files-found: error
@@ -186,6 +192,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-deb
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
@@ -194,6 +201,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-rpm
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
           if-no-files-found: error
@@ -202,6 +210,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-appimage
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
@@ -211,6 +220,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-msi
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: error
@@ -219,6 +229,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-setup
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

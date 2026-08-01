@@ -602,6 +602,7 @@ jobs:
         if: env.BUILD_ENABLED
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: release-${{ matrix.target }}
           path: release-artifacts/*
           if-no-files-found: error

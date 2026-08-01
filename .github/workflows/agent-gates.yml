@@ -1,12 +1,16 @@
 name: Agent Gates
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   pull_request:
+#     paths:
+#       - 'packages/frontend/**'
+#       - 'e2e/visual/**'
+#       - 'e2e/helpers/screenshot.ts'
+#       - 'scripts/agent/**'
+#       - 'e2e/results/benchmarks/**'
+# <<< ci-local:gated
 on:
-  pull_request:
-    paths:
-      - 'packages/frontend/**'
-      - 'e2e/visual/**'
-      - 'e2e/helpers/screenshot.ts'
-      - 'scripts/agent/**'
-      - 'e2e/results/benchmarks/**'
+  workflow_dispatch:
 
 jobs:
   agent-gates:

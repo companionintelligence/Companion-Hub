@@ -242,7 +242,7 @@ jobs:
         with:
           name: results-${{ matrix.server }}-batch-${{ matrix.batch }}
           path: results-${{ matrix.server }}/
-          retention-days: 30
+          retention-days: 7
 
   aggregate:
     name: Aggregate Results
@@ -331,7 +331,7 @@ jobs:
         with:
           name: fleet-unified-report
           path: fleet-report.md
-          retention-days: 90
+          retention-days: 7
 
   notify:
     name: Notify
