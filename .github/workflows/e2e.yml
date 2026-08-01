@@ -1,11 +1,21 @@
 name: E2E Tests
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#   schedule:
+#     # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
+#     # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
+#     - cron: "0 1 * * *"
+#   workflow_call:
+#     inputs:
+#       version:
+#         description: "Version tag for release E2E"
+#         required: false
+#         type: string
+# <<< ci-local:gated
 on:
   workflow_dispatch:
-  schedule:
-    # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
-    # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
-    - cron: "0 1 * * *"
   workflow_call:
     inputs:
       version:
