@@ -5,8 +5,19 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
+
+/** Drop unknown marketplace categories so newer catalog tags do not fail Zod parse. */
+function normalizeAppConfigCategories(config: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(config.categories)) {
+    return config;
+  }
+  const filtered = config.categories.filter((category): category is string => typeof category === 'string' && KNOWN_APP_CATEGORIES.has(category));
+  return { ...config, categories: filtered.length > 0 ? filtered : ['utilities'] };
+}
 
 export class AppStoreFilesManager {
   constructor(
@@ -70,7 +81,7 @@ export class AppStoreFilesManager {
       if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
-        const config = JSON.parse(configFile ?? '{}');
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
         const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
         if (!parsedConfig.success) {
@@ -101,7 +112,7 @@ export class AppStoreFilesManager {
       if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
-        const config = JSON.parse(configFile ?? '{}');
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
         const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
         if (!parsedConfig.success) {
@@ -138,7 +149,7 @@ export class AppStoreFilesManager {
     if (await this.filesystem.pathExists(path.join(appInstalledDir, 'config.json'))) {
       const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
-      const config = JSON.parse(configFile ?? '{}');
+      const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
       const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
       if (!parsedConfig.success) {

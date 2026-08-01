@@ -128,6 +128,15 @@ describe('build-container.yml', () => {
     expect(gate).toContain('arm64');
   });
 
+  it('asserts image config architecture and runtime uname/node arch per platform', () => {
+    // Manifest index strings alone miss BUILDPLATFORM bugs that put amd64 Node in the arm64 slot.
+    const gate = gateSource();
+    expect(gate).toContain('crane config --platform');
+    expect(gate).toContain('uname -m');
+    expect(gate).toContain('process.arch');
+    expect(gate).toContain('TARGETPLATFORM');
+  });
+
   it('refuses to pass when there is no reference to verify', () => {
     // The verification loop iterates over the resolved references. If desktop_ref were
     // ever empty the loop would simply not run and the job would go green having proved

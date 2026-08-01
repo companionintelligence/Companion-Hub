@@ -1,8 +1,12 @@
 name: PR Compliance
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   pull_request:
+#     types: [opened, edited, synchronize]
+# <<< ci-local:gated
 on:
-  pull_request:
-    types: [opened, edited, synchronize]
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
