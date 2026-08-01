@@ -732,9 +732,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       }
       if (ready) break;
-      // (2) HTTP probe
+      // (2) HTTP probe. `redirect: 'manual'` is load-bearing, not a detail: Node's fetch defaults
+      // to redirect:'follow', so an app answering / with a 302 to its own configured hostname sends
+      // us chasing a host this machine cannot resolve, and fetch THROWS ECONNREFUSED instead of
+      // reporting the 302 we already had. The app is up and serving — we just never see it, at ANY
+      // timeout. nextcloud declares a 20-minute ceiling and still never passed; jdownloader2,
+      // inkscape, medusa and mixpost all serve in 10-40s standalone yet timed out on the fleet.
+      // A 3xx is itself proof of a live HTTP server, so it counts as ready.
       try {
-        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(4000),
+        });
         httpStatus = res.status;
         if (httpStatus < 500) {
           ready = true;
@@ -756,20 +765,50 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // Docker's userland proxy ACCEPTS the handshake on any published port, even with nothing
       // listening inside the container — so tcpAccepts() alone cannot tell "non-HTTP service" from
       // "dead app", and on its own this branch mints false PASSES as readily as it removes false
-      // failures (hindsight published :9999 but its control plane never bound; the proxy accepted
-      // anyway and the app scored a pass while serving nothing). Require a real in-container
-      // listener on the INTERNAL port before trusting it.
+      // failures. In the 492-app run 16 apps passed this way; only ~4 (mysql, mongodb, geth,
+      // jdownloader2) are actually non-HTTP. nextcloud, coolify, prestashop, tandoor and friends
+      // were web apps credited a pass on nothing but a docker-proxy handshake.
       if (alive.ok && (alive.out || '').trim() === 'running' && (await tcpAccepts(hostPort))) {
-        if (await hasInternalListener(statsName, result.port)) {
+        // Crediting a non-HTTP pass needs a real in-container listener PLUS positive evidence that
+        // the thing listening is a wire protocol rather than a web app that has not finished
+        // booting. `nextcloud` is the cautionary case: it listens on :80 mid-boot and used to
+        // collect a `pass` labelled "non-HTTP service" when it is nothing of the sort.
+        //
+        // Two accepted forms of evidence, because one alone is not enough:
+        //   (a) the server GREETS unsolicited — mysql/postgres announce themselves on connect.
+        //   (b) the image is a known datastore family. mongodb neither greets NOR answers an HTTP
+        //       request (verified: both probes return zero bytes), so at the socket level it is
+        //       indistinguishable from a stalled web app. An explicit list is a heuristic, but it is
+        //       auditable and wrong in a bounded way — whereas accepting every silent listener is
+        //       what manufactured ~12 false passes per run.
+        const listening = await hasInternalListener(statsName, result.port);
+        const img = (result.image || '').toLowerCase();
+        const knownWireProtocol =
+          /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$|\/)/.test(
+            img.split('@')[0],
+          );
+        const greets = listening && (await serverGreets(hostPort));
+        if (listening && (greets || knownWireProtocol)) {
           ready = true;
           readyVia = 'tcp';
-          result.notes = [result.notes, `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}, no HTTP (non-HTTP service)`]
+          // Name the evidence that ACTUALLY applied. The old note asserted "no HTTP listener
+          // (non-HTTP service)" for every TCP pass without ever checking, which is how a dozen
+          // stalled web apps got recorded as healthy non-HTTP services. A note is an audit trail;
+          // it must not claim a signal we did not observe.
+          result.notes = [
+            result.notes,
+            greets
+              ? `ready via raw TCP on :${hostPort} — in-container listener on :${result.port} sent an unsolicited protocol greeting (non-HTTP service)`
+              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted on known datastore image (${img.split('@')[0]})`,
+          ]
             .filter(Boolean)
             .join(' | ');
         } else {
           result.notes = [
             result.notes,
-            `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
+            listening
+              ? `:${result.port} is listening but never served HTTP and sends no protocol greeting — treated as not ready, not as a non-HTTP service`
+              : `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
           ]
             .filter(Boolean)
             .join(' | ');
@@ -1138,6 +1177,38 @@ function tcpAccepts(port: number, timeoutMs = 4000): Promise<boolean> {
 }
 
 /**
+ * Does the server send an UNSOLICITED greeting? This is what separates "genuinely not HTTP" from
+ * "an HTTP app that simply has not finished booting" — a distinction a bare connect cannot make.
+ * Wire protocols announce themselves the moment you connect (mysql sends its v10 handshake,
+ * mongodb/postgres likewise), while an HTTP server sends nothing and waits for a request. Verified
+ * empirically: mysql:8.4.10 emits 4a0000000a38...; nginx:alpine emits nothing.
+ *
+ * Deliberate bias: a silent-but-listening port resolves to FALSE, so we withhold the pass. That can
+ * under-credit a non-HTTP protocol that waits for the client to speak first (redis-style), costing a
+ * false FAILURE. That is the safer error — a false failure gets investigated, a false pass is
+ * silent, and false passes are what this whole readiness path was previously manufacturing.
+ */
+function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect({ host: '127.0.0.1', port });
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(waitMs + 1000);
+    // Send nothing: any bytes that arrive are the server's own greeting.
+    sock.once('connect', () => setTimeout(() => done(false), waitMs));
+    sock.once('data', (b) => done(b.length > 0));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+    sock.once('close', () => done(false));
+  });
+}
+
+/**
  * The manifest's own declared constraints for a generated env var, keyed by env_variable.
  * Built per-app from config.json `form_fields` so QA honours the SAME contract the Hub does
  * (packages/backend/src/modules/apps/app.helpers.ts reads field.min when it mints `random`
@@ -1174,6 +1245,16 @@ function hexOfLength(chars: number): string {
 }
 
 /**
+ * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
+ * quotes, so the host shell expands `$4`/`$2` inside an awk script to empty before the command ever
+ * reaches the container — which silently broke the /proc listener probe and made every genuinely
+ * non-HTTP app (mysql, mongodb, geth) look dead.
+ */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
  * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
  * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
@@ -1183,16 +1264,17 @@ function hexOfLength(chars: number): string {
  */
 async function hasInternalListener(container: string, port: number): Promise<boolean> {
   const hex = port.toString(16).toUpperCase().padStart(4, '0');
-  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN.
+  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Both files
+  // are read because a container may bind v4, v6, or both (mysql listens on tcp6 only).
   const procProbe = `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="0A"{split($2,a,":"); if (a[2]=="${hex}") found=1} END{exit found?0:1}'`;
   const probes = [`ss -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, `netstat -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, procProbe];
   for (const p of probes) {
-    const r = await execAsync(`docker exec ${container} sh -c ${JSON.stringify(p)}`, 8_000);
+    const r = await execAsync(`docker exec ${container} sh -c ${shq(p)}`, 8_000);
     // exit 0 => listener found. A non-zero exit can mean "no listener" OR "tool missing"; only the
     // /proc probe can distinguish, so treat it as authoritative and the others as best-effort.
     if (r.ok) return true;
   }
-  const proc = await execAsync(`docker exec ${container} sh -c ${JSON.stringify('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
+  const proc = await execAsync(`docker exec ${container} sh -c ${shq('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
   // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
   if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
   return false;
