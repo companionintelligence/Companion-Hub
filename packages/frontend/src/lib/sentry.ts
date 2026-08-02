@@ -200,6 +200,11 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
     if (text.includes('set_background_color not allowed')) {
       return true;
     }
+    // Tauri ACL denials for remote hub URLs / missing capabilities — expected until
+    // the desktop shell allowlists the origin; not actionable frontend bugs.
+    if (text.includes('not allowed by ACL')) {
+      return true;
+    }
     if (text === 'userContext unavailable during startup; using defaults') {
       return true;
     }

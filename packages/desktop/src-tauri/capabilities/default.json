@@ -2,6 +2,16 @@
   "identifier": "default",
   "description": "Default capabilities for the main window",
   "windows": ["main"],
+  "remote": {
+    "urls": [
+      "https://*.companionintelligence.com",
+      "https://companionintelligence.com",
+      "https://*.ci.computer",
+      "https://ci.computer",
+      "http://localhost:*",
+      "http://127.0.0.1:*"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-close",
