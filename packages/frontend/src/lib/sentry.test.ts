@@ -35,6 +35,7 @@ vi.mock('./registration-api', () => ({
 
 describe('frontend sentry', () => {
   const originalEnv = {
+    DEV: import.meta.env.DEV,
     CI_CLOUD_URL: import.meta.env.CI_CLOUD_URL,
     CI_HUB_VERSION: import.meta.env.CI_HUB_VERSION,
     CI_HUB_ENVIRONMENT: import.meta.env.CI_HUB_ENVIRONMENT,
@@ -49,6 +50,8 @@ describe('frontend sentry', () => {
     withScope.mockImplementation((callback: (scope: { setTag: typeof setTag; setExtra: typeof setExtra; setLevel: typeof setLevel }) => void) => {
       callback({ setTag, setExtra, setLevel });
     });
+    // Vitest runs with import.meta.env.DEV=true; production-path tests need init enabled.
+    testEnv.DEV = false;
     testEnv.CI_CLOUD_URL = 'https://hub.ci.computer/';
     testEnv.CI_HUB_VERSION = 'v0.2.27';
     testEnv.CI_HUB_ENVIRONMENT = 'development';
@@ -59,12 +62,21 @@ describe('frontend sentry', () => {
   });
 
   afterEach(() => {
+    testEnv.DEV = originalEnv.DEV;
     testEnv.CI_CLOUD_URL = originalEnv.CI_CLOUD_URL;
     testEnv.CI_HUB_VERSION = originalEnv.CI_HUB_VERSION;
     testEnv.CI_HUB_ENVIRONMENT = originalEnv.CI_HUB_ENVIRONMENT;
     testEnv.VITE_SENTRY_DSN = originalEnv.VITE_SENTRY_DSN;
     testEnv.VITE_SENTRY_RELEASE = originalEnv.VITE_SENTRY_RELEASE;
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('does not initialize Sentry in Vite dev builds', async () => {
+    testEnv.DEV = true;
+
+    await import('./sentry');
+
+    expect(init).not.toHaveBeenCalled();
   });
 
   it('initializes Sentry for browser users when a frontend DSN is configured', async () => {
@@ -152,6 +164,13 @@ describe('frontend sentry', () => {
           values: [
             { value: 'window.set_background_color not allowed. Permissions associated with this command: core:window:allow-set-background-color' },
           ],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      beforeSend?.({
+        exception: {
+          values: [{ value: 'Command plugin:window|close not allowed by ACL' }],
         },
       }),
     ).toBeNull();
