@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { TRANSIENT_DB_RETRY_DELAYS_MS, withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
 import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
@@ -14,7 +15,7 @@ const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without
  * mid-MCP-initialize should ride out a Docker DNS hiccup (`EAI_AGAIN ci-hub-db`), but a genuinely
  * down database must fail fast into a 503, not hold requests hostage.
  */
-export const AUTH_LOOKUP_RETRY_DELAYS_MS: readonly number[] = [150, 400];
+export const AUTH_LOOKUP_RETRY_DELAYS_MS: readonly number[] = TRANSIENT_DB_RETRY_DELAYS_MS;
 
 /** Operator-facing view of a stored key — never includes the hash or the raw key. */
 export interface ApiKeyInfo {
@@ -106,25 +107,24 @@ export class ApiKeyService {
    * your key") instead of 401 ("your key is wrong").
    */
   private async findByHashResilient(hashedKey: string): Promise<ApiKeyRow | undefined> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= AUTH_LOOKUP_RETRY_DELAYS_MS.length; attempt++) {
-      if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, AUTH_LOOKUP_RETRY_DELAYS_MS[attempt - 1]));
+    try {
+      return await withTransientDbRetry(() => this.repo.findByHash(hashedKey), {
+        delaysMs: AUTH_LOOKUP_RETRY_DELAYS_MS,
+        onRetry: (err, attempt, maxAttempts) => {
+          this.logger.warn(
+            `API key lookup hit transient database error (attempt ${attempt}/${maxAttempts})`,
+            err instanceof Error ? err.message : String(err),
+          );
+        },
+      });
+    } catch (err) {
+      // Non-transient query bugs must keep their original type. Exhausted transient
+      // failures become ApiKeyStoreUnavailableError so guards can answer 503.
+      if (!isTransientDbError(err)) {
+        throw err;
       }
-      try {
-        return await this.repo.findByHash(hashedKey);
-      } catch (err) {
-        if (!isTransientDbError(err)) {
-          throw err;
-        }
-        lastError = err;
-        this.logger.warn(
-          `API key lookup hit transient database error (attempt ${attempt + 1}/${AUTH_LOOKUP_RETRY_DELAYS_MS.length + 1})`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      throw new ApiKeyStoreUnavailableError(err);
     }
-    throw new ApiKeyStoreUnavailableError(lastError);
   }
 
   /** Fails closed on an unparseable timestamp: `NaN < now` is false, so a naive comparison would
