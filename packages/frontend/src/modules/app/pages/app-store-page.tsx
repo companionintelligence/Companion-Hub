@@ -190,9 +190,13 @@ export default () => {
   const onSearch = useCallback(
     (value: string) => {
       setLocalSearch(value);
+      // Featured is curated; route searching users into the exhaustive "All" query.
+      if (category === 'featured' && value.trim().length > 0) {
+        setCategory(undefined);
+      }
       setSearch(value);
     },
-    [setSearch],
+    [category, setCategory, setSearch],
   );
 
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
