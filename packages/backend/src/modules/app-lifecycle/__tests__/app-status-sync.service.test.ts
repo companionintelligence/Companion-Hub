@@ -204,4 +204,14 @@ describe('AppStatusSyncService', () => {
       expect.objectContaining({ debounceKey: 'app-status-sync:mixed:demo:ci-marketplace' }),
     );
   });
+
+  it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {
+    const boom = new Error('docker list failed');
+    appRepository.getApps.mockRejectedValue(boom);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
+  });
 });
