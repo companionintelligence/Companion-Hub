@@ -30,19 +30,33 @@ export function Titlebar() {
       .catch(console.warn);
 
     import('@tauri-apps/api/window')
-      .then((mod) => {
+      .then(async (mod) => {
         const win = mod.getCurrentWindow();
         setAppWindow(win);
-        win.isMaximized().then(setIsMaximized);
+        // Remote hub URLs loaded inside the desktop webview used to reject these
+        // IPC calls ("not allowed by ACL") as unhandled promise rejections when
+        // capabilities lacked a remote URL allowlist — swallow ACL denials here.
+        try {
+          setIsMaximized(await win.isMaximized());
+        } catch {
+          /* ACL / older shell — titlebar still renders without maximize state */
+        }
         // Debounce isMaximized checks on Windows/Linux — calling isMaximized()
         // with decorations:false can be expensive. On macOS this is handled
         // natively via titleBarStyle: overlay so no onResized listener needed.
-        win.onResized(() => {
-          if (debounceRef.current) clearTimeout(debounceRef.current);
-          debounceRef.current = setTimeout(() => {
-            win.isMaximized().then(setIsMaximized);
-          }, 150);
-        });
+        try {
+          await win.onResized(() => {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            debounceRef.current = setTimeout(() => {
+              void win
+                .isMaximized()
+                .then(setIsMaximized)
+                .catch(() => undefined);
+            }, 150);
+          });
+        } catch {
+          /* ACL / older shell */
+        }
       })
       .catch(console.warn);
 

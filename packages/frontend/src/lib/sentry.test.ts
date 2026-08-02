@@ -35,6 +35,7 @@ vi.mock('./registration-api', () => ({
 
 describe('frontend sentry', () => {
   const originalEnv = {
+    DEV: import.meta.env.DEV,
     CI_CLOUD_URL: import.meta.env.CI_CLOUD_URL,
     CI_HUB_VERSION: import.meta.env.CI_HUB_VERSION,
     CI_HUB_ENVIRONMENT: import.meta.env.CI_HUB_ENVIRONMENT,
@@ -49,6 +50,8 @@ describe('frontend sentry', () => {
     withScope.mockImplementation((callback: (scope: { setTag: typeof setTag; setExtra: typeof setExtra; setLevel: typeof setLevel }) => void) => {
       callback({ setTag, setExtra, setLevel });
     });
+    // Vitest runs with import.meta.env.DEV=true; production-path tests need init enabled.
+    testEnv.DEV = false;
     testEnv.CI_CLOUD_URL = 'https://hub.ci.computer/';
     testEnv.CI_HUB_VERSION = 'v0.2.27';
     testEnv.CI_HUB_ENVIRONMENT = 'development';
@@ -59,12 +62,21 @@ describe('frontend sentry', () => {
   });
 
   afterEach(() => {
+    testEnv.DEV = originalEnv.DEV;
     testEnv.CI_CLOUD_URL = originalEnv.CI_CLOUD_URL;
     testEnv.CI_HUB_VERSION = originalEnv.CI_HUB_VERSION;
     testEnv.CI_HUB_ENVIRONMENT = originalEnv.CI_HUB_ENVIRONMENT;
     testEnv.VITE_SENTRY_DSN = originalEnv.VITE_SENTRY_DSN;
     testEnv.VITE_SENTRY_RELEASE = originalEnv.VITE_SENTRY_RELEASE;
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('does not initialize Sentry in Vite dev builds', async () => {
+    testEnv.DEV = true;
+
+    await import('./sentry');
+
+    expect(init).not.toHaveBeenCalled();
   });
 
   it('initializes Sentry for browser users when a frontend DSN is configured', async () => {
@@ -125,8 +137,13 @@ describe('frontend sentry', () => {
     type SentryEventInput = {
       message?: string;
       exception?: { values?: Array<{ value?: string }> };
+      tags?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      fingerprint?: string[];
     };
-    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
     expect(beforeSend).toBeTypeOf('function');
 
     expect(
@@ -150,5 +167,54 @@ describe('frontend sentry', () => {
         },
       }),
     ).toBeNull();
+    expect(
+      beforeSend?.({
+        exception: {
+          values: [{ value: 'Command plugin:window|close not allowed by ACL' }],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('rewrites TranslatableError events with HTTP status and path, and drops 4xx', async () => {
+    const { TranslatableError } = await import('@/types/error.types');
+    await import('./sentry');
+
+    type SentryEventInput = {
+      message?: string;
+      exception?: { values?: Array<{ value?: string }> };
+      tags?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      fingerprint?: string[];
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
+
+    const clientError = new TranslatableError(
+      'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
+      {},
+      {
+        status: 401,
+        url: 'http://localhost:5005/api/apps',
+      },
+    );
+    expect(beforeSend?.({ exception: { values: [{ value: 'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN' }] } }, { originalException: clientError })).toBeNull();
+
+    const serverError = new TranslatableError(
+      'COMMON_AN_ERROR_OCCURRED',
+      {},
+      {
+        status: 500,
+        url: 'http://localhost:5005/api/marketplace/apps/search?pageSize=500',
+        body: 'Internal Server Error',
+      },
+    );
+    const enriched = beforeSend?.({ exception: { values: [{ value: 'COMMON_AN_ERROR_OCCURRED' }] } }, { originalException: serverError });
+
+    expect(enriched?.exception?.values?.[0]?.value).toBe('COMMON_AN_ERROR_OCCURRED (500 /api/marketplace/apps/search)');
+    expect(enriched?.tags?.http_status).toBe('500');
+    expect(enriched?.extra?.response_body).toBe('Internal Server Error');
+    expect(enriched?.fingerprint).toEqual(['translatable-api-error', '500', '/api/marketplace/apps/search']);
   });
 });

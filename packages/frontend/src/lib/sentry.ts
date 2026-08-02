@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react';
+import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
 
@@ -137,8 +138,58 @@ async function ensureHubSentryDeviceId(): Promise<void> {
   return deviceIdRequest;
 }
 
+function apiPathForSentry(url: string): string {
+  try {
+    const parsed = new URL(url, typeof window === 'undefined' ? 'http://localhost' : window.location.origin);
+    return parsed.pathname || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Rewrite a TranslatableError event so Sentry shows the failing HTTP request
+ * (status + path + body snippet) instead of only the generic i18n key.
+ * Client errors (4xx) are expected UI feedback and are dropped.
+ */
+function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: TranslatableError): Sentry.ErrorEvent | null {
+  if (!error.http) {
+    return event;
+  }
+
+  if (error.http.status >= 400 && error.http.status < 500) {
+    return null;
+  }
+
+  const path = apiPathForSentry(error.http.url);
+  const summary = `${error.message} (${error.http.status} ${path})`;
+  const values = event.exception?.values;
+  if (values?.[0]) {
+    values[0].value = summary;
+  } else {
+    event.message = summary;
+  }
+
+  event.tags = {
+    ...event.tags,
+    http_status: String(error.http.status),
+  };
+  event.extra = {
+    ...event.extra,
+    http_status: error.http.status,
+    http_url: error.http.url,
+    http_path: path,
+    response_body: error.http.body,
+    message_key: error.message,
+  };
+  event.fingerprint = ['translatable-api-error', String(error.http.status), path];
+
+  return event;
+}
+
 function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
-  const haystack = [event.message, ...(event.exception?.values?.map((value) => value.value) ?? [])].filter(
+  const exceptionValues = event.exception?.values ?? [];
+  const haystack = [event.message, ...exceptionValues.flatMap((value) => [value.value, value.type])].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
 
@@ -149,7 +200,17 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
     if (text.includes('set_background_color not allowed')) {
       return true;
     }
+    // Tauri ACL denials for remote hub URLs / missing capabilities — expected until
+    // the desktop shell allowlists the origin; not actionable frontend bugs.
+    if (text.includes('not allowed by ACL')) {
+      return true;
+    }
     if (text === 'userContext unavailable during startup; using defaults') {
+      return true;
+    }
+    // TanStack Query throws CancelledError whenever an in-flight query is
+    // superseded or unmounted; it is expected control flow, not a failure.
+    if (text === 'CancelledError') {
       return true;
     }
   }
@@ -165,6 +226,13 @@ export function initHubSentry(): void {
     return;
   }
 
+  // Local dev sessions (vite dev server / HMR) previously flooded the
+  // production Sentry project with CancelledError, HMR, and localhost API
+  // failures. Dev builds keep console reporting only.
+  if (import.meta.env.DEV) {
+    return;
+  }
+
   const dsn = import.meta.env.VITE_SENTRY_DSN?.trim();
   if (!dsn) {
     return;
@@ -177,8 +245,17 @@ export function initHubSentry(): void {
     enabled: true,
     tracesSampleRate: 0,
     sendDefaultPii: true,
-    beforeSend(event) {
-      return shouldDropSentryEvent(event) ? null : event;
+    beforeSend(event, hint) {
+      if (shouldDropSentryEvent(event)) {
+        return null;
+      }
+
+      const original = hint?.originalException;
+      if (original instanceof TranslatableError) {
+        return enrichTranslatableErrorEvent(event, original);
+      }
+
+      return event;
     },
   });
 
@@ -203,6 +280,16 @@ export function captureHubException(error: unknown, context?: Record<string, unk
 
   Sentry.withScope((scope) => {
     scope.setTag('component', getComponentTag());
+    if (error instanceof TranslatableError && error.http) {
+      const path = apiPathForSentry(error.http.url);
+      scope.setTag('http_status', String(error.http.status));
+      scope.setExtra('http_status', error.http.status);
+      scope.setExtra('http_url', error.http.url);
+      scope.setExtra('http_path', path);
+      scope.setExtra('response_body', error.http.body);
+      scope.setExtra('message_key', error.message);
+      scope.setFingerprint(['translatable-api-error', String(error.http.status), path]);
+    }
     if (context) {
       for (const [key, value] of Object.entries(context)) {
         if (value !== undefined) {

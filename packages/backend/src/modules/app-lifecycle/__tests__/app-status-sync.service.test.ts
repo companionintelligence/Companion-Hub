@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppStatusSyncService } from '../app-status-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -14,6 +14,7 @@ describe('AppStatusSyncService', () => {
   let appRepository: MockProxy<AppsRepository>;
   let docker: MockProxy<Dockerode>;
   let errorReportingService: MockProxy<ErrorReportingService>;
+  let dockerService: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     appRepository = mock<AppsRepository>();
@@ -21,6 +22,9 @@ describe('AppStatusSyncService', () => {
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
+    dockerService = {
+      diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
+    };
 
     const config = mock<ConfigurationService>();
     config.get.mockImplementation((key: string) => {
@@ -44,6 +48,8 @@ describe('AppStatusSyncService', () => {
       docker,
       undefined,
       errorReportingService,
+      undefined,
+      dockerService as never,
     );
   });
 
@@ -213,5 +219,38 @@ describe('AppStatusSyncService', () => {
 
     expect(result.success).toBe(false);
     expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
+  });
+
+  it('attaches container logs when reporting a running → stopped crash', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 9,
+        appName: 'remotion-studio',
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        State: 'exited',
+        Status: 'Exited (1) 2 seconds ago',
+        Labels: { 'ci-os-hub.appurn': 'remotion-studio:ci-marketplace' },
+      },
+    ] as never);
+    dockerService.diagnoseAppContainers.mockResolvedValue({
+      unhealthy: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+      healthy: [],
+    });
+
+    await service.syncAllAppStatuses();
+
+    expect(dockerService.diagnoseAppContainers).toHaveBeenCalledWith('remotion-studio:ci-marketplace');
+    expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+      appUrn: 'remotion-studio:ci-marketplace',
+      phase: 'crash',
+      message: expect.stringContaining('Error: out of memory'),
+      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+    });
   });
 });

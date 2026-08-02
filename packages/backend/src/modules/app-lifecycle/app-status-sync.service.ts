@@ -4,6 +4,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
+import { DockerService } from '../docker/docker.service';
 import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
@@ -40,6 +41,7 @@ export class AppStatusSyncService {
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
+    @Optional() private readonly dockerService?: DockerService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -181,11 +183,7 @@ export class AppStatusSyncService {
           // Detect crash: running → stopped or missing
           if (app.status === 'running' && (newStatus === 'stopped' || newStatus === 'missing')) {
             this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
-            this.errorReportingService?.reportAppFailure({
-              appUrn,
-              phase: 'crash',
-              message: `App transitioned from ${app.status} to ${newStatus} during status sync`,
-            });
+            await this.reportAppCrash(appUrn, app.status, newStatus);
           }
           syncedCount++;
         }
@@ -214,6 +212,36 @@ export class AppStatusSyncService {
         totalApps: 0,
       };
     }
+  }
+
+  /**
+   * Report a marketplace app crash with the same container-log trail post_start
+   * already attaches. Without logs, Sentry only said "transitioned from running
+   * to stopped" — useless for figuring out why the app died.
+   */
+  private async reportAppCrash(appUrn: AppUrn, previousStatus: AppStatus, newStatus: AppStatus): Promise<void> {
+    let containers: Array<{ name: string; state: string; logs?: string }> | undefined;
+    let message = `App transitioned from ${previousStatus} to ${newStatus} during status sync`;
+
+    if (this.dockerService) {
+      try {
+        const diag = await this.dockerService.diagnoseAppContainers(appUrn);
+        if (diag.unhealthy.length > 0) {
+          containers = diag.unhealthy;
+          const logSummary = diag.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs || '(no logs)'}`).join('\n');
+          message = `${message}\n${logSummary}`;
+        }
+      } catch (diagError) {
+        this.logger.warn(`Failed to capture container logs for crashed app ${appUrn}: ${String(diagError)}`);
+      }
+    }
+
+    this.errorReportingService?.reportAppFailure({
+      appUrn,
+      phase: 'crash',
+      message,
+      containers,
+    });
   }
 
   private getTransitionalGraceMs(status: AppStatus): number {
