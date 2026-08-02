@@ -4,9 +4,20 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
-static CAPTURED_LOG_EVENTS: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> =
+static CAPTURED_LOG_EVENTS: OnceLock<Mutex<std::collections::HashMap<String, CaptureRecord>>> =
     OnceLock::new();
 const LOG_EVENT_DEBOUNCE_WINDOW: Duration = Duration::from_secs(300);
+/// After this many captures of the same message, back off to the repeat window
+/// so retry loops (e.g. the tray watchdog re-running a failing `start_hub`
+/// every few minutes for days) can't flood Sentry with identical events.
+const REPEAT_CAPTURE_LIMIT: u32 = 3;
+const REPEAT_CAPTURE_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
+
+struct CaptureRecord {
+    message: String,
+    last_captured: Instant,
+    count: u32,
+}
 
 fn read_env_value(env_path: &Path, key: &str) -> Option<String> {
     let content = std::fs::read_to_string(env_path).ok()?;
@@ -186,9 +197,21 @@ fn is_warning_message(message: &str) -> bool {
         || lower.contains("could not")
 }
 
+/// Successful operations whose command output happens to contain scary words
+/// ("level=warning …" from docker compose, for example) must never become
+/// Sentry events. Failure keywords win over success keywords, so wrapper
+/// messages like "Watchdog start_hub failed: docker compose up -d succeeded
+/// but Hub did not become ready" still classify as errors.
+fn is_success_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("succeeded") || lower.contains("successful")
+}
+
 fn classify_log_level(message: &str) -> sentry::Level {
     if is_failure_message(message) {
         sentry::Level::Error
+    } else if is_success_message(message) {
+        sentry::Level::Info
     } else if is_warning_message(message) {
         sentry::Level::Warning
     } else {
@@ -220,23 +243,92 @@ fn should_capture_log_event(operation: &str, message: &str) -> bool {
     }
 
     let cache = CAPTURED_LOG_EVENTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let key = format!(
-        "{}:{}",
-        operation.trim().to_ascii_lowercase(),
-        message.trim().to_ascii_lowercase()
-    );
-    let now = Instant::now();
-
     let mut events = cache.lock().expect("captured log events mutex poisoned");
-    events.retain(|_, timestamp| now.duration_since(*timestamp) < LOG_EVENT_DEBOUNCE_WINDOW);
+    should_capture_with(&mut events, operation, message, Instant::now())
+}
 
-    match events.get(&key) {
-        Some(previous) if now.duration_since(*previous) < LOG_EVENT_DEBOUNCE_WINDOW => false,
-        _ => {
-            events.insert(key, now);
-            true
+/// Capture decision, factored out of the global cache for testability.
+///
+/// Suppresses:
+/// - exact repeats within [`LOG_EVENT_DEBOUNCE_WINDOW`], backing off to
+///   [`REPEAT_CAPTURE_WINDOW`] after [`REPEAT_CAPTURE_LIMIT`] captures;
+/// - wrapper duplicates: callers like the tray watchdog re-log the same error
+///   `start_hub`/`stop_hub` just reported ("Watchdog start_hub failed: {err}"),
+///   which used to send every hub failure to Sentry two or three times. If a
+///   recently captured message is contained in the new one (or vice versa),
+///   the new one is only kept as a breadcrumb.
+fn should_capture_with(
+    events: &mut std::collections::HashMap<String, CaptureRecord>,
+    operation: &str,
+    message: &str,
+    now: Instant,
+) -> bool {
+    let normalized_message = message.trim().to_ascii_lowercase();
+    let key = format!("{}:{}", operation.trim().to_ascii_lowercase(), normalized_message);
+
+    events.retain(|_, record| now.duration_since(record.last_captured) < REPEAT_CAPTURE_WINDOW);
+
+    if let Some(record) = events.get_mut(&key) {
+        let window = if record.count >= REPEAT_CAPTURE_LIMIT {
+            REPEAT_CAPTURE_WINDOW
+        } else {
+            LOG_EVENT_DEBOUNCE_WINDOW
+        };
+        if now.duration_since(record.last_captured) < window {
+            return false;
         }
+        record.last_captured = now;
+        record.count += 1;
+        return true;
     }
+
+    let is_wrapper_duplicate = events.values().any(|record| {
+        now.duration_since(record.last_captured) < LOG_EVENT_DEBOUNCE_WINDOW
+            && !record.message.is_empty()
+            && (normalized_message.contains(&record.message)
+                || record.message.contains(&normalized_message))
+    });
+    if is_wrapper_duplicate {
+        return false;
+    }
+
+    events.insert(
+        key,
+        CaptureRecord {
+            message: normalized_message,
+            last_captured: now,
+            count: 1,
+        },
+    );
+    true
+}
+
+/// Normalize a message for Sentry grouping. Sentry groups `capture_message`
+/// events by message text, so host-specific fragments (docker socket paths,
+/// home directories, ports, PIDs, timestamps) used to fragment one root cause
+/// — e.g. "cannot connect to the Docker daemon at unix:///Users/<name>/…" —
+/// into a separate issue per machine. Paths and digits are stripped before
+/// the text is used as the fingerprint.
+fn grouping_fingerprint(message: &str) -> String {
+    let without_paths = message
+        .split_whitespace()
+        .map(|token| {
+            if token.contains('/') || token.contains('\\') {
+                "<path>"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut normalized: String = without_paths
+        .chars()
+        .filter(|c| !c.is_ascii_digit())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.truncate(200);
+    normalized
 }
 
 pub fn record_log_event(operation: &str, message: &str) {
@@ -254,7 +346,16 @@ pub fn record_log_event(operation: &str, message: &str) {
     });
 
     if level != sentry::Level::Info && should_capture_log_event(operation, message) {
-        sentry::capture_message(&format!("{operation}: {}", truncate(message, 2000)), level);
+        let fingerprint = grouping_fingerprint(message);
+        sentry::with_scope(
+            |scope| scope.set_fingerprint(Some(&[operation, fingerprint.as_str()])),
+            || {
+                sentry::capture_message(
+                    &format!("{operation}: {}", truncate(message, 2000)),
+                    level,
+                );
+            },
+        );
     }
 }
 
@@ -295,10 +396,13 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_log_level, is_benign_compose_optional_env_warning, is_benign_hub_start_message,
-        normalize_portal_url, parse_dsn, portal_environment_for_url, read_deployment_version,
-        read_device_id, read_first_env_value, read_portal_url,
+        classify_log_level, grouping_fingerprint, is_benign_compose_optional_env_warning,
+        is_benign_hub_start_message, normalize_portal_url, parse_dsn, portal_environment_for_url,
+        read_deployment_version, read_device_id, read_first_env_value, read_portal_url,
+        should_capture_with, CaptureRecord, LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
     };
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn rejects_malformed_dsn_without_panicking() {
@@ -413,6 +517,88 @@ mod tests {
         assert!(!is_benign_hub_start_message(
             "Failed to remove the existing Traefik container before recreate. permission denied"
         ));
+    }
+
+    #[test]
+    fn classifies_success_messages_as_info_even_with_embedded_warnings() {
+        // docker compose prints `level=warning msg=…` on success; those used
+        // to ship to Sentry as warning events.
+        assert_eq!(
+            classify_log_level(
+                r#"docker compose pull succeeded. time="2026-07-30T10:22:43-07:00" level=warning msg="The \"FOO\" variable is not set.""#
+            ),
+            sentry::Level::Info
+        );
+        assert_eq!(
+            classify_log_level("Stale container cleanup succeeded. level=warning msg=…"),
+            sentry::Level::Info
+        );
+        // Failure keywords win over success keywords.
+        assert_eq!(
+            classify_log_level(
+                "Watchdog start_hub failed: docker compose up -d succeeded but Hub did not become ready"
+            ),
+            sentry::Level::Error
+        );
+    }
+
+    #[test]
+    fn suppresses_wrapper_duplicates_of_recently_captured_errors() {
+        let mut events: HashMap<String, CaptureRecord> = HashMap::new();
+        let now = Instant::now();
+
+        let inner = "Database bootstrap failed. open /home/ci/.local/share/companion-hub/docker-compose.prod.yml: no such file or directory";
+        assert!(should_capture_with(&mut events, "hub.start", inner, now));
+
+        // The watchdog re-logs the same error wrapped with prefix and suffix.
+        let wrapped = format!("Watchdog start_hub failed: {inner} Open tray → View Logs for details.");
+        assert!(!should_capture_with(
+            &mut events,
+            "tray.watchdog",
+            &wrapped,
+            now + Duration::from_secs(1)
+        ));
+
+        // A genuinely different error is still captured.
+        assert!(should_capture_with(
+            &mut events,
+            "tray.watchdog",
+            "Watchdog container restart failed: docker restart ci-os-hub failed: permission denied",
+            now + Duration::from_secs(2)
+        ));
+    }
+
+    #[test]
+    fn backs_off_after_repeated_captures_of_the_same_failure() {
+        let mut events: HashMap<String, CaptureRecord> = HashMap::new();
+        let mut now = Instant::now();
+        let message = "Traefik recreate preparation failed: cannot connect to the Docker daemon";
+
+        // The first N captures pass with the normal debounce between them…
+        for _ in 0..REPEAT_CAPTURE_LIMIT {
+            assert!(should_capture_with(&mut events, "hub.start", message, now));
+            now += LOG_EVENT_DEBOUNCE_WINDOW + Duration::from_secs(1);
+        }
+
+        // …after which the same failure is suppressed even past the debounce
+        // window (the watchdog retry loop used to send 186 identical events).
+        assert!(!should_capture_with(&mut events, "hub.start", message, now));
+    }
+
+    #[test]
+    fn grouping_fingerprint_strips_host_specific_fragments() {
+        let mac = "Failed to remove the existing Traefik container before recreate. Cannot connect to the Docker daemon at unix:///Users/bennett/.docker/run/docker.sock. Is the docker daemon running?";
+        let linux = "Failed to remove the existing Traefik container before recreate. Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+        assert_eq!(grouping_fingerprint(mac), grouping_fingerprint(linux));
+
+        let port_a = "ports are not available: exposing port TCP 0.0.0.0:8642";
+        let port_b = "ports are not available: exposing port TCP 0.0.0.0:3000";
+        assert_eq!(grouping_fingerprint(port_a), grouping_fingerprint(port_b));
+
+        assert_ne!(
+            grouping_fingerprint("Database bootstrap failed."),
+            grouping_fingerprint("Traefik recreate preparation failed.")
+        );
     }
 
     #[test]
