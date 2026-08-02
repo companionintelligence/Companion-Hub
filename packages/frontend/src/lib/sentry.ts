@@ -188,7 +188,8 @@ function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: Translata
 }
 
 function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
-  const haystack = [event.message, ...(event.exception?.values?.map((value) => value.value) ?? [])].filter(
+  const exceptionValues = event.exception?.values ?? [];
+  const haystack = [event.message, ...exceptionValues.flatMap((value) => [value.value, value.type])].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
 
@@ -202,6 +203,11 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
     if (text === 'userContext unavailable during startup; using defaults') {
       return true;
     }
+    // TanStack Query throws CancelledError whenever an in-flight query is
+    // superseded or unmounted; it is expected control flow, not a failure.
+    if (text === 'CancelledError') {
+      return true;
+    }
   }
 
   return false;
@@ -212,6 +218,13 @@ export function initHubSentry(): void {
     return;
   }
   if (typeof window === 'undefined') {
+    return;
+  }
+
+  // Local dev sessions (vite dev server / HMR) previously flooded the
+  // production Sentry project with CancelledError, HMR, and localhost API
+  // failures. Dev builds keep console reporting only.
+  if (import.meta.env.DEV) {
     return;
   }
 
