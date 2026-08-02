@@ -211,6 +211,16 @@ describe('AppStatusSyncService', () => {
     );
   });
 
+  it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {
+    const boom = new Error('docker list failed');
+    appRepository.getApps.mockRejectedValue(boom);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
+  });
+
   it('attaches container logs when reporting a running → stopped crash', async () => {
     appRepository.getApps.mockResolvedValue([
       {

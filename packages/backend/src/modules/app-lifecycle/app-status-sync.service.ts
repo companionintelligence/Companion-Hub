@@ -200,6 +200,9 @@ export class AppStatusSyncService {
       };
     } catch (error) {
       this.logger.error('Error during app status sync:', error);
+      // Status sync is what detects app crashes. If the loop itself dies and we
+      // only log locally, crash detection goes dark with no Sentry signal.
+      this.errorReportingService?.captureException(error, { surface: 'app-status-sync' });
 
       return {
         success: false,
