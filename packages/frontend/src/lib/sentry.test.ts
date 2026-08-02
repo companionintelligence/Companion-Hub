@@ -125,8 +125,13 @@ describe('frontend sentry', () => {
     type SentryEventInput = {
       message?: string;
       exception?: { values?: Array<{ value?: string }> };
+      tags?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      fingerprint?: string[];
     };
-    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
     expect(beforeSend).toBeTypeOf('function');
 
     expect(
@@ -150,5 +155,47 @@ describe('frontend sentry', () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it('rewrites TranslatableError events with HTTP status and path, and drops 4xx', async () => {
+    const { TranslatableError } = await import('@/types/error.types');
+    await import('./sentry');
+
+    type SentryEventInput = {
+      message?: string;
+      exception?: { values?: Array<{ value?: string }> };
+      tags?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      fingerprint?: string[];
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
+
+    const clientError = new TranslatableError(
+      'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
+      {},
+      {
+        status: 401,
+        url: 'http://localhost:5005/api/apps',
+      },
+    );
+    expect(beforeSend?.({ exception: { values: [{ value: 'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN' }] } }, { originalException: clientError })).toBeNull();
+
+    const serverError = new TranslatableError(
+      'COMMON_AN_ERROR_OCCURRED',
+      {},
+      {
+        status: 500,
+        url: 'http://localhost:5005/api/marketplace/apps/search?pageSize=500',
+        body: 'Internal Server Error',
+      },
+    );
+    const enriched = beforeSend?.({ exception: { values: [{ value: 'COMMON_AN_ERROR_OCCURRED' }] } }, { originalException: serverError });
+
+    expect(enriched?.exception?.values?.[0]?.value).toBe('COMMON_AN_ERROR_OCCURRED (500 /api/marketplace/apps/search)');
+    expect(enriched?.tags?.http_status).toBe('500');
+    expect(enriched?.extra?.response_body).toBe('Internal Server Error');
+    expect(enriched?.fingerprint).toEqual(['translatable-api-error', '500', '/api/marketplace/apps/search']);
   });
 });
