@@ -5237,39 +5237,10 @@ fn start_hub_inner(
         }
     }
 
-    if !compose_path.exists() {
-        let recover_candidates = compose_resource_candidates(
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(Path::to_path_buf))
-                .as_deref()
-                .unwrap_or(Path::new(".")),
-        );
-
-        if let Some(src) = recover_candidates
-            .iter()
-            .find(|candidate| candidate.exists())
-        {
-            std::fs::copy(src, compose_path).map_err(|error| {
-                let message = format!(
-                    "Compose file was missing and recovery copy from {} failed: {}",
-                    src.display(),
-                    error
-                );
-                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-                with_view_logs_hint(message)
-            })?;
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!(
-                    "Recovered missing compose file at {} from {}",
-                    compose_path.display(),
-                    src.display()
-                ),
-            );
-        }
-    }
+    ensure_hub_compose_file(compose_path, data_dir).map_err(|message| {
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
 
     // Ensure the file-mounted Docker config path is a file, not a directory.
     // If Docker ever created this path with the wrong type, compose startup fails
@@ -6910,6 +6881,69 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
         PathBuf::from("/usr/lib/Companion Hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/share/companion-hub").join(HUB_COMPOSE_FILENAME),
     ]
+}
+
+/// Ensure `docker-compose.prod.yml` exists at `compose_path` before hub start.
+///
+/// Recovery order matches `initialize_hub`: copy from bundled resource candidates,
+/// then write the compile-time embedded seed. Without the seed fallback, machines
+/// that lost the data-dir compose file (or never finished initialize) looped the
+/// watchdog forever on "Database bootstrap failed. open …/docker-compose.prod.yml:
+/// no such file or directory" (RUST-HUB-DESKTOP-SHELL-3N/3Q/3P).
+fn ensure_hub_compose_file(compose_path: &Path, data_dir: &Path) -> Result<(), String> {
+    if compose_path.exists() {
+        return Ok(());
+    }
+
+    let recover_candidates = compose_resource_candidates(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .as_deref()
+            .unwrap_or(Path::new(".")),
+    );
+
+    if let Some(src) = recover_candidates
+        .iter()
+        .find(|candidate| candidate.exists())
+    {
+        std::fs::copy(src, compose_path).map_err(|error| {
+            format!(
+                "Compose file was missing and recovery copy from {} failed: {}",
+                src.display(),
+                error
+            )
+        })?;
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Recovered missing compose file at {} from {}",
+                compose_path.display(),
+                src.display()
+            ),
+        );
+        return Ok(());
+    }
+
+    std::fs::write(compose_path, HUB_COMPOSE_SEED).map_err(|error| {
+        // Intentionally not phrased like a compose open race — this must stick
+        // until the user retries after fixing disk permissions / free space.
+        format!(
+            "Failed to materialize {} from the embedded seed (no bundled resource found): {}",
+            compose_path.display(),
+            error
+        )
+    })?;
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Recovered missing compose file at {} from embedded seed",
+            compose_path.display()
+        ),
+    );
+    Ok(())
 }
 
 /// Initialize Hub data directory and generate .env file.
@@ -9293,6 +9327,35 @@ mod tests {
         assert!(super::should_persist_start_failure(
             "Database bootstrap failed. 429 Too Many Requests"
         ));
+        // Seed materialization failures must stick — they are not a setup race.
+        assert!(super::should_persist_start_failure(
+            "Failed to materialize /home/ci/.local/share/companion-hub/docker-compose.prod.yml from the embedded seed (no bundled resource found): Permission denied"
+        ));
+    }
+
+    #[test]
+    fn ensure_hub_compose_file_writes_embedded_seed_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose_path = dir.path().join(super::HUB_COMPOSE_FILENAME);
+        assert!(!compose_path.exists());
+
+        super::ensure_hub_compose_file(&compose_path, dir.path()).expect("write seed");
+
+        let written = std::fs::read_to_string(&compose_path).expect("read compose");
+        assert!(written.contains("services:"), "seed should be a compose file");
+        assert!(written.len() > 100);
+    }
+
+    #[test]
+    fn ensure_hub_compose_file_is_noop_when_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose_path = dir.path().join(super::HUB_COMPOSE_FILENAME);
+        std::fs::write(&compose_path, "services: {}\n").expect("seed existing");
+
+        super::ensure_hub_compose_file(&compose_path, dir.path()).expect("noop");
+
+        let written = std::fs::read_to_string(&compose_path).expect("read compose");
+        assert_eq!(written, "services: {}\n");
     }
 
     #[test]
