@@ -35,10 +35,15 @@ export const AppStoreSidebar = () => {
   const onSearch = useCallback(
     (value: string) => {
       setLocalSearch(value);
+      // Featured is a curated feed, not an exhaustive searchable catalog.
+      // When a user starts searching there, switch to "All" to show full results.
+      if (category === 'featured' && value.trim().length > 0) {
+        setCategory(undefined);
+      }
       setSearch(value);
       navigatePreservingStore();
     },
-    [setSearch, navigatePreservingStore],
+    [category, setCategory, setSearch, navigatePreservingStore],
   );
 
   const handleCategoryClick = useCallback(

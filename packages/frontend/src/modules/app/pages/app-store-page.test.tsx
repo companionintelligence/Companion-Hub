@@ -313,4 +313,20 @@ describe('AppStorePage — multi-store UX', () => {
       query: { search: '', category: undefined, pageSize: 24, storeId: 'ci-apps' },
     });
   });
+
+  it('switches to all when searching from featured view', () => {
+    setupQueries();
+    mockStoreState.category = 'featured';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS'), { target: { value: 'companion' } });
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setSearch).toHaveBeenCalledWith('companion');
+  });
 });

@@ -57,6 +57,16 @@ describe('AppStoreSidebar', () => {
     expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('router');
   });
 
+  it('switches from featured to all when searching', () => {
+    mockStoreState.category = 'featured';
+    render(<AppStoreSidebar />);
+
+    fireEvent.change(screen.getByPlaceholderText('Search apps...'), { target: { value: 'docs' } });
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setSearch).toHaveBeenCalledWith('docs');
+  });
+
   it('clears the search when the trailing clear button is clicked', () => {
     mockStoreState.search = 'router';
     render(<AppStoreSidebar />);
