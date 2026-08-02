@@ -1,4 +1,5 @@
 import type { ErrorEvent, EventHint } from '@sentry/node';
+import { ApiKeyStoreUnavailableError, isTransientDbError } from '@/modules/api-keys/api-key.errors';
 
 const SECRET_PATTERNS = [
   /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
@@ -56,7 +57,33 @@ function scrubValue(value: unknown): unknown {
   return value;
 }
 
-export function scrubEvent(event: ErrorEvent, _hint: EventHint): ErrorEvent | null {
+function isTransientDbSentryNoise(event: ErrorEvent, hint: EventHint | undefined): boolean {
+  const original = hint?.originalException;
+  if (original instanceof ApiKeyStoreUnavailableError) {
+    return true;
+  }
+  if (isTransientDbError(original)) {
+    return true;
+  }
+  // Nest may wrap the driver error as ServiceUnavailableException with cause set.
+  if (original instanceof Error && isTransientDbError(original.cause)) {
+    return true;
+  }
+
+  const exceptionText = event.exception?.values?.map((value) => `${value.type ?? ''} ${value.value ?? ''}`).join(' ') ?? event.message ?? '';
+  return /EAI_AGAIN|ENOTFOUND|ApiKeyStoreUnavailable|Database temporarily unavailable/i.test(exceptionText);
+}
+
+export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | null {
+  // Docker DNS blips (`EAI_AGAIN ci-hub-db`) and exhausted auth-store retries are
+  // infrastructure noise, not hub bugs. Keep one grouped warning so outages stay
+  // visible without creating a new high-priority issue per failing query.
+  if (isTransientDbSentryNoise(event, hint)) {
+    event.level = 'warning';
+    event.fingerprint = ['transient-db-unreachable'];
+    event.tags = { ...event.tags, error_class: 'transient-db-unreachable' };
+  }
+
   if (event.message) {
     event.message = scrubString(event.message);
   }
