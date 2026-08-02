@@ -38,6 +38,7 @@ describe('frontend sentry', () => {
     DEV: import.meta.env.DEV,
     CI_CLOUD_URL: import.meta.env.CI_CLOUD_URL,
     CI_HUB_VERSION: import.meta.env.CI_HUB_VERSION,
+    CI_HUB_IMAGE: import.meta.env.CI_HUB_IMAGE,
     CI_HUB_ENVIRONMENT: import.meta.env.CI_HUB_ENVIRONMENT,
     VITE_SENTRY_DSN: import.meta.env.VITE_SENTRY_DSN,
     VITE_SENTRY_RELEASE: import.meta.env.VITE_SENTRY_RELEASE,
@@ -54,6 +55,7 @@ describe('frontend sentry', () => {
     testEnv.DEV = false;
     testEnv.CI_CLOUD_URL = 'https://hub.ci.computer/';
     testEnv.CI_HUB_VERSION = 'v0.2.27';
+    testEnv.CI_HUB_IMAGE = 'ghcr.io/companionintelligence/ci-hub:v0.2.27';
     testEnv.CI_HUB_ENVIRONMENT = 'development';
     testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
     testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
@@ -65,6 +67,7 @@ describe('frontend sentry', () => {
     testEnv.DEV = originalEnv.DEV;
     testEnv.CI_CLOUD_URL = originalEnv.CI_CLOUD_URL;
     testEnv.CI_HUB_VERSION = originalEnv.CI_HUB_VERSION;
+    testEnv.CI_HUB_IMAGE = originalEnv.CI_HUB_IMAGE;
     testEnv.CI_HUB_ENVIRONMENT = originalEnv.CI_HUB_ENVIRONMENT;
     testEnv.VITE_SENTRY_DSN = originalEnv.VITE_SENTRY_DSN;
     testEnv.VITE_SENTRY_RELEASE = originalEnv.VITE_SENTRY_RELEASE;
@@ -93,6 +96,8 @@ describe('frontend sentry', () => {
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
     expect(setTag).toHaveBeenCalledWith('deployment_version', 'v0.2.27');
+    expect(setTag).toHaveBeenCalledWith('hub_image', 'ghcr.io/companionintelligence/ci-hub:v0.2.27');
+    expect(setTag).toHaveBeenCalledWith('hub_image_tag', 'v0.2.27');
     await vi.waitFor(() => expect(setTag).toHaveBeenCalledWith('device_id', 'device-123'));
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
     expect(fetchDeviceRegistrationInfoResult).toHaveBeenCalled();

@@ -6,6 +6,7 @@ const dsn = process.env.SENTRY_DSN?.trim();
 const deviceId = process.env.DEVICE_ID?.trim();
 const portalUrl = normalizePortalUrl(process.env.CI_CLOUD_URL);
 const deploymentVersion = process.env.CI_HUB_VERSION?.trim();
+const hubImage = process.env.CI_HUB_IMAGE?.trim();
 
 // The backend owns its own process-level uncaughtException/unhandledRejection
 // handlers (see main.ts) which log, capture, flush, and control exit. Drop
@@ -26,6 +27,22 @@ function resolvePortalEnvironment(url: string): 'dev' | 'prod' | 'custom' {
     return 'prod';
   }
   return 'custom';
+}
+
+/** Extract `:tag` from an image ref like `ghcr.io/org/ci-hub:v0.2.5` (not digests). */
+function hubImageTag(image: string): string | null {
+  // Only inspect the final path segment so `localhost:5000/ci-hub:tag` works and
+  // `repo@sha256:…` digests are ignored.
+  const name = image.includes('/') ? image.slice(image.lastIndexOf('/') + 1) : image;
+  if (name.includes('@')) {
+    return null;
+  }
+  const colon = name.lastIndexOf(':');
+  if (colon === -1) {
+    return null;
+  }
+  const tag = name.slice(colon + 1).trim();
+  return tag || null;
 }
 
 if (dsn) {
@@ -53,5 +70,15 @@ if (dsn) {
 
   if (deploymentVersion) {
     Sentry.setTag('deployment_version', deploymentVersion);
+  }
+
+  // Full compose image ref + tag so release triage can filter by container version
+  // even when Sentry `release` is a git SHA bake.
+  if (hubImage) {
+    Sentry.setTag('hub_image', hubImage);
+    const imageTag = hubImageTag(hubImage);
+    if (imageTag) {
+      Sentry.setTag('hub_image_tag', imageTag);
+    }
   }
 }

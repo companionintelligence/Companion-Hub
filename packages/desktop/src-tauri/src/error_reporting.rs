@@ -84,6 +84,27 @@ fn read_deployment_version(env_path: &Path, release: &str) -> Option<String> {
     })
 }
 
+fn read_hub_image(env_path: &Path) -> Option<String> {
+    read_first_env_value(env_path, &["CI_HUB_IMAGE"])
+}
+
+/// Extract `:tag` from an image ref like `ghcr.io/org/ci-hub:v0.2.5` (not digests).
+fn hub_image_tag(image: &str) -> Option<&str> {
+    // Only inspect the final path segment so `localhost:5000/ci-hub:tag` works and
+    // `repo@sha256:…` digests are ignored.
+    let name = image.rsplit_once('/').map(|(_, name)| name).unwrap_or(image);
+    if name.contains('@') {
+        return None;
+    }
+    let (_, tag) = name.rsplit_once(':')?;
+    let tag = tag.trim();
+    if tag.is_empty() {
+        None
+    } else {
+        Some(tag)
+    }
+}
+
 fn portal_environment_for_url(url: &str) -> &'static str {
     match reqwest::Url::parse(url)
         .ok()
@@ -157,6 +178,12 @@ pub fn init_from_env(env_path: &Path, release: &str) {
             }
             if let Some(deployment_version) = read_deployment_version(env_path, release) {
                 scope.set_tag("deployment_version", deployment_version);
+            }
+            if let Some(hub_image) = read_hub_image(env_path) {
+                if let Some(image_tag) = hub_image_tag(&hub_image) {
+                    scope.set_tag("hub_image_tag", image_tag.to_string());
+                }
+                scope.set_tag("hub_image", hub_image);
             }
         });
         let _ = SENTRY_GUARD.set(guard);
@@ -398,7 +425,8 @@ mod tests {
     use super::{
         classify_log_level, grouping_fingerprint, is_benign_compose_optional_env_warning,
         is_benign_hub_start_message, normalize_portal_url, parse_dsn, portal_environment_for_url,
-        read_deployment_version, read_device_id, read_first_env_value, read_portal_url,
+        hub_image_tag, read_deployment_version, read_device_id, read_first_env_value, read_hub_image,
+        read_portal_url,
         should_capture_with, CaptureRecord, LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
     };
     use std::collections::HashMap;
@@ -478,6 +506,31 @@ mod tests {
 
         let value = read_deployment_version(&env_path, "v0.0.0");
         assert_eq!(value.as_deref(), Some("v0.2.27"));
+    }
+
+    #[test]
+    fn reads_hub_image_and_parses_tag() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let env_path = tempdir.path().join("hub.env");
+        std::fs::write(
+            &env_path,
+            "CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:v0.2.27\n",
+        )
+        .expect("write env");
+
+        assert_eq!(
+            read_hub_image(&env_path).as_deref(),
+            Some("ghcr.io/companionintelligence/ci-hub:v0.2.27")
+        );
+        assert_eq!(
+            hub_image_tag("ghcr.io/companionintelligence/ci-hub:v0.2.27"),
+            Some("v0.2.27")
+        );
+        assert_eq!(hub_image_tag("ghcr.io/companionintelligence/ci-hub"), None);
+        assert_eq!(
+            hub_image_tag("ghcr.io/companionintelligence/ci-hub@sha256:abc"),
+            None
+        );
     }
 
     #[test]

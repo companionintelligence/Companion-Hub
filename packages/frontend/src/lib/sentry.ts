@@ -52,6 +52,25 @@ function getDeploymentVersion(): string | null {
   return version ? version : null;
 }
 
+function getHubImage(): string | null {
+  const image = import.meta.env.CI_HUB_IMAGE?.trim();
+  return image ? image : null;
+}
+
+/** Extract `:tag` from an image ref like `ghcr.io/org/ci-hub:v0.2.5` (not digests). */
+function hubImageTag(image: string): string | null {
+  const name = image.includes('/') ? image.slice(image.lastIndexOf('/') + 1) : image;
+  if (name.includes('@')) {
+    return null;
+  }
+  const colon = name.lastIndexOf(':');
+  if (colon === -1) {
+    return null;
+  }
+  const tag = name.slice(colon + 1).trim();
+  return tag || null;
+}
+
 function getSentryRelease(): string | undefined {
   const release = import.meta.env.VITE_SENTRY_RELEASE?.trim();
   if (release) {
@@ -74,6 +93,15 @@ function applyStaticSentryTags(): void {
   const deploymentVersion = getDeploymentVersion();
   if (deploymentVersion) {
     Sentry.setTag('deployment_version', deploymentVersion);
+  }
+
+  const hubImage = getHubImage();
+  if (hubImage) {
+    Sentry.setTag('hub_image', hubImage);
+    const imageTag = hubImageTag(hubImage);
+    if (imageTag) {
+      Sentry.setTag('hub_image_tag', imageTag);
+    }
   }
 }
 
