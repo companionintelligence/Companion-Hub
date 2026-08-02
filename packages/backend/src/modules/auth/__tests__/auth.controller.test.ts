@@ -12,6 +12,7 @@ import { AuthController } from '../auth.controller';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
+import { verifyPortalIdToken } from '../portal-token';
 import { SessionManager } from '../session.manager';
 import { signForwardAuthUser } from '../utils/forward-auth-signing';
 
@@ -21,6 +22,14 @@ vi.mock('../portal-sso', async (importOriginal) => {
     ...actual,
     exchangePortalAuthorizationCode: vi.fn(),
     fetchPortalSessionEmail: vi.fn(),
+  };
+});
+
+vi.mock('../portal-token', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../portal-token')>();
+  return {
+    ...actual,
+    verifyPortalIdToken: vi.fn(),
   };
 });
 
@@ -166,6 +175,79 @@ describe('AuthController', () => {
   });
 
   describe('traefik', () => {
+    it('accepts a valid Portal Bearer and returns 200 with signed headers (no SSO redirect)', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        return undefined as never;
+      });
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({
+        sub: 'portal-sub',
+        email: 'support@lifescope.io',
+        name: 'Support',
+      });
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+
+      const req = {
+        user: undefined,
+        headers: {
+          authorization: 'Bearer portal.id.token',
+          'x-forwarded-host': 'ci-memory-core7-team.companionintelligence.com',
+          'x-forwarded-uri': '/api/files/upload',
+        },
+      } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+        setHeader,
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.id.token', expect.objectContaining({ publicCiCloudUrl: 'https://hub.ci.computer' }));
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      const headers = Object.fromEntries(setHeader.mock.calls);
+      expect(headers['X-CI-Hub-User']).toBe('support@lifescope.io');
+      const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@lifescope.io', timestamp));
+    });
+
+    it('returns 401 (not 302) when a Portal Bearer is present but invalid', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        return undefined as never;
+      });
+      vi.mocked(verifyPortalIdToken).mockResolvedValue(null);
+
+      const req = {
+        user: undefined,
+        headers: {
+          authorization: 'Bearer bad.token',
+          'x-forwarded-host': 'ci-memory-core7-team.companionintelligence.com',
+        },
+      } as unknown as Request;
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
+
     it('should return 200 with a signed X-CI-Hub-User header when user is authenticated', async () => {
       // Arrange: the resolver (not config) is the source of the signing secret —
       // per-app when the forwarded host maps to an installed app (#74).
