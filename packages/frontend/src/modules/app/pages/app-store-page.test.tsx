@@ -10,6 +10,8 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
     setStoreId: vi.fn(),
     search: '',
     setSearch: vi.fn(),
+    setSearchImmediate: vi.fn(),
+    resetBrowseToFeatured: vi.fn(),
   },
   mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
 }));
@@ -328,5 +330,45 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
     expect(mockStoreState.setSearch).toHaveBeenCalledWith('companion');
+  });
+
+  it('hydrates search and category from URL query params', () => {
+    capturedSearchParams = new URLSearchParams('q=ollama&category=ai&store=ci-apps');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  it('writes browse params to the URL when search and category are set', () => {
+    setupQueries();
+    mockStoreState.search = 'docs';
+    mockStoreState.category = 'development';
+    mockStoreState.storeId = 'ci-apps';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const updater = mockSetSearchParams.mock.calls.find((call) => typeof call[0] === 'function')?.[0] as
+      | ((prev: URLSearchParams) => URLSearchParams)
+      | undefined;
+
+    expect(updater).toBeTypeOf('function');
+    if (typeof updater !== 'function') {
+      throw new Error('expected setSearchParams updater');
+    }
+    const next = updater(new URLSearchParams('store=ci-apps'));
+    expect(next.get('q')).toBe('docs');
+    expect(next.get('category')).toBe('development');
+    expect(next.get('store')).toBe('ci-apps');
   });
 });
