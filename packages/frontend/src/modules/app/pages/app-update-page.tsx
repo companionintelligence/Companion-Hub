@@ -2,19 +2,13 @@ import { getAppComposeDiffOptions, getAppConfigDiffOptions, getAppOptions, updat
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/Card';
-import { ScrollArea } from '@/components/ui/ScrollArea';
-import { StepContent, Stepper, StepTrigger, StepTriggerList } from '@/components/ui/Stepper/Stepper';
 import { Switch } from '@/components/ui/Switch';
-import { unifiedMergeView } from '@codemirror/merge';
-import { copilot } from '@uiw/codemirror-theme-copilot';
-import CodeMirror from '@uiw/react-codemirror';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Trans, useTranslation } from 'react-i18next';
-import { ArrowRight, Check, ChevronLeft, ChevronRight, Info, Loader2, X } from 'lucide-react';
-import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
+import { useTranslation } from 'react-i18next';
+import { ArrowRight, Check, ChevronLeft, Loader2, X } from 'lucide-react';
 import type { TranslatableError } from '@/types/error.types';
 import { redirect, useLocation, useNavigate, useParams } from 'react-router';
 import type { Route } from './+types/app-update-page';
@@ -34,15 +28,6 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   return appOptions.data;
 }
 
-const buildVersionLabel = (latestDocker?: string | null, latestVersion?: string | number | null) => {
-  return [latestDocker?.toString().trim(), latestVersion ? `(${String(latestVersion)})` : undefined].filter(Boolean).join(' ');
-};
-
-const LoadingBlock = () => {
-  const { t } = useTranslation();
-  return <div className="mt-3 text-muted">{t('LOADING')}</div>;
-};
-
 export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
   const params = useParams<{ storeId: string; appId: string }>();
   const { t } = useTranslation();
@@ -60,7 +45,6 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
   const { info, metadata } = appData;
 
   const [backupApp, setBackupApp] = useState(true);
-  const [currentStep, setCurrentStep] = useState(0);
 
   const configDiffQuery = useQuery({
     ...getAppConfigDiffOptions({ path: { urn: info.urn } }),
@@ -80,11 +64,6 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
     },
   });
 
-  const newVersionLabel = useMemo(
-    () => buildVersionLabel(metadata?.latestDockerVersion, metadata?.latestVersion),
-    [metadata?.latestDockerVersion, metadata?.latestVersion],
-  );
-
   const configChanged = useMemo(() => {
     if (!configDiffQuery.data) return undefined;
     return configDiffQuery.data.current !== configDiffQuery.data.new;
@@ -94,8 +73,6 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
     if (!composeDiffQuery.data) return undefined;
     return composeDiffQuery.data.current !== composeDiffQuery.data.new;
   }, [composeDiffQuery.data]);
-
-  const LAST_STEP = 4;
 
   return (
     <Card data-testid="app-update">
@@ -114,140 +91,77 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
       </CardHeader>
       <CardContent className="pt-2">
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-          <Stepper currentStep={currentStep}>
-            <StepTriggerList>
-              <StepTrigger step={0} title={t('APP_UPDATE_SUMMARY_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={1} title={t('COMMON_INFORMATION')} onStepChange={setCurrentStep} />
-              <StepTrigger step={2} title={t('APP_UPDATE_CONFIGURATION_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={3} title={t('APP_UPDATE_COMPOSE_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={4} title={t('COMMON_BACKUP')} onStepChange={setCurrentStep} />
-            </StepTriggerList>
-            <div className="mt-1">
-              {/* Summary step */}
-              <StepContent step={0}>
-                <div className="space-y-3" data-testid="update-summary">
-                  <div className="flex justify-between items-center" data-testid="update-summary-version">
-                    <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
-                    <span className="text-sm font-medium">
-                      {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
-                    </span>
-                  </div>
-                  {info.supported_architectures && info.supported_architectures.length > 0 && (
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
-                      <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
-                    </div>
-                  )}
-                  {metadata.minHubVersion && (
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
-                      <span className="text-sm font-medium">{metadata.minHubVersion}</span>
-                    </div>
-                  )}
-                  <div className="border-t border-border/40 pt-2 space-y-1">
-                    <div className="flex items-center gap-2 text-sm">
-                      {configChanged === undefined ? (
-                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
-                      ) : configChanged ? (
-                        <Check size={14} className="text-amber-500" />
-                      ) : (
-                        <X size={14} className="text-muted-foreground" />
-                      )}
-                      <span>
-                        {configChanged === undefined
-                          ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
-                          : configChanged
-                            ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
-                            : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      {composeChanged === undefined ? (
-                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
-                      ) : composeChanged ? (
-                        <Check size={14} className="text-amber-500" />
-                      ) : (
-                        <X size={14} className="text-muted-foreground" />
-                      )}
-                      <span>
-                        {composeChanged === undefined
-                          ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
-                          : composeChanged
-                            ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
-                            : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
-                      </span>
-                    </div>
-                  </div>
+          <div className="space-y-4" data-testid="update-summary">
+            <div className="space-y-3">
+              <div className="flex justify-between items-center" data-testid="update-summary-version">
+                <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
+                <span className="text-sm font-medium">
+                  {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
+                </span>
+              </div>
+              {info.supported_architectures && info.supported_architectures.length > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
+                  <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
                 </div>
-              </StepContent>
-              <StepContent step={1}>
-                <div className="text-muted-foreground">
-                  <Trans
-                    t={t}
-                    i18nKey="APP_UPDATE_INFORMATION_SUBTITLE"
-                    values={{
-                      version: newVersionLabel,
-                      name: info.name,
-                    }}
-                    components={{ strong: <strong /> }}
-                  />
+              )}
+              {metadata.minHubVersion && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
+                  <span className="text-sm font-medium">{metadata.minHubVersion}</span>
                 </div>
-              </StepContent>
-              <StepContent step={2}>
-                <div className="text-muted-foreground">{t('APP_UPDATE_CONFIGURATION_SUBTITLE')}</div>
-                {configDiffQuery.isLoading && <LoadingBlock />}
-                {!configDiffQuery.isLoading && (
-                  <ScrollArea maxheight={500} className="mt-3 border rounded">
-                    <CodeMirror
-                      value={configDiffQuery.data?.new ?? ''}
-                      readOnly
-                      height="400px"
-                      theme={copilot}
-                      extensions={[
-                        unifiedMergeView({
-                          original: configDiffQuery.data?.current ?? '',
-                          mergeControls: false,
-                        }),
-                      ]}
-                    />
-                  </ScrollArea>
-                )}
-              </StepContent>
-              <StepContent step={3}>
-                <div className="text-muted-foreground">{t('APP_UPDATE_COMPOSE_SUBTITLE')}</div>
-                {composeDiffQuery.isLoading && <LoadingBlock />}
-                {!composeDiffQuery.isLoading && (
-                  <ScrollArea maxheight={500} className="mt-3 border rounded">
-                    <CodeMirror
-                      value={composeDiffQuery.data?.new ?? ''}
-                      readOnly
-                      height="400px"
-                      theme={copilot}
-                      extensions={[
-                        unifiedMergeView({
-                          original: composeDiffQuery.data?.current ?? '',
-                          mergeControls: false,
-                        }),
-                      ]}
-                    />
-                  </ScrollArea>
-                )}
-                <Alert variant="info" className="mt-3">
-                  <AlertIcon>
-                    <Info strokeWidth={2} />
-                  </AlertIcon>
-                  <div>
-                    <AlertHeading>{t('COMMON_NOTE')}</AlertHeading>
-                    <AlertDescription>{t('APP_UPDATE_COMPOSE_ALERT_SUBTITLE')}</AlertDescription>
-                  </div>
-                </Alert>
-              </StepContent>
-              <StepContent step={4}>
-                <div className="text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</div>
-                <Switch checked={backupApp} onCheckedChange={setBackupApp} label={t('COMMON_BACKUP')} className="mt-3" />
-              </StepContent>
+              )}
+              <div className="border-t border-border/40 pt-2 space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  {configChanged === undefined ? (
+                    <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                  ) : configChanged ? (
+                    <Check size={14} className="text-amber-500" />
+                  ) : (
+                    <X size={14} className="text-muted-foreground" />
+                  )}
+                  <span>
+                    {configChanged === undefined
+                      ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
+                      : configChanged
+                        ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
+                        : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  {composeChanged === undefined ? (
+                    <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                  ) : composeChanged ? (
+                    <Check size={14} className="text-amber-500" />
+                  ) : (
+                    <X size={14} className="text-muted-foreground" />
+                  )}
+                  <span>
+                    {composeChanged === undefined
+                      ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
+                      : composeChanged
+                        ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
+                        : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
+                  </span>
+                </div>
+              </div>
             </div>
-          </Stepper>
+
+            <p className="text-sm text-muted-foreground" data-testid="update-what-happens">
+              {t('APP_UPDATE_WHAT_HAPPENS', { name: info.name })}
+            </p>
+
+            <div className="border-t border-border/40 pt-3">
+              <p className="text-sm text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</p>
+              <Switch
+                checked={backupApp}
+                onCheckedChange={setBackupApp}
+                label={t('COMMON_BACKUP')}
+                className="mt-3"
+                data-testid="update-backup-switch"
+              />
+            </div>
+          </div>
         </motion.div>
       </CardContent>
       <CardFooter className="border-0 flex items-center justify-between gap-3">
@@ -255,33 +169,19 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
           <ChevronLeft className="me-1" size={16} />
           {t('COMMON_CANCEL')}
         </Button>
-        <div className="flex items-center justify-end gap-2">
-          {currentStep > 0 && (
-            <Button variant="link" onClick={() => setCurrentStep((step) => step - 1)} className="mr-2">
-              {t('COMMON_BACK')}
-            </Button>
-          )}
-          {currentStep < LAST_STEP && (
-            <Button onClick={() => setCurrentStep((step) => step + 1)}>
-              {t('APP_UPDATE_FORM_NEXT')}
-              <ChevronRight className="ms-2 text-muted" size={12} />
-            </Button>
-          )}
-          {currentStep === LAST_STEP && (
-            <Button
-              onClick={() =>
-                update.mutate({
-                  path: { urn: info.urn },
-                  body: { performBackup: backupApp },
-                })
-              }
-              intent="success"
-              loading={update.isPending}
-            >
-              {t('COMMON_UPDATE')}
-            </Button>
-          )}
-        </div>
+        <Button
+          onClick={() =>
+            update.mutate({
+              path: { urn: info.urn },
+              body: { performBackup: backupApp },
+            })
+          }
+          intent="success"
+          loading={update.isPending}
+          data-testid="update-confirm"
+        >
+          {t('COMMON_UPDATE')}
+        </Button>
       </CardFooter>
     </Card>
   );
