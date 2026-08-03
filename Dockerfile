@@ -148,6 +148,7 @@ RUN --mount=type=secret,id=sentry_auth_token \
 FROM runner_base AS runner
 
 ARG TARGETARCH
+ARG TARGETPLATFORM
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
@@ -167,10 +168,15 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
-RUN --mount=type=cache,target=/root/.npm \
+# RUN --platform=$TARGETPLATFORM is required: on arm64 CI runners buildx builds the
+# linux/amd64 manifest slot as linux/arm64->amd64; without this, RUN executes on
+# the build host and process.arch stays arm64 while TARGETARCH is amd64.
+RUN --platform=$TARGETPLATFORM \
+    --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
-RUN set -eux; \
+RUN --platform=$TARGETPLATFORM \
+    set -eux; \
     echo "Installing docker-compose for ${TARGETARCH:-amd64}"; \
     if [ "${TARGETARCH}" = "arm64" ]; then \
       curl -fL --retry 3 --retry-delay 5 -o /usr/local/bin/docker-compose \

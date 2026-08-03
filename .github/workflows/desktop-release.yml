@@ -12,7 +12,7 @@ on:
         default: true
         type: boolean
       environment:
-        description: 'Cloud target (dev=hub.companionintelligence.com / dl-dev; production=hub.ci.computer / dl)'
+        description: 'Cloud target'
         required: false
         default: 'dev'
         type: choice
