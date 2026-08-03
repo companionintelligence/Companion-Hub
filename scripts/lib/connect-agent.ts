@@ -449,7 +449,10 @@ export function readJsonIfPresent(path: string): Record<string, unknown> {
  */
 export function writeJsonAtomic(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
+  // Per-process, so two concurrent runs cannot write the same temp file and have one
+  // rename the other's half-serialized JSON into place. It also means a temp file left
+  // by a crashed run is never reused, so its mode cannot be inherited.
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, path);
   chmodSync(path, 0o600);
@@ -946,21 +949,46 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   // throws — a permissions change, a full disk — takes a working plugin with it, which
   // is the same loss the staging directory above exists to prevent.
   const previous = existsSync(dir) ? `${dir}.previous` : undefined;
-  if (previous) {
-    rmDirRecursive(previous);
-    renameSync(dir, previous);
-  }
+  let movedAside = false;
   try {
+    if (previous) {
+      rmDirRecursive(previous);
+      renameSync(dir, previous);
+      movedAside = true;
+    }
     renameSync(staging, dir);
   } catch (error) {
-    if (previous) renameSync(previous, dir);
-    rmDirRecursive(staging);
+    // Rollback is best-effort, and the message has to reflect whether it worked. Saying
+    // "the existing install was put back" when the rename that would put it back also
+    // threw leaves someone believing a working plugin is in place when it is sitting
+    // under another name — and the whole point of this path is not losing it silently.
+    let restored = false;
+    if (movedAside && previous) {
+      try {
+        rmDirRecursive(dir);
+        renameSync(previous, dir);
+        restored = true;
+      } catch {
+        restored = false;
+      }
+    }
+    try {
+      rmDirRecursive(staging);
+    } catch {
+      // Leftover staging is untidy, not harmful, and must not mask the real error.
+    }
+    const lostGround = movedAside && !restored;
     printMessageBox(
-      'Install failed — nothing was changed',
+      lostGround ? 'Install failed — the previous install needs restoring by hand' : 'Install failed — nothing was changed',
       [
         `Could not move the new plugin into ${dir}`,
         String((error as Error).message),
-        ...(previous ? ['', 'The existing install was put back.'] : []),
+        '',
+        ...(lostGround
+          ? ['The previous install could not be put back automatically. It is at:', `  ${previous}`, `Move that directory to ${dir} to restore it.`]
+          : movedAside
+            ? ['The existing install was put back.']
+            : ['No install existed to disturb.']),
       ],
       'red',
     );
