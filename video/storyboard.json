@@ -1,0 +1,282 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "ci-hub",
+    "name": "Companion Hub",
+    "repo": "companionintelligence/CI-Hub",
+    "marketplaceId": "ci-hub",
+    "website": "ci.computer"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5
+  },
+  "chapters": {
+    "claim": "Claim the machine",
+    "setup": "First boot",
+    "run": "Day to day",
+    "dials": "Under the hood"
+  },
+  "media": {
+    "music": null,
+    "musicVolume": 0.14
+  },
+  "scenes": [
+    {
+      "id": "open",
+      "kind": "intro",
+      "seconds": 4.5,
+      "title": "Companion Hub",
+      "caption": "Your data. Your hardware. Your AI.",
+      "narration": "Companion Hub is the app runtime that lives in your house."
+    },
+    {
+      "id": "sign-in",
+      "kind": "screen",
+      "chapter": "claim",
+      "seconds": 5,
+      "caption": "A local admin account. The cloud is optional.",
+      "narration": "It opens on a local login. A CI Account is optional.",
+      "shots": [
+        {
+          "id": "login-screen",
+          "url": "hub.ci.lan/login",
+          "alt": "The Hub login form: a CI Account button above the local email and password fields.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/login",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='you@example.com']",
+            "settle": 900
+          }
+        }
+      ]
+    },
+    {
+      "id": "pair-the-hub",
+      "kind": "screen",
+      "chapter": "claim",
+      "seconds": 5,
+      "caption": "Six characters, and the machine is yours.",
+      "narration": "A new Hub asks for one pairing code from the Portal.",
+      "shots": [
+        {
+          "id": "device-registration",
+          "url": "hub.ci.lan/device-registration",
+          "alt": "Step 2: Connect this device, with the pairing-code field waiting for six characters.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/device-registration",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='ABC123']",
+            "settle": 900,
+            "mask": ["text=Device ID"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "first-boot",
+      "kind": "screen",
+      "chapter": "setup",
+      "seconds": 5.5,
+      "caption": "Local models, network, apps. Then Install & Finish.",
+      "narration": "First boot is one pass. Local models, remote access, a few apps.",
+      "shots": [
+        {
+          "id": "onboarding-wizard",
+          "url": "hub.ci.lan/onboarding",
+          "alt": "The Set Up Your Hub wizard with its sticky Install and Finish footer.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/onboarding",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='finish-setup-btn']",
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "home-dashboard",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5.5,
+      "caption": "Disk, CPU, memory. From a box you can point at.",
+      "narration": "This is home. Disk, CPU and memory, read off hardware you own.",
+      "shots": [
+        {
+          "id": "hub-home",
+          "url": "hub.ci.lan/home",
+          "alt": "The Hub dashboard: three system stat cards above the installed-apps row.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/login",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='you@example.com']",
+            "before": [
+              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='Enter your password']", "password"] },
+              { "click": "button[type='submit']" },
+              { "waitFor": "text=Disk space" },
+              { "wait": 1500 }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "browse-the-store",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5.5,
+      "caption": "The App Store, fed by the open Marketplace.",
+      "narration": "The store is fed by the open Marketplace. Search it, or browse by category.",
+      "shots": [
+        {
+          "id": "hub-store",
+          "url": "hub.ci.lan/store",
+          "alt": "The Hub App Store grid, with the category sidebar and the search field.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/store",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "a[href^='/store/']",
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "app-privacy",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "App Privacy, on every single app page.",
+      "narration": "Every app page carries an App Privacy card. It is a short read.",
+      "shots": [
+        {
+          "id": "app-details",
+          "url": "hub.ci.lan/store",
+          "alt": "An app detail page: description, Information panel, and the App Privacy card.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/store",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "a[href^='/store/']",
+            "before": [
+              { "click": "a[href^='/store/']" },
+              { "waitFor": "[data-testid='app-header-actions-row']" },
+              { "wait": 1500 }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "install-and-run",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "Installing, then running. That is the whole ceremony.",
+      "narration": "Install it, and the Hub works until that badge turns green.",
+      "shots": [
+        {
+          "id": "app-installing",
+          "url": "hub.ci.lan/apps",
+          "alt": "An installed app mid-lifecycle: the status pill moving from installing to running.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/store",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-status-pill']",
+            "settle": 1200,
+            "mask": ["text=Installing"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "every-dial",
+      "kind": "screen",
+      "chapter": "dials",
+      "seconds": 5.5,
+      "caption": "Security, network, app stores, AI, logs.",
+      "narration": "Want the dials? They are all here. Reading your own logs costs nothing.",
+      "shots": [
+        {
+          "id": "hub-settings",
+          "url": "hub.ci.lan/settings",
+          "alt": "Hub settings with its tab row: Settings, Security, App Stores, Network, AI, MCP, System, Logs.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/settings",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='settings-scroll-container']",
+            "settle": 1200
+          }
+        },
+        {
+          "id": "hub-settings-security",
+          "url": "hub.ci.lan/settings",
+          "alt": "The Security tab of Hub settings.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/settings",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='settings-scroll-container']",
+            "before": [{ "click": "button[role='tab']:has-text('Security')" }, { "wait": 900 }],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "resource-monitor",
+      "kind": "screen",
+      "chapter": "dials",
+      "seconds": 4.5,
+      "caption": "Per-app CPU and memory, sampled live.",
+      "narration": "The resource monitor charts every app's CPU and memory.",
+      "shots": [
+        {
+          "id": "hub-resource-monitor",
+          "url": "hub.ci.lan/resource-monitor",
+          "alt": "The Resource Monitor: workload summary cards above the per-app table.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/resource-monitor",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "text=Resource Monitor",
+            "settle": 1200,
+            "mask": ["text=Last sampled"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "recap",
+      "kind": "feature",
+      "seconds": 5,
+      "caption": "Your hardware. Your domain. Your data.",
+      "narration": "Your own hardware, your own domain, your own data. Nothing to cancel.",
+      "items": [
+        { "label": "Hardware", "value": "Yours" },
+        { "label": "Domain", "value": "Yours" },
+        { "label": "Data", "value": "Stays home" },
+        { "label": "Subscriptions", "value": "None" }
+      ]
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 4.5,
+      "caption": "ci.computer",
+      "cta": "Own your AI.",
+      "url": "ci.computer",
+      "narration": "Companion Intelligence. ci dot computer. Own your AI."
+    }
+  ]
+}
