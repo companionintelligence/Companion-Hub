@@ -405,6 +405,7 @@
   "APP_UPDATE_SETTINGS_STOPPED_HINT": "Changes will apply when you next start the app.",
   "APP_UPDATE_ERROR_MIN_HUB_VERSION": "App {{id}} update requires CI Hub version {{minVersion}} or higher. Please update your instance.",
   "APP_UPDATE_INFORMATION_SUBTITLE": "To update {{name}} to version <strong>{{version}}</strong>, follow the steps to review and apply the update.",
+  "APP_UPDATE_WHAT_HAPPENS": "CI Hub will stop {{name}}'s containers, apply the new app definition, keep your existing app data, pull any new images, then start the app again if it was running.",
   "APP_UPDATE_CONFIGURATION_TITLE": "Configuration",
   "APP_UPDATE_CONFIGURATION_SUBTITLE": "Review the new configuration of the app.",
   "APP_UPDATE_COMPOSE_TITLE": "Compose file",
