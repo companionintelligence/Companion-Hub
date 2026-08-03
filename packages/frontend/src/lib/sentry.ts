@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/react';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
+import { scrubEvent, scrubUrl } from './sentry-scrubber';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -205,7 +206,8 @@ function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: Translata
   event.extra = {
     ...event.extra,
     http_status: error.http.status,
-    http_url: error.http.url,
+    // Query strings on hub routes carry search terms and one-shot tokens.
+    http_url: scrubUrl(error.http.url),
     http_path: path,
     response_body: error.http.body,
     message_key: error.message,
@@ -280,10 +282,12 @@ export function initHubSentry(): void {
 
       const original = hint?.originalException;
       if (original instanceof TranslatableError) {
-        return enrichTranslatableErrorEvent(event, original);
+        const enriched = enrichTranslatableErrorEvent(event, original);
+        // Enrichment adds the response body and API URL, so scrub after it.
+        return enriched ? scrubEvent(enriched) : null;
       }
 
-      return event;
+      return scrubEvent(event);
     },
   });
 
@@ -312,7 +316,7 @@ export function captureHubException(error: unknown, context?: Record<string, unk
       const path = apiPathForSentry(error.http.url);
       scope.setTag('http_status', String(error.http.status));
       scope.setExtra('http_status', error.http.status);
-      scope.setExtra('http_url', error.http.url);
+      scope.setExtra('http_url', scrubUrl(error.http.url));
       scope.setExtra('http_path', path);
       scope.setExtra('response_body', error.http.body);
       scope.setExtra('message_key', error.message);

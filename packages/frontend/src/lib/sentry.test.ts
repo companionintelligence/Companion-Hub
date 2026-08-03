@@ -220,6 +220,41 @@ describe('frontend sentry', () => {
     expect(enriched?.exception?.values?.[0]?.value).toBe('COMMON_AN_ERROR_OCCURRED (500 /api/marketplace/apps/search)');
     expect(enriched?.tags?.http_status).toBe('500');
     expect(enriched?.extra?.response_body).toBe('Internal Server Error');
+    expect(enriched?.extra?.http_url).toBe('http://localhost:5005/api/marketplace/apps/search');
     expect(enriched?.fingerprint).toEqual(['translatable-api-error', '500', '/api/marketplace/apps/search']);
+  });
+
+  it('scrubs the payload in beforeSend before it leaves the browser', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = {
+      message?: string;
+      request?: { url?: string; cookies?: Record<string, string>; data?: unknown; headers?: Record<string, string> };
+      extra?: Record<string, unknown>;
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
+
+    // httpContextIntegration sets request.url from location.href, and the
+    // reset-password route carries a live one-time token in its query string.
+    const scrubbed = beforeSend?.({
+      message: 'boom at /Users/bennett/devel',
+      request: {
+        url: 'https://hub.ci.localhost/auth/reset-password?token=one-time-secret',
+        cookies: { 'ci-hub-session': 'session-value' },
+        data: { password: 'hunter2' },
+        headers: { cookie: 'ci-hub-session=session-value', 'User-Agent': 'Mozilla/5.0' },
+      },
+      extra: { apiKey: 'ci_live_abcdef' },
+    });
+
+    expect(scrubbed?.request?.url).toBe('https://hub.ci.localhost/auth/reset-password');
+    expect(scrubbed?.request?.cookies).toBeUndefined();
+    expect(scrubbed?.request?.data).toBeUndefined();
+    expect(scrubbed?.request?.headers?.cookie).toBe('[Filtered]');
+    expect(scrubbed?.request?.headers?.['User-Agent']).toBe('Mozilla/5.0');
+    expect(scrubbed?.message).toBe('boom at ~/devel');
+    expect(scrubbed?.extra?.apiKey).toBe('[Filtered]');
   });
 });
