@@ -363,7 +363,10 @@ describe('AppStorePage — multi-store UX', () => {
       | undefined;
 
     expect(updater).toBeTypeOf('function');
-    const next = updater!(new URLSearchParams('store=ci-apps'));
+    if (typeof updater !== 'function') {
+      throw new Error('expected setSearchParams updater');
+    }
+    const next = updater(new URLSearchParams('store=ci-apps'));
     expect(next.get('q')).toBe('docs');
     expect(next.get('category')).toBe('development');
     expect(next.get('store')).toBe('ci-apps');
