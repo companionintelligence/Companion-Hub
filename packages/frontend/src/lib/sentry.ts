@@ -2,7 +2,8 @@ import * as Sentry from '@sentry/react';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
-import { scrubEvent, scrubUrl } from './sentry-scrubber';
+import { scrubBreadcrumb, scrubBrowserEvent, scrubString, scrubUrl } from './sentry-scrubber';
+import { isTelemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -206,10 +207,16 @@ function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: Translata
   event.extra = {
     ...event.extra,
     http_status: error.http.status,
-    // Query strings on hub routes carry search terms and one-shot tokens.
+    // The raw `res.url` captured in root.tsx keeps its query string, which on
+    // this app carries app slugs, pairing codes and search terms. `path` above
+    // was already query-stripped for the title and fingerprint; attaching the
+    // unstripped URL right beside it gave that back.
     http_url: scrubUrl(error.http.url),
     http_path: path,
-    response_body: error.http.body,
+    // The first 300 characters of the failing response. Kept — it is the single
+    // most useful field for triaging a 5xx — but run through the scrubber,
+    // since it is server output we do not control.
+    response_body: typeof error.http.body === 'string' ? scrubString(error.http.body) : error.http.body,
     message_key: error.message,
   };
   event.fingerprint = ['translatable-api-error', String(error.http.status), path];
@@ -268,26 +275,50 @@ export function initHubSentry(): void {
     return;
   }
 
+  // Initialise eagerly and gate in `beforeSend`, rather than awaiting consent
+  // before init: that way a mid-session flip of "Allow error monitoring" takes
+  // effect on the next capture in BOTH directions, with no reload. Nothing is
+  // sent until the consent fetch below resolves — `isTelemetryAllowed()` is
+  // false while the answer is unknown.
+  void refreshTelemetryConsent();
+
   Sentry.init({
     dsn,
     environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
     release: getSentryRelease(),
     enabled: true,
     tracesSampleRate: 0,
-    sendDefaultPii: true,
+    // No PII, matching the rest of the fleet. The Sentry org has
+    // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the one
+    // component storing users' real IP addresses. Device attribution comes from
+    // the explicit `device_id` tag/user id set below, not from the SDK.
+    sendDefaultPii: false,
     beforeSend(event, hint) {
+      if (!isTelemetryAllowed()) {
+        // Keep the cached answer fresh for subsequent events; an in-app settings
+        // save publishes its result immediately and does not wait for this.
+        refreshTelemetryConsentIfStale();
+        return null;
+      }
+
+      refreshTelemetryConsentIfStale();
+
       if (shouldDropSentryEvent(event)) {
         return null;
       }
 
       const original = hint?.originalException;
-      if (original instanceof TranslatableError) {
-        const enriched = enrichTranslatableErrorEvent(event, original);
-        // Enrichment adds the response body and API URL, so scrub after it.
-        return enriched ? scrubEvent(enriched) : null;
-      }
+      // Enrich first, scrub second: the enricher adds extras of its own, and
+      // scrubbing before that would leave them unredacted.
+      const enriched = original instanceof TranslatableError ? enrichTranslatableErrorEvent(event, original) : event;
 
-      return scrubEvent(event);
+      return enriched === null ? null : scrubBrowserEvent(enriched);
+    },
+    // Breadcrumbs are attached to the event by the SDK and scrubbed above too;
+    // doing it here as well means a crumb is redacted at the moment it is
+    // recorded, so it cannot leak via any other path that reads the buffer.
+    beforeBreadcrumb(breadcrumb) {
+      return scrubBreadcrumb(breadcrumb);
     },
   });
 
@@ -316,9 +347,11 @@ export function captureHubException(error: unknown, context?: Record<string, unk
       const path = apiPathForSentry(error.http.url);
       scope.setTag('http_status', String(error.http.status));
       scope.setExtra('http_status', error.http.status);
+      // Same reasoning as enrichTranslatableErrorEvent: the raw URL carries a
+      // query string the query-stripped `path` deliberately drops.
       scope.setExtra('http_url', scrubUrl(error.http.url));
       scope.setExtra('http_path', path);
-      scope.setExtra('response_body', error.http.body);
+      scope.setExtra('response_body', typeof error.http.body === 'string' ? scrubString(error.http.body) : error.http.body);
       scope.setExtra('message_key', error.message);
       scope.setFingerprint(['translatable-api-error', String(error.http.status), path]);
     }

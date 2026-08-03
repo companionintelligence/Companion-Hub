@@ -7,15 +7,15 @@ import { scrubEvent, scrubString, scrubUrl } from './sentry-scrubber';
 const noHint = {} as never;
 
 /** Scrub an event that is expected to survive, so assertions stay unguarded. */
-function scrub(event: ErrorEvent): ErrorEvent {
-  const scrubbed = scrubEvent(event, noHint);
+function scrub(event: unknown): ErrorEvent {
+  const scrubbed = scrubEvent(event as ErrorEvent, noHint);
   if (!scrubbed) {
     throw new Error('scrubEvent unexpectedly dropped the event');
   }
   return scrubbed;
 }
 
-function firstFrame(event: ErrorEvent) {
+function firstFrame(event: unknown) {
   const [frame] = scrub(event).exception?.values?.[0]?.stacktrace?.frames ?? [];
   return frame;
 }
@@ -50,6 +50,11 @@ describe('scrubString', () => {
     expect(scrubString('C:/Users/bennett/AppData/ci')).toBe('~/AppData/ci');
   });
 
+  it('collapses macOS and Linux home directories exactly', () => {
+    expect(scrubString('/Users/bennett/devel/x.ts')).toBe('~/devel/x.ts');
+    expect(scrubString('/home/ci/data/hub.db')).toBe('~/data/hub.db');
+  });
+
   it('redacts bearer tokens and tailscale auth keys', () => {
     expect(scrubString('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def')).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     expect(scrubString('tskey-auth-abc123-def456')).toBe('[Filtered]');
@@ -58,6 +63,7 @@ describe('scrubString', () => {
   it('redacts the hyphenated api-key form', () => {
     // `x-api-key` reaches us as a header key AND inside logged header dumps.
     expect(scrubString('api-key: ci_live_0987654321')).not.toContain('ci_live_0987654321');
+    expect(scrubString('api_key=sk-live-1234567890')).not.toContain('sk-live-1234567890');
   });
 
   it('redacts credentials embedded in connection URLs', () => {
@@ -65,6 +71,7 @@ describe('scrubString', () => {
 
     expect(scrubbed).not.toContain('pgadmin_s3cure');
     expect(scrubbed).toContain('[Filtered]');
+    expect(scrubString('postgres://ci:hunter2@ci-hub-db:5432/hub')).not.toContain('hunter2');
   });
 
   it('truncates oversized strings', () => {
@@ -72,6 +79,7 @@ describe('scrubString', () => {
 
     expect(scrubbed).toHaveLength(8000 + '… [truncated]'.length);
     expect(scrubbed.endsWith('… [truncated]')).toBe(true);
+    expect(scrubbed.length).toBeLessThan(9000);
   });
 
   it('leaves ordinary text alone', () => {
@@ -82,6 +90,7 @@ describe('scrubString', () => {
 describe('scrubUrl', () => {
   it('drops the query and hash', () => {
     expect(scrubUrl('https://hub.ci.localhost/store?search=therapy#top')).toBe('https://hub.ci.localhost/store');
+    expect(scrubUrl('https://hub.local/api/apps?q=x#f')).toBe('https://hub.local/api/apps');
   });
 
   it('returns path-only URLs unchanged', () => {
@@ -121,10 +130,79 @@ describe('scrubEvent transient DB handling', () => {
   });
 });
 
-describe('scrubEvent request payload', () => {
-  // `include.cookies` defaults to on and is NOT gated behind `sendDefaultPii`,
-  // so these arrive whatever that flag is set to.
+describe('key denylist', () => {
+  it('filters hyphenated api-key headers, signatures and identity keys', () => {
+    // A bare credential value matches no SECRET_PATTERN, so the KEY is the only
+    // signal. `x-api-key` used to fall through: it contains neither `apikey`
+    // nor `api_key`.
+    const result = scrub({
+      extra: {
+        'x-api-key': 'ci_hub_9f3a7c21be40',
+        'X-API-Key': 'ci_hub_9f3a7c21be40',
+        signature: 'deadbeef',
+        email: 'liam@example.com',
+        username: 'liam',
+        user: 'liam',
+        owner: 'liam',
+        'x-forwarded-for': '203.0.113.42',
+        forwarded: 'for=203.0.113.42',
+        'remote-addr': '203.0.113.42',
+        'x-ci-hub-user': 'liam',
+      },
+    });
+
+    for (const [key, value] of Object.entries(result.extra ?? {})) {
+      expect(value, `${key} was not filtered`).toBe('[Filtered]');
+    }
+  });
+
+  it('keeps diagnostic keys that merely look identity-ish', () => {
+    const result = scrub({
+      extra: { 'user-agent': 'curl/8.0', user_id: 'abc', owner_id: 'def', http_status: 500 },
+    });
+
+    expect(result.extra).toEqual({ 'user-agent': 'curl/8.0', user_id: 'abc', owner_id: 'def', http_status: 500 });
+  });
+});
+
+describe('request data the SDK attaches behind our backs', () => {
+  it('strips url query, query_string, cookies, body and sensitive headers', () => {
+    const result = scrub({
+      request: {
+        url: 'http://hub.local/api/apps/install?token=SUPERSECRET&app=private-notes',
+        query_string: 'token=SUPERSECRET&app=private-notes',
+        cookies: { 'ci-hub-session': 'abc123' },
+        data: { password: 'hunter2' },
+        headers: {
+          cookie: 'ci-hub-session=abc123',
+          authorization: 'Bearer abc123DEF',
+          'x-api-key': 'ci_hub_9f3a',
+          'x-ci-hub-user': 'liam',
+          referer: 'http://hub.local/apps?q=private-notes',
+          'user-agent': 'curl/8.0',
+        },
+      },
+    });
+
+    const request = result.request as Record<string, unknown>;
+    expect(request.url).toBe('http://hub.local/api/apps/install');
+    expect(request.query_string).toBe('[Filtered]');
+    expect(request.cookies).toBeUndefined();
+    expect(request.data).toBeUndefined();
+
+    const headers = request.headers as Record<string, string>;
+    expect(headers.cookie).toBe('[Filtered]');
+    expect(headers.authorization).toBe('[Filtered]');
+    expect(headers['x-api-key']).toBe('[Filtered]');
+    expect(headers['x-ci-hub-user']).toBe('[Filtered]');
+    // Referrer keeps its path but loses the query — that is where search terms live.
+    expect(headers.referer).toBe('http://hub.local/apps');
+    expect(headers['user-agent']).toBe('curl/8.0');
+  });
+
   it('drops cookies, body and query string', () => {
+    // `include.cookies` defaults to on and is NOT gated behind `sendDefaultPii`,
+    // so these arrive whatever that flag is set to.
     const event = {
       request: {
         cookies: { 'ci-hub-session': 'eyJhbGciOiJIUzI1NiJ9.session.value' },
@@ -132,7 +210,7 @@ describe('scrubEvent request payload', () => {
         query_string: 'search=private+app',
         headers: { authorization: 'Bearer abc', 'user-agent': 'curl/8' },
       },
-    } as unknown as ErrorEvent;
+    };
 
     const scrubbed = scrub(event);
 
@@ -151,7 +229,7 @@ describe('scrubEvent request payload', () => {
         url: 'https://hub.ci.localhost/auth/reset-password?token=one-time-secret',
         query_string: 'token=one-time-secret',
       },
-    } as unknown as ErrorEvent;
+    };
 
     const scrubbed = scrub(event);
 
@@ -160,13 +238,13 @@ describe('scrubEvent request payload', () => {
   });
 
   it('filters the cookie header, not only the parsed cookies map', () => {
-    const event = { request: { headers: { cookie: 'ci-hub-session=eyJhbGciOiJIUzI1NiJ9' } } } as unknown as ErrorEvent;
+    const event = { request: { headers: { cookie: 'ci-hub-session=eyJhbGciOiJIUzI1NiJ9' } } };
 
     expect(scrub(event).request?.headers?.cookie).toBe('[Filtered]');
   });
 
   it('filters the hyphenated x-api-key header', () => {
-    const event = { request: { headers: { 'x-api-key': 'ci_live_abcdef123456' } } } as unknown as ErrorEvent;
+    const event = { request: { headers: { 'x-api-key': 'ci_live_abcdef123456' } } };
 
     expect(scrub(event).request?.headers?.['x-api-key']).toBe('[Filtered]');
   });
@@ -174,7 +252,7 @@ describe('scrubEvent request payload', () => {
   it('strips the query string from URL-valued headers', () => {
     const event = {
       request: { headers: { Referer: 'https://hub.ci.localhost/store?search=private', location: '/settings?tab=account' } },
-    } as unknown as ErrorEvent;
+    };
 
     const headers = scrub(event).request?.headers;
 
@@ -183,9 +261,22 @@ describe('scrubEvent request payload', () => {
   });
 
   it('tolerates an event with no request section', () => {
-    const event = { message: 'plain failure' } as ErrorEvent;
+    const event = { message: 'plain failure' };
 
     expect(scrub(event).message).toBe('plain failure');
+  });
+
+  it('drops the machine hostname', () => {
+    expect(scrub({ server_name: 'MacBook-Pro-2.local' }).server_name).toBeUndefined();
+    expect(scrub({ server_name: 'Bennetts-MacBook-Pro.local' }).server_name).toBeUndefined();
+  });
+
+  it('keeps user.id but drops every other user identifier', () => {
+    const result = scrub({
+      user: { id: 'device-abc', ip_address: '203.0.113.42', email: 'liam@example.com', username: 'liam' },
+    });
+
+    expect(result.user).toEqual({ id: 'device-abc' });
   });
 });
 
@@ -194,23 +285,52 @@ describe('scrubEvent identity-bearing keys', () => {
   // behind its own Traefik forward-auth, which injects headers our code never
   // references.
   it.each(['x-ci-hub-user', 'x-forwarded-user', 'x-ci-owner', 'username', 'email'])('filters %s', (key) => {
-    const event = { request: { headers: { [key]: 'bennett' } } } as unknown as ErrorEvent;
+    const event = { request: { headers: { [key]: 'bennett' } } };
 
     expect(scrub(event).request?.headers?.[key]).toBe('[Filtered]');
   });
 
   it.each(['user-agent', 'user_id', 'owner_id'])('keeps %s as diagnostic signal', (key) => {
-    const event = { request: { headers: { [key]: 'curl/8' } } } as unknown as ErrorEvent;
+    const event = { request: { headers: { [key]: 'curl/8' } } };
 
     expect(scrub(event).request?.headers?.[key]).toBe('curl/8');
   });
 });
 
-describe('scrubEvent hostname and stack frames', () => {
-  it('removes the machine hostname', () => {
-    const event = { server_name: 'Bennetts-MacBook-Pro.local' } as ErrorEvent;
+describe('stack frames', () => {
+  it('scrubs filename, abs_path, context lines and captured vars', () => {
+    const result = scrub({
+      exception: {
+        values: [
+          {
+            type: 'Error',
+            value: 'boom',
+            stacktrace: {
+              frames: [
+                {
+                  filename: '/Users/liam/devel/ci/CI-Hub/packages/backend/src/app.ts',
+                  abs_path: '/Users/liam/devel/ci/CI-Hub/packages/backend/src/app.ts',
+                  context_line: "const key = 'api_key=ci_hub_9f3a7c21be40';",
+                  pre_context: ['// /Users/liam/notes'],
+                  post_context: ['await fetch(`https://x/?token=SUPERSECRET`);'],
+                  vars: { token: 'bare-secret', path: '/Users/liam/notes' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
 
-    expect(scrub(event).server_name).toBeUndefined();
+    const frame = (result.exception?.values?.[0]?.stacktrace?.frames ?? [])[0] as Record<string, unknown>;
+    expect(frame.filename).not.toContain('/Users/liam');
+    expect(frame.abs_path).not.toContain('/Users/liam');
+    expect(frame.context_line).not.toContain('ci_hub_9f3a7c21be40');
+    expect((frame.pre_context as string[])[0]).not.toContain('/Users/liam');
+    expect((frame.post_context as string[])[0]).not.toContain('SUPERSECRET');
+    // A bare value under a sensitive key is caught by the key check.
+    expect((frame.vars as Record<string, unknown>).token).toBe('[Filtered]');
+    expect((frame.vars as Record<string, unknown>).path).not.toContain('/Users/liam');
   });
 
   it('scrubs stack frame paths and captured locals', () => {
@@ -231,7 +351,7 @@ describe('scrubEvent hostname and stack frames', () => {
           },
         ],
       },
-    } as unknown as ErrorEvent);
+    });
 
     expect(frame?.filename).toBe('~/devel/ci/CI-Hub/x.ts');
     expect(frame?.abs_path).toBe('~/devel/ci/CI-Hub/x.ts');
@@ -240,8 +360,10 @@ describe('scrubEvent hostname and stack frames', () => {
   });
 
   it('scrubs context_line, pre_context and post_context', () => {
-    // The ContextLines integration attaches the source around the throw site —
-    // hardcoded keys and connection strings live there.
+    // ContextLines is disabled in instrument.ts (MANUALLY_HANDLED_INTEGRATIONS)
+    // because seven lines of arbitrary source per frame is an unbounded channel
+    // a denylist cannot close. This stays as the belt-and-braces half: anything
+    // else that attaches source context still gets scrubbed.
     const frame = firstFrame({
       exception: {
         values: [
@@ -259,7 +381,7 @@ describe('scrubEvent hostname and stack frames', () => {
           },
         ],
       },
-    } as unknown as ErrorEvent);
+    });
 
     expect(frame?.context_line).not.toContain('sk-live-9988776655');
     expect(frame?.pre_context?.[0]).toBe('const dir = "~/notes";');
@@ -267,14 +389,14 @@ describe('scrubEvent hostname and stack frames', () => {
   });
 });
 
-describe('scrubEvent extra and breadcrumbs', () => {
+describe('extra', () => {
   it('filters sensitive keys in extra, at any depth', () => {
     const event = {
       extra: {
         outer: { password: 'hunter2', note: '/home/ci/x' },
         dsn: 'https://key@o1.ingest.sentry.io/2',
       },
-    } as unknown as ErrorEvent;
+    };
 
     const extra = scrub(event).extra as { outer: { password: string; note: string }; dsn: string };
 
@@ -283,10 +405,31 @@ describe('scrubEvent extra and breadcrumbs', () => {
     expect(extra.dsn).toBe('[Filtered]');
   });
 
+  it('survives a cyclic extra payload', () => {
+    const cyclic: Record<string, unknown> = { name: 'loop' };
+    cyclic.self = cyclic;
+
+    expect(() => scrub({ extra: cyclic })).not.toThrow();
+  });
+});
+
+describe('breadcrumbs', () => {
+  it('walks data as a whole object so bare credentials under sensitive keys are caught', () => {
+    // Scrubbing each value individually would miss this: `bare-secret-value`
+    // matches no secret pattern, and only the KEY identifies it.
+    const result = scrub({
+      breadcrumbs: [{ message: 'fetch /Users/liam/x', data: { token: 'bare-secret-value' } }],
+    });
+
+    const crumb = (result.breadcrumbs ?? [])[0] as Record<string, unknown>;
+    expect((crumb.data as Record<string, unknown>).token).toBe('[Filtered]');
+    expect(crumb.message).not.toContain('/Users/liam');
+  });
+
   it('scrubs breadcrumb data, not only the message', () => {
     const event = {
       breadcrumbs: [{ message: 'GET /Users/bennett', data: { token: 'abc123', url: '/api/apps' } }],
-    } as unknown as ErrorEvent;
+    };
 
     const [breadcrumb] = scrub(event).breadcrumbs ?? [];
 
@@ -295,21 +438,50 @@ describe('scrubEvent extra and breadcrumbs', () => {
     expect(breadcrumb?.data?.url).toBe('/api/apps');
   });
 
+  it('filters http.query and http.fragment by name', () => {
+    // nativeNodeFetchIntegration sanitises `data.url` but re-attaches the parts
+    // it removed as `http.query` / `http.fragment`. They match no pattern and no
+    // sensitive key, so the name is the only handle. tracesSampleRate:0 does not
+    // prevent this — the undici instrumentation runs regardless.
+    const result = scrub({
+      breadcrumbs: [
+        {
+          message: 'HTTP GET',
+          data: {
+            url: 'https://portal.example.com/api/devices',
+            'http.query': '?token=SUPERSECRET_abc123&api_key=KEY_xyz',
+            'http.fragment': '#section-private',
+            'http.method': 'GET',
+          },
+        },
+      ],
+    });
+
+    const data = ((result.breadcrumbs ?? [])[0] as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data['http.query']).toBe('[Filtered]');
+    expect(data['http.fragment']).toBe('[Filtered]');
+    expect(data['http.method']).toBe('GET');
+  });
+
+  it('strips query strings from URL-valued crumb keys', () => {
+    const result = scrub({
+      breadcrumbs: [{ data: { url: 'https://hub.local/apps?q=private', from: '/a?x=1', to: '/b#frag' } }],
+    });
+
+    const data = ((result.breadcrumbs ?? [])[0] as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data.url).toBe('https://hub.local/apps');
+    expect(data.from).toBe('/a');
+    expect(data.to).toBe('/b');
+  });
+
   it('strips query strings from URL-valued breadcrumb data', () => {
     const event = {
       breadcrumbs: [{ category: 'http', data: { url: '/api/store/search?q=private+app', status_code: 500 } }],
-    } as unknown as ErrorEvent;
+    };
 
     const [breadcrumb] = scrub(event).breadcrumbs ?? [];
 
     expect(breadcrumb?.data?.url).toBe('/api/store/search');
     expect(breadcrumb?.data?.status_code).toBe(500);
-  });
-
-  it('survives a cyclic extra payload', () => {
-    const cyclic: Record<string, unknown> = { name: 'loop' };
-    cyclic.self = cyclic;
-
-    expect(() => scrub({ extra: cyclic } as unknown as ErrorEvent)).not.toThrow();
   });
 });

@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/nestjs';
 import { DEFAULT_DEV_CI_CLOUD_URL, DEFAULT_PROD_CI_CLOUD_URL } from './common/constants';
 import { scrubEvent } from './core/error-reporting/sentry-scrubber';
+import { envTelemetryBlock, isReportingAllowed } from './core/error-reporting/telemetry-consent';
 
 const dsn = process.env.SENTRY_DSN?.trim();
 const deviceId = process.env.DEVICE_ID?.trim();
@@ -12,7 +13,17 @@ const hubImage = process.env.CI_HUB_IMAGE?.trim();
 // handlers (see main.ts) which log, capture, flush, and control exit. Drop
 // Sentry's default OnUncaughtException/OnUnhandledRejection integrations so
 // crashes are captured exactly once and our handlers govern the exit/flush.
-const MANUALLY_HANDLED_INTEGRATIONS = new Set(['OnUncaughtException', 'OnUnhandledRejection']);
+//
+// ContextLines is dropped for a different reason: it attaches seven lines of
+// real source around every in-app frame, and a runtime probe showed that
+// scrubbing that text is not sufficient. `scrubString` can only catch home
+// paths and *prefixed* credentials (`api_key=…`); a bare IP, an email, or an
+// opaque key literal sitting in a nearby source line matches nothing and ships
+// verbatim. That makes it an unbounded channel whose contents depend on
+// whatever happens to be written near a throw. The stack frames, line numbers
+// and release SHA remain, and the source for a given release is a lookup away,
+// so triage loses very little for a leak class that cannot otherwise be closed.
+const MANUALLY_HANDLED_INTEGRATIONS = new Set(['OnUncaughtException', 'OnUnhandledRejection', 'ContextLines']);
 
 function normalizePortalUrl(value: string | undefined): string | null {
   const normalized = value?.trim().replace(/\/+$/, '');
@@ -45,7 +56,27 @@ function hubImageTag(image: string): string | null {
   return tag || null;
 }
 
-if (dsn) {
+/**
+ * The `beforeSend` consent gate.
+ *
+ * Evaluated per event rather than once at init, so flipping "Allow error
+ * monitoring" in Settings stops (or resumes) reporting on the very next capture
+ * without restarting the Hub. Returning `null` drops the event before the
+ * transport ever sees it.
+ */
+function gateAndScrub(event: Parameters<typeof scrubEvent>[0], hint: Parameters<typeof scrubEvent>[1]): ReturnType<typeof scrubEvent> {
+  if (!isReportingAllowed(process.env)) {
+    return null;
+  }
+
+  return scrubEvent(event, hint);
+}
+
+// `CI_LOCAL_ONLY` / `CI_TELEMETRY` are process-lifetime env switches, so an
+// opted-out process should never construct a transport at all. The *user's*
+// switch is deliberately not consulted here — gating it in `beforeSend` instead
+// is what lets a mid-session flip work in both directions.
+if (dsn && !envTelemetryBlock(process.env)) {
   Sentry.init({
     dsn,
     environment: process.env.SENTRY_ENV ?? process.env.CI_HUB_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
@@ -53,9 +84,22 @@ if (dsn) {
     enabled: true,
     tracesSampleRate: 0,
     profilesSampleRate: 0,
-    sendDefaultPii: true,
+    // The rest of the fleet sends no PII, and the Sentry org has
+    // `scrubIPAddresses` disabled — leaving this on made the Hub the one
+    // component storing users' real IP addresses. In @sentry/core 10.x this
+    // flag governs exactly `user.ip_address` and the IP-bearing request headers
+    // (`x-forwarded-for` and friends); `user.id` — our `device_id` — is set
+    // explicitly below and is unaffected, so triage loses nothing.
+    sendDefaultPii: false,
+    // Without this, @sentry/node-core resolves `serverName` to `os.hostname()`
+    // and the runtime stamps it on every event inside `_prepareEvent` — i.e.
+    // before `beforeSend` — regardless of `sendDefaultPii`. Personal machines
+    // are routinely named after their owner, which is precisely the identifier
+    // the `device_id` tag exists to replace. `scrubEvent` deletes the field too;
+    // this stops it ever being computed.
+    includeServerName: false,
     integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
-    beforeSend: scrubEvent,
+    beforeSend: gateAndScrub,
   });
 
   if (deviceId) {
