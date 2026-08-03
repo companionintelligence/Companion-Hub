@@ -44,4 +44,14 @@ describe('store-browse-params', () => {
     expect(shouldLeaveFeaturedForSearch('featured', 'ollama')).toBe(true);
     expect(shouldLeaveFeaturedForSearch('ai', 'ollama')).toBe(false);
   });
+
+  it('builds detail query strings without empty params', () => {
+    expect(
+      applyStoreBrowseParams(new URLSearchParams(), {
+        q: 'router',
+        category: 'network',
+        store: 'ci-marketplace',
+      }).toString(),
+    ).toBe('q=router&category=network&store=ci-marketplace');
+  });
 });
