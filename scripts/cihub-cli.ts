@@ -24,6 +24,7 @@ import {
   submitPairingCode,
   waitForHubApi,
 } from './lib/register-hub';
+import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
@@ -1967,4 +1968,59 @@ export function runHostUpdate(args: string[]) {
     process.exit(1);
   }
   process.exit(result.status ?? 1);
+}
+
+// --- connect an existing agent (BYO) ---
+
+/**
+ * `cihub connect openclaw|hermes` — see scripts/lib/connect-agent.ts for the design
+ * notes, in particular why the memory-slot guard has to run before the installer.
+ */
+export async function runConnectCommand(args: string[]) {
+  const usage =
+    `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
+    '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
+    '                     [--force]                          claim a foreign memory slot\n' +
+    '                     [--dry-run]                        print the plan, write nothing';
+
+  // Parsing lives in connect-agent.ts so its rules can be tested without a terminal.
+  const parsed = parseConnectArgs(args);
+  if (parsed.error || !parsed.agent) usageAndExit(parsed.error ? `${parsed.error}\n${usage}` : usage);
+
+  const agent = parsed.agent;
+  const { hubUrl, hubKey, force, dryRun } = parsed;
+  let memoryUrl = parsed.memoryUrl;
+  let memoryKey = parsed.memoryKey;
+
+  // Prompted only on a TTY. In CI or a pipe, a missing flag is a usage error rather
+  // than a hang waiting on stdin nobody is attached to.
+  if ((!memoryUrl || !memoryKey) && input.isTTY) {
+    const rl = createInterface({ input, output });
+    try {
+      if (!memoryUrl) {
+        printMessageBox(
+          'Companion Memory URL',
+          [
+            'This Hub can answer on more than one address, and the value is written once.',
+            'Use the address this machine can reach — local network, Private VPN, or your',
+            'exposed domain. See the connect docs if you are unsure which applies.',
+          ],
+          'cyan',
+        );
+        memoryUrl = (await rl.question('  Companion Memory URL: ')).trim();
+      }
+      if (!memoryKey) {
+        memoryKey = (await rl.question('  Companion Memory API key (Settings → API Keys): ')).trim();
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  // Still missing after the prompt, or never prompted because this is not a TTY.
+  if (!memoryUrl || !memoryKey) {
+    usageAndExit(`${BASE_COMMAND} connect ${agent} needs --memory-url and --memory-key (or a TTY to prompt on).`);
+  }
+
+  await connectAgent({ agent, memoryUrl: normalizeMemoryUrl(memoryUrl), memoryKey, hubUrl, hubKey, force, dryRun });
 }
