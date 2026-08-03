@@ -138,6 +138,16 @@ describe('build-container.yml', () => {
     expect(gate).toContain('TARGETPLATFORM');
   });
 
+  it('installs binfmt in the gate job so arm64 containers can run on amd64 runners', () => {
+    const gate = gateSource();
+    expect(gate).toContain('setup-qemu-action');
+    const dockerRunAt = gate.indexOf('docker run --rm --platform');
+    const qemuAt = gate.indexOf('setup-qemu-action');
+    expect(qemuAt, 'QEMU must be set up before docker run platform checks').toBeGreaterThan(-1);
+    expect(dockerRunAt, 'docker run platform checks must exist').toBeGreaterThan(-1);
+    expect(qemuAt).toBeLessThan(dockerRunAt);
+  });
+
   it('refuses to pass when there is no reference to verify', () => {
     // The verification loop iterates over the resolved references. If desktop_ref were
     // ever empty the loop would simply not run and the job would go green having proved
