@@ -909,3 +909,21 @@ describe('formatApiKeyRows', () => {
     expect(formatApiKeyRows('{"not":"an array"}')).toEqual([]);
   });
 });
+
+describe('formatApiKeyRows on a Hub without per-key capability', () => {
+  const row = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+  // Defaulting to 'write' there would state a restriction the server does not enforce —
+  // no published Hub has the column, so every key is bounded by its scopes alone.
+  it('omits capability rather than inventing the column default', () => {
+    const [line] = formatApiKeyRows(row, false);
+    expect(line).not.toMatch(/write|read|full/);
+    expect(line).toContain('laptop');
+    expect(line).toContain('[mcp]');
+  });
+
+  it('still reports capability when the Hub has it', () => {
+    const withCap = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
+    expect(formatApiKeyRows(withCap, true)[0]).toContain('read');
+  });
+});
