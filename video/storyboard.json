@@ -35,8 +35,8 @@
       "kind": "screen",
       "chapter": "claim",
       "seconds": 5,
-      "caption": "A local admin account. The cloud is optional.",
-      "narration": "It opens on a local login. A CI Account is optional.",
+      "caption": "A local admin account. Companion Portal is optional.",
+      "narration": "It opens on a local login. Companion Portal sign-in is optional.",
       "shots": [
         {
           "id": "login-screen",
@@ -58,7 +58,7 @@
       "chapter": "claim",
       "seconds": 5,
       "caption": "Six characters, and the machine is yours.",
-      "narration": "A new Hub asks for one pairing code from the Portal.",
+      "narration": "A new Hub asks for one pairing code from Companion Portal.",
       "shots": [
         {
           "id": "device-registration",
@@ -131,8 +131,8 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5.5,
-      "caption": "The App Store, fed by the open Marketplace.",
-      "narration": "The store is fed by the open Marketplace. Search it, or browse by category.",
+      "caption": "The App Store, fed by the open Hub market.",
+      "narration": "The store is fed by the open Hub market. Search it, or browse by category.",
       "shots": [
         {
           "id": "hub-store",
@@ -274,9 +274,9 @@
       "kind": "outro",
       "seconds": 4.5,
       "caption": "ci.computer",
-      "cta": "Own your AI.",
+      "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Intelligence. ci dot computer. Own your AI."
+      "narration": "Companion Intelligence. ci dot computer. UnCloud your life."
     }
   ]
 }

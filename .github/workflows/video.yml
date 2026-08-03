@@ -113,6 +113,11 @@ jobs:
         with:
           node-version: 22
           registry-url: https://npm.pkg.github.com
+          # Without `scope`, setup-node writes a bare `registry=` line into
+          # ~/.npmrc and routes EVERY package at GitHub Packages, so public
+          # deps (playwright) 404 on install. Scope it to the one org that
+          # actually lives there.
+          scope: "@companionintelligence"
 
       - uses: pnpm/action-setup@v4
 
