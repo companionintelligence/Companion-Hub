@@ -84,7 +84,7 @@ function assertRefIsPushed(): void {
     return;
   }
   console.error(`\n\u274c Ref '${HUB_REF}' does not exist on origin, so no node can fetch it.`);
-  console.error("   The fleet tests whatever ref you name — it defaults to your current local branch.");
+  console.error('   The fleet tests whatever ref you name — it defaults to your current local branch.');
   console.error('   Push it, or pin one explicitly:  FLEET_HUB_REF=dev FLEET_HUB_SHA=$(git rev-parse origin/dev)\n');
   process.exit(1);
 }
