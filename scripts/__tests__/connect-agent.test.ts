@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  backupFile,
   backupPathFor,
   checkMemorySlot,
   HERMES_PACKAGE,
@@ -18,6 +19,8 @@ import {
   PLUGIN_ID,
   probeHubMcp,
   readJsonIfPresent,
+  run,
+  runFailureMessage,
   tarballUrl,
   timestampForBackup,
   triageMcpProbe,
@@ -489,7 +492,49 @@ describe('reading an existing config', () => {
   });
 });
 
+describe('subprocess failure reporting', () => {
+  it('names a binary that could not be started, instead of "exited null"', () => {
+    const result = run('definitely-not-a-real-binary-xyz', ['--version']);
+    expect(result.ok).toBe(false);
+    // spawnSync leaves status null and stderr empty here, so the status alone says
+    // nothing about what went wrong.
+    expect(result.status).toBeNull();
+    expect(result.error).toBeDefined();
+    const message = runFailureMessage(result, 'the thing');
+    expect(message).toMatch(/could not run/);
+    expect(message).not.toMatch(/null/);
+  });
+
+  it('prefers stderr when the process ran and failed', () => {
+    const result = run('bash', ['-c', 'echo "the real reason" >&2; exit 3']);
+    expect(runFailureMessage(result, 'the thing')).toBe('the real reason');
+  });
+
+  it('falls back to the exit status when a process fails silently', () => {
+    expect(runFailureMessage(run('bash', ['-c', 'exit 4']), 'the thing')).toBe('the thing exited 4');
+  });
+});
+
 describe('backups', () => {
+  it('tightens the copy, since the source may be world-readable and hold a token', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-backup-'));
+    const source = join(dir, 'openclaw.json');
+    writeFileSync(source, '{"gateway":{"auth":{"token":"secret"}}}');
+    chmodSync(source, 0o644);
+
+    const target = backupFile(source, 'stamp');
+    expect(target).toBeDefined();
+    // copyFileSync carries the source mode over, so without the explicit chmod this
+    // would be a 0644 copy of a secret-bearing file that we chose to create.
+    expect(statSync(target as string).mode & 0o777).toBe(0o600);
+  });
+
+  it('reports no backup when there was no file to copy', () => {
+    expect(backupFile(join(tmpdir(), 'connect-agent-absent.json'), 'stamp')).toBeUndefined();
+  });
+});
+
+describe('backup naming', () => {
   it('timestamps so consecutive runs never overwrite the safety net', () => {
     const a = backupPathFor('/tmp/openclaw.json', timestampForBackup(new Date('2026-08-03T10:00:00Z')));
     const b = backupPathFor('/tmp/openclaw.json', timestampForBackup(new Date('2026-08-03T10:00:01Z')));

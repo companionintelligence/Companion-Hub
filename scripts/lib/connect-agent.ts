@@ -30,7 +30,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { bold, printMessageBox } from './cli-ui';
 
 /**
@@ -386,8 +386,7 @@ export function readJsonIfPresent(path: string): Record<string, unknown> {
  * the user silently loses everything else in it.
  */
 export function writeJsonAtomic(path: string, value: unknown) {
-  const dir = join(path, '..');
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, path);
@@ -398,12 +397,16 @@ export function backupFile(path: string, stamp: string): string | undefined {
   if (!existsSync(path)) return undefined;
   const target = backupPathFor(path, stamp);
   copyFileSync(path, target);
+  // The source is whatever was already on disk, and copyFileSync carries its mode over.
+  // A config OpenClaw or the user created 0644 therefore yields a 0644 copy of a file
+  // that can hold a gateway token — and this copy is one we chose to make.
+  chmodSync(target, 0o600);
   return target;
 }
 
 // --- process helpers --------------------------------------------------------
 
-export type RunResult = { ok: boolean; stdout: string; stderr: string; status: number | null };
+export type RunResult = { ok: boolean; stdout: string; stderr: string; status: number | null; error?: string };
 
 export function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): RunResult {
   const result = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd, env: options.env ?? process.env });
@@ -412,7 +415,21 @@ export function run(command: string, args: string[], options: { cwd?: string; en
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     status: result.status,
+    // When the process cannot be STARTED at all, spawnSync reports the reason here and
+    // leaves status null with empty stderr — so a caller falling back to the status
+    // prints "exit null" and says nothing about the missing binary.
+    error: result.error ? String(result.error.message ?? result.error) : undefined,
   };
+}
+
+/** The most useful thing a failed `run()` can say, in the order it is worth saying. */
+export function runFailureMessage(result: RunResult, what: string): string {
+  if (result.error) return `${what} could not run: ${result.error}`;
+  const stderr = result.stderr.trim();
+  if (stderr !== '') return stderr;
+  const stdout = result.stdout.trim();
+  if (stdout !== '') return stdout;
+  return `${what} exited ${result.status}`;
 }
 
 export function commandExists(name: string): boolean {
@@ -696,7 +713,7 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   // guard above had to run first.
   const install = run('openclaw', ['plugins', 'install', spec, '--force']);
   if (!install.ok) {
-    printMessageBox('Install failed', [install.stderr.trim() || install.stdout.trim() || `openclaw plugins install exited ${install.status}`], 'red');
+    printMessageBox('Install failed', [runFailureMessage(install, 'openclaw plugins install')], 'red');
     if (backup) restoreBackup(configPath, backup);
     process.exit(2);
   }
@@ -717,7 +734,20 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
     process.exit(2);
   }
   const { config: finalConfig, changes: finalChanges } = mergeOpenClawConfig(afterInstall, { url: ctx.memoryUrl, token: ctx.memoryKey });
-  writeJsonAtomic(configPath, finalConfig);
+  // The write is the one step exit 2 exists for, so it cannot be the one step that
+  // escapes the contract. A full disk or a read-only home would otherwise skip the
+  // restore entirely and surface as a stack trace from the CLI's top-level catch.
+  try {
+    writeJsonAtomic(configPath, finalConfig);
+  } catch (error) {
+    if (backup) restoreBackup(configPath, backup);
+    printMessageBox(
+      backup ? 'Could not write config — restored from backup' : 'Could not write config',
+      [`${configPath}: ${String((error as Error).message)}`, '', ...(backup ? [`Restored from ${backup}`] : [])],
+      'red',
+    );
+    process.exit(2);
+  }
 
   const lint = run('openclaw', ['doctor', '--lint', '--json']);
   const ourFindings = lintFindingsForOurKeys(lint.stdout);
@@ -801,8 +831,23 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   // both — a clean tree, and an existing install that survives every failure up to the
   // rename. Credentials live outside this directory, so the swap loses nothing.
   const staging = `${dir}.incoming`;
-  rmDirRecursive(staging);
-  mkdirSync(staging, { recursive: true });
+  // A read-only plugins directory fails here, and an uncaught EACCES would surface as a
+  // stack trace from the CLI's top-level catch rather than as the reason.
+  try {
+    rmDirRecursive(staging);
+    mkdirSync(staging, { recursive: true });
+  } catch (error) {
+    printMessageBox(
+      'Cannot install — nothing was changed',
+      [
+        `Could not prepare ${staging}`,
+        String((error as Error).message),
+        ...(existsSync(dir) ? ['', `The existing install at ${dir} was left alone.`] : []),
+      ],
+      'red',
+    );
+    process.exit(2);
+  }
 
   // pipefail: without it the pipeline reports tar's status, so a curl that dies partway
   // through would be judged by whether tar could still read what arrived.
@@ -816,7 +861,7 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       'Download failed — nothing was changed',
       [
         `Could not fetch ${url}`,
-        fetched.stderr.trim() || `exit ${fetched.status}`,
+        runFailureMessage(fetched, 'the download'),
         ...(existsSync(dir) ? ['', `Any existing install at ${dir} was left alone.`] : []),
       ],
       'red',
@@ -833,8 +878,32 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     process.exit(2);
   }
 
-  rmDirRecursive(dir);
-  renameSync(staging, dir);
+  // Move the old install aside rather than deleting it, so the window where NEITHER
+  // exists is one rename wide and is recoverable. Deleting first means a rename that
+  // throws — a permissions change, a full disk — takes a working plugin with it, which
+  // is the same loss the staging directory above exists to prevent.
+  const previous = existsSync(dir) ? `${dir}.previous` : undefined;
+  if (previous) {
+    rmDirRecursive(previous);
+    renameSync(dir, previous);
+  }
+  try {
+    renameSync(staging, dir);
+  } catch (error) {
+    if (previous) renameSync(previous, dir);
+    rmDirRecursive(staging);
+    printMessageBox(
+      'Install failed — nothing was changed',
+      [
+        `Could not move the new plugin into ${dir}`,
+        String((error as Error).message),
+        ...(previous ? ['', 'The existing install was put back.'] : []),
+      ],
+      'red',
+    );
+    process.exit(2);
+  }
+  if (previous) rmDirRecursive(previous);
 
   printMessageBox(
     'Plugin installed — one step left',
