@@ -769,7 +769,20 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   }
 
   const stamp = timestampForBackup(new Date());
-  const backup = backupFile(configPath, stamp);
+  // No backup, no safety net for everything below — so this failing is a reason to stop
+  // BEFORE the installer runs, while "nothing was written" is still true. An unreadable
+  // config or an unwritable directory would otherwise escape as a stack trace.
+  let backup: string | undefined;
+  try {
+    backup = backupFile(configPath, stamp);
+  } catch (error) {
+    printMessageBox(
+      'Cannot connect — nothing was written',
+      [`Could not back up ${configPath}`, String((error as Error).message), '', 'The install is not attempted without a way to undo it.'],
+      'red',
+    );
+    process.exit(1);
+  }
 
   // The installer edits config too, so the backup has to be taken before it runs.
   //
@@ -896,7 +909,13 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   // install: the user ends up with no plugin and an exit 2. Staging alongside gives
   // both — a clean tree, and an existing install that survives every failure up to the
   // rename. Credentials live outside this directory, so the swap loses nothing.
-  const staging = `${dir}.incoming`;
+  // Dot-prefixed and therefore invisible to Hermes. Both its memory discovery and its
+  // general plugin loader skip entries under `plugins/` whose name starts with `.` or
+  // `_`, and a leftover WITHOUT that prefix is not inert: a copy at
+  // `companionintelligence.incoming` is discovered as a second provider by that name and
+  // offered in `hermes memory setup` (verified — it appears in `hermes memory status`).
+  // A crash between here and the swap would otherwise leave one behind.
+  const staging = join(dirname(dir), `.${PLUGIN_ID}.incoming`);
   // A read-only plugins directory fails here, and an uncaught EACCES would surface as a
   // stack trace from the CLI's top-level catch rather than as the reason.
   try {
@@ -948,7 +967,7 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   // exists is one rename wide and is recoverable. Deleting first means a rename that
   // throws — a permissions change, a full disk — takes a working plugin with it, which
   // is the same loss the staging directory above exists to prevent.
-  const previous = existsSync(dir) ? `${dir}.previous` : undefined;
+  const previous = existsSync(dir) ? join(dirname(dir), `.${PLUGIN_ID}.previous`) : undefined;
   let movedAside = false;
   try {
     if (previous) {
@@ -994,7 +1013,17 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     );
     process.exit(2);
   }
-  if (previous) rmDirRecursive(previous);
+  // The install has already succeeded by this point. Failing to tidy up the old copy is
+  // untidy, not a failure, and must not turn a working install into a stack trace.
+  if (previous) {
+    try {
+      rmDirRecursive(previous);
+    } catch {
+      // Left behind alongside the new install. Harmless only because the name is
+      // dot-prefixed: Hermes skips those when scanning `plugins/`, so it is not offered
+      // as a stale second provider.
+    }
+  }
 
   printMessageBox(
     'Plugin installed — one step left',
