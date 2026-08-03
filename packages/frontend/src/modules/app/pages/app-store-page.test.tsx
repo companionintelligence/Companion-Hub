@@ -10,6 +10,8 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
     setStoreId: vi.fn(),
     search: '',
     setSearch: vi.fn(),
+    setSearchImmediate: vi.fn(),
+    resetBrowseToFeatured: vi.fn(),
   },
   mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
 }));

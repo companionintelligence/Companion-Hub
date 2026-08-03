@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { buildStoreIndexPath } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid } from 'lucide-react';
@@ -25,12 +26,11 @@ export const AppStoreSidebar = () => {
     setLocalSearch(search);
   }, [search]);
 
-  const navigatePreservingStore = useCallback(() => {
+  const navigatePreservingBrowseContext = useCallback(() => {
     if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-      const target = storeId ? `/store?store=${storeId}` : '/store';
-      navigate(target);
+      navigate(buildStoreIndexPath({ q: search.trim() ? search : undefined, category, store: storeId }));
     }
-  }, [navigate, location.pathname, storeId]);
+  }, [navigate, location.pathname, search, category, storeId]);
 
   const onSearch = useCallback(
     (value: string) => {
@@ -41,17 +41,17 @@ export const AppStoreSidebar = () => {
         setCategory(undefined);
       }
       setSearch(value);
-      navigatePreservingStore();
+      navigatePreservingBrowseContext();
     },
-    [category, setCategory, setSearch, navigatePreservingStore],
+    [category, setCategory, setSearch, navigatePreservingBrowseContext],
   );
 
   const handleCategoryClick = useCallback(
     (cat?: typeof category) => {
       setCategory(cat);
-      navigatePreservingStore();
+      navigatePreservingBrowseContext();
     },
-    [setCategory, navigatePreservingStore],
+    [setCategory, navigatePreservingBrowseContext],
   );
 
   return (

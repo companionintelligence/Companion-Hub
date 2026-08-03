@@ -33,7 +33,7 @@ export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
   const { userSettings } = useAppContext();
   const { setTheme } = useTheme();
-  const { setCategory: setStoreCategory } = useAppStoreState();
+  const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
 
@@ -53,8 +53,9 @@ export const Header = (props: HeaderProps) => {
   };
 
   const openStoreWithFeaturedDefaults = useCallback(() => {
-    setStoreCategory('featured');
-  }, [setStoreCategory]);
+    resetBrowseToFeatured();
+    navigate('/store?category=featured');
+  }, [resetBrowseToFeatured, navigate]);
 
   const deviceName = useMemo(() => {
     const source = userSettings?.ciHubDeviceSlug?.trim();

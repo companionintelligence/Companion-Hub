@@ -1,5 +1,6 @@
 import { getEnabledAppStoresOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
+import { applyStoreBrowseParams, parseStoreBrowseParams } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -58,9 +59,10 @@ export default () => {
   const { t } = useTranslation();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setCategory, category, storeId, setStoreId, search, setSearch } = useAppStoreState();
+  const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
   const hasInitializedDefaultCategory = useRef(false);
+  const isWritingBrowseUrl = useRef(false);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
 
   useEffect(() => {
@@ -68,13 +70,46 @@ export default () => {
   }, [search]);
 
   useEffect(() => {
-    if (hasInitializedDefaultCategory.current) return;
-    hasInitializedDefaultCategory.current = true;
+    if (isWritingBrowseUrl.current) {
+      isWritingBrowseUrl.current = false;
+      return;
+    }
 
-    if (!category) {
+    const parsed = parseStoreBrowseParams(searchParams);
+
+    setSearchImmediate(parsed.q ?? '');
+
+    if (parsed.category !== undefined) {
+      hasInitializedDefaultCategory.current = true;
+      setCategory(parsed.category);
+      return;
+    }
+
+    if (!hasInitializedDefaultCategory.current) {
+      hasInitializedDefaultCategory.current = true;
       setCategory(DEFAULT_STORE_CATEGORY);
     }
-  }, [category, setCategory]);
+  }, [searchParams, setCategory, setSearchImmediate]);
+
+  useEffect(() => {
+    setSearchParams(
+      (prev) => {
+        const next = applyStoreBrowseParams(prev, {
+          q: search.trim() ? search : undefined,
+          category,
+          store: storeId,
+        });
+
+        if (next.toString() === prev.toString()) {
+          return prev;
+        }
+
+        isWritingBrowseUrl.current = true;
+        return next;
+      },
+      { replace: true },
+    );
+  }, [search, category, storeId, setSearchParams]);
 
   const queryClient = useQueryClient();
 
@@ -178,13 +213,11 @@ export default () => {
   const handleStoreSwitch = useCallback(
     (slug: string) => {
       setStoreId(slug);
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('store', slug);
-        return next;
+      setSearchParams((prev) => applyStoreBrowseParams(prev, { q: search.trim() ? search : undefined, category, store: slug }), {
+        replace: true,
       });
     },
-    [setStoreId, setSearchParams],
+    [setStoreId, setSearchParams, search, category],
   );
 
   const onSearch = useCallback(

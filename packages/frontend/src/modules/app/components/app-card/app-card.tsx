@@ -3,6 +3,8 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
 import { limitText } from '@/lib/helpers/text-helpers';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
+import { storeBrowseQueryString } from '@/lib/store-browse-params';
+import { useAppStoreState } from '@/stores/app-store';
 import type { AppInfoSimple } from '@/types/app.types';
 import { Check, Download } from 'lucide-react';
 import type React from 'react';
@@ -25,7 +27,14 @@ function resolveAppCardImageUrl(app: AppCardApp, imageUrlOverride?: string | nul
 
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, imageUrlOverride }) => {
   const { t } = useTranslation();
+  const { search, category, storeId: browseStoreId } = useAppStoreState();
   const [appId, storeId] = app.urn.split(':');
+  const browseQuery = storeBrowseQueryString({
+    q: search.trim() ? search : undefined,
+    category,
+    store: browseStoreId ?? storeId,
+  });
+  const detailPath = browseQuery ? `/store/${storeId}/${appId}?${browseQuery}` : `/store/${storeId}/${appId}`;
   const logoUrl = resolveAppCardImageUrl(app, imageUrlOverride);
   const [imgSrc, setImgSrc] = useState(logoUrl);
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
@@ -59,7 +68,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
   }
 
   return (
-    <Link to={`/store/${storeId}/${appId}`} className="block h-full group">
+    <Link to={detailPath} className="block h-full group">
       <GlassContainer
         className="h-full min-h-[180px] flex flex-col p-4 shadow-sm shadow-slate-300/70 transition-all active:scale-[0.98] hover:bg-white/10 hover:shadow-xl hover:shadow-slate-300/80 sm:min-h-[220px] dark:shadow-none dark:hover:shadow-lg dark:hover:shadow-black/20"
         intensity="low"
