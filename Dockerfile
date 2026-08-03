@@ -2,7 +2,13 @@ ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
-ARG TARGETARCH=amd64
+# NO default on TARGETARCH: a declared default OVERRIDES buildx's automatic
+# per-platform value, so `=amd64` here made the linux/arm64 manifest slot build
+# with TARGETARCH=amd64 — installing x86_64 docker-compose into arm64 images
+# and failing the runner stage's arch sanity check. Plain `docker build` (no
+# buildx) leaves it empty; the shell-level `${TARGETARCH:-amd64}` fallbacks
+# below handle that.
+ARG TARGETARCH
 ARG DOCKER_PLATFORM=linux/amd64
 
 # JS build stages run on BUILDPLATFORM for speed. Runtime stages MUST use

@@ -226,10 +226,8 @@ export class DestructiveToolDisabledError extends Error {
   ) {
     super(
       cause.reason === 'unconfirmed'
-        ? `Tool '${toolName}' is destructive and was run without confirmation. Confirm the prompt in the ` + 'Hub UI to run it.'
-        : `Tool '${toolName}' is destructive and this API key's capability is '${cause.capability}'. Grant ` +
-            "the key the 'full' capability in Settings → Security to allow destructive tools, or run it " +
-            'from the Hub UI with explicit confirmation.',
+        ? `Tool '${toolName}' is destructive and was run without confirmation. Confirm the prompt in the Hub UI to run it.`
+        : `Tool '${toolName}' is destructive and this API key's capability is '${cause.capability}'. Grant the key the 'full' capability in Settings → Security to allow destructive tools, or run it from the Hub UI with explicit confirmation.`,
     );
     this.name = 'DestructiveToolDisabledError';
   }

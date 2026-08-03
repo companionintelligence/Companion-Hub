@@ -47,7 +47,7 @@ const byKind = {
 
 function table(rows: Entry[]): string {
   if (rows.length === 0) return '_None found._\n';
-  return rows.map((e) => `| \`${e.path}\` | ${e.hint.replace(/\|/g, '\\|')} |`).join('\n') + '\n';
+  return `${rows.map((e) => `| \`${e.path}\` | ${e.hint.replace(/\|/g, '\\|')} |`).join('\n')}\n`;
 }
 
 const md = `# Test Inventory — CI-Hub
