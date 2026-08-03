@@ -1,0 +1,23 @@
+{
+  "name": "mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mobile (iOS/Android) app for managing and accessing the Companion Intelligence Hub",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "node -e \"process.exit(0)\"",
+    "build:check": "cargo build --manifest-path src-tauri/Cargo.toml",
+    "build:bundle": "tauri build",
+    "ios:init": "tauri ios init",
+    "ios:dev": "tauri ios dev",
+    "ios:build": "tauri ios build",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build",
+    "icons": "tauri icon"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.4.0"
+  }
+}

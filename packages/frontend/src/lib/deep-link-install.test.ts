@@ -60,4 +60,50 @@ describe('deep-link-install', () => {
     clearStashedInstallIntentForApp('immich', 'ci-marketplace');
     expect(peekStashedInstallIntent()).toBeNull();
   });
+
+  it('escapes slugs so a hostile deep link cannot steer navigation', () => {
+    // appSlug/storeId arrive from outside the app — anyone can hand the OS a
+    // cihub://install link. Encoding is what keeps them a single path segment
+    // instead of letting them climb the route tree or graft on query params.
+    expect(buildInstallIntentPath({ appSlug: '../../admin', storeId: 'ci-marketplace' })).toBe('/store/ci-marketplace/..%2F..%2Fadmin?install=1');
+    expect(buildInstallIntentPath({ appSlug: 'immich?admin=1', storeId: 'ci-marketplace' })).toBe(
+      '/store/ci-marketplace/immich%3Fadmin%3D1?install=1',
+    );
+    expect(buildInstallIntentPath({ appSlug: 'a#b', storeId: 'x/y' })).toBe('/store/x%2Fy/a%23b?install=1');
+  });
+
+  it('treats a corrupt or half-written stash as empty', () => {
+    sessionStorage.setItem('ci-hub.pending-install-intent', '{not json');
+    expect(peekStashedInstallIntent()).toBeNull();
+
+    // Valid JSON, but nothing we can act on.
+    sessionStorage.setItem('ci-hub.pending-install-intent', JSON.stringify({ storeId: 'ci-marketplace' }));
+    expect(peekStashedInstallIntent()).toBeNull();
+    expect(takeStashedInstallIntent()).toBeNull();
+  });
+
+  it('refuses to stash an intent with no app slug', () => {
+    stashPendingInstallIntent({ appSlug: '   ', storeId: 'ci-marketplace' });
+    expect(peekStashedInstallIntent()).toBeNull();
+  });
+
+  it('trims padded fields and normalises a blank deviceId to null', () => {
+    stashPendingInstallIntent({ appSlug: ' immich ', storeId: ' ci-marketplace ', deviceId: '  ' });
+    expect(peekStashedInstallIntent()).toEqual({ appSlug: 'immich', storeId: 'ci-marketplace', deviceId: null });
+  });
+
+  it('keeps a deviceId when the link targets a specific Hub', () => {
+    stashPendingInstallIntent({ appSlug: 'immich', storeId: 'ci-marketplace', deviceId: ' dev-1 ' });
+    expect(peekStashedInstallIntent()?.deviceId).toBe('dev-1');
+  });
+
+  it('does not auto-open for a stashed intent from a different store', () => {
+    stashPendingInstallIntent({ appSlug: 'immich', storeId: 'other-store' });
+    expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '')).toBe(false);
+  });
+
+  it('ignores an install flag that is not exactly 1', () => {
+    expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '?install=0')).toBe(false);
+    expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '?install=true')).toBe(false);
+  });
 });

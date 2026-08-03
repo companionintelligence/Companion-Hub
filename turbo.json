@@ -16,6 +16,11 @@
         "src-tauri/target/release/ci-os-hub-desktop.exe"
       ]
     },
+    "mobile#build": {
+      "dependsOn": ["frontend#build", "^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": []
+    },
     "bundle": {
       "dependsOn": ["^bundle"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],

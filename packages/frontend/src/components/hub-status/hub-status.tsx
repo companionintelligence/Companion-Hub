@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useRevalidator } from 'react-router';
+import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
@@ -671,6 +673,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
   const { revalidate } = useRevalidator();
   useDeepLinkPairCapture();
+  useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
@@ -900,8 +903,12 @@ export function HubStatus({ children }: HubStatusProps) {
     await openLogsFolder();
   }, []);
 
-  // If not in Tauri, don't block the UI — web users have the backend proxied
-  if (!isTauri) return <>{children}</>;
+  // If not in Tauri, don't block the UI — web users have the backend proxied.
+  // On mobile there is no *local* Hub to manage (no Docker on a phone): the app
+  // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
+  // desktop-only commands / localhost probes) doesn't apply. The remote Hub's
+  // reachability is handled by the connect flow and the normal app loaders.
+  if (!isTauri || isTauriMobileSync()) return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {

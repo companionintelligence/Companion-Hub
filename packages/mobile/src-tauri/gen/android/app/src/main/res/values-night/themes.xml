@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.ci_os_hub_mobile" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- CI dark app background from globals.css (dark theme background token ~= #041620). Matches the
+             dark-themed webview so the launch/window background doesn't flash before the app loads. -->
+        <item name="android:windowBackground">#FF041620</item>
+        <item name="android:statusBarColor">#FF041620</item>
+        <item name="android:navigationBarColor">#FF041620</item>
+    </style>
+</resources>

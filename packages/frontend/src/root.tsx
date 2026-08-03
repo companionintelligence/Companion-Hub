@@ -18,6 +18,7 @@ import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
+import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from '@/lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -27,15 +28,51 @@ import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
 
-function DesktopStartupFallback() {
+/** How long the mobile bootstrap spinner runs before offering a way out. */
+const MOBILE_SWITCH_HUB_ESCAPE_MS = 8000;
+
+export function DesktopStartupFallback() {
+  // Mobile is a thin client connecting to a *remote* Hub — there's no local API,
+  // so the desktop copy would be misleading.
+  const isMobile = isTauriMobileSync();
+  const message = isMobile
+    ? safeI18nText('ROOT_CONNECTING', 'Connecting…')
+    : safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...');
+
+  // Escape hatch: a returning mobile user whose stored Hub is unreachable would
+  // otherwise spin here forever (the '/' loader returns null while the Hub's
+  // registration status is unavailable, and the only Switch Hub UI lives behind
+  // a working Hub session). After a few seconds, offer the Hub picker.
+  const [showSwitchHub, setShowSwitchHub] = useState(false);
+  useEffect(() => {
+    if (!isMobile || !getHubBaseUrlSync()) return;
+    const id = window.setTimeout(() => setShowSwitchHub(true), MOBILE_SWITCH_HUB_ESCAPE_MS);
+    return () => window.clearTimeout(id);
+  }, [isMobile]);
+
   return (
     <main
       id="root"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background text-sm text-muted-foreground"
       role="status"
       aria-busy="true"
     >
-      {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+      {message}
+      {showSwitchHub && (
+        <div className="flex flex-col items-center gap-3">
+          <span>{safeI18nText('MOBILE_CONNECT_HUB_UNREACHABLE_HINT', "Can't reach your Hub.")}</span>
+          <button
+            type="button"
+            data-testid="startup-switch-hub-btn"
+            className="min-h-[44px] rounded-md border border-input px-4 text-foreground transition-colors hover:bg-accent"
+            onClick={() => {
+              void clearHubConnection().finally(() => window.location.assign('/connect'));
+            }}
+          >
+            {safeI18nText('MOBILE_CONNECT_SWITCH_HUB', 'Switch Hub')}
+          </button>
+        </div>
+      )}
     </main>
   );
 }
@@ -120,9 +157,15 @@ client.setConfig({
 });
 
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
-  ? probeHealthyHubApiPort().then((port) => {
+  ? (async () => {
+      // On mobile there is no local backend — the app is a thin client pointed at
+      // a remote Hub the user chose. initMobileConnection() applies any stored Hub
+      // baseUrl; when none is set, clientLoader routes the user to /connect.
+      const { isMobile } = await initMobileConnection();
+      if (isMobile) return;
+      const port = await probeHealthyHubApiPort();
       configureHubApiPort(port ?? 5002);
-    })
+    })()
   : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
@@ -152,6 +195,16 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   await tauriBaseUrlReady;
 
   const url = new URL(request.url);
+
+  // On mobile, nothing works until a remote Hub is chosen. Send the user to the
+  // connect screen; the connect route itself is exempt so it can render.
+  if (isTauriMobileSync() && !getHubBaseUrlSync()) {
+    if (url.pathname !== '/connect') {
+      return redirect('/connect');
+    }
+    return null;
+  }
+
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {
@@ -381,7 +434,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
         <Meta />
         <Links />
       </head>

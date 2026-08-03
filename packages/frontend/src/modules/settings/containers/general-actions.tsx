@@ -13,7 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
@@ -49,6 +50,7 @@ export const GeneralActionsContainer = () => {
   const [factoryResetting, setFactoryResetting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
+  const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
 
@@ -452,6 +454,46 @@ export const GeneralActionsContainer = () => {
               data-testid="factory-reset-confirm-btn"
             >
               {t('SETTINGS_FACTORY_RESET_BUTTON')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {isTauriMobileSync() && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5 text-muted-foreground" />
+              <CardTitle className="text-xl">{t('MOBILE_CONNECT_CONNECTED_HUB')}</CardTitle>
+            </div>
+            <CardDescription className="break-all">{getHubBaseUrlSync() ?? t('MOBILE_CONNECT_NO_HUB_SELECTED')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" data-testid="switch-hub-btn" onClick={() => setSwitchHubOpen(true)}>
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={switchHubOpen} onOpenChange={setSwitchHubOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_TITLE')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="py-2">{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_DESC')}</DialogDescription>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSwitchHubOpen(false)}>
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              data-testid="switch-hub-confirm-btn"
+              onClick={async () => {
+                await clearHubConnection();
+                window.location.href = '/connect';
+              }}
+            >
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -215,3 +215,14 @@
     background-repeat: no-repeat;
   }
 }
+
+@layer utilities {
+  /* Keep content clear of the notch / status bar / home indicator on mobile
+     (requires viewport-fit=cover, set in the document <meta name="viewport">). */
+  .safe-area-inset {
+    padding-top: max(2rem, env(safe-area-inset-top));
+    padding-bottom: max(2rem, env(safe-area-inset-bottom));
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+}

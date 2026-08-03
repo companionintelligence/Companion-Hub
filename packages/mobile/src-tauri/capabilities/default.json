@@ -1,0 +1,44 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for the Companion Hub mobile app",
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "core:app:allow-version",
+    "core:event:default",
+    "opener:default",
+    "store:default",
+    "os:default",
+    "deep-link:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://hub.ci.computer/*"
+        },
+        {
+          "url": "https://*.ci.computer/*"
+        },
+        {
+          "url": "https://hub.companionintelligence.com/*"
+        },
+        {
+          "url": "https://*.companionintelligence.com/*"
+        },
+        {
+          "url": "https://*.companionintel.com/*"
+        },
+        {
+          "url": "http://localhost:*/*"
+        },
+        {
+          "url": "http://192.168.*.*:*/*"
+        },
+        {
+          "url": "http://10.*.*.*:*/*"
+        }
+      ]
+    }
+  ]
+}
