@@ -19,6 +19,7 @@ function readWorkflow(name: string) {
 
 const buildContainer = readWorkflow('build-container.yml');
 const desktopRelease = readWorkflow('desktop-release.yml');
+const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf-8');
 
 const GATE_JOB = 'verify-anonymous-pull:';
 
@@ -152,6 +153,17 @@ describe('build-container.yml', () => {
     const gate = gateSource();
     expect(gate).toMatch(/-n\s+"\$\{VERSION\}"/);
     expect(gate).toContain('${IMAGE_REPO}:${VERSION}');
+  });
+});
+
+describe('Dockerfile runner stage', () => {
+  it('forces native npm and docker-compose installs onto TARGETPLATFORM', () => {
+    // arm64 CI runners cross-build the linux/amd64 manifest slot as
+    // linux/arm64->amd64; without RUN --platform the arch sanity check sees
+    // process.arch=arm64 while TARGETARCH=amd64 and the build fails.
+    const runnerSection = dockerfile.slice(dockerfile.indexOf('FROM runner_base AS runner'));
+    expect(runnerSection).toContain('RUN --platform=$TARGETPLATFORM');
+    expect(runnerSection).toMatch(/npm install[\s\S]*docker-compose for/);
   });
 });
 

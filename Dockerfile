@@ -2,7 +2,13 @@ ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
-ARG TARGETARCH=amd64
+# NO default on TARGETARCH: a declared default OVERRIDES buildx's automatic
+# per-platform value, so `=amd64` here made the linux/arm64 manifest slot build
+# with TARGETARCH=amd64 — installing x86_64 docker-compose into arm64 images
+# and failing the runner stage's arch sanity check. Plain `docker build` (no
+# buildx) leaves it empty; the shell-level `${TARGETARCH:-amd64}` fallbacks
+# below handle that.
+ARG TARGETARCH
 ARG DOCKER_PLATFORM=linux/amd64
 
 # JS build stages run on BUILDPLATFORM for speed. Runtime stages MUST use
@@ -148,6 +154,7 @@ RUN --mount=type=secret,id=sentry_auth_token \
 FROM runner_base AS runner
 
 ARG TARGETARCH
+ARG TARGETPLATFORM
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
@@ -167,10 +174,15 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
-RUN --mount=type=cache,target=/root/.npm \
+# RUN --platform=$TARGETPLATFORM is required: on arm64 CI runners buildx builds the
+# linux/amd64 manifest slot as linux/arm64->amd64; without this, RUN executes on
+# the build host and process.arch stays arm64 while TARGETARCH is amd64.
+RUN --platform=$TARGETPLATFORM \
+    --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
-RUN set -eux; \
+RUN --platform=$TARGETPLATFORM \
+    set -eux; \
     echo "Installing docker-compose for ${TARGETARCH:-amd64}"; \
     if [ "${TARGETARCH}" = "arm64" ]; then \
       curl -fL --retry 3 --retry-delay 5 -o /usr/local/bin/docker-compose \
