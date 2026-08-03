@@ -291,14 +291,26 @@ pub fn init_from_env(env_path: &Path, data_dir: &Path, release: &str) {
         // one component storing users' real IP addresses. Device attribution
         // comes from the explicit `device_id` tag/user set below.
         send_default_pii: false,
-        // Consent gate. Evaluated per event so turning "Allow error monitoring"
-        // off in Settings stops the very next capture, with no app restart.
+        // The `contexts` integration fills this from `hostname::get()` when it is
+        // left None, and sentry-core stamps it on every event in `prepare_event`
+        // — which runs immediately before `before_send`. Pre-setting it stops the
+        // hostname ever being read; `scrub_event` clears the field as well, so
+        // neither this literal nor a real hostname is transmitted.
+        server_name: Some("[redacted]".into()),
+        // Consent gate + payload scrubber. Evaluated per event so turning
+        // "Allow error monitoring" off in Settings stops the very next capture,
+        // with no app restart.
         before_send: Some(Arc::new(|event| {
             if reporting_allowed() {
-                Some(event)
+                Some(crate::sentry_scrubber::scrub_event(event))
             } else {
                 None
             }
+        })),
+        // Redact each breadcrumb as it is recorded, so raw operator log text
+        // never sits in the ring buffer waiting for a later event to carry it.
+        before_breadcrumb: Some(Arc::new(|breadcrumb| {
+            Some(crate::sentry_scrubber::scrub_breadcrumb(breadcrumb))
         })),
         ..Default::default()
     });

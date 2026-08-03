@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/react';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
+import { scrubBreadcrumb, scrubBrowserEvent, scrubString, scrubUrl } from './sentry-scrubber';
 import { isTelemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
 
 let sentryInitialized = false;
@@ -206,9 +207,16 @@ function enrichTranslatableErrorEvent(event: Sentry.ErrorEvent, error: Translata
   event.extra = {
     ...event.extra,
     http_status: error.http.status,
-    http_url: error.http.url,
+    // The raw `res.url` captured in root.tsx keeps its query string, which on
+    // this app carries app slugs, pairing codes and search terms. `path` above
+    // was already query-stripped for the title and fingerprint; attaching the
+    // unstripped URL right beside it gave that back.
+    http_url: scrubUrl(error.http.url),
     http_path: path,
-    response_body: error.http.body,
+    // The first 300 characters of the failing response. Kept — it is the single
+    // most useful field for triaging a 5xx — but run through the scrubber,
+    // since it is server output we do not control.
+    response_body: typeof error.http.body === 'string' ? scrubString(error.http.body) : error.http.body,
     message_key: error.message,
   };
   event.fingerprint = ['translatable-api-error', String(error.http.status), path];
@@ -300,11 +308,17 @@ export function initHubSentry(): void {
       }
 
       const original = hint?.originalException;
-      if (original instanceof TranslatableError) {
-        return enrichTranslatableErrorEvent(event, original);
-      }
+      // Enrich first, scrub second: the enricher adds extras of its own, and
+      // scrubbing before that would leave them unredacted.
+      const enriched = original instanceof TranslatableError ? enrichTranslatableErrorEvent(event, original) : event;
 
-      return event;
+      return enriched === null ? null : scrubBrowserEvent(enriched);
+    },
+    // Breadcrumbs are attached to the event by the SDK and scrubbed above too;
+    // doing it here as well means a crumb is redacted at the moment it is
+    // recorded, so it cannot leak via any other path that reads the buffer.
+    beforeBreadcrumb(breadcrumb) {
+      return scrubBreadcrumb(breadcrumb);
     },
   });
 
@@ -333,9 +347,11 @@ export function captureHubException(error: unknown, context?: Record<string, unk
       const path = apiPathForSentry(error.http.url);
       scope.setTag('http_status', String(error.http.status));
       scope.setExtra('http_status', error.http.status);
-      scope.setExtra('http_url', error.http.url);
+      // Same reasoning as enrichTranslatableErrorEvent: the raw URL carries a
+      // query string the query-stripped `path` deliberately drops.
+      scope.setExtra('http_url', scrubUrl(error.http.url));
       scope.setExtra('http_path', path);
-      scope.setExtra('response_body', error.http.body);
+      scope.setExtra('response_body', typeof error.http.body === 'string' ? scrubString(error.http.body) : error.http.body);
       scope.setExtra('message_key', error.message);
       scope.setFingerprint(['translatable-api-error', String(error.http.status), path]);
     }

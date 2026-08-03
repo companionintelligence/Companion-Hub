@@ -62,6 +62,35 @@ describe('backend instrument', () => {
     expect(init).not.toHaveBeenCalled();
   });
 
+  it('sends no server name and attaches no source context', async () => {
+    process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
+
+    await import('../instrument');
+
+    const options = init.mock.calls[0]?.[0] as {
+      includeServerName?: boolean;
+      integrations?: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+
+    // Otherwise the runtime resolves serverName to os.hostname() and stamps it on
+    // every event inside _prepareEvent — before beforeSend, and regardless of
+    // sendDefaultPii.
+    expect(options.includeServerName).toBe(false);
+
+    // ContextLines attaches seven lines of real source per frame. Scrubbing that
+    // text is not sufficient — a bare IP, email or opaque key literal in a
+    // nearby line matches no pattern — so the integration is dropped outright.
+    const kept = options.integrations?.([
+      { name: 'ContextLines' },
+      { name: 'OnUncaughtException' },
+      { name: 'OnUnhandledRejection' },
+      { name: 'RequestData' },
+      { name: 'Http' },
+    ]);
+
+    expect(kept?.map((integration) => integration.name)).toEqual(['RequestData', 'Http']);
+  });
+
   it.each([
     ['CI_LOCAL_ONLY', 'true'],
     ['CI_TELEMETRY', 'off'],

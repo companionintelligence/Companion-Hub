@@ -13,7 +13,17 @@ const hubImage = process.env.CI_HUB_IMAGE?.trim();
 // handlers (see main.ts) which log, capture, flush, and control exit. Drop
 // Sentry's default OnUncaughtException/OnUnhandledRejection integrations so
 // crashes are captured exactly once and our handlers govern the exit/flush.
-const MANUALLY_HANDLED_INTEGRATIONS = new Set(['OnUncaughtException', 'OnUnhandledRejection']);
+//
+// ContextLines is dropped for a different reason: it attaches seven lines of
+// real source around every in-app frame, and a runtime probe showed that
+// scrubbing that text is not sufficient. `scrubString` can only catch home
+// paths and *prefixed* credentials (`api_key=…`); a bare IP, an email, or an
+// opaque key literal sitting in a nearby source line matches nothing and ships
+// verbatim. That makes it an unbounded channel whose contents depend on
+// whatever happens to be written near a throw. The stack frames, line numbers
+// and release SHA remain, and the source for a given release is a lookup away,
+// so triage loses very little for a leak class that cannot otherwise be closed.
+const MANUALLY_HANDLED_INTEGRATIONS = new Set(['OnUncaughtException', 'OnUnhandledRejection', 'ContextLines']);
 
 function normalizePortalUrl(value: string | undefined): string | null {
   const normalized = value?.trim().replace(/\/+$/, '');
@@ -81,6 +91,13 @@ if (dsn && !envTelemetryBlock(process.env)) {
     // (`x-forwarded-for` and friends); `user.id` — our `device_id` — is set
     // explicitly below and is unaffected, so triage loses nothing.
     sendDefaultPii: false,
+    // Without this, @sentry/node-core resolves `serverName` to `os.hostname()`
+    // and the runtime stamps it on every event inside `_prepareEvent` — i.e.
+    // before `beforeSend` — regardless of `sendDefaultPii`. Personal machines
+    // are routinely named after their owner, which is precisely the identifier
+    // the `device_id` tag exists to replace. `scrubEvent` deletes the field too;
+    // this stops it ever being computed.
+    includeServerName: false,
     integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
     beforeSend: gateAndScrub,
   });

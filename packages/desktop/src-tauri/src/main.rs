@@ -7,6 +7,7 @@ mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;
 pub mod port_manager;
+mod sentry_scrubber;
 mod tray;
 mod updater;
 
