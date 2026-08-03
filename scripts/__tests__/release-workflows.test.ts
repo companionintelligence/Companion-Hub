@@ -157,13 +157,15 @@ describe('build-container.yml', () => {
 });
 
 describe('Dockerfile runner stage', () => {
-  it('forces native npm and docker-compose installs onto TARGETPLATFORM', () => {
-    // arm64 CI runners cross-build the linux/amd64 manifest slot as
-    // linux/arm64->amd64; without RUN --platform the arch sanity check sees
-    // process.arch=arm64 while TARGETARCH=amd64 and the build fails.
-    const runnerSection = dockerfile.slice(dockerfile.indexOf('FROM runner_base AS runner'));
-    expect(runnerSection).toContain('RUN --platform=$TARGETPLATFORM');
-    expect(runnerSection).toMatch(/npm install[\s\S]*docker-compose for/);
+  it('skips in-stage process.arch check on cross-builds and re-binds runner to TARGETPLATFORM', () => {
+    // RUN --platform is not valid stable Dockerfile syntax (parse error on GHA buildx).
+    // Cross-builds (linux/arm64->amd64) defer to verify-anonymous-pull; native builds
+    // still assert process.arch matches TARGETARCH in the runner stage.
+    const runnerSection = dockerfile.slice(dockerfile.indexOf('FROM --platform=${TARGETPLATFORM} runner_base AS runner'));
+    expect(runnerSection).toContain('FROM --platform=${TARGETPLATFORM} runner_base AS runner');
+    expect(runnerSection).toContain('BUILDPLATFORM');
+    expect(runnerSection).toContain('verify-anonymous-pull validates the pushed image');
+    expect(runnerSection).not.toContain('RUN --platform=$TARGETPLATFORM');
   });
 });
 

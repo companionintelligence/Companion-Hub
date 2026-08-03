@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 ARG BUILDPLATFORM
@@ -151,10 +152,11 @@ RUN --mount=type=secret,id=sentry_auth_token \
     find packages/frontend/dist/client -name '*.map' -delete || true
 
 # ---- RUNNER (target arch) ----
-FROM runner_base AS runner
+FROM --platform=${TARGETPLATFORM} runner_base AS runner
 
 ARG TARGETARCH
 ARG TARGETPLATFORM
+ARG BUILDPLATFORM
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
@@ -174,15 +176,10 @@ WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64
 # image slot cannot contain amd64 Node/native deps (Rosetta/QEMU footgun).
-# RUN --platform=$TARGETPLATFORM is required: on arm64 CI runners buildx builds the
-# linux/amd64 manifest slot as linux/arm64->amd64; without this, RUN executes on
-# the build host and process.arch stays arm64 while TARGETARCH is amd64.
-RUN --platform=$TARGETPLATFORM \
-    --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
-RUN --platform=$TARGETPLATFORM \
-    set -eux; \
+RUN set -eux; \
     echo "Installing docker-compose for ${TARGETARCH:-amd64}"; \
     if [ "${TARGETARCH}" = "arm64" ]; then \
       curl -fL --retry 3 --retry-delay 5 -o /usr/local/bin/docker-compose \
@@ -195,12 +192,16 @@ RUN --platform=$TARGETPLATFORM \
     fi; \
     chmod +x /usr/local/bin/docker-compose; \
     /usr/local/bin/docker-compose version; \
-    node -p "process.arch" | grep -E '^(arm64|x64)$'; \
-    case "${TARGETARCH:-amd64}" in \
-      arm64) node -p "process.arch" | grep -qx arm64 ;; \
-      amd64|"") node -p "process.arch" | grep -qx x64 ;; \
-      *) echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
-    esac
+    if [ "${BUILDPLATFORM}" = "${TARGETPLATFORM}" ]; then \
+      node -p "process.arch" | grep -E '^(arm64|x64)$'; \
+      case "${TARGETARCH:-amd64}" in \
+        arm64) node -p "process.arch" | grep -qx arm64 ;; \
+        amd64|"") node -p "process.arch" | grep -qx x64 ;; \
+        *) echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
+      esac; \
+    else \
+      echo "Cross-build ${BUILDPLATFORM} -> ${TARGETPLATFORM}: skipping in-stage process.arch check (verify-anonymous-pull validates the pushed image)"; \
+    fi
 
 COPY --from=builder /app/package.json ./
 
