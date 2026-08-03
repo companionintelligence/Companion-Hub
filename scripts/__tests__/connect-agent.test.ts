@@ -9,12 +9,15 @@ import {
   backupPathFor,
   checkMemorySlot,
   HERMES_PACKAGE,
+  hermesPluginDir,
+  hubMcpUrl,
   lintFindingsForOurKeys,
   mergeOpenClawConfig,
   normalizeMemoryUrl,
   openClawConfigPath,
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
+  parseConnectArgs,
   parseToolsListBody,
   PLUGIN_ID,
   probeHubMcp,
@@ -489,6 +492,88 @@ describe('reading an existing config', () => {
     expect(() => readJsonIfPresent(tmp('openclaw.json', '[1,2]'))).toThrow(/an array, not a config object/);
     expect(() => readJsonIfPresent(tmp('openclaw.json', '"a string"'))).toThrow(/a string, not a config object/);
     expect(() => readJsonIfPresent(tmp('openclaw.json', 'null'))).toThrow(/a null, not a config object/);
+  });
+});
+
+describe('connect argument parsing', () => {
+  it('accepts the minimal form', () => {
+    expect(parseConnectArgs(['openclaw', '--memory-url', 'https://m.example.com', '--memory-key', 'k'])).toEqual({
+      agent: 'openclaw',
+      memoryUrl: 'https://m.example.com',
+      memoryKey: 'k',
+      hubUrl: undefined,
+      hubKey: undefined,
+      force: false,
+      dryRun: false,
+    });
+  });
+
+  it('reads the boolean flags in any position', () => {
+    const parsed = parseConnectArgs(['hermes', '--dry-run', '--memory-url', 'https://m', '--force', '--memory-key', 'k']);
+    expect(parsed.force).toBe(true);
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.memoryKey).toBe('k');
+  });
+
+  it('rejects a missing or unknown agent instead of connecting something', () => {
+    expect(parseConnectArgs([]).error).toMatch(/needs an agent/);
+    expect(parseConnectArgs(['claude']).error).toMatch(/got 'claude'/);
+  });
+
+  // The whole reason the guard exists: this used to probe the literal "--memory-key"
+  // as a URL and report it unreachable.
+  it('refuses a flag whose value is the next flag', () => {
+    expect(parseConnectArgs(['openclaw', '--memory-url', '--memory-key', 'k']).error).toBe('--memory-url needs a value.');
+  });
+
+  it('refuses a trailing flag with nothing after it', () => {
+    expect(parseConnectArgs(['openclaw', '--memory-key']).error).toBe('--memory-key needs a value.');
+  });
+
+  it('requires the hub flags together, since one alone cannot authenticate', () => {
+    const base = ['openclaw', '--memory-url', 'https://m', '--memory-key', 'k'];
+    expect(parseConnectArgs([...base, '--hub-url', 'https://h']).error).toMatch(/go together/);
+    expect(parseConnectArgs([...base, '--hub-key', 'hk']).error).toMatch(/go together/);
+    expect(parseConnectArgs([...base, '--hub-url', 'https://h', '--hub-key', 'hk']).error).toBeUndefined();
+  });
+
+  // Absent here is not an error — the CLI prompts for these on a TTY.
+  it('leaves missing credentials to the caller rather than failing', () => {
+    const parsed = parseConnectArgs(['hermes']);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.memoryUrl).toBeUndefined();
+  });
+});
+
+describe('hub mcp url', () => {
+  it('folds trailing slashes so the dry run cannot print //api/mcp', () => {
+    expect(hubMcpUrl('https://hub.example.com/')).toBe('https://hub.example.com/api/mcp');
+    expect(hubMcpUrl('https://hub.example.com///')).toBe('https://hub.example.com/api/mcp');
+    expect(hubMcpUrl('https://hub.example.com')).toBe('https://hub.example.com/api/mcp');
+  });
+});
+
+describe('hermes plugin dir', () => {
+  const saved = process.env.HERMES_HOME;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = saved;
+  });
+
+  it('defaults to ~/.hermes', () => {
+    delete process.env.HERMES_HOME;
+    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
+  });
+
+  it('honors HERMES_HOME', () => {
+    process.env.HERMES_HOME = '/tmp/elsewhere';
+    expect(hermesPluginDir('/home/someone')).toBe('/tmp/elsewhere/plugins/companionintelligence');
+  });
+
+  // Without the trim, join roots the install under a directory literally named "   ".
+  it('treats a whitespace-only value as unset, not as a path', () => {
+    process.env.HERMES_HOME = '   ';
+    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
   });
 });
 

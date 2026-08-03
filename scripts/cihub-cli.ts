@@ -24,7 +24,7 @@ import {
   submitPairingCode,
   waitForHubApi,
 } from './lib/register-hub';
-import { type Agent as ConnectAgent, connectAgent, normalizeMemoryUrl } from './lib/connect-agent';
+import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
@@ -1977,33 +1977,20 @@ export function runHostUpdate(args: string[]) {
  * notes, in particular why the memory-slot guard has to run before the installer.
  */
 export async function runConnectCommand(args: string[]) {
-  const agent = args[0] as ConnectAgent;
-  if (agent !== 'openclaw' && agent !== 'hermes') {
-    usageAndExit(
-      `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
-        '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
-        '                     [--force]                          claim a foreign memory slot\n' +
-        '                     [--dry-run]                        print the plan, write nothing',
-    );
-  }
+  const usage =
+    `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
+    '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
+    '                     [--force]                          claim a foreign memory slot\n' +
+    '                     [--dry-run]                        print the plan, write nothing';
 
-  // A missing value must not swallow the next flag. `--memory-url --memory-key K` would
-  // otherwise probe the literal URL "--memory-key" and report it as unreachable, which
-  // sends people looking at their network instead of their typo.
-  const flagValue = (name: string) => {
-    const i = args.indexOf(name);
-    if (i < 0) return undefined;
-    const value = args[i + 1];
-    if (value === undefined || value.startsWith('--')) usageAndExit(`${name} needs a value.`);
-    return value;
-  };
-  const force = args.includes('--force');
-  const dryRun = args.includes('--dry-run');
+  // Parsing lives in connect-agent.ts so its rules can be tested without a terminal.
+  const parsed = parseConnectArgs(args);
+  if (parsed.error || !parsed.agent) usageAndExit(parsed.error ? `${parsed.error}\n${usage}` : usage);
 
-  let memoryUrl = flagValue('--memory-url');
-  let memoryKey = flagValue('--memory-key');
-  const hubUrl = flagValue('--hub-url');
-  const hubKey = flagValue('--hub-key');
+  const agent = parsed.agent;
+  const { hubUrl, hubKey, force, dryRun } = parsed;
+  let memoryUrl = parsed.memoryUrl;
+  let memoryKey = parsed.memoryKey;
 
   // Prompted only on a TTY. In CI or a pipe, a missing flag is a usage error rather
   // than a hang waiting on stdin nobody is attached to.
@@ -2030,11 +2017,9 @@ export async function runConnectCommand(args: string[]) {
     }
   }
 
+  // Still missing after the prompt, or never prompted because this is not a TTY.
   if (!memoryUrl || !memoryKey) {
     usageAndExit(`${BASE_COMMAND} connect ${agent} needs --memory-url and --memory-key (or a TTY to prompt on).`);
-  }
-  if ((hubUrl && !hubKey) || (hubKey && !hubUrl)) {
-    usageAndExit('--hub-url and --hub-key go together: one without the other cannot authenticate.');
   }
 
   await connectAgent({ agent, memoryUrl: normalizeMemoryUrl(memoryUrl), memoryKey, hubUrl, hubKey, force, dryRun });

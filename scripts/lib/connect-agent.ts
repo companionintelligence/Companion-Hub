@@ -347,8 +347,70 @@ export function openClawConfigPath(home = homedir()): string {
   return join(stateDir || join(home, '.openclaw'), 'openclaw.json');
 }
 
+/** Trimmed for the same reason `openClawConfigPath` is: a whitespace-only export is not
+ *  an override, but `join` would happily root the install under a directory named "   ". */
 export function hermesPluginDir(home = homedir()): string {
-  return join(process.env.HERMES_HOME || join(home, '.hermes'), 'plugins', PLUGIN_ID);
+  const hermesHome = process.env.HERMES_HOME?.trim();
+  return join(hermesHome || join(home, '.hermes'), 'plugins', PLUGIN_ID);
+}
+
+/** The Hub MCP endpoint, with any trailing slashes folded so `//api/mcp` cannot appear. */
+export function hubMcpUrl(hubUrl: string): string {
+  return `${hubUrl.replace(/\/+$/, '')}/api/mcp`;
+}
+
+// --- argument parsing -------------------------------------------------------
+
+export type ParsedConnectArgs = {
+  agent?: Agent;
+  memoryUrl?: string;
+  memoryKey?: string;
+  hubUrl?: string;
+  hubKey?: string;
+  force: boolean;
+  dryRun: boolean;
+  /** Set when the arguments cannot be used as given; the CLI turns this into usage. */
+  error?: string;
+};
+
+/**
+ * Parse `connect`'s arguments without touching the terminal or the process.
+ *
+ * Split out from the command so the rules can be tested: a missing flag value must not
+ * swallow the following flag, and `--hub-url`/`--hub-key` only mean anything together.
+ * The CLI keeps the parts that need a TTY — prompting for whatever is still missing —
+ * and turns `error` into a usage exit.
+ */
+export function parseConnectArgs(args: string[]): ParsedConnectArgs {
+  const force = args.includes('--force');
+  const dryRun = args.includes('--dry-run');
+  const agent = args[0] === 'openclaw' || args[0] === 'hermes' ? (args[0] as Agent) : undefined;
+  if (agent === undefined) return { force, dryRun, error: `connect needs an agent: openclaw or hermes${args[0] ? ` (got '${args[0]}')` : ''}.` };
+
+  const values: Record<string, string | undefined> = {};
+  for (const name of ['--memory-url', '--memory-key', '--hub-url', '--hub-key']) {
+    const i = args.indexOf(name);
+    if (i < 0) continue;
+    const value = args[i + 1];
+    // `--memory-url --memory-key K` would otherwise probe the literal "--memory-key"
+    // and report it unreachable, sending people to their network instead of their typo.
+    if (value === undefined || value.startsWith('--')) return { agent, force, dryRun, error: `${name} needs a value.` };
+    values[name] = value;
+  }
+
+  const parsed: ParsedConnectArgs = {
+    agent,
+    memoryUrl: values['--memory-url'],
+    memoryKey: values['--memory-key'],
+    hubUrl: values['--hub-url'],
+    hubKey: values['--hub-key'],
+    force,
+    dryRun,
+  };
+  if (Boolean(parsed.hubUrl) !== Boolean(parsed.hubKey)) {
+    return { ...parsed, error: '--hub-url and --hub-key go together: one without the other cannot authenticate.' };
+  }
+  return parsed;
 }
 
 /** Timestamped so consecutive runs never overwrite each other's safety net. */
@@ -686,7 +748,8 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
         `${bold('would install')}  openclaw plugins install ${spec}`,
         `${bold('would edit')}     ${configPath}`,
         ...(changes.length > 0 ? changes.map((c) => `  ${c}`) : ['  (config already matches)']),
-        ...(ctx.hubUrl ? ['', `${bold('would add')}      openclaw mcp add ci-hub --url ${ctx.hubUrl}/api/mcp`] : []),
+        // Same derivation the real run uses, so the printed plan cannot drift from it.
+        ...(ctx.hubUrl ? ['', `${bold('would add')}      openclaw mcp add ci-hub --url ${hubMcpUrl(ctx.hubUrl)}`] : []),
       ],
       'yellow',
     );
@@ -775,7 +838,7 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
       'add',
       'ci-hub',
       '--url',
-      `${ctx.hubUrl.replace(/\/+$/, '')}/api/mcp`,
+      hubMcpUrl(ctx.hubUrl),
       '--transport',
       'streamable-http',
       '--header',
