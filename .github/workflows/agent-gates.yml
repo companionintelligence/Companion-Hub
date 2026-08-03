@@ -12,6 +12,10 @@ name: Agent Gates
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   agent-gates:
     runs-on: ubuntu-latest
