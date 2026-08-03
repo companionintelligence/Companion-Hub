@@ -827,6 +827,22 @@ describe('buildApiKeyInsertSql', () => {
   it('renders a multi-scope grant as a text[] literal', () => {
     expect(buildApiKeyInsertSql({ ...row, scopes: ['mcp', 'app'] })).toContain("ARRAY['mcp','app']::text[]");
   });
+
+  // Verified against a live 0.2.47 appliance: the column arrived after several published
+  // releases, and inserting it there fails with `column "capability" ... does not exist`,
+  // taking out the headless minting route on exactly the Hubs that most need it.
+  it('omits capability on a Hub whose api_key table predates the column', () => {
+    const sql = buildApiKeyInsertSql({ ...row, withCapability: false });
+    expect(sql).toBe(
+      "INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], " +
+        `'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+    expect(sql).not.toContain('capability');
+  });
+
+  it('still writes capability when the column is present', () => {
+    expect(buildApiKeyInsertSql({ ...row, withCapability: true })).toContain('capability');
+  });
 });
 
 describe('sqlQuote', () => {

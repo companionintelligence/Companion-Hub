@@ -1276,13 +1276,47 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
  * the database is unit-testable — the validation above narrows what can get here, but the quoting is
  * the last line of defence and deserves its own assertions.
  */
-export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; capability: string; prefix: string; hashedKey: string }): string {
+export function buildApiKeyInsertSql(row: {
+  name: string;
+  scopes: string[];
+  capability: string;
+  prefix: string;
+  hashedKey: string;
+  /** False on a Hub released before per-key capability existed. */
+  withCapability?: boolean;
+}): string {
   const scopeArray = `ARRAY[${row.scopes.map(sqlQuote).join(',')}]::text[]`;
+
+  if (row.withCapability === false) {
+    return (
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+      `${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+    );
+  }
 
   return (
     `INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
     `${sqlQuote(row.capability)}, ${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
   );
+}
+
+/**
+ * Does this Hub's `api_key` table carry the `capability` column?
+ *
+ * Per-key capability arrived after several published Hub releases, and the CLI is run
+ * against whatever appliance is in front of it — an older one than the checkout is the
+ * normal case, not an edge case. Verified against a live 0.2.47: without this the insert
+ * dies on `column "capability" of relation "api_key" does not exist`, so the documented
+ * headless key-minting route fails outright on exactly the appliances that most need a
+ * CLI, since minting in the browser is what it exists to avoid.
+ *
+ * Unknown answers are treated as "present": that keeps the modern path first, and a
+ * genuinely missing column still surfaces as the same insert error as before.
+ */
+export function apiKeyTableHasCapability(): boolean {
+  const result = psql("SELECT 1 FROM information_schema.columns WHERE table_name='api_key' AND column_name='capability';");
+  if (!result.ok) return true;
+  return result.stdout.split('\n')[0]?.trim() === '1';
 }
 
 /**
@@ -1412,12 +1446,14 @@ export function runApiKeyCommand(args: string[]) {
     }
 
     const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
+    const withCapability = apiKeyTableHasCapability();
     const sql = buildApiKeyInsertSql({
       name,
       scopes,
       capability,
       prefix: rawKey.slice(0, API_KEY_PREFIX_LEN),
       hashedKey: createHash('sha256').update(rawKey).digest('hex'),
+      withCapability,
     });
 
     const result = psql(sql);
@@ -1436,7 +1472,17 @@ export function runApiKeyCommand(args: string[]) {
         `${bold('id')}      ${newId}`,
         `${bold('name')}    ${name}`,
         `${bold('scopes')}  ${scopes.join(', ')}`,
-        `${bold('can')}     ${capability}`,
+        // Reporting the requested capability on a Hub that cannot store it would be a
+        // plain untruth about how much authority the key just gained.
+        ...(withCapability
+          ? [`${bold('can')}     ${capability}`]
+          : [
+              `${bold('can')}     everything its scopes allow`,
+              '',
+              'This Hub predates per-key capability, so there is no read/write/full',
+              `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
+              'Update the Hub if you need capability-limited keys.',
+            ]),
         '',
         `${bold('key')}     ${rawKey}`,
         '',

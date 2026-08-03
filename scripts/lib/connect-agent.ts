@@ -61,13 +61,29 @@ export type Agent = 'openclaw' | 'hermes';
 export type ProbeVerdict = {
   ok: boolean;
   /** Short machine-ish label, used in tests and the summary box. */
-  code: 'ok' | 'unauthorized' | 'wrong-path' | 'missing-intents-scope' | 'pre-g1-gateway' | 'unreachable' | 'http-error' | 'rpc-error';
+  code:
+    | 'ok'
+    | 'unauthorized'
+    | 'wrong-path'
+    | 'missing-intents-scope'
+    | 'missing-memory-scope'
+    | 'pre-g1-gateway'
+    | 'unreachable'
+    | 'http-error'
+    | 'rpc-error';
   message: string;
   /** What the operator should actually do. */
   hint?: string;
 };
 
-/** Diagnose a Companion Memory `GET /api/health` response. */
+/**
+ * Diagnose a Companion Memory `GET /api/health` response.
+ *
+ * Reachability only. `/api/health` is UNAUTHENTICATED — verified live: it answers 200
+ * with no key at all and 200 with a junk one. So a pass here says the address is right
+ * and nothing whatsoever about the credential, and this function must never claim
+ * otherwise. `triageMemoryAuth` below is what actually exercises the key.
+ */
 export function triageMemoryProbe(status: number | undefined, transportError?: string): ProbeVerdict {
   if (status === undefined) {
     return {
@@ -94,9 +110,69 @@ export function triageMemoryProbe(status: number | undefined, transportError?: s
     };
   }
   if (status >= 200 && status < 300) {
-    return { ok: true, code: 'ok', message: 'Companion Memory is reachable and the key works.' };
+    return { ok: true, code: 'ok', message: 'Companion Memory is reachable.' };
   }
   return { ok: false, code: 'http-error', message: `Companion Memory returned HTTP ${status}.` };
+}
+
+/**
+ * Diagnose a Companion Memory `GET /api/memory/context` response — the leg that
+ * actually tests the credential.
+ *
+ * This endpoint is one the plugin itself calls (bootstrap context), and it is guarded
+ * by the `Memory` scope at `read` capability. That makes it the cheapest call that
+ * distinguishes the three states `/api/health` cannot:
+ *
+ * - **401** — the key is wrong, or sent under the wrong header.
+ * - **403** — the key authenticates but is not allowed here. On a key minted for the
+ *   MCP sections of the docs (`MCP` + `Intents`, no `Memory`) this is the ONLY signal
+ *   anything is wrong: passive capture then fails on every write, and the plugin
+ *   swallows those failures rather than break a session, so without this probe the
+ *   user gets a clean setup and memory that silently never accumulates.
+ * - **2xx** — scope and capability are good for reads.
+ *
+ * Deliberately a read: the write capability that capture needs cannot be probed without
+ * writing something, so the success message promises reads only rather than overstating
+ * what was proven.
+ */
+export function triageMemoryAuth(status: number | undefined, transportError?: string): ProbeVerdict {
+  if (status === undefined) {
+    return {
+      ok: false,
+      code: 'unreachable',
+      message: `Could not reach Companion Memory: ${transportError ?? 'no response'}`,
+    };
+  }
+  if (status === 401) {
+    return {
+      ok: false,
+      code: 'unauthorized',
+      message: 'Companion Memory rejected the key (HTTP 401).',
+      hint: 'The key is sent as the x-api-key header, not Authorization: Bearer. Mint one in the memory UI under Settings → API Keys.',
+    };
+  }
+  if (status === 403) {
+    return {
+      ok: false,
+      code: 'missing-memory-scope',
+      message: 'Companion Memory authenticated the key but refused /api/memory (HTTP 403).',
+      hint:
+        "The key needs the 'Memory' scope at 'Read & write'. A key minted for MCP only (MCP + Intents) authenticates and is refused here — " +
+        'and because the plugin never breaks a session over a failed write, that fault would otherwise show up as memory that silently never accumulates.',
+    };
+  }
+  if (status === 404 || status === 405) {
+    return {
+      ok: false,
+      code: 'wrong-path',
+      message: `Companion Memory returned HTTP ${status} for /api/memory/context.`,
+      hint: 'The server answered /api/health but not the memory API. Check this is Companion Memory and not another service on the same address.',
+    };
+  }
+  if (status >= 200 && status < 300) {
+    return { ok: true, code: 'ok', message: 'Companion Memory accepted the key for memory reads.' };
+  }
+  return { ok: false, code: 'http-error', message: `Companion Memory returned HTTP ${status} for /api/memory/context.` };
 }
 
 /**
@@ -182,7 +258,7 @@ export function checkMemorySlot(config: Record<string, unknown>, force: boolean)
     current,
     message:
       `The memory slot is held by '${current}'. Re-run with --force to claim it. ` +
-      'Note that installing the plugin by hand would take the slot WITHOUT asking, which is why this check runs before anything is written.',
+      'Selecting this plugin means that provider stops being the one that runs, so the choice is left to you rather than made for you.',
   };
 }
 
@@ -350,8 +426,110 @@ export function openClawConfigPath(home = homedir()): string {
 /** Trimmed for the same reason `openClawConfigPath` is: a whitespace-only export is not
  *  an override, but `join` would happily root the install under a directory named "   ". */
 export function hermesPluginDir(home = homedir()): string {
-  const hermesHome = process.env.HERMES_HOME?.trim();
-  return join(hermesHome || join(home, '.hermes'), 'plugins', PLUGIN_ID);
+  return join(hermesHome(home), 'plugins', PLUGIN_ID);
+}
+
+/** `$HERMES_HOME`, or `~/.hermes`. Shared by the plugin dir and the config file. */
+export function hermesHome(home = homedir()): string {
+  return process.env.HERMES_HOME?.trim() || join(home, '.hermes');
+}
+
+/** Where Hermes reads `mcp_servers` from. */
+export function hermesConfigPath(home = homedir()): string {
+  return join(hermesHome(home), 'config.yaml');
+}
+
+/**
+ * Insert or update the `mcp_servers.hub` block in a Hermes `config.yaml`.
+ *
+ * Line-based rather than parse-and-re-emit, and deliberately so: this file is
+ * hand-maintained, and a YAML round-trip discards comments, quoting style and key order
+ * across the WHOLE file to change six lines. This mirrors `configure-hub-mcp.py`, which
+ * has been doing exactly this in the Hermes appliance image, so the two writers agree
+ * on the block's shape.
+ *
+ * No `transport:` line, matching the `ci_server` block: Hermes defaults to Streamable
+ * HTTP for any entry with a `url`, and its only other accepted value is `sse`, which
+ * these servers do not serve. The Hub differs from Companion Memory in the auth header
+ * only — `Authorization: Bearer` rather than `x-api-key`.
+ *
+ * Returns the new text and whether anything changed, so a converged config is left
+ * byte-identical instead of being rewritten (and backed up) on every run.
+ */
+export function patchHermesMcpServers(configText: string, mcpUrl: string, key: string): { text: string; changed: boolean } {
+  const indentOf = (line: string) => line.length - line.trimStart().length;
+  const isBlankOrComment = (line: string) => line.trim() === '' || line.trim().startsWith('#');
+
+  const lines = configText.length > 0 ? configText.split('\n') : [];
+  // A file not ending in a newline would otherwise get the block welded onto its last line.
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+  const blockLines = (indent: number): string[] => {
+    const child = ' '.repeat(indent + 2);
+    const grand = ' '.repeat(indent + 4);
+    return [
+      `${' '.repeat(indent)}hub:`,
+      `${child}url: "${mcpUrl}"`,
+      `${child}headers:`,
+      `${grand}Authorization: "Bearer ${key}"`,
+      `${child}timeout: 180`,
+      `${child}connect_timeout: 60`,
+    ];
+  };
+
+  const endOfBlock = (start: number, indent: number): number => {
+    for (let i = start + 1; i < lines.length; i++) {
+      if (isBlankOrComment(lines[i])) continue;
+      if (indentOf(lines[i]) <= indent) return i;
+    }
+    return lines.length;
+  };
+
+  const mcpIndex = lines.findIndex((line) => /^\s*mcp_servers:\s*(?:#.*)?$/.test(line));
+
+  if (mcpIndex === -1) {
+    const appended = [...lines, 'mcp_servers:', ...blockLines(2), ''];
+    return { text: appended.join('\n'), changed: true };
+  }
+
+  const mcpIndent = indentOf(lines[mcpIndex]);
+  const mcpEnd = endOfBlock(mcpIndex, mcpIndent);
+
+  // Take the child indent from a sibling rather than assuming two spaces — a config
+  // indented with four would otherwise get a block its own parser reads as a sibling.
+  let childIndent = mcpIndent + 2;
+  for (let i = mcpIndex + 1; i < mcpEnd; i++) {
+    if (!isBlankOrComment(lines[i])) {
+      childIndent = indentOf(lines[i]);
+      break;
+    }
+  }
+
+  const hubIndex = lines.slice(mcpIndex + 1, mcpEnd).findIndex((line) => /^\s*hub:\s*(?:#.*)?$/.test(line));
+  const replacement = blockLines(childIndent);
+
+  if (hubIndex === -1) {
+    // Before trailing blanks/comments, so the block joins its siblings rather than
+    // landing after a comment that introduces whatever follows.
+    let insertAt = mcpEnd;
+    while (insertAt - 1 > mcpIndex && isBlankOrComment(lines[insertAt - 1])) insertAt--;
+    lines.splice(insertAt, 0, ...replacement);
+    return { text: `${lines.join('\n')}\n`, changed: true };
+  }
+
+  const start = mcpIndex + 1 + hubIndex;
+  // Back off the blank lines and comments that separate this block from whatever
+  // follows: they belong to the file, not to `hub`. Including them made the comparison
+  // below always unequal — so a converged config was rewritten and backed up on every
+  // run — and the splice then swallowed the blank line, quietly reformatting the user's
+  // file a little more each time.
+  let end = endOfBlock(start, indentOf(lines[start]));
+  while (end - 1 > start && isBlankOrComment(lines[end - 1])) end--;
+  const existing = lines.slice(start, end);
+  if (existing.join('\n') === replacement.join('\n')) return { text: configText, changed: false };
+
+  lines.splice(start, end - start, ...replacement);
+  return { text: `${lines.join('\n')}\n`, changed: true };
 }
 
 /** The Hub MCP endpoint, with any trailing slashes folded so `//api/mcp` cannot appear. */
@@ -540,11 +718,26 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<{ statu
   }
 }
 
+/**
+ * Probe Companion Memory in two legs: is it there, and does the key work.
+ *
+ * The health leg stays because it is the only one that can tell "wrong address" from
+ * "wrong key" — without it, a 404 from some unrelated service on that port would be
+ * triaged as a credential fault. But it must not be the last word: it does not
+ * authenticate, so on its own it reports success for a key that cannot write a single
+ * turn.
+ */
 export async function probeMemory(baseUrl: string, key: string): Promise<ProbeVerdict> {
   // x-api-key, not Bearer. Both adapters send it this way and the server only reads it
   // from that header; sending Bearer here is a silent 401.
-  const res = await fetchWithTimeout(`${baseUrl}/api/health`, { method: 'GET', headers: { 'x-api-key': key, Accept: 'application/json' } });
-  return triageMemoryProbe(res.status, res.error);
+  const headers = { 'x-api-key': key, Accept: 'application/json' };
+
+  const health = await fetchWithTimeout(`${baseUrl}/api/health`, { method: 'GET', headers });
+  const reachable = triageMemoryProbe(health.status, health.error);
+  if (!reachable.ok) return reachable;
+
+  const auth = await fetchWithTimeout(`${baseUrl}/api/memory/context`, { method: 'GET', headers });
+  return triageMemoryAuth(auth.status, auth.error);
 }
 
 /**
@@ -788,8 +981,10 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   //
   // Its `--force` is unrelated to ours: it means "overwrite an existing installed
   // plugin", which is what re-running connect to upgrade should do. It grants nothing
-  // about the memory slot — the installer claims that either way, which is why the
-  // guard above had to run first.
+  // about the memory slot. Nor does the install itself, in the `npm:` form used here —
+  // live-verified that it registers the entry and leaves `plugins.slots.memory` alone
+  // (the path form does auto-claim, which is why the two must not be reasoned about
+  // together). The slot is taken by the merge below, so the guard above runs first.
   const install = run('openclaw', ['plugins', 'install', spec, '--force']);
   if (!install.ok) {
     printMessageBox('Install failed', [runFailureMessage(install, 'openclaw plugins install')], 'red');
@@ -894,8 +1089,16 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
         '',
         `${bold('would fetch')}    ${url}`,
         `${bold('would extract')}  ${dir}`,
+        ...(ctx.hubUrl
+          ? [
+              '',
+              `${bold('would edit')}     ${hermesConfigPath()}`,
+              `  mcp_servers.hub.url = ${hubMcpUrl(ctx.hubUrl)}`,
+              '  mcp_servers.hub.headers.Authorization = (set)',
+            ]
+          : []),
         '',
-        'Then hand off to `hermes memory setup`, which owns the credentials.',
+        'Then hand off to `hermes memory setup`, which owns the memory credentials.',
       ],
       'yellow',
     );
@@ -953,11 +1156,19 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     );
     process.exit(2);
   }
-  if (!existsSync(join(staging, 'plugin.yaml'))) {
+  // `__init__.py`, not `plugin.yaml`. Hermes has two plugin subsystems and they key off
+  // different files: the general registry reads `plugin.yaml`, but MEMORY PROVIDER
+  // discovery scans each directory's `__init__.py` for its provider markers. A tree
+  // with a manifest and no `__init__.py` is exactly the shape that installs cleanly and
+  // then never appears in `hermes memory setup`.
+  if (!existsSync(join(staging, '__init__.py'))) {
     rmDirRecursive(staging);
     printMessageBox(
       'Install failed — nothing was changed',
-      ['The downloaded archive has no plugin.yaml.', 'Hermes discovers providers by scanning for that file, so it would not be found.'],
+      [
+        'The downloaded archive has no __init__.py.',
+        'Hermes finds memory providers by scanning that file in each plugin directory, so this would not be offered by `hermes memory setup`.',
+      ],
       'red',
     );
     process.exit(2);
@@ -1025,6 +1236,35 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     }
   }
 
+  // Hub MCP is written here, unlike the memory credentials: no Hermes wizard owns
+  // `mcp_servers`, so leaving it to a handoff leaves it undone. This was the gap —
+  // `--hub-url` probed a server and then registered nothing.
+  let hubConfigPath: string | undefined;
+  let hubBackup: string | undefined;
+  if (ctx.hubUrl && ctx.hubKey) {
+    const configPath = hermesConfigPath();
+    const before = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
+    const { text, changed } = patchHermesMcpServers(before, hubMcpUrl(ctx.hubUrl), ctx.hubKey);
+
+    if (changed) {
+      try {
+        mkdirSync(dirname(configPath), { recursive: true });
+        // Only when there is something to lose; a first-time write has no prior state.
+        if (before.length > 0) hubBackup = backupFile(configPath, timestampForBackup(new Date()));
+        writeFileSync(configPath, text, { mode: 0o600 });
+        hubConfigPath = configPath;
+        ctx.lines.push('Hub MCP server registered as `hub`.');
+      } catch (error) {
+        // The plugin is already in place and usable without Hub MCP, so this reports
+        // and continues rather than exiting 2 and implying nothing was installed.
+        if (hubBackup) restoreBackup(configPath, hubBackup);
+        ctx.lines.push(`Hub MCP could not be written to ${configPath}: ${(error as Error).message}`);
+      }
+    } else {
+      ctx.lines.push('Hub MCP server already registered as `hub`.');
+    }
+  }
+
   printMessageBox(
     'Plugin installed — one step left',
     [
@@ -1032,6 +1272,8 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       '',
       `${bold('installed')}  ${HERMES_PACKAGE}@${PINNED_VERSIONS.hermes}`,
       `${bold('path')}       ${dir}`,
+      ...(hubConfigPath ? [`${bold('config')}     ${hubConfigPath}`] : []),
+      ...(hubBackup ? [`${bold('backup')}     ${hubBackup}`] : []),
       '',
       'Credentials are owned by the Hermes wizard, which runs its own connection test',
       'and saves nothing if it fails. Finish with:',
@@ -1054,6 +1296,9 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       'nothing and only raises a tool-override grant this plugin has no use for.',
       '',
       'Confirm with `hermes memory status` — it should report the provider as available.',
+      // Only when a server was actually registered: Hermes reads mcp_servers at startup,
+      // so the tools are absent until a restart and that reads as a failed write.
+      ...(hubConfigPath ? ['', 'Restart Hermes for the Hub MCP server — `mcp_servers` is read at startup.'] : []),
     ],
     'green',
   );
