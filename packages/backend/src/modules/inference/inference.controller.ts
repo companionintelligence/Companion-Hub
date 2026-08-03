@@ -57,13 +57,13 @@ export class InferenceController {
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    return profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
-          ? 'vllm'
-          : 'ollama';
+    // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
+    // ready: its official image covers both cases — the `:rocm` tag when /dev/kfd passthrough
+    // works, and the default tag (which bundles a Vulkan/RADV ggml backend that auto-activates via
+    // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
+    // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
+    // which declines AMD outright rather than mount devices into an image that can't use them.
+    return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
   }
 
   private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {

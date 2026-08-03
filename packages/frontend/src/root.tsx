@@ -98,13 +98,23 @@ client.interceptors.request.use((request) => {
   return request;
 });
 
+function truncateForSentry(text: string, max = 300): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return '';
+  }
+  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
     let data: { message?: string; intlParams?: Record<string, string> } = {};
+    let rawBody = '';
 
     // Try to parse JSON, but handle empty or invalid responses gracefully
     try {
       const text = await res.text();
+      rawBody = text;
       if (text) {
         data = JSON.parse(text);
       }
@@ -114,8 +124,16 @@ client.interceptors.response.use(async (res) => {
       data = { message: res.statusText || fallbackMessage };
     }
 
-    const error = new TranslatableError(normalizeApiErrorMessage(data.message, res.status));
-    error.intlParams = data.intlParams ?? {};
+    const messageKey = normalizeApiErrorMessage(data.message, res.status);
+    // Keep `message` as the i18n key for toast/UI (`t(e.message)`). Attach HTTP
+    // details separately so Sentry can show the real failing request instead of
+    // only "COMMON_AN_ERROR_OCCURRED".
+    const bodyForSentry = truncateForSentry(typeof data.message === 'string' && data.message ? data.message : rawBody);
+    const error = new TranslatableError(messageKey, data.intlParams ?? {}, {
+      status: res.status,
+      url: res.url ?? '',
+      body: bodyForSentry || undefined,
+    });
 
     if (res.status === 401 && !isSessionExpiryExempt(res.url ?? '')) {
       await handleSessionExpired();

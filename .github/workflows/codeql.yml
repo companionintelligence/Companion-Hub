@@ -1,13 +1,17 @@
 name: 'CodeQL - Code Quality'
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches:
+#       - dev
+#       - main
+#   pull_request:
+#   schedule:
+#     - cron: '0 6 * * 1'
+# <<< ci-local:gated
 on:
-  push:
-    branches:
-      - dev
-      - main
-  pull_request:
-  schedule:
-    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 jobs:
   analyze:

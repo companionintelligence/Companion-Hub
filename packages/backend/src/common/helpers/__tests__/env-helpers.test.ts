@@ -149,11 +149,13 @@ describe('env-helpers — resolve() priority chain', () => {
     expect(process.env.JWT_SECRET).toBe('runtime-jwt-secret');
   });
 
-  it('MUST keep process.env MCP_API_KEY when set, even if data .env differs', async () => {
-    process.env.MCP_API_KEY = 'runtime-mcp-key';
+  it('MUST NOT carry MCP_API_KEY into the resolved env, even when an older .env still has one', async () => {
+    // SEC-MCP-8: the value authenticates nothing (McpAuthGuard has no env fallback and nothing seeds
+    // the key store), so it is no longer derived and a stale one is dropped rather than republished
+    // into state/.env.resolved. Real MCP keys live in the hashed store.
     setupMocks({ dataEnv: 'MCP_API_KEY=from-data' });
-    await generateSystemEnvFile();
-    expect(process.env.MCP_API_KEY).toBe('runtime-mcp-key');
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.has('MCP_API_KEY')).toBe(false);
   });
 
   it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {
@@ -422,10 +424,9 @@ describe('env-helpers — RABBITMQ_PASSWORD fail-closed in production', () => {
     await expect(generateSystemEnvFile()).rejects.toThrow(/RABBITMQ_PASSWORD is not set/);
   });
 
-  it('MUST NOT invent the weak default, but tolerates an explicit admin in production (compose still ships it)', async () => {
-    // The shipped prod compose hardcodes RABBITMQ_PASSWORD=admin on both the
-    // broker and the Hub, so hard-failing here would break boot. We keep the
-    // explicit value (broker match) rather than silently inventing it.
+  it('MUST NOT invent the weak default, but tolerates an explicit admin in production (compose fallback)', async () => {
+    // Compose interpolates ${RABBITMQ_PASSWORD:-admin}. An explicit admin still
+    // matches the broker; we keep it rather than silently inventing another value.
     process.env.NODE_ENV = 'production';
     process.env.RABBITMQ_PASSWORD = 'admin';
     setupMocks({ dataEnv: '' });

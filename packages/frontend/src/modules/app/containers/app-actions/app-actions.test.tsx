@@ -35,6 +35,8 @@ const hoisted = vi.hoisted(() => ({
     isDisconnecting: false,
     isLoading: false,
   },
+  architecture: 'amd64' as 'amd64' | 'arm64',
+  toastError: vi.fn(),
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -115,9 +117,15 @@ vi.mock('@/modules/app/helpers/use-installation-progress', () => ({
   useInstallationProgress: () => null,
 }));
 
+vi.mock('@/context/app-context', () => ({
+  useAppContext: () => ({
+    architecture: hoisted.architecture,
+  }),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: {
-    error: vi.fn(),
+    error: (...args: unknown[]) => hoisted.toastError(...args),
     success: vi.fn(),
   },
 }));
@@ -263,6 +271,8 @@ describe('AppActions', () => {
       blockedReasonKey: null,
       providerStatus: 'absent',
     });
+    hoisted.architecture = 'amd64';
+    hoisted.toastError.mockReset();
   });
 
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
@@ -337,6 +347,26 @@ describe('AppActions', () => {
     render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+  });
+
+  it('disables Install and toasts wrong architecture when the Hub arch is unsupported', async () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+    hoisted.architecture = 'arm64';
+
+    render(
+      <AppActions
+        app={makeApp({ status: 'missing' })}
+        metadata={metadata}
+        info={makeInfo({ supported_architectures: ['amd64'] })}
+        urlAvailability={idleAvailability}
+        layout="hero"
+      />,
+    );
+
+    const install = screen.getByTestId('action-common_install');
+    expect(install).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(install);
+    expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
   });
 
   it('keeps install errors inline in hero layout with constrained width', () => {

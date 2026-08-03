@@ -2,9 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { type CallToolResult, CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { McpService } from './mcp.service';
 import { McpToolNotFoundError, McpToolRegistry, toToolDescriptor } from './mcp-tool-registry.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
+import { mcpCallContext } from './mcp-call-context';
 
 /**
  * BUG-MCP-1: builds a spec-compliant MCP {@link Server} (official SDK) bound to the Hub's shared
@@ -28,9 +30,12 @@ export class McpServerFactory {
   create(): Server {
     const server = new Server(this.mcpService.getServerInfo(), { capabilities: this.mcpService.getCapabilities() });
 
-    // tools/list — project the registry into the MCP tool descriptor shape (shared with the admin catalog).
+    // tools/list — project the registry into the MCP tool descriptor shape (shared with the admin
+    // catalog), filtered to what the calling key can actually run. An agent is shown a coherent
+    // surface rather than tools it was always going to be refused; the annotations on each descriptor
+    // then say which of the visible ones mutate.
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.registry.listTools().map(toToolDescriptor),
+      tools: this.registry.listToolsForCapability(this.callerCapability()).map(toToolDescriptor),
     }));
 
     // tools/call — route to the registry, format success/errors into MCP content, and audit.
@@ -40,7 +45,7 @@ export class McpServerFactory {
       const start = Date.now();
 
       try {
-        const result = await this.registry.callTool(toolName, toolArgs);
+        const result = await this.registry.callTool(toolName, toolArgs, { capability: this.callerCapability() });
         // ISSUE-MCP-2: audit every successful tool call at info (name + duration only — never args).
         this.logger.info('MCP tool call', toolName, `${Date.now() - start}ms`, 'ok');
         // Cast: our {type:'text'} content is structurally a CallToolResult; the SDK's content union
@@ -62,5 +67,18 @@ export class McpServerFactory {
     });
 
     return server;
+  }
+
+  /**
+   * The capability of the key behind the request being handled. One server instance serves a whole
+   * session, so this is read per request from {@link mcpCallContext} rather than captured at
+   * construction — a key demoted while a session is open loses authority on its very next call.
+   *
+   * Fails closed: no context means the request did not come through {@link McpAuthGuard} +
+   * {@link McpController}, which should be impossible, so it is treated as the least authority rather
+   * than trusted.
+   */
+  private callerCapability(): ApiKeyCapability {
+    return mcpCallContext.getStore()?.capability ?? 'read';
   }
 }

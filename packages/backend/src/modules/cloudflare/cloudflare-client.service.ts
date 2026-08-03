@@ -40,6 +40,11 @@ export interface AppInfo {
    * migration 0017.
    */
   privilegedKind?: 'hub' | 'vpn';
+  /**
+   * Authoritative Hub API listen port. Only meaningful when `privilegedKind === 'hub'`.
+   * Portal persists this on the Hub application row so tunnel routes track desktop port remaps.
+   */
+  hubListenPort?: number;
 }
 
 /**
@@ -78,6 +83,10 @@ export interface CloudflareSyncResult {
    */
   failures: PublicDnsFailure[];
   synced: number;
+  /** HTTP status from Portal when the control-plane request failed. */
+  errorStatus?: number;
+  /** Short, user-safe reason for a full sync failure (auth, ownership, timeout, …). */
+  errorMessage?: string;
 }
 
 export interface PortalDeviceApplication {
@@ -216,15 +225,59 @@ export class CloudflareClientService {
 
     if (!this.tunnelId) {
       this.logger.warn('Cannot sync state: Tunnel not initialized and no tunnelId provided');
-      return { ok: false, failed: [], failures: [], synced: 0 };
+      return {
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Tunnel not initialized',
+      };
+    }
+
+    const maxAttempts = 3;
+    let lastError: CloudflareSyncResult | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await this.syncStateOnce(organizationId, apps);
+      if (result.ok) {
+        return result;
+      }
+      lastError = result;
+      const transient =
+        result.errorStatus === undefined ||
+        result.errorStatus >= 500 ||
+        result.errorMessage?.toLowerCase().includes('timeout') ||
+        result.errorMessage?.toLowerCase().includes('network');
+      if (!transient || attempt === maxAttempts) {
+        return result;
+      }
+      this.logger.warn(
+        `Cloudflare state sync attempt ${attempt}/${maxAttempts} failed (${result.errorStatus ?? 'n/a'}: ${result.errorMessage ?? 'unknown'}); retrying…`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+
+    return lastError ?? { ok: false, failed: [], failures: [], synced: 0, errorMessage: 'State sync failed' };
+  }
+
+  private async syncStateOnce(organizationId: string, apps: AppInfo[]): Promise<CloudflareSyncResult> {
+    const tunnelId = this.tunnelId;
+    if (!tunnelId) {
+      return {
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Tunnel not initialized',
+      };
     }
 
     try {
-      this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
-      this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
+      this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${tunnelId})...`);
+      this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId, apps }, null, 2)}`);
       const responseData = await this.portalClient.postTunnelState({
         organizationId,
-        tunnelId: this.tunnelId,
+        tunnelId,
         apps,
       });
       const response = { data: responseData };
@@ -291,17 +344,34 @@ export class CloudflareClientService {
 
         return { ok: true, failed, failures, synced: synced ?? 0 };
       }
-      return { ok: false, failed: [], failures: [], synced: 0 };
+      return {
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Portal returned success=false for tunnel state sync',
+      };
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`Failed to sync state: ${error.message}`);
       } else {
         this.logger.error(`Failed to sync state: ${String(error)}`);
       }
+      let errorStatus: number | undefined;
+      let errorMessage = error instanceof Error ? error.message : String(error);
       if (axios.isAxiosError(error) && error.response) {
+        errorStatus = error.response.status;
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
+        const body = error.response.data as { error?: string } | undefined;
+        if (typeof body?.error === 'string' && body.error.trim()) {
+          errorMessage = body.error;
+        } else if (errorStatus === 401 || errorStatus === 403) {
+          errorMessage = 'Device auth/tunnel ownership rejected — re-pair this Hub with CI Portal';
+        } else if (errorStatus >= 500) {
+          errorMessage = `Portal/Cloudflare control-plane error (${errorStatus})`;
+        }
       }
-      return { ok: false, failed: [], failures: [], synced: 0 };
+      return { ok: false, failed: [], failures: [], synced: 0, errorStatus, errorMessage };
     }
   }
 

@@ -238,13 +238,25 @@ describe('CloudflareClientService', () => {
 
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
-      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
+      expect(result).toMatchObject({
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Tunnel not initialized',
+      });
     });
 
-    it('should handle axios error', async () => {
+    it('should handle axios error with cause details', async () => {
       portalClient.postTunnelState.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
-      expect(result).toEqual({ ok: false, failed: [], failures: [], synced: 0 });
+      expect(result).toMatchObject({
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Network Error',
+      });
     });
   });
 

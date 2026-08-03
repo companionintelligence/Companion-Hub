@@ -1,11 +1,40 @@
 name: Build and Push Container
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches:
+#       - "main"
+#       - "dev"
+#       - "staging"
+#   workflow_dispatch:
+#     inputs:
+#       environment:
+#         description: 'Environment to deploy to'
+#         required: true
+#         type: choice
+#         options:
+#           - dev
+#           - staging
+#           - production
+#       tag:
+#         description: 'Release tag to publish as a versioned image (e.g. v0.2.45). Production only; ignored elsewhere.'
+#         required: false
+#         default: ''
+#         type: string
+#   workflow_call:
+#     inputs:
+#       environment:
+#         description: 'Environment to deploy to'
+#         required: true
+#         type: string
+#       tag:
+#         description: 'Release tag to publish as a versioned image (e.g. v0.2.45). Production only; ignored elsewhere.'
+#         required: false
+#         default: ''
+#         type: string
+# <<< ci-local:gated
 on:
-  push:
-    branches:
-      - "main"
-      - "dev"
-      - "staging"
   workflow_dispatch:
     inputs:
       environment:
@@ -238,9 +267,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Fresh runner: nothing is inherited from the deploy job, including crane.
+      # Fresh runner: nothing is inherited from the deploy job, including crane or binfmt.
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4
+
+      # linux/arm64 `docker run` on ubuntu-latest needs binfmt; without it the gate reports
+      # exec format error even when the pushed arm64 manifest slot is correct.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false
 
       - name: Verify anonymous pull and multi-arch manifest
         env:
@@ -324,6 +360,43 @@ jobs:
                    "Restore 'platforms: linux/amd64,linux/arm64' on the build step."
               FAILED=1
             fi
+
+            # Manifest index strings alone are not enough: a BUILDPLATFORM bug can publish
+            # an amd64 Node blob under the linux/arm64 slot. Assert image config architecture
+            # and a real `uname -m` from each platform.
+            for PLAT_EXPECT in "linux/amd64:amd64:x86_64" "linux/arm64:arm64:aarch64"; do
+              PLAT="${PLAT_EXPECT%%:*}"
+              REST="${PLAT_EXPECT#*:}"
+              CFG_EXPECT="${REST%%:*}"
+              UNAME_EXPECT="${REST##*:}"
+              CFG_ARCH="$(crane config --platform "${PLAT}" "${REF}" 2>/tmp/crane-cfg-err | jq -r '.architecture // empty' || true)"
+              if [ "${CFG_ARCH}" != "${CFG_EXPECT}" ]; then
+                echo "::error::${REF} platform ${PLAT} config.architecture is '${CFG_ARCH}' (want ${CFG_EXPECT})." \
+                     "Runner stages must use TARGETPLATFORM so arm64 images are not amd64 under Rosetta." \
+                     "$(cat /tmp/crane-cfg-err 2>/dev/null || true)"
+                FAILED=1
+                continue
+              fi
+              if ! docker pull --platform "${PLAT}" "${REF}" >/tmp/docker-pull-out 2>&1; then
+                echo "::error::Failed to pull ${REF} for ${PLAT}: $(cat /tmp/docker-pull-out)"
+                FAILED=1
+                continue
+              fi
+              UNAME_GOT="$(docker run --rm --platform "${PLAT}" "${REF}" uname -m 2>/tmp/uname-err || true)"
+              if [ "${UNAME_GOT}" != "${UNAME_EXPECT}" ]; then
+                echo "::error::${REF} platform ${PLAT} uname -m is '${UNAME_GOT}' (want ${UNAME_EXPECT})." \
+                     "$(cat /tmp/uname-err 2>/dev/null || true)"
+                FAILED=1
+              fi
+              NODE_ARCH="$(docker run --rm --platform "${PLAT}" "${REF}" node -p process.arch 2>/tmp/node-arch-err || true)"
+              NODE_EXPECT="x64"
+              [ "${CFG_EXPECT}" = "arm64" ] && NODE_EXPECT="arm64"
+              if [ "${NODE_ARCH}" != "${NODE_EXPECT}" ]; then
+                echo "::error::${REF} platform ${PLAT} process.arch is '${NODE_ARCH}' (want ${NODE_EXPECT})." \
+                     "$(cat /tmp/node-arch-err 2>/dev/null || true)"
+                FAILED=1
+              fi
+            done
 
             [ "${HAS_AMD64}" -eq 1 ] && AMD64="✅" || AMD64="❌"
             [ "${HAS_ARM64}" -eq 1 ] && ARM64="✅" || ARM64="❌"

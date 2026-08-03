@@ -16,6 +16,7 @@ export class BackupTools implements OnModuleInit {
     this.registry.register({
       category: 'Backups',
       name: 'hub_backup_app',
+      access: 'write',
       description: 'Create a backup of an app. Returns a requestId.',
       inputSchema: { type: 'object', properties: { appUrn: urnProp }, required: ['appUrn'] },
       handler: (p) => this.backupApp(p as { appUrn: string }),
@@ -23,6 +24,7 @@ export class BackupTools implements OnModuleInit {
     this.registry.register({
       category: 'Backups',
       name: 'hub_restore_app_backup',
+      access: 'write',
       destructive: true, // ISSUE-MCP-2: irreversibly overwrites the app's live data with the snapshot.
       description: 'Restore an app from a named backup file. Returns a requestId.',
       inputSchema: {
@@ -35,6 +37,7 @@ export class BackupTools implements OnModuleInit {
     this.registry.register({
       category: 'Backups',
       name: 'hub_list_app_backups',
+      access: 'read',
       description: 'List available backups for an app with pagination.',
       inputSchema: {
         type: 'object',
@@ -50,6 +53,7 @@ export class BackupTools implements OnModuleInit {
     this.registry.register({
       category: 'Backups',
       name: 'hub_delete_backup',
+      access: 'write',
       destructive: true, // ISSUE-MCP-2: permanently deletes a backup file.
       description: 'Delete a backup file for an app.',
       inputSchema: {

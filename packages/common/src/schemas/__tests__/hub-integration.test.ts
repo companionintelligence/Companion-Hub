@@ -138,6 +138,69 @@ describe('hubIntegrationSchema', () => {
     });
   });
 
+  describe('R-SCH-4: inference env mapping', () => {
+    // The mapping is opt-in per variable, so a partial declaration is the normal
+    // case — not an edge case. Zod 4 made enum-keyed `z.record` exhaustive, which
+    // silently rejected every real manifest and dropped those apps from the store
+    // catalog; `z.partialRecord` is what keeps this passing.
+    it('should accept a partial mapping declaring only the variables an app consumes', () => {
+      const result = hubIntegrationSchema.safeParse({
+        inference: {
+          llm_base_url: 'LLM_API_BASE',
+          llm_api_key: 'LLM_API_KEY',
+          chat_model: 'LLM_DEFAULT_CHAT_MODEL',
+          embedding_model: 'LLM_DEFAULT_EMBEDDING_MODEL',
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.inference?.chat_model).toBe('LLM_DEFAULT_CHAT_MODEL');
+        expect(result.data?.inference?.vision_model).toBeUndefined();
+      }
+    });
+
+    it('should accept a single-variable mapping', () => {
+      const result = hubIntegrationSchema.safeParse({ inference: { ollama_host: 'OLLAMA_HOST' } });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept a mapping declaring every inference variable', () => {
+      const result = hubIntegrationSchema.safeParse({
+        inference: {
+          llm_base_url: 'A',
+          llm_api_key: 'B',
+          chat_model: 'C',
+          embedding_model: 'D',
+          vision_model: 'E',
+          ollama_host: 'F',
+          num_ctx: 'G',
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept an empty mapping', () => {
+      expect(hubIntegrationSchema.safeParse({ inference: {} }).success).toBe(true);
+    });
+
+    it('should reject an unknown inference variable name', () => {
+      expect(hubIntegrationSchema.safeParse({ inference: { not_a_variable: 'X' } }).success).toBe(false);
+    });
+
+    it('should reject an empty env variable name', () => {
+      // An empty value would be written to app.env as a nameless key.
+      expect(hubIntegrationSchema.safeParse({ inference: { chat_model: '' } }).success).toBe(false);
+    });
+
+    it('should leave inference undefined when not declared', () => {
+      const result = hubIntegrationSchema.safeParse({ mcp_client: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.inference).toBeUndefined();
+      }
+    });
+  });
+
   describe('R-SCH-2: appInfoSchema integration', () => {
     const minimalAppInfo = {
       id: 'test-app',
@@ -175,6 +238,18 @@ describe('hubIntegrationSchema', () => {
       if (result.success) {
         expect(result.data.hub_integration?.oidc?.issuer_env).toBe('CI_OIDC_ISSUER');
         expect(result.data.hub_integration?.oidc?.issuer_path).toBe('/api/auth');
+      }
+    });
+
+    it('should parse appInfoSchema with a partial hub_integration.inference', () => {
+      const result = appInfoSchema.safeParse({
+        ...minimalAppInfo,
+        hub_integration: { inference: { llm_base_url: 'LLM_API_BASE', chat_model: 'LLM_DEFAULT_CHAT_MODEL' } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.hub_integration?.inference?.llm_base_url).toBe('LLM_API_BASE');
+        expect(result.data.hub_integration?.inference?.num_ctx).toBeUndefined();
       }
     });
 

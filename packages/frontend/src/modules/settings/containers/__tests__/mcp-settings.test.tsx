@@ -7,7 +7,8 @@ import { McpSettingsContainer } from '../mcp-settings';
 
 // ENH-MCP-4: exercises the MCP settings screen against a mocked /api/mcp-admin surface.
 // Key management moved to the hub-wide Settings → Security card (see api-keys.test.tsx);
-// this tab only links there.
+// this tab only links there. The appliance-wide destructive switch that used to live here is gone
+// too — destructive access is now each key's capability, granted one key at a time on that card.
 
 const mockApiFetch = vi.fn();
 vi.mock('@/lib/api-fetch', () => ({ apiFetch: (...args: unknown[]) => mockApiFetch(...args) }));
@@ -31,18 +32,6 @@ vi.mock('@/components/ui/Input', () => ({
   Input: (props: any) => <input {...props} />,
 }));
 vi.mock('@/components/ui/Skeleton/Skeleton', () => ({ Skeleton: () => <div data-testid="skeleton" /> }));
-vi.mock('@/components/ui/Switch', () => ({
-  Switch: ({ checked, onCheckedChange, name }: any) => (
-    <input
-      type="checkbox"
-      role="switch"
-      aria-label={name}
-      aria-checked={checked}
-      checked={checked}
-      onChange={(e) => onCheckedChange(e.target.checked)}
-    />
-  ),
-}));
 vi.mock('@/components/ui/Card', () => ({
   Card: ({ children }: any) => <div>{children}</div>,
   CardHeader: ({ children }: any) => <div>{children}</div>,
@@ -66,14 +55,35 @@ const STATUS = {
   protocolVersion: '2025-11-25',
   toolCount: 2,
   activeSessions: 0,
-  destructiveAllowed: false,
   activeKeyCount: 2,
   endpoint: '/api/mcp',
 };
 const TOOLS = {
   tools: [
-    { name: 'hub_list_installed_apps', description: 'List apps', inputSchema: { type: 'object' }, destructive: false, category: 'App Discovery' },
-    { name: 'hub_uninstall_app', description: 'Uninstall an app', inputSchema: { type: 'object' }, destructive: true, category: 'App Lifecycle' },
+    {
+      name: 'hub_list_installed_apps',
+      description: 'List apps',
+      inputSchema: { type: 'object' },
+      destructive: false,
+      access: 'read',
+      category: 'App Discovery',
+    },
+    {
+      name: 'hub_start_app',
+      description: 'Start an app',
+      inputSchema: { type: 'object' },
+      destructive: false,
+      access: 'write',
+      category: 'App Lifecycle',
+    },
+    {
+      name: 'hub_uninstall_app',
+      description: 'Uninstall an app',
+      inputSchema: { type: 'object' },
+      destructive: true,
+      access: 'write',
+      category: 'App Lifecycle',
+    },
   ],
 };
 function mockGet(url: string) {
@@ -151,18 +161,33 @@ describe('McpSettingsContainer', () => {
     expect(screen.getByText('hub_uninstall_app')).toBeTruthy();
   });
 
-  it('toggles the destructive gate via POST /settings', async () => {
-    const user = userEvent.setup();
+  it('offers no appliance-wide destructive switch, and points at where the decision moved to', async () => {
+    // One switch could only be on or off for every key at once, so enabling it for one agent enabled
+    // it for all of them. An operator who remembers it here must be told where it went, not just find
+    // it missing.
     renderContainer();
     await waitFor(() => expect(screen.getByTestId('mcp-settings')).toBeTruthy());
 
-    await user.click(screen.getByRole('switch', { name: 'mcp-allow-destructive' }));
-    await waitFor(() =>
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/mcp-admin/settings',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ allowDestructive: true }) }),
-      ),
-    );
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.getByText('MCP_SETTINGS_CAPABILITY_HINT')).toBeTruthy();
+    expect(screen.getByTestId('mcp-manage-keys')).toBeTruthy();
+  });
+
+  it('badges each tool by the least capability that reaches it', async () => {
+    renderContainer();
+    await waitFor(() => expect(screen.getByTestId('mcp-tool-groups')).toBeTruthy());
+
+    const readRow = screen.getByText('hub_list_installed_apps').closest('li') as HTMLElement;
+    expect(within(readRow).queryByText('MCP_SETTINGS_TOOL_WRITE_BADGE')).toBeNull();
+    expect(within(readRow).queryByText('MCP_SETTINGS_TOOL_DESTRUCTIVE_BADGE')).toBeNull();
+
+    const writeRow = screen.getByText('hub_start_app').closest('li') as HTMLElement;
+    expect(within(writeRow).getByText('MCP_SETTINGS_TOOL_WRITE_BADGE')).toBeTruthy();
+
+    // Destructive implies write, so the badges are alternatives rather than a stack.
+    const destructiveRow = screen.getByText('hub_uninstall_app').closest('li') as HTMLElement;
+    expect(within(destructiveRow).getByText('MCP_SETTINGS_TOOL_DESTRUCTIVE_BADGE')).toBeTruthy();
+    expect(within(destructiveRow).queryByText('MCP_SETTINGS_TOOL_WRITE_BADGE')).toBeNull();
   });
 
   it('runs a tool and shows the result', async () => {

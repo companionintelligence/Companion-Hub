@@ -208,13 +208,36 @@ describe('ReposHelpers', () => {
       expect(JSON.parse(configCall[1]).description).toBe('Config fallback description');
     });
 
-    it('skips re-downloading apps whose local config matches the published version', async () => {
+    it('skips re-downloading apps whose local config matches the published catalog entry', async () => {
+      const compose = JSON.stringify({ schemaVersion: 2, services: [] });
       axiosMock.request.mockResolvedValue({
         status: 200,
         statusText: 'OK',
-        data: [{ id: 'app1', slug: 'app1', name: 'App 1', version: '1.0.0', cihub_app_version: 3 }],
+        data: [
+          {
+            id: 'app1',
+            slug: 'app1',
+            name: 'App 1',
+            version: '1.0.0',
+            cihub_app_version: 3,
+            updated_at: 100,
+            supported_architectures: ['amd64'],
+            compose,
+          },
+        ],
       });
-      (fs.promises.readFile as any).mockResolvedValue(JSON.stringify({ cihub_app_version: 3, version: '1.0.0', available: true }));
+      (fs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+        if (String(filePath).includes('docker-compose.json')) {
+          return compose;
+        }
+        return JSON.stringify({
+          cihub_app_version: 3,
+          version: '1.0.0',
+          available: true,
+          updated_at: 100,
+          supported_architectures: ['amd64'],
+        });
+      });
 
       const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
@@ -240,6 +263,49 @@ describe('ReposHelpers', () => {
       const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('app1/config.json')));
       expect(configCall).toBeDefined();
       expect(JSON.parse(configCall[1]).cihub_app_version).toBe(4);
+    });
+
+    it('re-syncs when version is unchanged but updated_at / architectures / compose drift', async () => {
+      const localCompose = JSON.stringify({ schemaVersion: 2, services: [{ name: 'old' }] });
+      const portalCompose = JSON.stringify({ schemaVersion: 2, services: [{ name: 'new' }] });
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [
+          {
+            id: 'cal',
+            slug: 'cal',
+            name: 'Cal.diy',
+            version: 'latest',
+            cihub_app_version: 2,
+            updated_at: 200,
+            supported_architectures: ['amd64', 'arm64'],
+            runtime_platform: 'linux/amd64',
+            compose: portalCompose,
+          },
+        ],
+      });
+      (fs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+        if (String(filePath).includes('docker-compose.json')) {
+          return localCompose;
+        }
+        return JSON.stringify({
+          cihub_app_version: 2,
+          version: 'latest',
+          available: true,
+          updated_at: 100,
+          supported_architectures: ['amd64'],
+        });
+      });
+      axiosMock.get.mockResolvedValue({ status: 404, statusText: 'Not Found', headers: {}, data: '' });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const configCall = calls.find((call: any[]) => call[0].includes(path.normalize('cal/config.json')));
+      expect(configCall).toBeDefined();
+      expect(JSON.parse(configCall[1]).supported_architectures).toEqual(['amd64', 'arm64']);
+      expect(JSON.parse(configCall[1]).runtime_platform).toBe('linux/amd64');
     });
 
     it('retries transient CI Cloud HTTP failures before succeeding', async () => {

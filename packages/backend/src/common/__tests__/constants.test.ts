@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const savedEnv = {
@@ -50,5 +52,37 @@ describe('constants environment defaults', () => {
 
     expect(constants.DEFAULT_CI_CLOUD_URL).toBe('https://hub.companionintelligence.com');
     expect(constants.DEFAULT_PUBLIC_DOMAIN).toBe('companionintelligence.com');
+  });
+});
+
+describe('resolveDataDir', () => {
+  const inContainer = () => true;
+  const onHost = () => false;
+
+  it('prefers an explicit data dir over everything else', async () => {
+    const { resolveDataDir } = await loadConstants();
+
+    expect(resolveDataDir({ CI_HUB_DATA_DIR: '/tmp/ci-hub-e2e', ROOT_FOLDER_HOST: '/repo/.internal' }, inContainer)).toBe('/tmp/ci-hub-e2e');
+    expect(resolveDataDir({ TIPI_DATA_DIR: '/legacy/data' }, inContainer)).toBe('/legacy/data');
+  });
+
+  it('uses the container mount even though ROOT_FOLDER_HOST is set in the container', async () => {
+    const { resolveDataDir } = await loadConstants();
+
+    expect(resolveDataDir({ ROOT_FOLDER_HOST: '/home/user/ci-hub/.internal' }, inContainer)).toBe('/data');
+  });
+
+  it('falls back to ROOT_FOLDER_HOST on a host instead of the unwritable /data', async () => {
+    const { resolveDataDir } = await loadConstants();
+
+    expect(resolveDataDir({ ROOT_FOLDER_HOST: '/home/user/ci-hub/.internal' }, onHost)).toBe('/home/user/ci-hub/.internal');
+  });
+
+  it('never returns /data on a host, even with no env at all', async () => {
+    const { resolveDataDir } = await loadConstants();
+
+    // Bare `turbo run dev`: turbo does not feed .env files to tasks, so NODE_ENV and
+    // ROOT_FOLDER_HOST are both absent. Returning /data here is the EACCES boot crash.
+    expect(resolveDataDir({}, onHost)).toBe(path.join(os.homedir(), '.ci-hub'));
   });
 });

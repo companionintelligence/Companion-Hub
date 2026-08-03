@@ -2,11 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
-import { buildHubLocalOrigin, buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
@@ -35,7 +37,9 @@ import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate
  *   the forward-auth identity header. The Hub-global value is re-injected below for
  *   the memory provider ONLY; first-party consumers receive a PER-APP secret minted
  *   further down, never this one — which is the whole point of the provider gate.
- * - `JWT_SECRET` / `MCP_API_KEY` — the Hub's own signing key and admin API key.
+ * - `JWT_SECRET` — the Hub's own signing key. `MCP_API_KEY` stays on this list even though the Hub
+ *   no longer derives one (SEC-MCP-8): an appliance upgraded from an older build can still have the
+ *   dead value in its env file, and an app has no business receiving it either way.
  * - `POSTGRES_PASSWORD` — the Hub's database password. Note the stock `postgres`
  *   image reads this from its environment, so leaking it does not merely disclose
  *   the secret, it seeds other databases with it.
@@ -128,7 +132,38 @@ export class AppHelpers {
     private readonly inferenceEnv: InferenceEnvResolver,
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
+    private readonly portalClient: PortalClientService,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  /**
+   * The Hub's tailnet origin for the `CI_HUB_ORIGINS` allowlist, or null when
+   * the Private VPN is not connected / cannot be served. Lazy ModuleRef lookup
+   * for the same reason as elsewhere in this module — a static TailscaleService
+   * import would cycle. Env generation is rare, so the uncached status read is
+   * fine here (and wanted: a connect that just happened must be visible).
+   */
+  private async hubTailnetOrigin(): Promise<string | null> {
+    try {
+      const { TailscaleService } = await import('../tailscale/tailscale.service');
+      const tailscale = this.moduleRef?.get(TailscaleService, { strict: false });
+
+      if (!tailscale) {
+        return null;
+      }
+
+      const status = await tailscale.getStatus();
+
+      return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
+    } catch (err) {
+      // Degrade to "no tailnet entry" but leave a trace — a silently missing
+      // origin here means ci-memory rejects every VPN callback with nothing in
+      // the logs to say why.
+      this.logger.debug(`[AppHelpers] tailnet origin unavailable for CI_HUB_ORIGINS: ${err instanceof Error ? err.message : String(err)}`);
+
+      return null;
+    }
+  }
 
   /**
    * This function generates an env file for the provided app.
@@ -605,16 +640,84 @@ export class AppHelpers {
       }
     }
 
+    // First-party CI-Server deployments (ci-memory, plus rebuilds from the CI-Server
+    // source). Derived once and shared by the OIDC blocks below and the maps-key block
+    // further down, which each used to recompute the same predicate.
+    const isFirstPartyCiServerApp =
+      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+
+    // Never overwrite a value the operator pinned in the Hub's own .env (envMap is
+    // seeded from it). Mirrors the GOOGLE_MAPS_KEY handling below: Hub-derived
+    // defaults fill gaps, they don't win arguments.
+    const setUnlessOperatorSet = (key: string, value: string) => {
+      if ((envMap.get(key) ?? '').trim().length > 0) {
+        return false;
+      }
+
+      envMap.set(key, value);
+
+      return true;
+    };
+
     // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
     // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
     // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
-    // The first-party check is computed lazily so opted-in apps (the common path going
-    // forward) don't pay for the id/source scan on every env generation.
-    if (!oidcIntegration && normalizedCloudUrl) {
-      const isFirstPartyPortalOidcApp =
-        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-      if (isFirstPartyPortalOidcApp) {
-        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    if (!oidcIntegration && normalizedCloudUrl && isFirstPartyCiServerApp) {
+      envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    }
+
+    // --- Portal Bearer-token verification (CI-Server `auth.portal.*`) ---
+    // Distinct from the issuer injection above, and NOT gated on it: OIDC_ISSUER_URL
+    // feeds CI-Server's `auth.oidc` (the interactive "Sign in with CI-Portal" browser
+    // flow), while these three feed `auth.portal` — the Bearer path in
+    // JwtOrApiKeyAuthGuard that verifies portal-issued JWTs against the portal JWKS.
+    // Two independent config blocks, so an app that later declares
+    // hub_integration.oidc must not silently lose its Bearer config.
+    //
+    // CI-Server ships `auth.portal.enabled: false` with issuer/jwksUri pointing at the
+    // *prod* portal. Paired against any other portal, every Bearer call — the browser
+    // extension's GET /api/devices and POST /api/v1/events — 401s, and
+    // PortalTokenService swallows the verification error, so the cause is invisible.
+    //
+    // The issuer is the BARE origin, not `<origin>/api/auth`: that path is only the
+    // OIDC *discovery* base; the `iss` claim the portal actually stamps is the origin
+    // (confirmed against its published discovery document). The JWKS, however, does
+    // live under the /api/auth mount.
+    if (isFirstPartyCiServerApp && normalizedCloudUrl) {
+      const injected = [
+        setUnlessOperatorSet('PORTAL_OIDC_ENABLED', 'true'),
+        setUnlessOperatorSet('PORTAL_OIDC_ISSUER', normalizedCloudUrl),
+        setUnlessOperatorSet('PORTAL_OIDC_JWKS_URI', `${normalizedCloudUrl}/api/auth/jwks`),
+      ].filter(Boolean).length;
+
+      if (injected > 0) {
+        this.logger.debug(`[AppHelpers] Injected paired Portal Bearer-auth config for ${appUrn} (${injected}/3 keys; issuer=${normalizedCloudUrl})`);
+      }
+    } else if (isFirstPartyCiServerApp) {
+      this.logger.warn(
+        `[AppHelpers] ${appUrn} is a first-party CI-Server app but CI_CLOUD_URL is empty; portal Bearer auth will stay disabled and token-authenticated calls will 401.`,
+      );
+    }
+
+    // --- Companion Memory Google Maps / geocoding key (from Portal) ---
+    // Portal holds GOOGLE_MAPS_API_KEY as a wrangler secret and serves it at
+    // GET /api/config/maps. Inject into ci-memory so server geocode + the
+    // Memory frontend runtime maps config both work without baking Vite keys
+    // into images. Best-effort: never fail env generation if Portal is down.
+    if (isFirstPartyCiServerApp) {
+      const operatorSetMapsKey = (envMap.get('GOOGLE_MAPS_KEY') ?? '').trim().length > 0 || (envMap.get('GEOCODING_API_KEY') ?? '').trim().length > 0;
+      if (!operatorSetMapsKey) {
+        try {
+          const maps = await this.portalClient.fetchMapsConfig();
+          const apiKey = maps?.configured ? maps.apiKey?.trim() : '';
+          if (apiKey) {
+            envMap.set('GOOGLE_MAPS_KEY', apiKey);
+            envMap.set('GEOCODING_API_KEY', apiKey);
+            this.logger.debug(`[AppHelpers] Injected Portal Google Maps key for ${appUrn}`);
+          }
+        } catch (err) {
+          this.logger.warn(`[AppHelpers] Portal maps-key fetch failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
@@ -713,9 +816,16 @@ export class AppHelpers {
       // can never match a real callback and only bloats the allowlist. The LAN
       // callback leg genuinely cannot work for a listen-all appliance (its real
       // LAN IP is unknown), so there is nothing to preserve.
+      // The tailnet origin joins the list whenever the Private VPN is up: it is
+      // the origin the whole ceremony runs on for a VPN caller, and without it
+      // here ci-memory rejects that caller's callback outright
+      // (CI-Engineering#78). Like the LAN entry, its absence (VPN down at env
+      // generation time) simply means that leg is not offered — reconnecting the
+      // VPN requires regenerating ci-memory's env (a restart) to pick it up.
       const hubOrigins = [
         buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain }),
         buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port }),
+        await this.hubTailnetOrigin(),
       ].filter((origin): origin is string => origin != null && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|\[::1\])(:|$)/.test(origin));
 
       if (hubOrigins.length > 0) {

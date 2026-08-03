@@ -1,4 +1,4 @@
-import { getEnabledAppStoresOptions, searchAppsOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getEnabledAppStoresOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
@@ -12,12 +12,13 @@ import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
+import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
-import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -38,6 +39,7 @@ const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
+const DEFAULT_STORE_CATEGORY = 'featured';
 
 export const AppStorePageSuspense = () => {
   return (
@@ -58,11 +60,21 @@ export default () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
+  const hasInitializedDefaultCategory = useRef(false);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
 
   useEffect(() => {
     setLocalSearch(search);
   }, [search]);
+
+  useEffect(() => {
+    if (hasInitializedDefaultCategory.current) return;
+    hasInitializedDefaultCategory.current = true;
+
+    if (!category) {
+      setCategory(DEFAULT_STORE_CATEGORY);
+    }
+  }, [category, setCategory]);
 
   const queryClient = useQueryClient();
 
@@ -127,19 +139,13 @@ export default () => {
     return new Set(installedAppsData.installed.map((a) => a.info.urn));
   }, [installedAppsData]);
 
-  const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Marketplace');
+  const ciCloudStore = appStores?.appStores?.find((s) => s.slug === 'ci-marketplace' || s.name === 'CI Marketplace');
+  const marketplaceSlug = ciCloudStore?.slug ?? storeId ?? 'ci-marketplace';
 
-  const { data: allAppsData } = useQuery({
-    ...searchAppsOptions({
-      query: { pageSize: 1000, storeId: ciCloudStore?.slug },
-    }),
-    enabled: !!ciCloudStore && isAlternativesView,
-  });
-
-  const availableAppSlugs = useMemo(() => {
-    if (!allAppsData?.data) return new Set<string>();
-    return new Set(allAppsData.data.filter((app) => app.available).map((app) => app.id));
-  }, [allAppsData]);
+  // Portal links any alternative with a curated `appSlug`. Catalog listings stay visible
+  // across architectures; install is gated on the app detail page when the Hub arch
+  // is unsupported. Trust Portal's slug for alternative links.
+  const isAlternativeInStore = useCallback((alt: AltEntry) => Boolean(alt.appSlug), []);
 
   // Sync ?store= query param to Zustand, or fall back to first available store
   useEffect(() => {
@@ -184,9 +190,13 @@ export default () => {
   const onSearch = useCallback(
     (value: string) => {
       setLocalSearch(value);
+      // Featured is curated; route searching users into the exhaustive "All" query.
+      if (category === 'featured' && value.trim().length > 0) {
+        setCategory(undefined);
+      }
       setSearch(value);
     },
-    [setSearch],
+    [category, setCategory, setSearch],
   );
 
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
@@ -227,7 +237,7 @@ export default () => {
   }, [search, alternativesData]);
 
   if (params.storeId) {
-    return <Navigate to={`/app-store?store=${params.storeId}`} />;
+    return <Navigate to={`/store?store=${params.storeId}`} />;
   }
 
   if (isCheckingRegistration || (registrationStatus && !registrationStatus.registered)) {
@@ -313,7 +323,7 @@ export default () => {
                 onClick={() => setCategory(cat.id)}
               >
                 {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
-                {cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}
+                {getCategoryLabel(t, cat.id)}
               </Button>
             );
           })}
@@ -324,8 +334,12 @@ export default () => {
         <FeaturedStoreView storeId={ciCloudStore?.slug ?? 'ci-marketplace'} installedAppUrns={installedAppUrns} />
       ) : isAlternativesView ? (
         <div className="min-w-0 space-y-6">
+          <div>
+            <h2 className="mb-1 text-xl font-semibold text-foreground sm:text-2xl">{t('APP_STORE_ALTERNATIVES')}</h2>
+            <p className="text-muted-foreground">{t('APP_STORE_ALTERNATIVES_SUBTITLE')}</p>
+          </div>
           {isAlternativesDataLoading && (
-            <div className="space-y-4 py-8">
+            <div className="space-y-4 py-4">
               <div className="h-8 max-w-md w-[60%] animate-pulse rounded bg-muted" />
               <div className="h-40 animate-pulse rounded-md bg-muted/40" />
             </div>
@@ -349,73 +363,79 @@ export default () => {
 
               return (
                 <Card key={altCategory} className="overflow-hidden">
-                  <CardHeader className="border-b bg-muted/30 py-4 px-3 sm:px-6">
+                  <CardHeader className="border-b bg-muted/30 px-3 py-3 sm:px-6 sm:py-4">
                     <div className="flex items-center gap-2">
                       {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
                       <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
                     </div>
                   </CardHeader>
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-muted/20 hover:bg-muted/20">
-                        <TableHead className="w-1/2 font-semibold">{t('APP_STORE_PROPRIETARY')}</TableHead>
-                        <TableHead className="w-1/2 font-semibold">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(items as AltItem[]).map((item, index) => (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: Static list
-                        <TableRow key={index}>
-                          <TableCell className="py-3">
-                            <div className="flex flex-wrap gap-2">
-                              {item.proprietary.map((prop) => (
-                                <div
-                                  key={prop.name}
-                                  className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
-                                  title={prop.name}
-                                >
-                                  {prop.icon && <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />}
-                                  <span className="font-medium">{prop.name}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </TableCell>
-                          <TableCell className="py-3">
-                            <div className="flex flex-wrap gap-2">
-                              {item.alternatives.map((alt) => {
-                                const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
-                                if (isAvailable) {
-                                  return (
-                                    <Link
-                                      key={alt.name}
-                                      to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
-                                      className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 transition-colors"
-                                    >
-                                      {alt.icon && <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />}
-                                      {alt.name}
-                                      <ArrowRight className="h-3 w-3" />
-                                    </Link>
-                                  );
-                                }
-                                return (
-                                  <div
-                                    key={alt.name}
-                                    className="flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
-                                  >
-                                    {alt.icon && (
-                                      <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
-                                    )}
-                                    {alt.name}
-                                    <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">{t('ONBOARDING_SOON')}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </TableCell>
+                  <div className="w-full overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/20 hover:bg-muted/20">
+                          <TableHead className="w-1/2 font-semibold">{t('APP_STORE_PROPRIETARY')}</TableHead>
+                          <TableHead className="w-1/2 font-semibold">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {(items as AltItem[]).map((item, index) => (
+                          // biome-ignore lint/suspicious/noArrayIndexKey: Static list
+                          <TableRow key={index}>
+                            <TableCell className="py-3">
+                              <div className="flex flex-wrap gap-2">
+                                {item.proprietary.map((prop) => (
+                                  <div
+                                    key={prop.name}
+                                    className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
+                                    title={prop.name}
+                                  >
+                                    {prop.icon && (
+                                      <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
+                                    )}
+                                    <span className="font-medium">{prop.name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </TableCell>
+                            <TableCell className="py-3">
+                              <div className="flex flex-wrap gap-2">
+                                {item.alternatives.map((alt) => {
+                                  const isInStore = isAlternativeInStore(alt);
+                                  if (isInStore) {
+                                    return (
+                                      <Link
+                                        key={alt.name}
+                                        to={`/store/${marketplaceSlug}/${alt.appSlug}`}
+                                        className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
+                                      >
+                                        {alt.icon && (
+                                          <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
+                                        )}
+                                        {alt.name}
+                                        <ArrowRight className="h-3 w-3" />
+                                      </Link>
+                                    );
+                                  }
+                                  return (
+                                    <div
+                                      key={alt.name}
+                                      className="flex cursor-not-allowed items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground"
+                                    >
+                                      {alt.icon && (
+                                        <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
+                                      )}
+                                      {alt.name}
+                                      <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-xs">{t('ONBOARDING_SOON')}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </Card>
               );
             })

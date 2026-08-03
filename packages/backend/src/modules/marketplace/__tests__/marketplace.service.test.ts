@@ -117,7 +117,7 @@ describe('MarketplaceService', () => {
       expect(spies.getAppInfoFromAppStoreLite).toHaveBeenCalledWith('app-1:store-1' as any);
     });
 
-    it('should filter out incompatible architectures', async () => {
+    it('should keep incompatible architectures listed for browse/install gating', async () => {
       await service.initialize();
 
       spies.getAvailableAppUrns.mockResolvedValue(['app-arm:store-1']);
@@ -129,7 +129,8 @@ describe('MarketplaceService', () => {
       });
 
       const result = await service.getAvailableApps();
-      expect(result).toHaveLength(0);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.urn).toBe('app-arm:store-1');
     });
   });
 

@@ -76,6 +76,22 @@ export class VllmBackend implements InferenceBackend {
   }
 
   getComposeConfig(gpuVendor: string): Record<string, unknown> {
+    if (gpuVendor === 'amd') {
+      // vLLM has no reliably maintained ROCm image for the AMD hardware CI-Hub actually detects
+      // (the Strix Halo APU, gfx1151, and consumer Radeon GPUs). The upstream `vllm/vllm-openai-rocm`
+      // image (official as of the vLLM v0.14.0 release pipeline) is validated only for MI-series
+      // data-center accelerators (gfx942/gfx950). The one image that does advertise gfx1151 support —
+      // AMD's `rocm/vllm-dev` — is a CI/dev image rebuilt hourly under commit-hash tags, not a stable
+      // release artifact, so pinning to it in production compose config would be fragile and likely to
+      // break silently on rebuild. Decline AMD outright rather than mount /dev/kfd + /dev/dri into the
+      // CUDA-only `vllm/vllm-openai` image, which can't use them. Ollama already covers AMD GPUs
+      // correctly (ROCm when ready, Vulkan/RADV fallback otherwise) — see OllamaBackend.
+      throw new Error(
+        'vLLM has no reliably maintained ROCm image for AMD GPUs (upstream vllm/vllm-openai-rocm targets MI-series ' +
+          'data-center accelerators only). Use the Ollama backend for AMD hardware instead.',
+      );
+    }
+
     const base: Record<string, unknown> = {
       image: this.getDockerImage(),
       container_name: 'ci-hub-vllm',
@@ -91,9 +107,6 @@ export class VllmBackend implements InferenceBackend {
         },
       };
       base.runtime = 'nvidia';
-    } else if (gpuVendor === 'amd') {
-      base.devices = ['/dev/kfd', '/dev/dri'];
-      base.group_add = ['video', 'render'];
     }
 
     return base;

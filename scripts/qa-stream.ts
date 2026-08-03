@@ -16,8 +16,9 @@
  */
 
 import { exec, execSync, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -411,6 +412,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     }
 
     const config: AppConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    // Per-app; must be loaded before any ${VAR} substitution so generated secrets match the
+    // lengths this manifest actually declares (see loadFieldSpecs).
+    loadFieldSpecs(config as unknown as Record<string, unknown>);
     result.name = config.name ?? appId;
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
@@ -643,9 +647,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set) — keep one runaway app
       // from starving its neighbours now that apps run concurrently on a node.
       const capFlags = (QA_MEM_LIMIT ? ` --memory ${QA_MEM_LIMIT}` : '') + (QA_CPU_LIMIT ? ` --cpus ${QA_CPU_LIMIT}` : '');
-      // Bind a Docker-assigned host port (host side :0) so we never collide with the
-      // Hub/Traefik (commonly on :80) or another app under test on the same node.
-      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
+      // Reserve a concrete free port rather than publishing `0:<port>`. An ephemeral binding is
+      // reassigned on every container restart, while everything downstream (readiness poll,
+      // screenshot, TCP probe) keeps using the port resolved once here — so a restart silently
+      // moves the app and we probe a dead port for the rest of the ceiling. Still avoids colliding
+      // with the Hub/Traefik (commonly :80) or a peer app on the same node.
+      const reserved = await reserveHostPort();
+      const publishFlag = reserved > 0 ? `${reserved}:${result.port}` : `0:${result.port}`;
+      const run = execQuiet(`docker run -d --name ${containerName} -p ${publishFlag}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
       if (!run.ok) {
         result.score = 'error';
         result.failKind = 'start';
@@ -709,7 +718,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           deadReason = `container ${st}`;
           break;
         }
-        if (restarts >= 4) {
+        // Must stay ABOVE the compose restart policy's MaximumRetryCount (on-failure:10), or we
+        // fail an app mid-recovery: miniflux legitimately needs ~4 restarts to outlast postgres
+        // initdb, then serves HTTP 200. A genuinely dead app is still caught immediately below —
+        // once the policy is exhausted the container settles in `exited`, which fail-fasts above.
+        if (restarts > 10) {
           deadReason = `restart loop (${restarts} restarts)`;
           break;
         }
@@ -719,9 +732,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       }
       if (ready) break;
-      // (2) HTTP probe
+      // (2) HTTP probe. `redirect: 'manual'` is load-bearing, not a detail: Node's fetch defaults
+      // to redirect:'follow', so an app answering / with a 302 to its own configured hostname sends
+      // us chasing a host this machine cannot resolve, and fetch THROWS ECONNREFUSED instead of
+      // reporting the 302 we already had. The app is up and serving — we just never see it, at ANY
+      // timeout. nextcloud declares a 20-minute ceiling and still never passed; jdownloader2,
+      // inkscape, medusa and mixpost all serve in 10-40s standalone yet timed out on the fleet.
+      // A 3xx is itself proof of a live HTTP server, so it counts as ready.
       try {
-        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(4000),
+        });
         httpStatus = res.status;
         if (httpStatus < 500) {
           ready = true;
@@ -729,6 +751,68 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         }
       } catch {
         // not serving yet
+      }
+    }
+
+    // (4) LAST-RESORT: non-HTTP wire-protocol services. If we exhausted the ceiling without an HTTP
+    // or healthcheck signal, but the container is still alive and its port ACCEPTS TCP, the service
+    // is up and simply doesn't speak HTTP there (mysql:3306, mongodb:27017, geth:30303 — all of
+    // which QA previously scored as false `timeout`s while the DB was verifiably serving queries).
+    // Deliberately only consulted after the loop, so a genuine web app still has to satisfy (1)/(2)
+    // — this can only ever convert a would-be false failure, never mask a real one.
+    if (!ready && !deadReason) {
+      const alive = await execAsync(`docker inspect ${statsName} --format '{{.State.Status}}'`, 8_000);
+      // Docker's userland proxy ACCEPTS the handshake on any published port, even with nothing
+      // listening inside the container — so tcpAccepts() alone cannot tell "non-HTTP service" from
+      // "dead app", and on its own this branch mints false PASSES as readily as it removes false
+      // failures. In the 492-app run 16 apps passed this way; only ~4 (mysql, mongodb, geth,
+      // jdownloader2) are actually non-HTTP. nextcloud, coolify, prestashop, tandoor and friends
+      // were web apps credited a pass on nothing but a docker-proxy handshake.
+      if (alive.ok && (alive.out || '').trim() === 'running' && (await tcpAccepts(hostPort))) {
+        // Crediting a non-HTTP pass needs a real in-container listener PLUS positive evidence that
+        // the thing listening is a wire protocol rather than a web app that has not finished
+        // booting. `nextcloud` is the cautionary case: it listens on :80 mid-boot and used to
+        // collect a `pass` labelled "non-HTTP service" when it is nothing of the sort.
+        //
+        // Two accepted forms of evidence, because one alone is not enough:
+        //   (a) the server GREETS unsolicited — mysql/postgres announce themselves on connect.
+        //   (b) the image is a known datastore family. mongodb neither greets NOR answers an HTTP
+        //       request (verified: both probes return zero bytes), so at the socket level it is
+        //       indistinguishable from a stalled web app. An explicit list is a heuristic, but it is
+        //       auditable and wrong in a bounded way — whereas accepting every silent listener is
+        //       what manufactured ~12 false passes per run.
+        const listening = await hasInternalListener(statsName, result.port);
+        const img = (result.image || '').toLowerCase();
+        const knownWireProtocol =
+          /(^|\/)(mongo|redis|memcached|postgres|mariadb|mysql|percona|cassandra|clickhouse|elasticsearch|opensearch|rabbitmq|nats|etcd|valkey)(:|$|\/)/.test(
+            img.split('@')[0],
+          );
+        const greets = listening && (await serverGreets(hostPort));
+        if (listening && (greets || knownWireProtocol)) {
+          ready = true;
+          readyVia = 'tcp';
+          // Name the evidence that ACTUALLY applied. The old note asserted "no HTTP listener
+          // (non-HTTP service)" for every TCP pass without ever checking, which is how a dozen
+          // stalled web apps got recorded as healthy non-HTTP services. A note is an audit trail;
+          // it must not claim a signal we did not observe.
+          result.notes = [
+            result.notes,
+            greets
+              ? `ready via raw TCP on :${hostPort} — in-container listener on :${result.port} sent an unsolicited protocol greeting (non-HTTP service)`
+              : `ready via raw TCP on :${hostPort} — in-container listener on :${result.port}; no greeting, accepted on known datastore image (${img.split('@')[0]})`,
+          ]
+            .filter(Boolean)
+            .join(' | ');
+        } else {
+          result.notes = [
+            result.notes,
+            listening
+              ? `:${result.port} is listening but never served HTTP and sends no protocol greeting — treated as not ready, not as a non-HTTP service`
+              : `port :${hostPort} accepts TCP but nothing is listening on :${result.port} inside the container (docker-proxy artifact)`,
+          ]
+            .filter(Boolean)
+            .join(' | ');
+        }
       }
     }
 
@@ -1072,13 +1156,189 @@ async function prepull(appIds: string[]): Promise<void> {
  * password referenced by both the app and its db service) gets the SAME value everywhere —
  * that's what lets multi-service apps actually connect under a standalone smoke test.
  */
+/**
+ * Raw TCP-connect probe. Used as a LAST-RESORT readiness signal for apps that never speak HTTP on
+ * their declared port — databases (mysql:3306, mongodb:27017), P2P nodes (geth:30303) and other
+ * wire-protocol services. Those can never satisfy the HTTP poll no matter how healthy they are, so
+ * without this they always score a false `timeout`. Resolves true iff the port accepts a connection.
+ */
+function tcpAccepts(port: number, timeoutMs = 4000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect({ host: '127.0.0.1', port });
+    const done = (ok: boolean) => {
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+  });
+}
+
+/**
+ * Does the server send an UNSOLICITED greeting? This is what separates "genuinely not HTTP" from
+ * "an HTTP app that simply has not finished booting" — a distinction a bare connect cannot make.
+ * Wire protocols announce themselves the moment you connect (mysql sends its v10 handshake,
+ * mongodb/postgres likewise), while an HTTP server sends nothing and waits for a request. Verified
+ * empirically: mysql:8.4.10 emits 4a0000000a38...; nginx:alpine emits nothing.
+ *
+ * Deliberate bias: a silent-but-listening port resolves to FALSE, so we withhold the pass. That can
+ * under-credit a non-HTTP protocol that waits for the client to speak first (redis-style), costing a
+ * false FAILURE. That is the safer error — a false failure gets investigated, a false pass is
+ * silent, and false passes are what this whole readiness path was previously manufacturing.
+ */
+function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = connect({ host: '127.0.0.1', port });
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(waitMs + 1000);
+    // Send nothing: any bytes that arrive are the server's own greeting.
+    sock.once('connect', () => setTimeout(() => done(false), waitMs));
+    sock.once('data', (b) => done(b.length > 0));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+    sock.once('close', () => done(false));
+  });
+}
+
+/**
+ * The manifest's own declared constraints for a generated env var, keyed by env_variable.
+ * Built per-app from config.json `form_fields` so QA honours the SAME contract the Hub does
+ * (packages/backend/src/modules/apps/app.helpers.ts reads field.min when it mints `random`
+ * fields). Without this the harness fabricates a value of its own fixed length and can violate
+ * the app's stated requirement — pds declares min/max 64 for its secp256k1 PLC rotation key, we
+ * minted 32 hex chars (16 bytes) where atproto demands 32 BYTES, and the app crashed on every
+ * QA run while a real Hub install was fine. That is the harness testing something the product
+ * never does.
+ */
+type FieldSpec = { min?: number; max?: number; type?: string; def?: string };
+let FIELD_SPECS: Map<string, FieldSpec> = new Map();
+
+function loadFieldSpecs(config: Record<string, unknown>): void {
+  FIELD_SPECS = new Map();
+  const fields = config?.form_fields;
+  if (!Array.isArray(fields)) return;
+  for (const f of fields as Array<Record<string, unknown>>) {
+    const env = typeof f?.env_variable === 'string' ? f.env_variable : '';
+    if (!env) continue;
+    FIELD_SPECS.set(env, {
+      min: typeof f.min === 'number' ? f.min : undefined,
+      max: typeof f.max === 'number' ? f.max : undefined,
+      type: typeof f.type === 'string' ? f.type : undefined,
+      def: f.default !== undefined && f.default !== null ? String(f.default) : undefined,
+    });
+  }
+}
+
+/** Hex string of exactly `chars` characters (randomBytes yields 2 hex chars per byte). */
+function hexOfLength(chars: number): string {
+  return randomBytes(Math.ceil(chars / 2))
+    .toString('hex')
+    .slice(0, chars);
+}
+
+/**
+ * Single-quote a string for the HOST shell. JSON.stringify is the wrong tool here: it emits DOUBLE
+ * quotes, so the host shell expands `$4`/`$2` inside an awk script to empty before the command ever
+ * reaches the container — which silently broke the /proc listener probe and made every genuinely
+ * non-HTTP app (mysql, mongodb, geth) look dead.
+ */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Is anything actually LISTENING on `port` inside the container? Guards the raw-TCP readiness
+ * branch, which docker-proxy would otherwise satisfy for a container serving nothing at all.
+ * Tries ss, then netstat, then /proc/net/tcp{,6} — many images ship none of the first two, so the
+ * /proc parse is the one that works on distroless/alpine. Returns false only when we positively
+ * determine there is no listener; an image where every probe is unavailable returns true rather
+ * than manufacturing a failure we cannot substantiate.
+ */
+async function hasInternalListener(container: string, port: number): Promise<boolean> {
+  const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  // /proc/net/tcp col 2 is local_address (HEX_IP:HEX_PORT), col 4 is st; 0A = TCP_LISTEN. Both files
+  // are read because a container may bind v4, v6, or both (mysql listens on tcp6 only).
+  const procProbe = `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="0A"{split($2,a,":"); if (a[2]=="${hex}") found=1} END{exit found?0:1}'`;
+  const probes = [`ss -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, `netstat -ltn 2>/dev/null | grep -q ':${port}[^0-9]'`, procProbe];
+  for (const p of probes) {
+    const r = await execAsync(`docker exec ${container} sh -c ${shq(p)}`, 8_000);
+    // exit 0 => listener found. A non-zero exit can mean "no listener" OR "tool missing"; only the
+    // /proc probe can distinguish, so treat it as authoritative and the others as best-effort.
+    if (r.ok) return true;
+  }
+  const proc = await execAsync(`docker exec ${container} sh -c ${shq('cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l')}`, 8_000);
+  // If we could not even read /proc/net/tcp, we have no evidence either way — do not fail on a guess.
+  if (!proc.ok || Number((proc.out || '0').trim()) === 0) return true;
+  return false;
+}
+
 function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
+  // Honour the declared length, but ONLY for `random` fields — those are the ones the Hub itself
+  // mints as opaque strings (app.helpers.ts createRandomString), so length is the whole contract.
+  // Typed fields (fqdnip, password, email, text) carry a FORMAT the length alone can't satisfy:
+  // pds declares PDS_HOSTNAME as fqdnip min=4, and a 4-char hex blob is a valid length but not a
+  // valid hostname — zod rejects it and the app dies. Those keep the name-based heuristics below.
+  const spec = FIELD_SPECS.get(name);
+  if (spec?.type === 'random' && spec.min && spec.min > 0) {
+    v = hexOfLength(spec.min);
+    cache.set(name, v);
+    return v;
+  }
+  // Same principle one step further: when the manifest states the VALUE (a default) or a non-string
+  // TYPE, the name-based guesses below are strictly worse than what the app itself declares — and
+  // for typed config they are actively wrong. homebox declares HBOX_OPTIONS_ALLOW_REGISTRATION as
+  // boolean/default true; no name pattern matches it, so it fell to the trailing random-hex branch,
+  // Go panicked with `ParseBool: parsing "f7d277beb051bafb": invalid syntax`, and QA recorded the
+  // app as genuinely broken. With the declared default it serves HTTP 200 in 3.0s.
+  // Deliberately AFTER the `random` branch above: a `random` field's default (if any) is a
+  // placeholder, not a usable secret.
+  if (spec?.def !== undefined) {
+    cache.set(name, spec.def);
+    return spec.def;
+  }
+  if (spec?.type === 'boolean') {
+    cache.set(name, 'true');
+    return 'true';
+  }
+  if (spec?.type === 'number') {
+    cache.set(name, '1');
+    return '1';
+  }
+  // A field wanting an RSA/EC PRIVATE KEY needs a real PEM, not opaque hex — and it must be tested
+  // BEFORE the generic secret branch below, which would otherwise swallow it on "KEY". nofx asks for
+  // RSA_PRIVATE_KEY, got 32 hex chars, and fataled with "invalid PEM format" on every fleet run;
+  // with a genuine key (either real newlines or the \n-escaped single line its manifest hint
+  // prescribes) the backend boots and serves /api/health 200 on the same image.
+  if (/(^|_)(RSA_|EC_)?PRIVATE_KEY$|_PEM$|PRIVKEY/.test(name)) {
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    // Emit the escaped single-line form: env values cross docker/compose as one line, and apps that
+    // accept a PEM here document exactly this encoding. Apps reading real newlines still parse it
+    // once the runtime unescapes, and both forms were confirmed to boot nofx.
+    v = String(privateKey).trim().replace(/\n/g, '\\n');
+    cache.set(name, v);
+    return v;
+  }
   if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
   else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
-  else if (/EMAIL/.test(name)) v = 'ci@ci.localhost';
+  // `.localhost` is a reserved TLD that strict validators reject (directus's UsersService.validateEmail
+  // rejects it outright, crashing `cli.js bootstrap` before the app ever binds its port). RFC 2606
+  // reserves example.com precisely for this, and it passes every validator we've hit.
+  else if (/EMAIL/.test(name)) v = 'ci@example.com';
   else if (/DATA_DIR$|_DIR$/.test(name)) {
     v = join(scratchBase, `var_${name.toLowerCase()}`);
     mkdirSync(v, { recursive: true });
@@ -1181,20 +1441,36 @@ async function composeUp(
   const mainPort = main?.internalPort ?? 80;
   // Apps like Penpot embed ${APP_BASE_URL} as PENPOT_PUBLIC_URI — it must match the browser URL
   // including the host port. Reserve the publish port up front so substitution is correct.
-  let reservedHostPort = 0;
-  if (composeReferencesVar(services, 'APP_BASE_URL')) {
-    reservedHostPort = await reserveHostPort();
-    if (reservedHostPort > 0) cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
+  // Reserve UNCONDITIONALLY. Publishing `0:<port>` lets Docker pick an ephemeral host port, and it
+  // picks a NEW one every time the container restarts — while the readiness loop, the screenshot and
+  // the TCP probe all keep using the port resolved once at startup. Any app that restarts before it
+  // settles (a first-boot DB race, which `restart: on-failure:10` now makes MORE likely) therefore
+  // gets probed on a dead port for the rest of its ceiling and scores a bogus `timeout`: hasura,
+  // miniflux and langfuse all hit this. A fixed reservation survives restarts and matches what the
+  // appliance actually does in production (`hostPort: '${APP_PORT}'`).
+  const reservedHostPort = await reserveHostPort();
+  if (reservedHostPort > 0 && composeReferencesVar(services, 'APP_BASE_URL')) {
+    cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
   }
   const subst = (s: string) =>
     s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+  // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
+  // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
+  const sharedMounts = new Map<string, string>();
+  const seededMounts = new Set<string>();
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
   const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
-    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: "no"\n`;
+    // `restart: "no"` diverged from the appliance, which runs apps under a restart policy. Manifests
+    // routinely declare `dependsOn` with no health condition, so on a cold boot the app connects while
+    // its DB is still running initdb, takes one refused connection and exits. In production it restarts
+    // and comes up fine; under `"no"` it stayed dead and QA scored a false `fail` (miniflux, hasura,
+    // langfuse). Bounded on-failure restarts let that transient race self-heal while the readiness
+    // ceiling and the exited/restart-loop fail-fast still bail out on a genuinely broken app.
+    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: on-failure:10\n`;
     // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set). Applied per service so a
     // multi-service stack stays bounded when several apps run concurrently on one node. These are
     // Compose v2 top-level keys (`mem_limit`/`cpus`) — honored by `docker compose up` without swarm.
@@ -1253,7 +1529,27 @@ async function composeUp(
       y += '    volumes:\n';
       for (const v of vols) {
         const cp = v.containerPath as string;
-        const sc = join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
+        // Key the scratch dir on the manifest's hostPath, so two services declaring the SAME
+        // hostPath share one directory — which is what the appliance does, and what these manifests
+        // rely on. Keying per (service, containerPath) silently gave each service its own private
+        // dir: route96 has an init sidecar that writes config.toml to a shared hostPath, the main
+        // service mounted a DIFFERENT empty dir, found no config, and exited. Falls back to the old
+        // per-service path only when no hostPath is declared (a purely ephemeral runtime dir).
+        const hp = subst(String(v.hostPath ?? ''));
+        const sc = hp
+          ? (sharedMounts.get(hp) ??
+            (() => {
+              const d = join(scratchBase, '_shared', hp.replace(/[^a-zA-Z0-9]/g, '_'));
+              sharedMounts.set(hp, d);
+              return d;
+            })())
+          : join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
+        // Seed/chmod a shared dir once, not once per service that mounts it.
+        if (hp && seededMounts.has(sc)) {
+          y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
+          continue;
+        }
+        if (hp) seededMounts.add(sc);
         // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir) so config
         // FILE targets and initdb scripts exist before compose up; otherwise an empty dir is mounted.
         const seed = seedSourceFor(appId, v.hostPath);

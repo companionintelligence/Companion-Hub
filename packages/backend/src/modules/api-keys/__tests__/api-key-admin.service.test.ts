@@ -11,6 +11,7 @@ function keyInfo(overrides: Partial<ApiKeyInfo> & { id: number }): ApiKeyInfo {
     name: `key-${overrides.id}`,
     prefix: 'abcd1234',
     scopes: ['mcp'],
+    capability: 'write',
     managed: false,
     ownerAppUrn: null,
     expiresAt: null,
@@ -33,8 +34,45 @@ describe('ApiKeyAdminService', () => {
     const res = await service.createKey('CLI');
     // Operator keys never carry 'app': that scope requires an owning app URN to pass the
     // callback guard, so an operator-created 'app' key would be a dead credential.
-    expect(apiKeys.create).toHaveBeenCalledWith('CLI', { scopes: ['mcp'] });
+    expect(apiKeys.create).toHaveBeenCalledWith('CLI', { scopes: ['mcp'], capability: 'write' });
     expect(res.key).toBe('abcd1234RAW');
+  });
+
+  it('createKey mints at the requested capability, so a read-only key is never wide open in between', async () => {
+    apiKeys.create.mockResolvedValue({ ...keyInfo({ id: 6, name: 'recall', capability: 'read' }), key: 'raw' });
+    await service.createKey('recall', 'read');
+    expect(apiKeys.create).toHaveBeenCalledWith('recall', { scopes: ['mcp'], capability: 'read' });
+  });
+
+  describe('setKeyCapability', () => {
+    it('changes the level and reports the transition, not just the new state', async () => {
+      apiKeys.findById.mockResolvedValue(keyInfo({ id: 5, capability: 'write' }));
+      apiKeys.setCapability.mockResolvedValue(true);
+
+      expect(await service.setKeyCapability(5, 'read')).toEqual({ changed: true, capability: 'read', previousCapability: 'write' });
+      expect(apiKeys.setCapability).toHaveBeenCalledWith(5, 'read');
+    });
+
+    it('is a no-op when the key is already at that level, and does not write', async () => {
+      apiKeys.findById.mockResolvedValue(keyInfo({ id: 5, capability: 'read' }));
+
+      expect(await service.setKeyCapability(5, 'read')).toEqual({ changed: false, capability: 'read', previousCapability: 'read' });
+      expect(apiKeys.setCapability).not.toHaveBeenCalled();
+    });
+
+    it('reports changed:false for an id that no longer exists (revoked in another tab)', async () => {
+      apiKeys.findById.mockResolvedValue(null);
+
+      expect(await service.setKeyCapability(99, 'full')).toEqual({ changed: false, capability: 'full', previousCapability: null });
+      expect(apiKeys.setCapability).not.toHaveBeenCalled();
+    });
+
+    it("changes a managed app key too — it is the operator's appliance", async () => {
+      apiKeys.findById.mockResolvedValue(keyInfo({ id: 7, managed: true, ownerAppUrn: 'openclaw:ci-store' }));
+      apiKeys.setCapability.mockResolvedValue(true);
+
+      expect((await service.setKeyCapability(7, 'read')).changed).toBe(true);
+    });
   });
 
   it('listKeys returns every stored key (all scopes, operator + managed)', async () => {

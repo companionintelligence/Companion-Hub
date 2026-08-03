@@ -19,68 +19,88 @@ const isAppBaseUrl = (value: string) =>
     require_tld: false,
   });
 
+/** Resolve empty form values to catalog defaults so install can succeed with sensible config.json defaults. */
+export const resolveFieldValue = (field: FormField, value: unknown): unknown => {
+  if (value !== undefined && value !== null && value !== '') {
+    return value;
+  }
+  if (field.default !== undefined && field.default !== null && String(field.default) !== '') {
+    return field.default;
+  }
+  return value;
+};
+
 export const validateField = (field: FormField, value: unknown): ValidationError | undefined => {
-  if (field.required && !value && typeof value !== 'boolean') {
+  const resolved = resolveFieldValue(field, value);
+
+  if (field.required && !resolved && typeof resolved !== 'boolean') {
     return { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: field.label } };
   }
 
-  if (!value || typeof value !== 'string') {
+  if (!resolved || typeof resolved !== 'string') {
     return undefined;
   }
 
-  if (field.regex && !validator.matches(value, field.regex)) {
+  const stringValue = resolved;
+
+  if (field.regex && !validator.matches(stringValue, field.regex)) {
     return { messageKey: field.pattern_error ?? 'APP_INSTALL_FORM_ERROR_REGEX', params: { label: field.label, pattern: field.regex } };
   }
 
   switch (field.type) {
     case 'text':
-      if (field.max && value.length > field.max) {
+      if (field.max && stringValue.length > field.max) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_MAX_LENGTH', params: { label: field.label, max: String(field.max) } };
       }
-      if (field.min && value.length < field.min) {
+      if (field.min && stringValue.length < field.min) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_MIN_LENGTH', params: { label: field.label, min: String(field.min) } };
       }
       break;
-    case 'password':
-      if (!validator.isLength(value, { min: field.min || 0, max: field.max || 100 })) {
+    case 'password': {
+      // Secrets/tokens/JSON blobs routinely exceed 100 chars (e.g. Notion OPENAPI_MCP_HEADERS).
+      // Only enforce max when the catalog field declares one; otherwise allow up to 4096.
+      const min = field.min || 0;
+      const max = field.max ?? 4096;
+      if (!validator.isLength(stringValue, { min, max })) {
         return {
           messageKey: 'APP_INSTALL_FORM_ERROR_BETWEEN_LENGTH',
-          params: { label: field.label, min: String(field.min), max: String(field.max) },
+          params: { label: field.label, min: String(min), max: String(max) },
         };
       }
       break;
+    }
     case 'email':
-      if (!validator.isEmail(value)) {
+      if (!validator.isEmail(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_INVALID_EMAIL', params: { label: field.label } };
       }
       break;
     case 'number':
-      if (!validator.isNumeric(value)) {
+      if (!validator.isNumeric(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_NUMBER', params: { label: field.label } };
       }
       break;
     case 'fqdn':
-      if (!validator.isFQDN(value)) {
+      if (!validator.isFQDN(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_FQDN', params: { label: field.label } };
       }
       break;
     case 'ip':
-      if (!validator.isIP(value)) {
+      if (!validator.isIP(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_IP', params: { label: field.label } };
       }
       break;
     case 'fqdnip':
-      if (!validator.isFQDN(value || '') && !validator.isIP(value)) {
+      if (!validator.isFQDN(stringValue || '') && !validator.isIP(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_FQDNIP', params: { label: field.label } };
       }
       break;
     case 'url':
-      if (!isGenericUrl(value)) {
+      if (!isGenericUrl(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
       }
       break;
     case 'app_base_url':
-      if (!isAppBaseUrl(value)) {
+      if (!isAppBaseUrl(stringValue)) {
         return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
       }
       break;
@@ -124,7 +144,7 @@ export const validateAppConfig = (values: Record<string, unknown>, fields: FormF
     const error = validateField(field, config[field.env_variable]);
 
     if (error) {
-      errors[field.env_variable] = validateField(field, config[field.env_variable]);
+      errors[field.env_variable] = error;
     }
   }
 

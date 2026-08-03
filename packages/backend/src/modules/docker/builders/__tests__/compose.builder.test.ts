@@ -107,6 +107,53 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([ungranted], {}, netdataUrn, subnet)).rejects.toThrow(/host-privileged access/);
     });
 
+    it('allows a docker.sock host mount for coder', async () => {
+      const coderUrn = createAppUrn('coder', 'store-id');
+      const service: ServiceInput = {
+        name: 'coder',
+        image: 'image',
+        internalPort: 7080,
+        volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, coderUrn, subnet)).resolves.toContain('services:');
+    });
+
+    it('allows a privileged sidecar service for duix-avatar', async () => {
+      const duixUrn = createAppUrn('duix-avatar', 'store-id');
+      const main: ServiceInput = { name: 'duix-avatar', image: 'image', internalPort: 8383 };
+      const sidecar: ServiceInput = { name: 'video-synthesis', image: 'image', internalPort: 8384, privileged: true };
+      await expect(composeBuilder.getDockerCompose([main, sidecar], {}, duixUrn, subnet)).resolves.toContain('privileged: true');
+    });
+
+    it('allows granted host-path binds from an allowlisted app (falco) but not the rest of /sys', async () => {
+      const falcoUrn = createAppUrn('falco', 'store-id');
+      const granted: ServiceInput = {
+        name: 'falco',
+        image: 'image',
+        internalPort: 8765,
+        volumes: [
+          { hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' },
+          { hostPath: '/sys/kernel/tracing', containerPath: '/sys/kernel/tracing' },
+        ],
+      };
+      await expect(composeBuilder.getDockerCompose([granted], {}, falcoUrn, subnet)).resolves.toContain('services:');
+
+      const ungranted: ServiceInput = {
+        name: 'falco',
+        image: 'image',
+        internalPort: 8765,
+        volumes: [{ hostPath: '/sys/module', containerPath: '/host/sys/module' }],
+      };
+      await expect(composeBuilder.getDockerCompose([ungranted], {}, falcoUrn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('allows a privileged sandbox service for refly', async () => {
+      const reflyUrn = createAppUrn('refly', 'store-id');
+      const main: ServiceInput = { name: 'refly', image: 'image', internalPort: 5700 };
+      const sandbox: ServiceInput = { name: 'refly-sandbox', image: 'image', internalPort: 5701, privileged: true };
+      await expect(composeBuilder.getDockerCompose([main, sandbox], {}, reflyUrn, subnet)).resolves.toContain('privileged: true');
+    });
+
     it('allows the benign /etc/localtime and /etc/timezone binds for any app', async () => {
       const service: ServiceInput = {
         name: 'svc',

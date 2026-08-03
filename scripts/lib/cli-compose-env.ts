@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { parseEnvFile } from '../env-file.js';
@@ -60,6 +61,40 @@ function hasCloudflareTunnelToken(envFileName: string): boolean {
   }
 }
 
+function hasTailscaleAuthKey(vars: Record<string, string>): boolean {
+  return Boolean(vars.TAILSCALE_AUTHKEY?.trim() || vars.HEADSCALE_PREAUTH_KEY?.trim());
+}
+
+/** Best-effort: Tailscale login already persisted in the named Docker volume. */
+function probeTailscalePersistedState(): boolean {
+  try {
+    const result = spawnSync(
+      'docker',
+      ['run', '--rm', '-v', 'hub_tailscale_state:/state:ro', 'alpine:3.21', 'sh', '-c', 'test -s /state/tailscaled.state'],
+      { encoding: 'utf-8' },
+    );
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Test override so unit tests do not depend on a real `hub_tailscale_state` volume. */
+let tailscalePersistedStateProbe: () => boolean = probeTailscalePersistedState;
+
+export function setTailscalePersistedStateProbeForTests(probe: (() => boolean) | null): void {
+  tailscalePersistedStateProbe = probe ?? probeTailscalePersistedState;
+}
+
+function hasTailscalePersistedState(): boolean {
+  return tailscalePersistedStateProbe();
+}
+
+function privateVpnShouldRun(vars: Record<string, string>): boolean {
+  if (vars.PRIVATE_VPN_USER_DISABLED === 'true') return false;
+  return hasTailscaleAuthKey(vars) || hasTailscalePersistedState();
+}
+
 export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const hasEnvFile = Object.keys(vars).length > 0;
@@ -70,11 +105,14 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
         .map((s) => s.trim())
         .filter(Boolean),
     );
-    set.add('private-vpn');
+    // No env file yet — only enable Private VPN when the process env already has a key.
+    if (hasTailscaleAuthKey(process.env as Record<string, string>) || hasTailscalePersistedState()) {
+      set.add('private-vpn');
+    }
     if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
     return [...set].join(',');
   }
-  const vpnOn = vars.PRIVATE_VPN_USER_DISABLED !== 'true';
+  const vpnOn = privateVpnShouldRun(vars);
   const set = new Set<string>([
     ...(vars.COMPOSE_PROFILES || '')
       .split(',')
@@ -115,7 +153,11 @@ export function renderConfigLines(env: HubEnv) {
   const rootFolder = resolveRootFolderHost(envFileName);
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
   const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
-  const mcpApiKey = process.env.MCP_API_KEY || fileVars.MCP_API_KEY;
+  // Deliberately no `mcp api key` line. Nothing derives MCP_API_KEY any more (env-helpers deletes it
+  // rather than minting one) and McpAuthGuard has no env fallback, so the variable authenticates
+  // nothing. An appliance upgraded from an older build can still have the dead value sitting in its
+  // source env file — printing it as `<set>` is exactly what told operators they held a credential
+  // they did not. The real keys live in the hashed store: `cihub api-key list`.
   return [
     `${bold('environment')}      ${env}`,
     `${bold('env file')}         ${envFileName}`,
@@ -123,7 +165,6 @@ export function renderConfigLines(env: HubEnv) {
     `${bold('cloud url')}        ${process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
     `${bold('compose profiles')} ${composeProfiles || '(none)'}`,
     `${bold('mcp enabled')}      ${mcpEnabled}`,
-    `${bold('mcp api key')}      ${mcpApiKey ? '<set>' : '<not set>'}`,
   ];
 }
 
@@ -141,6 +182,21 @@ export function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, st
     CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
     CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
     CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
+    // Backend default is `/app` (the packaged container's root). Source-based local dev
+    // runs the backend bare on the host, where `/app` doesn't exist, breaking anything
+    // that derives from APP_DIR: Cloudflare tunnel file writes (EACCES), the Cloudflare
+    // service's docker-compose-file lookup (falls back to `${APP_DIR}/docker-compose.local.yml`),
+    // and the swagger.json writer. Point it at the repo root, mirroring the CI_HUB_DATA_DIR
+    // treatment above. requireRepoRoot() has already confirmed cwd is the checkout root
+    // by the time this runs (see startHub's 'local-dev' branch).
+    //
+    // Note: FilesystemService#getSafeFilePath allowlists `APP_DIR`, so this makes the whole
+    // checkout (including .env*, .git/) a "safe" root for backend file ops in local dev —
+    // same as prod, where /app is the packaged app's own files. Accepted tradeoff: a local
+    // dev checkout is inherently a superset of the packaged image's /app, and a developer
+    // running this already has equal-or-greater direct filesystem access. Never reachable
+    // from appliance/prod/staging/dev-docker (requireRepoRoot/isApplianceMode gate this).
+    CI_HUB_APP_DIR: sourceVars.CI_HUB_APP_DIR || process.cwd(),
     CI_HUB_VERSION: sourceVars.CI_HUB_VERSION || process.env.CI_HUB_VERSION || packageVersion(),
   };
   const content = Object.entries(runtimeVars)

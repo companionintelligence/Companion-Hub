@@ -16,7 +16,7 @@ import {
   Trash,
 } from 'lucide-react';
 import type React from 'react';
-import { createElement, useState, useEffect, useRef } from 'react';
+import { createElement, useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -51,6 +51,12 @@ import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
+import { useAppContext } from '@/context/app-context';
+
+function isArchitectureSupported(supported: string[] | undefined, hostArch: string | undefined): boolean {
+  if (!hostArch || !supported?.length) return true;
+  return supported.includes(hostArch);
+}
 
 /**
  * Whether THIS browser can plausibly reach an app's LAN address
@@ -202,6 +208,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { architecture } = useAppContext();
   const { setOptimisticStatus } = useAppStatus();
   const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
@@ -209,6 +216,15 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const [searchParams] = useSearchParams();
   const autoInstallTriggeredRef = useRef(false);
   const memory = useMemoryConnection(info.urn);
+  const archSupported = isArchitectureSupported(info.supported_architectures, architecture);
+  const showWrongArchitectureToast = useCallback(() => {
+    toast.error(
+      t('APP_ACTION_WRONG_ARCHITECTURE', {
+        arch: architecture,
+        arches: (info.supported_architectures ?? []).join(', '),
+      }),
+    );
+  }, [architecture, info.supported_architectures, t]);
 
   // Opening an app hands the flow to the system browser, which (in the desktop app)
   // holds no Hub session cookie. Only a memory-consumer app matters here: its
@@ -247,6 +263,13 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       return;
     }
 
+    if (!archSupported) {
+      autoInstallTriggeredRef.current = true;
+      showWrongArchitectureToast();
+      clearStashedInstallIntentForApp(appSlug, storeId);
+      return;
+    }
+
     autoInstallTriggeredRef.current = true;
     installDisclosure.open();
     clearStashedInstallIntentForApp(appSlug, storeId);
@@ -263,7 +286,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         { replace: true },
       );
     }
-  }, [app?.status, appSlug, storeId, location.pathname, location.search, navigate, searchParams, installDisclosure.open]);
+  }, [
+    app?.status,
+    appSlug,
+    storeId,
+    location.pathname,
+    location.search,
+    navigate,
+    searchParams,
+    installDisclosure.open,
+    archSupported,
+    showWrongArchitectureToast,
+  ]);
 
   useEffect(() => {
     if (autoInstallTriggeredRef.current || (app?.status ?? 'missing') !== 'missing') {
@@ -277,10 +311,15 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       }
 
       autoInstallTriggeredRef.current = true;
+      if (!archSupported) {
+        showWrongArchitectureToast();
+        clearStashedInstallIntentForApp(appSlug, storeId);
+        return;
+      }
       installDisclosure.open();
       clearStashedInstallIntentForApp(appSlug, storeId);
     })();
-  }, [app?.status, appSlug, storeId, installDisclosure.open]);
+  }, [app?.status, appSlug, storeId, installDisclosure.open, archSupported, showWrongArchitectureToast]);
 
   const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
@@ -367,25 +406,28 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
     );
   })();
 
+  // Keep the control clickable when unsupported so a tap can toast; style it disabled.
   const InstallButton = (
     <ActionButton
       key="install"
-      onClick={installDisclosure.open}
+      onClick={archSupported ? installDisclosure.open : showWrongArchitectureToast}
       title={t('COMMON_INSTALL')}
       variant="default"
       size="lg"
-      className="install-action-button"
+      className={clsx('install-action-button', !archSupported && 'opacity-50')}
+      aria-disabled={!archSupported}
     />
   );
   const RetryInstallButton = (
     <ActionButton
       key="retry-install"
       IconComponent={RotateCw}
-      onClick={installDisclosure.open}
+      onClick={archSupported ? installDisclosure.open : showWrongArchitectureToast}
       title={t('APP_ACTION_RETRY_INSTALL')}
       variant="outline"
       size="lg"
-      className="retry-install-action-button"
+      className={clsx('retry-install-action-button', !archSupported && 'opacity-50')}
+      aria-disabled={!archSupported}
     />
   );
 

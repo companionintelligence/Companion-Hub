@@ -1,9 +1,13 @@
 name: Nightly Release
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#   schedule:
+#     - cron: "0 0 * * *"
+# <<< ci-local:gated
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"
 
 jobs:
   build-images:

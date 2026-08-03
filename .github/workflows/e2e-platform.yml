@@ -1,9 +1,13 @@
 name: E2E Platform Tests
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   pull_request:
+#     branches: [dev, main]
+#     types: [opened, synchronize, ready_for_review]
+# <<< ci-local:gated
 on:
-  pull_request:
-    branches: [dev, main]
-    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch:
 
 concurrency:
   group: e2e-platform-${{ github.event.pull_request.number || github.ref }}

@@ -23,6 +23,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_get_app_skill',
+      access: 'read',
       description: 'Get the resolved SKILL.md agent skill description for an app. Returns the content with template variables resolved.',
       inputSchema: {
         type: 'object',
@@ -37,6 +38,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_list_agent_apps',
+      access: 'read',
       description:
         'List all installed apps that have agent integration (skill, openapi, or mcp). Only includes apps with at least one integration layer.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -46,6 +48,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_list_app_tools',
+      access: 'read',
       description: 'List all agent tools provided by a specific app, including OpenAPI-generated tools and MCP-bridged tools.',
       inputSchema: {
         type: 'object',
@@ -60,9 +63,13 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_call_app_tool',
+      access: 'write',
       // A bridged tool's effect is opaque to the Hub — github-mcp can delete branches, filesystem-mcp
       // can overwrite files. Same posture as mutating hub_call_app_api verbs: gated as destructive.
-      isDestructive: () => true,
+      // Stated as the static flag rather than an always-true predicate: a predicate would advertise
+      // this as argument-dependent, so tools/list would keep offering it to read-only and write keys
+      // that can never actually run it.
+      destructive: true,
       description:
         "Call a tool on an app's bridged MCP server. Use hub_list_app_tools to discover tool names. " +
         'The Hub forwards the call to the app container over its declared MCP transport and returns the result.',
@@ -81,6 +88,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_get_app_openapi',
+      access: 'read',
       description: 'Get the raw OpenAPI spec for an app as a JSON string.',
       inputSchema: {
         type: 'object',

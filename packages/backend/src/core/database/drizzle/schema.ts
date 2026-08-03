@@ -167,6 +167,10 @@ export const apiKey = pgTable(
     // Which surfaces accept this key ('mcp' tools, 'app' callbacks). One key can open several, so
     // a companion app holds a single credential and scope grants never rotate its secret.
     scopes: text().array().default([]).notNull(),
+    // What the key may DO on those surfaces: 'read' | 'write' | 'full' (see api-key.capabilities.ts).
+    // A second, orthogonal axis to `scopes` — surface vs verb — replacing the appliance-wide
+    // MCP_ALLOW_DESTRUCTIVE gate, which could only be on or off for every key at once.
+    capability: varchar().default('write').notNull(),
     name: varchar().notNull(),
     prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
     hashedKey: varchar('hashed_key').notNull(),

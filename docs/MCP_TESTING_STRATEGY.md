@@ -201,7 +201,8 @@ the existing filter groups them; `triage.mjs` buckets an MCP **drift** `warn` as
 ## Layer 2 in practice (`scripts/qa-mcp-bridge.ts`)
 
 Env-gated regression of the real bridge over the **Streamable HTTP** transport: `HUB_URL` (default
-`http://localhost:5002`) + `MCP_API_KEY` (the Hub's Bearer key). It `POST`s `initialize` to the
+`http://localhost:5002`) + `MCP_API_KEY` (an `mcp`-scoped key from the Hub's key store — mint one
+with `cihub api-key create`; the appliance's own derived `MCP_API_KEY` is not a credential). It `POST`s `initialize` to the
 single `/api/mcp` endpoint (capturing the `Mcp-Session-Id` response header), then `POST`s
 `tools/list` with that session, asserting `protocolVersion`+`serverInfo`, a non-empty tool set, and
 `<appUrn>__<tool>` namespacing on any bridged tool. Responses may be JSON or an SSE frame; both are

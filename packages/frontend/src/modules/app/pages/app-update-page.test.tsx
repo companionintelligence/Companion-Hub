@@ -12,7 +12,6 @@ vi.mock('react-i18next', () => ({
       return key;
     },
   }),
-  Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
 }));
 
 vi.mock('react-router', async () => {
@@ -53,38 +52,10 @@ vi.mock('@/components/app-logo/app-logo', () => ({
   AppLogo: () => <div data-testid="app-logo" />,
 }));
 
-vi.mock('@uiw/react-codemirror', () => ({
-  default: () => <div data-testid="codemirror" />,
-}));
-vi.mock('@codemirror/merge', () => ({
-  unifiedMergeView: () => [],
-}));
-vi.mock('@uiw/codemirror-theme-copilot', () => ({
-  copilot: {},
-}));
-
 vi.mock('framer-motion', () => ({
   motion: {
     div: ({ children, ...props }: React.PropsWithChildren<Record<string, unknown>>) => <div {...props}>{children}</div>,
   },
-}));
-
-vi.mock('@/components/ui/Stepper/Stepper', () => ({
-  Stepper: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  StepTriggerList: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  StepTrigger: ({ title }: { title: string }) => <div>{title}</div>,
-  StepContent: ({ children, step }: { children: React.ReactNode; step: number }) => <div data-testid={`step-${step}`}>{children}</div>,
-}));
-
-vi.mock('@/components/ui/ScrollArea', () => ({
-  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock('@/components/ui/Alert/Alert', () => ({
-  Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  AlertIcon: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  AlertHeading: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-  AlertDescription: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
 
 import { useQuery } from '@tanstack/react-query';
@@ -128,10 +99,10 @@ function setupQueries(configChanged = true, composeChanged = false) {
   });
 }
 
-describe('AppUpdatePage — update summary', () => {
+describe('AppUpdatePage — one-step confirmation', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders the summary step with version change', () => {
+  it('renders the summary with version change', () => {
     setupQueries();
 
     render(
@@ -202,5 +173,31 @@ describe('AppUpdatePage — update summary', () => {
 
     expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_CONFIG_CHECKING');
     expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_COMPOSE_CHECKING');
+  });
+
+  it('shows what-happens copy and Update immediately', () => {
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppUpdatePage {...({ loaderData: APP_DATA } as any)} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('update-what-happens')).toHaveTextContent('APP_UPDATE_WHAT_HAPPENS(name=Test App)');
+    expect(screen.getByTestId('update-confirm')).toHaveTextContent('COMMON_UPDATE');
+    expect(screen.queryByText('APP_UPDATE_FORM_NEXT')).not.toBeInTheDocument();
+  });
+
+  it('defaults backup switch to checked', () => {
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppUpdatePage {...({ loaderData: APP_DATA } as any)} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('update-backup-switch')).toHaveAttribute('data-state', 'checked');
   });
 });

@@ -3,8 +3,10 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { McpAuthGuard } from './mcp-auth.guard';
 import { McpSessionRegistry } from './mcp-session.registry';
+import { mcpCallContext } from './mcp-call-context';
 
 /**
  * BUG-MCP-1: the Hub's MCP endpoint, speaking the spec's **Streamable HTTP** transport via the
@@ -12,8 +14,9 @@ import { McpSessionRegistry } from './mcp-session.registry';
  * responses in the POST body and never streamed). A single MCP endpoint handles POST (JSON-RPC in),
  * GET (server→client SSE stream) and DELETE (session teardown); sessions are tracked by the
  * `Mcp-Session-Id` header the SDK assigns at `initialize`. Session state lives in
- * {@link McpSessionRegistry}; this controller is the thin HTTP layer. Auth stays the Bearer
- * `MCP_API_KEY` ({@link McpAuthGuard}); the endpoint is rate-limited ({@link ThrottlerGuard}).
+ * {@link McpSessionRegistry}; this controller is the thin HTTP layer. Auth is a Bearer key from the
+ * hashed key store carrying the `mcp` scope ({@link McpAuthGuard} — no env credential); the endpoint
+ * is rate-limited ({@link ThrottlerGuard}).
  * Mirrors the CI-Server MCP controller for cross-repo consistency.
  */
 @Controller('mcp')
@@ -62,7 +65,10 @@ export class McpController {
     }
 
     try {
-      await transport.handleRequest(req, res, req.body);
+      // Run inside the calling key's context so the SDK's tools/list and tools/call handlers — which
+      // the session's server registered once, with no seam to pass a request through — can see who is
+      // calling and enforce that key's capability.
+      await this.withCallerContext(req, () => transport.handleRequest(req, res, req.body));
     } catch (error) {
       this.logger.error('MCP request handling failed', error);
       if (isNewTransport) {
@@ -99,7 +105,7 @@ export class McpController {
       return;
     }
     try {
-      await transport.handleRequest(req, res);
+      await this.withCallerContext(req, () => transport.handleRequest(req, res));
     } catch (error) {
       // Mirror handlePost: log + envelope instead of leaking Nest's generic 500. The transport
       // belongs to the registry (an existing session); one failed stream open doesn't invalidate the
@@ -125,6 +131,19 @@ export class McpController {
       // perspective the teardown succeeded — log the close failure and keep the 204.
       this.logger.warn('MCP session close failed during DELETE', error);
     }
+  }
+
+  /**
+   * Run `fn` inside the async context of the key {@link McpAuthGuard} authenticated for this request.
+   *
+   * The guard runs before every method on this controller, so the key is always present; the fallback
+   * exists because Express's request type cannot prove that, and the fail-closed default lives in the
+   * registry rather than here (a fabricated 'read' context would look like a real one). Not run inside
+   * a context at all is therefore the honest representation of "unknown caller".
+   */
+  private withCallerContext<T>(req: Request & { mcpApiKey?: ApiKeyContext }, fn: () => Promise<T>): Promise<T> {
+    const caller = req.mcpApiKey;
+    return caller ? mcpCallContext.run(caller, fn) : fn();
   }
 
   /** Write a JSON-RPC error envelope with an HTTP status (used for transport-level rejections). */

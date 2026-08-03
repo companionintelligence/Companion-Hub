@@ -31,9 +31,10 @@ export type UserContextDto = {
 
 export type AppContextDto = {
     appDataRootHostPath?: string | null;
+    architecture: 'amd64' | 'arm64';
     apps: Array<{
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         id: string;
@@ -158,7 +159,7 @@ export type MyAppsDto = {
         info: {
             author: string;
             available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+            categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
             created_at: number;
             deprecated: boolean;
             description: string;
@@ -276,7 +277,7 @@ export type GuestAppsDto = {
         info: {
             author: string;
             available: boolean;
-            categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+            categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
             created_at: number;
             deprecated: boolean;
             description: string;
@@ -381,7 +382,7 @@ export type GetAppDto = {
     info: {
         author: string;
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         description: string;
@@ -567,7 +568,7 @@ export type FactoryResetDto = {
 export type SearchAppsDto = {
     data: Array<{
         available: boolean;
-        categories: Array<'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
+        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
         created_at: number;
         deprecated: boolean;
         id: string;
@@ -2500,7 +2501,7 @@ export type SearchAppsData = {
     body?: never;
     path?: never;
     query?: {
-        category?: 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
+        category?: 'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
         cursor?: string;
         pageSize?: number | string;
         search?: string;

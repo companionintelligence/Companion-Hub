@@ -97,6 +97,8 @@ export function isUserInitiatedPageReload(): boolean {
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
+/** Probe misses required before leaving the Running UI after the hub has been steady. */
+const HUB_STEADY_PROBE_FAILURE_THRESHOLD = 3;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -216,10 +218,10 @@ function DockerDesktopGuide({
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
                 <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
-                  {t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED')}
+                  {t('HUB_STATUS_DOCKER_REQUIRED')}
                 </HintText>
               </div>
-              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED_DESC')}</p>
+              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_REQUIRED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
@@ -676,6 +678,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [confirmRetry, setConfirmRetry] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -690,12 +693,21 @@ export function HubStatus({ children }: HubStatusProps) {
   const hasReloadedRef = useRef(false);
   /** Once the hub has reached Running, ignore transient Starting (e.g. Tailscale sidecar or health blips). */
   const hubSteadyRunningRef = useRef(readHubSteadySession());
+  const consecutiveProbeFailuresRef = useRef(0);
 
   const checkHealthFallback = useCallback(async () => {
     const port = await probeHealthyHubApiPort(true);
     if (port !== null) {
+      consecutiveProbeFailuresRef.current = 0;
       setStatus('Running');
       return;
+    }
+    if (hubSteadyRunningRef.current) {
+      consecutiveProbeFailuresRef.current += 1;
+      if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+        setStatus('Running');
+        return;
+      }
     }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
@@ -761,6 +773,7 @@ export function HubStatus({ children }: HubStatusProps) {
             result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
 
           if (isHardNonRunning) {
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -774,12 +787,23 @@ export function HubStatus({ children }: HubStatusProps) {
           if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
             if (alivePort !== null) {
+              consecutiveProbeFailuresRef.current = 0;
               configureHubApiPort(alivePort);
               setStatus('Running');
               return;
             }
 
-            // API probe failed — treat as non-running even if we were steady before.
+            // After steady, tolerate brief probe misses so Tailscale/Docker blips do not
+            // flash the loading gate or force a full window reload on recovery.
+            if (hubSteadyRunningRef.current) {
+              consecutiveProbeFailuresRef.current += 1;
+              if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+                setStatus('Running');
+                return;
+              }
+            }
+
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -831,34 +855,35 @@ export function HubStatus({ children }: HubStatusProps) {
     return () => clearInterval(interval);
   }, [checkStatus]);
 
+  useEffect(() => {
+    const hasError = typeof status === 'object' && status !== null && 'Error' in status;
+    if (!hasError && confirmRetry) {
+      setConfirmRetry(false);
+    }
+  }, [status, confirmRetry]);
+
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_START'));
   }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_RESTART'));
   }, [startHub, t]);
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React
-  // Router's cache. Reload once so clientLoader runs against the healthy backend.
+  // Router's cache. Prefer revalidate over a full window reload so a brief API
+  // blip after steady does not flash the loading gate.
   useEffect(() => {
     if (!isTauri || status !== 'Running' || !sawNonRunningRef.current || hasReloadedRef.current) {
       return;
     }
     hasReloadedRef.current = true;
-    // User reload already re-ran clientLoader — revalidate routes instead of reloading again.
-    if (isUserInitiatedPageReload()) {
-      void revalidate();
-      return;
-    }
-    try {
-      reloadCurrentWindow();
-    } catch {
-      // JSDOM in tests doesn't support navigation; ignore safely.
-    }
+    void revalidate();
   }, [status, isTauri, revalidate]);
 
   const handleViewLogs = useCallback(async () => {
@@ -919,7 +944,7 @@ export function HubStatus({ children }: HubStatusProps) {
 
   return (
     <SetupPageShell title={gateTitle} contentClassName="items-center">
-      <div className="flex flex-col items-center gap-6 w-full">
+      <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' && <DockerInstallGuide />}
 
         {status === 'Stopped' && (
@@ -947,17 +972,45 @@ export function HubStatus({ children }: HubStatusProps) {
         {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
 
         {errorMessage && (
-          <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_ERROR')}</h2>
-            <p className="text-muted-foreground mb-6">{errorMessage}</p>
-            <button
-              type="button"
-              onClick={handleRestartHub}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t('HUB_STATUS_RESTART_HUB')}
-            </button>
-            <div className="flex gap-4 justify-center mt-6">
+          <SetupCard className="max-w-3xl w-full text-left">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" aria-hidden />
+              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_START_FAILED_TITLE')}</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mb-3">{t('HUB_STATUS_START_FAILED_HINT')}</p>
+            <pre className="bg-muted rounded-md p-4 text-xs sm:text-sm font-mono text-foreground/90 mb-6 max-h-72 overflow-auto whitespace-pre-wrap break-words">
+              {errorMessage}
+            </pre>
+            {confirmRetry ? (
+              <div className="rounded-md border border-border bg-muted/40 p-4 space-y-4">
+                <p className="text-sm text-foreground">{t('HUB_STATUS_RETRY_CONFIRM_PROMPT')}</p>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRestartHub}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('HUB_STATUS_RETRY_CONFIRM')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRetry(false)}
+                    className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+                  >
+                    {t('HUB_STATUS_RETRY_CANCEL')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRetry(true)}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t('HUB_STATUS_RETRY_HUB')}
+              </button>
+            )}
+            <div className="flex gap-4 mt-6">
               <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
                 {t('HUB_STATUS_VIEW_LOGS')}
               </button>

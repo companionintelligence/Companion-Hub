@@ -1,4 +1,3 @@
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -8,17 +7,14 @@ import { PortalClientService } from '../portal-client.service';
 describe('PortalCatalogService', () => {
   let service: PortalCatalogService;
   let portalClient: MockProxy<PortalClientService>;
-  let configuration: MockProxy<ConfigurationService>;
   let logger: MockProxy<LoggerService>;
 
   beforeEach(() => {
     portalClient = mock<PortalClientService>();
-    configuration = mock<ConfigurationService>();
     logger = mock<LoggerService>();
-    configuration.getConfig.mockReturnValue({ architecture: 'amd64' } as any);
     portalClient.getPublicPortalUrl.mockReturnValue('https://portal.example.com');
     portalClient.fetchStoreMetadataText.mockResolvedValue(null);
-    service = new PortalCatalogService(portalClient, configuration, logger);
+    service = new PortalCatalogService(portalClient, logger);
   });
 
   it('maps portal store apps with id matching slug for onboarding lookups', async () => {
@@ -119,6 +115,28 @@ describe('PortalCatalogService', () => {
         { type: 'password', label: 'DB password', env_variable: 'N8N_DB_PASSWORD', required: false },
         { type: 'text', label: 'Username', env_variable: 'APP_USER', required: true },
       ],
+    });
+  });
+
+  it('preserves MCP listing metadata and keeps MCP apps non-exposable without a fake port', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'filesystem-mcp',
+        name: 'Filesystem MCP',
+        short_desc: 'Filesystem tools',
+        categories: ['mcp'],
+        no_gui: true,
+        exposable: false,
+        form_fields: [{ type: 'text', label: 'Root', env_variable: 'ALLOWED_PATH', required: true, default: '/data' }],
+        mcp: { transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] },
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('filesystem-mcp:ci-marketplace' as any)).resolves.toMatchObject({
+      no_gui: true,
+      exposable: false,
+      mcp: { transport: 'stdio', command: 'npx' },
+      form_fields: [{ env_variable: 'ALLOWED_PATH', default: '/data' }],
     });
   });
 

@@ -27,6 +27,19 @@ export class EnvUtils {
   };
 
   public getArchitecture = () => {
+    // Keep in step with env-helpers: host probe wins over container os.arch().
+    const probePaths = [path.join(DATA_DIR, 'state', 'hardware', 'host_metrics.json'), path.join(DATA_DIR, 'state', 'hardware', 'host_system.json')];
+    for (const filePath of probePaths) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { cpuArch?: string };
+        if (parsed.cpuArch === 'arm64') return 'arm64';
+        if (parsed.cpuArch === 'x86_64' || parsed.cpuArch === 'amd64') return 'amd64';
+      } catch {
+        // ignore and fall through
+      }
+    }
+
     const arch = os.arch();
 
     if (arch === 'arm64') return 'arm64';

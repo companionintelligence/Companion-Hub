@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
 import { MCP_SCOPE } from './api-key.scopes';
+import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY } from './api-key.capabilities';
 
 /**
  * Business logic behind the session-authed hub-wide API-key admin surface (moved out of the MCP
@@ -29,11 +30,41 @@ export class ApiKeyAdminService {
    * Operator keys carry the 'mcp' scope only: the 'app' scope requires an owning app URN to satisfy
    * the callback guard's identity check, so an operator-created 'app' key could never authenticate
    * anything — offering it would only mint dead credentials.
+   *
+   * `capability` is what the key may do on that scope, and unlike the scope it IS a choice: a key
+   * minted for a third-party MCP client to read memory has no business installing apps.
    */
-  async createKey(name: string): Promise<ApiKeyInfo & { key: string }> {
-    const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE] });
-    this.logger.info('API key admin: key created', created.id);
+  async createKey(name: string, capability: ApiKeyCapability = DEFAULT_API_KEY_CAPABILITY): Promise<ApiKeyInfo & { key: string }> {
+    const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE], capability });
+    this.logger.info('API key admin: key created', created.id, capability);
     return created;
+  }
+
+  /**
+   * Change an existing key's capability. Reports the level it moved from as well as to, so the audit
+   * line and the UI both describe a transition rather than just a new state — "write → full" is the
+   * fact an operator reviewing the log needs, and `changed: false` alone cannot tell "no such key"
+   * from "already at that level".
+   *
+   * Managed (app-owned) keys are eligible too. An operator who decides Hermes should be read-only on
+   * their appliance is entitled to that, and re-provisioning preserves the choice
+   * ({@link ApiKeyService.provisionManagedKey}) — the UI is where the consequence gets explained.
+   */
+  async setKeyCapability(
+    id: number,
+    capability: ApiKeyCapability,
+  ): Promise<{ changed: boolean; capability: ApiKeyCapability; previousCapability: ApiKeyCapability | null }> {
+    const existing = await this.apiKeys.findById(id);
+    if (!existing) {
+      this.logger.info('API key admin: capability change', id, 'not-found');
+      return { changed: false, capability, previousCapability: null };
+    }
+    if (existing.capability === capability) {
+      return { changed: false, capability, previousCapability: existing.capability };
+    }
+    const changed = await this.apiKeys.setCapability(id, capability);
+    this.logger.info('API key admin: capability change', id, `${existing.capability} -> ${capability}`, changed ? 'ok' : 'not-found');
+    return { changed, capability, previousCapability: existing.capability };
   }
 
   /** Revoke a key by id. Managed keys can be revoked too (break-glass) — the owning app loses Hub

@@ -1,4 +1,3 @@
-import type { Architecture } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -16,19 +15,8 @@ import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-sto
 type AppList = Awaited<ReturnType<InstanceType<typeof MarketplaceService>['getAllAppFromStores']>>;
 
 const sortApps = (a: AppList[number], b: AppList[number]) => a.urn.localeCompare(b.urn);
-const filterApp =
-  (architecture: Architecture) =>
-  (app: AppList[number]): boolean => {
-    if (app.deprecated) {
-      return false;
-    }
-
-    if (!app.supported_architectures?.length) {
-      return true;
-    }
-
-    return app.supported_architectures.includes(architecture);
-  };
+/** Keep incompatible-arch apps visible in the store; install UI/backend gates them. */
+const filterApp = (app: AppList[number]): boolean => !app.deprecated;
 
 @Injectable()
 export class MarketplaceService {
@@ -163,13 +151,11 @@ export class MarketplaceService {
   }
 
   /**
-   * Filter the apps based on the architecture
-   * @param apps - The apps to filter
-   * @returns The filtered apps
+   * Filter deprecated apps out of the catalog. Architecture mismatches stay listed
+   * so users can browse them; install is blocked separately.
    */
   private filterApps(apps: AppList): AppList {
-    const { architecture } = this.configuration.getConfig();
-    return apps.sort(sortApps).filter(filterApp(architecture));
+    return apps.sort(sortApps).filter(filterApp);
   }
 
   /**

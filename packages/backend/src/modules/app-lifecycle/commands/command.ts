@@ -24,6 +24,7 @@ import { fromError } from 'zod-validation-error';
 import {
   AppLifecycleError,
   type AppCommandFailureResult,
+  translateKvmInstallMessage,
   translateRocmKfdInstallMessage,
   translateDockerNetworkOverlapError,
 } from './app-lifecycle-errors';
@@ -282,7 +283,7 @@ export class AppLifecycleCommand {
         };
       }
 
-      const translated = translateRocmKfdInstallMessage(err.message);
+      const translated = translateRocmKfdInstallMessage(err.message) ?? translateKvmInstallMessage(err.message);
       if (translated) {
         this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message);
         return {

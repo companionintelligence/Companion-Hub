@@ -326,6 +326,32 @@ describe('root response interceptor 401 handling', () => {
     expect(handleSessionExpired).toHaveBeenCalled();
   });
 
+  it('attaches HTTP status and URL to thrown TranslatableError for Sentry', async () => {
+    const { TranslatableError } = await import('./types/error.types');
+    const res = {
+      status: 500,
+      url: 'http://127.0.0.1:5002/api/store/listings',
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({ message: 'COMMON_AN_ERROR_OCCURRED' }),
+    } as unknown as Response;
+
+    let thrown: unknown;
+    try {
+      await responseInterceptor(res);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(TranslatableError);
+    const typed = thrown as InstanceType<typeof TranslatableError>;
+    expect(typed.message).toBe('COMMON_AN_ERROR_OCCURRED');
+    expect(typed.http).toEqual({
+      status: 500,
+      url: 'http://127.0.0.1:5002/api/store/listings',
+      body: 'COMMON_AN_ERROR_OCCURRED',
+    });
+  });
+
   it.each([
     'http://127.0.0.1:5002/api/auth/login',
     'http://127.0.0.1:5002/api/auth/logout',

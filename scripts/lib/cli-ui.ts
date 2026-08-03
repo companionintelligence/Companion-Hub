@@ -57,6 +57,15 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Connect an agent',
+    entries: [
+      {
+        command: `${BASE_COMMAND} connect openclaw|hermes`,
+        description: 'Wire a locally-installed agent to this Hub\u2019s Companion Memory (--memory-url, --memory-key; --dry-run to preview)',
+      },
+    ],
+  },
+  {
     title: 'Models',
     entries: [
       { command: `${BASE_COMMAND} models list`, description: 'List installed Ollama models' },
@@ -88,9 +97,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'MCP',
     entries: [
-      { command: `${BASE_COMMAND} mcp setup [env]`, description: 'Enable MCP and provision MCP_API_KEY' },
+      { command: `${BASE_COMMAND} mcp setup [env]`, description: 'Enable the MCP endpoint in the target env file' },
       { command: `${BASE_COMMAND} mcp shutdown [env]`, description: 'Disable MCP in the target env file' },
       { command: `${BASE_COMMAND} mcp config [env]`, description: 'Show current MCP settings' },
+      { command: `${BASE_COMMAND} api-key create --name <label>`, description: "Mint an API key (default scope 'mcp'); shown once" },
+      { command: `${BASE_COMMAND} api-key list`, description: 'List API keys (id, name, scopes, prefix)' },
     ],
   },
   {

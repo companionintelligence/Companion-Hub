@@ -1,6 +1,4 @@
-import type { Architecture } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -34,11 +32,13 @@ type PortalCatalogApp = {
   tipi_version?: number;
   min_hub_version?: number | null;
   exposable?: boolean;
+  no_gui?: boolean;
   dynamic_config?: boolean;
   form_fields?: unknown[];
   force_pull?: boolean;
   url_suffix?: string;
   hub_integration?: unknown;
+  mcp?: unknown;
 };
 
 export type PortalCatalogEntry = {
@@ -71,7 +71,6 @@ export class PortalCatalogService {
 
   constructor(
     private readonly portalClient: PortalClientService,
-    private readonly configuration: ConfigurationService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -109,13 +108,9 @@ export class PortalCatalogService {
     };
   }
 
-  private filterForArchitecture(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
-    const { architecture } = this.configuration.getConfig();
-    return apps.filter((app) => {
-      if (app.deprecated || !app.available) return false;
-      if (!app.supported_architectures?.length) return true;
-      return app.supported_architectures.includes(architecture as Architecture);
-    });
+  /** Drop deprecated/unavailable apps only — wrong-arch apps stay browseable. */
+  private filterCatalogEntries(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
+    return apps.filter((app) => !app.deprecated && app.available);
   }
 
   async getCatalogEntries(force = false): Promise<PortalCatalogEntry[]> {
@@ -134,7 +129,7 @@ export class PortalCatalogService {
         const raw = await this.portalClient.fetchStoreCatalog();
         const list = Array.isArray(raw) ? raw : [];
         const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-        this.cache = this.filterForArchitecture(mapped);
+        this.cache = this.filterCatalogEntries(mapped);
         this.cacheUpdatedAt = Date.now();
         return this.cache;
       } catch (error) {
@@ -249,6 +244,7 @@ export class PortalCatalogService {
     const categories = this.mapPortalCategories(app).filter((category): category is (typeof APP_CATEGORIES)[number] =>
       (APP_CATEGORIES as readonly string[]).includes(category),
     );
+    const isMcpListing = Boolean(app.mcp) || app.no_gui === true;
     const parsed = appInfoSchema.safeParse({
       id: slug,
       urn: appUrn,
@@ -259,7 +255,8 @@ export class PortalCatalogService {
       short_desc,
       description: markdownDescription?.trim() || '',
       categories: categories.length > 0 ? categories : ['utilities'],
-      port: typeof app.port === 'number' ? app.port : 8080,
+      // MCP / no_gui listings are not HTTP apps — omit the fake default port.
+      port: typeof app.port === 'number' ? app.port : isMcpListing ? undefined : 8080,
       version: typeof app.version === 'string' ? app.version : 'latest',
       cihub_app_version:
         typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
@@ -267,7 +264,10 @@ export class PortalCatalogService {
       website: typeof app.website === 'string' ? app.website : undefined,
       supported_architectures: app.supported_architectures?.length ? app.supported_architectures : ['amd64', 'arm64'],
       runtime_platform: typeof app.runtime_platform === 'string' ? app.runtime_platform : undefined,
-      exposable: app.exposable !== false,
+      // Prefer explicit catalog flags; default MCP listings to non-exposable.
+      exposable: typeof app.exposable === 'boolean' ? app.exposable : !isMcpListing,
+      no_gui: app.no_gui === true || isMcpListing ? true : undefined,
+      mcp: app.mcp,
       dynamic_config: app.dynamic_config !== false,
       form_fields: Array.isArray(app.form_fields) ? app.form_fields : undefined,
       force_pull: app.force_pull === true ? true : undefined,

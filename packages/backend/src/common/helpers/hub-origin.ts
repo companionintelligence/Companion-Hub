@@ -45,6 +45,13 @@ const LOCAL_DEV_DOMAIN = 'ci.localhost';
 const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdomain', '.localhost'];
 
 /**
+ * MagicDNS suffix of every Tailscale tailnet on the public control plane. A
+ * caller carrying such a host reached the Hub over the Private VPN — no LAN
+ * gateway or tunnel rewrite ever produces a `.ts.net` Host.
+ */
+const TAILNET_HOST_SUFFIX = '.ts.net';
+
+/**
  * The Hub's public origin (`https://<hubSubdomain>.<domain>`), or null when this
  * appliance has no provisioned public route — because it is not registered with
  * an organization (no `hubSubdomain`), or its domain is still the unprovisioned
@@ -94,6 +101,84 @@ export function buildHubLocalOrigin(input: { internalIp?: string | null; port?: 
   const port = input.port ?? 80;
 
   return port === 80 ? `http://${host}` : `http://${host}:${port}`;
+}
+
+/**
+ * The Hub's tailnet origin (`https://<nodeFqdn>`), or null when the Private VPN
+ * is not connected or cannot be served.
+ *
+ * `https` on the default port: the Hub is published via Tailscale Serve on
+ * `:443`, which terminates TLS with the tailnet's own certificate for the node
+ * FQDN. That is also why `httpsAvailable` gates the origin — Serve requires
+ * HTTPS Certificates on the tailnet (the `CertDomains` signal), so advertising
+ * this origin without it would hand out a launcher that cannot be served.
+ *
+ * Like {@link buildHubPublicOrigin}, a null is meaningful rather than an error:
+ * it is how a Hub without a (usable) Private VPN reports "there is no tailnet
+ * address here".
+ */
+export function buildHubTailnetOrigin(input: { connected?: boolean; httpsAvailable?: boolean; nodeFqdn?: string | null }): string | null {
+  if (!input.connected || !input.httpsAvailable) {
+    return null;
+  }
+
+  const nodeFqdn = input.nodeFqdn?.trim().replace(/\.+$/, '');
+
+  if (!nodeFqdn) {
+    return null;
+  }
+
+  return `https://${nodeFqdn.toLowerCase()}`;
+}
+
+/**
+ * Textual prefix of Tailscale's IPv6 assignment range, `fd7a:115c:a1e0::/48`.
+ * A /48 is exactly the first three groups, so a prefix match on the canonical
+ * lowercase form covers every address in the range (the compressed `::` form
+ * still begins with these three groups and a colon).
+ */
+const TAILNET_IPV6_PREFIX = 'fd7a:115c:a1e0:';
+
+/**
+ * Whether a hostname identifies a caller on the Hub's tailnet: a MagicDNS name
+ * (`*.ts.net`) or a Tailscale-assigned IP (IPv4 CGNAT 100.64/10, IPv6
+ * fd7a:115c:a1e0::/48).
+ *
+ * Callers MUST check this BEFORE {@link isPrivateHostname}: both Tailscale
+ * ranges are also part of the private set (CGNAT via the IPv4 branch, the IPv6
+ * range via the unique-local `fd` branch), but a caller arriving from them is
+ * on the VPN and can reach the Hub's tailnet origin — while it may well NOT be
+ * able to reach the `192.168.x.x` LAN origin the `local` classification would
+ * offer it.
+ */
+export function isTailnetHostname(hostname: string | null | undefined): boolean {
+  const host = hostname
+    ?.trim()
+    .toLowerCase()
+    .replace(/^\[|]$/g, '')
+    .replace(/\.+$/, '');
+
+  if (!host) {
+    return false;
+  }
+
+  if (host.endsWith(TAILNET_HOST_SUFFIX)) {
+    return true;
+  }
+
+  const ipVersion = net.isIP(host);
+
+  if (ipVersion === 4) {
+    const [first = 0, second = 0] = host.split('.').map(Number);
+
+    return first === 100 && second >= 64 && second <= 127;
+  }
+
+  if (ipVersion === 6) {
+    return host.startsWith(TAILNET_IPV6_PREFIX);
+  }
+
+  return false;
 }
 
 /**

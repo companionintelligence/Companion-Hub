@@ -12,7 +12,7 @@ function rowFrom(
   values: Partial<ApiKeyRow> & Pick<ApiKeyRow, 'name' | 'prefix' | 'hashedKey' | 'managed' | 'ownerAppUrn' | 'expiresAt'>,
   id = 1,
 ): ApiKeyRow {
-  return { id, scopes: ['mcp'], lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
+  return { id, scopes: ['mcp'], capability: 'write', lastUsedAt: null, createdAt: '2026-01-01T00:00:00Z', ...values };
 }
 
 describe('ApiKeyService', () => {
@@ -52,6 +52,19 @@ describe('ApiKeyService', () => {
       expect(repo.insert.mock.calls[0][0].scopes).toEqual(['mcp', 'app']);
     });
 
+    it("defaults capability to 'write' — what a key could always do before the column existed", async () => {
+      // Not 'read' (which would break "create a key, connect an agent") and not 'full' (which would
+      // reintroduce the leaked-key blast radius ISSUE-MCP-2 exists to prevent).
+      await service.create('CLI', { scopes: ['mcp'] });
+      expect(repo.insert.mock.calls[0][0].capability).toBe('write');
+    });
+
+    it('stores the requested capability', async () => {
+      const res = await service.create('recall', { scopes: ['mcp'], capability: 'read' });
+      expect(repo.insert.mock.calls[0][0].capability).toBe('read');
+      expect(res.capability).toBe('read');
+    });
+
     it('refuses an empty scope set rather than minting a key that opens nothing', async () => {
       // A scopeless key would be injected into an app's env and look provisioned, yet fail every
       // validate()/resolve — reject at the source instead of shipping a dead credential.
@@ -83,6 +96,47 @@ describe('ApiKeyService', () => {
 
       repo.findManagedByOwnerAppUrn.mockResolvedValue(undefined);
       expect(await service.findManagedByApp('none:s')).toBeNull();
+    });
+  });
+
+  describe('resolve', () => {
+    const storedRow = (overrides: Partial<ApiKeyRow> = {}) =>
+      rowFrom({ name: 'Laptop CLI', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: null, ...overrides });
+
+    it('returns the identity behind the key, so enforcement can consult the caller', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ id: 9, capability: 'full' }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toEqual({ id: 9, name: 'Laptop CLI', capability: 'full' });
+    });
+
+    it('returns null for a key that does not carry the required scope', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ scopes: ['app'] }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toBeNull();
+    });
+
+    it('returns null for an expired key', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ expiresAt: '2020-01-01T00:00:00Z' }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toBeNull();
+    });
+
+    it('reads an unrecognised stored capability as read-only, not as the default', async () => {
+      // The column is a plain varchar, so a row could hold anything a future or rolled-back writer
+      // put there. A value we cannot read is an authority level we do not understand, and the safe
+      // reading of that is the smallest one — 'write' would be a guess in the caller's favour.
+      repo.findByHash.mockResolvedValue(storedRow({ capability: 'superuser' }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toMatchObject({ capability: 'read' });
+    });
+  });
+
+  describe('setCapability', () => {
+    it('changes the level without touching the secret, so a deployed key keeps working', async () => {
+      repo.updateCapability.mockResolvedValue(1);
+      await expect(service.setCapability(5, 'read')).resolves.toBe(true);
+      expect(repo.updateCapability).toHaveBeenCalledWith(5, 'read');
+    });
+
+    it('reports false when the id no longer exists', async () => {
+      repo.updateCapability.mockResolvedValue(0);
+      await expect(service.setCapability(5, 'read')).resolves.toBe(false);
     });
   });
 
@@ -230,6 +284,30 @@ describe('ApiKeyService', () => {
       expect(key).toBe('existing');
       expect(repo.updateScopes).toHaveBeenCalledWith(7, ['mcp', 'app']);
       expect(repo.insert).not.toHaveBeenCalled();
+    });
+
+    it("leaves capability alone on re-provisioning, so an operator's tightening survives an app restart", async () => {
+      // Re-provisioning runs on every env regeneration. Resetting capability here would quietly undo
+      // a deliberate decision on the app's next restart — exactly when nobody is looking.
+      repo.findByHash.mockResolvedValue(
+        rowFrom({
+          id: 7,
+          name: 'hermes',
+          prefix: 'p',
+          hashedKey: sha256('existing'),
+          managed: true,
+          ownerAppUrn: 'hermes:ci-marketplace',
+          expiresAt: null,
+          capability: 'read',
+        }),
+      );
+      await service.provisionManagedKey({
+        appUrn: 'hermes:ci-marketplace',
+        appName: 'hermes',
+        existingRawKey: 'existing',
+        scopes: ['mcp'],
+      });
+      expect(repo.updateCapability).not.toHaveBeenCalled();
     });
 
     it('mints a fresh key with the requested scopes (revoking stale ones) when there is no valid existing key', async () => {

@@ -8,6 +8,8 @@ import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
+import { VllmBackend } from '../backends/vllm.backend';
+import { LemonadeBackend } from '../backends/lemonade.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -92,6 +94,8 @@ describe('AppCredentialsService', () => {
   let modelPuller: MockProxy<ModelPullerService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let vllmBackend: MockProxy<VllmBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
@@ -101,6 +105,8 @@ describe('AppCredentialsService', () => {
     modelPuller = mock<ModelPullerService>();
     cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
+    vllmBackend = mock<VllmBackend>();
+    lemonadeBackend = mock<LemonadeBackend>();
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({
@@ -145,6 +151,8 @@ describe('AppCredentialsService', () => {
         { provide: ModelPullerService, useValue: modelPuller },
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: VllmBackend, useValue: vllmBackend },
+        { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();

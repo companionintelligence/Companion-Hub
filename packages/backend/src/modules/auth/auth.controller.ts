@@ -59,6 +59,7 @@ import {
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
 } from './portal-sso';
+import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -995,6 +996,34 @@ export class AuthController {
     const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || 'http';
     const viaTunnel = this.viaCloudflareTunnel(req);
     const { ticket, cleanUri } = this.parseForwardedUri(uri);
+
+    // Machine clients (Companion Capture, browser extension) authenticate with a
+    // Portal id_token Bearer — not a Hub session cookie. Accept a valid Portal
+    // JWT here so Traefik does not 302 them into the Hub login HTML page.
+    // Invalid/expired Bearer → 401 (never a browser SSO redirect).
+    if (!req.user) {
+      const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+      if (bearer) {
+        const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+        const claims = await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase });
+        if (!claims) {
+          this.logger.debug('Traefik forward auth rejected Portal Bearer token');
+          return res.status(401).send();
+        }
+        const username = portalClaimsIdentity(claims);
+        const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
+        this.logger.debug('Portal Bearer accepted for Traefik forward auth', {
+          username,
+          secretSource: resolved.source,
+          targetApp: resolved.appUrn,
+        });
+        const signed = buildSignedForwardAuthHeaders(resolved.secret, username);
+        for (const [header, value] of Object.entries(signed)) {
+          res.setHeader(header, value);
+        }
+        return res.status(200).send();
+      }
+    }
 
     if (req.user) {
       // A ticket that reaches an already-authenticated request was never consumed (the LAN
