@@ -1987,9 +1987,15 @@ export async function runConnectCommand(args: string[]) {
     );
   }
 
+  // A missing value must not swallow the next flag. `--memory-url --memory-key K` would
+  // otherwise probe the literal URL "--memory-key" and report it as unreachable, which
+  // sends people looking at their network instead of their typo.
   const flagValue = (name: string) => {
     const i = args.indexOf(name);
-    return i >= 0 ? args[i + 1] : undefined;
+    if (i < 0) return undefined;
+    const value = args[i + 1];
+    if (value === undefined || value.startsWith('--')) usageAndExit(`${name} needs a value.`);
+    return value;
   };
   const force = args.includes('--force');
   const dryRun = args.includes('--dry-run');

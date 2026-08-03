@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   backupPathFor,
   checkMemorySlot,
@@ -9,6 +14,8 @@ import {
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
   PLUGIN_ID,
+  probeHubMcp,
+  readJsonIfPresent,
   tarballUrl,
   timestampForBackup,
   triageMcpProbe,
@@ -63,6 +70,121 @@ describe('probe triage', () => {
     const v = triageMcpProbe(200, 76);
     expect(v.ok).toBe(true);
     expect(v.message).toMatch(/76/);
+  });
+});
+
+/**
+ * The triage tests above take a status code as an argument, so they can say nothing
+ * about whether the probe elicits the right status from a real server. It did not: the
+ * probe sent `tools/list` with no session header, the Hub answered 400, and a healthy
+ * Hub was reported as the pre-G1 gateway on every single run. Only a server that
+ * enforces the contract catches that, so this stands one up.
+ */
+describe('probeHubMcp against a server enforcing the Hub session contract', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = undefined;
+  });
+
+  /** Mirrors mcp.controller.ts handlePost + handleDelete. */
+  function startHub(options: { stateless?: boolean; toolCount?: number } = {}): Promise<string> {
+    const { stateless = false, toolCount = 76 } = options;
+    const sessions = new Set<string>();
+    const deleted: string[] = [];
+
+    server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => {
+        raw += c;
+      });
+      req.on('end', () => {
+        const sid = req.headers['mcp-session-id'] as string | undefined;
+        const send = (status: number, payload: unknown, headers: Record<string, string> = {}) =>
+          res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(payload));
+
+        if (req.method === 'DELETE') {
+          if (sid) deleted.push(sid);
+          return send(200, { ok: true });
+        }
+
+        let body: { method?: string; id?: number } = {};
+        try {
+          body = JSON.parse(raw || '{}');
+        } catch {
+          /* fall through to the missing-session branch */
+        }
+
+        // Unknown session id -> 404, per the controller.
+        if (sid && !sessions.has(sid)) {
+          return send(404, { jsonrpc: '2.0', error: { code: -32001, message: 'Session not found; send an initialize request first.' } });
+        }
+        if (!sid) {
+          if (body.method !== 'initialize') {
+            // A stateless server (SDK with no sessionIdGenerator) skips session
+            // validation entirely, so an unsessioned tools/list is legitimate there.
+            if (stateless) {
+              return send(200, {
+                jsonrpc: '2.0',
+                id: body.id,
+                result: { tools: Array.from({ length: toolCount }, (_, i) => ({ name: `tool_${i}` })) },
+              });
+            }
+            // The exact 400 that made a healthy Hub look pre-G1.
+            return send(400, {
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Missing Mcp-Session-Id header; send an initialize request first.' },
+            });
+          }
+          const issued = `sess-${sessions.size + 1}`;
+          if (!stateless) sessions.add(issued);
+          return send(
+            200,
+            {
+              jsonrpc: '2.0',
+              id: body.id,
+              result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'ci-hub', version: '1' } },
+            },
+            // A stateless Hub (no sessionIdGenerator) issues no header and validates none.
+            stateless ? {} : { 'mcp-session-id': issued },
+          );
+        }
+        if (body.method === 'tools/list') {
+          return send(200, { jsonrpc: '2.0', id: body.id, result: { tools: Array.from({ length: toolCount }, (_, i) => ({ name: `tool_${i}` })) } });
+        }
+        return send(200, { jsonrpc: '2.0', id: body.id, result: {} });
+      });
+    });
+
+    (server as Server & { deleted: string[] }).deleted = deleted;
+    return new Promise((resolve) => server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo).port}`)));
+  }
+
+  it('carries the session id from initialize into tools/list', async () => {
+    const verdict = await probeHubMcp(await startHub(), 'testkey');
+    expect(verdict.code).toBe('ok');
+    expect(verdict.ok).toBe(true);
+    expect(verdict.message).toMatch(/76/);
+  });
+
+  it('releases the session instead of leaving it for the 30-minute reaper', async () => {
+    const url = await startHub();
+    await probeHubMcp(url, 'testkey');
+    expect((server as Server & { deleted: string[] }).deleted).toEqual(['sess-1']);
+  });
+
+  it('invents no session id for a server that issued none', async () => {
+    // Not reachable on CI-Hub today — mcp-session.registry.ts always passes a
+    // sessionIdGenerator — but a fabricated id would earn "Session not found" (404)
+    // from any MCP server, so the header stays conditional on one being issued.
+    const verdict = await probeHubMcp(await startHub({ stateless: true }), 'testkey');
+    expect(verdict.code).toBe('ok');
+  });
+
+  it('still reports a 0-tool listing as the missing intents scope', async () => {
+    const verdict = await probeHubMcp(await startHub({ toolCount: 0 }), 'testkey');
+    expect(verdict.code).toBe('missing-intents-scope');
   });
 });
 
@@ -197,6 +319,35 @@ describe('lint finding attribution', () => {
 
   it('survives unparseable lint output', () => {
     expect(lintFindingsForOurKeys('not json')).toEqual([]);
+  });
+});
+
+describe('reading an existing config', () => {
+  const tmp = (name: string, body: string) => {
+    const path = join(mkdtempSync(join(tmpdir(), 'connect-agent-')), name);
+    writeFileSync(path, body);
+    return path;
+  };
+
+  it('treats a missing file as an empty config', () => {
+    expect(readJsonIfPresent(join(tmpdir(), 'connect-agent-does-not-exist.json'))).toEqual({});
+  });
+
+  it('reads an object', () => {
+    expect(readJsonIfPresent(tmp('openclaw.json', '{"gateway":{"mode":"local"}}'))).toEqual({ gateway: { mode: 'local' } });
+  });
+
+  it('refuses malformed JSON rather than overwriting it', () => {
+    expect(() => readJsonIfPresent(tmp('openclaw.json', '{oops'))).toThrow(/not valid JSON/);
+  });
+
+  // Valid JSON, wrong shape: the merge would write its keys onto an array, and
+  // JSON.stringify drops non-index properties — so the file would come back as `[]`
+  // with every setting silently gone.
+  it('refuses valid JSON that is not a config object', () => {
+    expect(() => readJsonIfPresent(tmp('openclaw.json', '[1,2]'))).toThrow(/an array, not a config object/);
+    expect(() => readJsonIfPresent(tmp('openclaw.json', '"a string"'))).toThrow(/a string, not a config object/);
+    expect(() => readJsonIfPresent(tmp('openclaw.json', 'null'))).toThrow(/a null, not a config object/);
   });
 });
 

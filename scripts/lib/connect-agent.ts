@@ -308,11 +308,20 @@ export function timestampForBackup(now: Date): string {
 
 export function readJsonIfPresent(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     throw new Error(`${path} is not valid JSON (${String((error as Error).message)}). Fix or move it before connecting.`);
   }
+  // Valid JSON that is not an object would merge without complaint and then serialize
+  // back as an array or a bare string, silently dropping everything the merge added.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `${path} contains ${Array.isArray(parsed) ? 'an array' : `a ${parsed === null ? 'null' : typeof parsed}`}, not a config object. Fix or move it before connecting.`,
+    );
+  }
+  return parsed as Record<string, unknown>;
 }
 
 /**
@@ -380,12 +389,12 @@ export function lintFindingsForOurKeys(lintJson: string): string[] {
 
 const PROBE_TIMEOUT_MS = 10_000;
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<{ status?: number; body: string; error?: string }> {
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<{ status?: number; body: string; sessionId?: string; error?: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    return { status: res.status, body: await res.text().catch(() => '') };
+    return { status: res.status, body: await res.text().catch(() => ''), sessionId: res.headers.get('mcp-session-id') ?? undefined };
   } catch (error) {
     return { body: '', error: String((error as Error).message ?? error) };
   } finally {
@@ -403,9 +412,23 @@ export async function probeMemory(baseUrl: string, key: string): Promise<ProbeVe
 /**
  * Probe Hub MCP with `initialize` then `tools/list`.
  *
- * Called twice deliberately. A released pre-G1 gateway rejects alternating requests
- * with 400, so a single call has a coin-flip chance of looking healthy — which is
- * exactly how that defect stayed hidden long enough to reach a release.
+ * The session header is not optional. The Hub answers `initialize` with an
+ * `Mcp-Session-Id` and REQUIRES it on every later message — a `tools/list` without it
+ * is rejected 400 "Missing Mcp-Session-Id header" by mcp.controller.ts before the SDK
+ * is ever reached. Omitting it made a perfectly healthy Hub look like the pre-G1
+ * gateway below, on every run.
+ *
+ * Sent only when the server issued one: a Hub configured stateless (no
+ * `sessionIdGenerator`) returns no header and validates no session, and inventing one
+ * there would earn a 404 "Session not found".
+ *
+ * `notifications/initialized` is deliberately not sent. The SDK marks the transport
+ * initialized on the initialize REQUEST, so `tools/list` is already allowed, and a
+ * notification would be one more thing to get wrong for no gain.
+ *
+ * Both messages are sent so the pre-G1 gateway is still caught: it rejected alternating
+ * requests with 400, so a single call had a coin-flip chance of looking healthy — which
+ * is how that defect stayed hidden long enough to reach a release.
  */
 export async function probeHubMcp(baseUrl: string, key: string): Promise<ProbeVerdict> {
   const url = `${baseUrl.replace(/\/+$/, '')}/api/mcp`;
@@ -423,11 +446,17 @@ export async function probeHubMcp(baseUrl: string, key: string): Promise<ProbeVe
   });
   const second = await fetchWithTimeout(url, {
     method: 'POST',
-    headers,
+    headers: first.sessionId ? { ...headers, 'Mcp-Session-Id': first.sessionId } : headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
   });
 
-  const alternating = (first.status === 400) !== (second.status === 400) && (first.status === 400 || second.status === 400);
+  // Release the session we just created rather than leaving it for the Hub's 30-minute
+  // reaper. Best-effort — a probe that cannot clean up is still a successful probe.
+  if (first.sessionId) {
+    await fetchWithTimeout(url, { method: 'DELETE', headers: { ...headers, 'Mcp-Session-Id': first.sessionId } }).catch(() => undefined);
+  }
+
+  const alternating = (first.status === 400) !== (second.status === 400);
   if (alternating) return triageMcpProbe(second.status, undefined, true);
 
   let toolCount: number | undefined;
@@ -499,7 +528,17 @@ type AgentContext = {
 
 async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   const configPath = openClawConfigPath();
-  const existing = readJsonIfPresent(configPath);
+
+  // An unreadable config is a "nothing was written" failure like any other, so it gets
+  // the same box and the same exit 1. Letting it propagate would reach the CLI's
+  // top-level catch and print a raw stack over the advice the user needs.
+  let existing: Record<string, unknown>;
+  try {
+    existing = readJsonIfPresent(configPath);
+  } catch (error) {
+    printMessageBox('Cannot connect — nothing was written', [String((error as Error).message)], 'red');
+    process.exit(1);
+  }
 
   // FIRST. The installer would overwrite a foreign slot without asking.
   const slot = checkMemorySlot(existing, ctx.force === true);
@@ -619,25 +658,48 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     return;
   }
 
-  // `tar -x` overwrites but never removes, so extracting over an older install leaves
-  // modules a later version deleted, plus their stale __pycache__, in a directory
-  // Python imports from. Credentials live outside this directory, so this is safe.
-  rmDirRecursive(dir);
-  mkdirSync(dir, { recursive: true });
+  // Staged, then swapped. Downloading straight into `dir` means clearing it first —
+  // `tar -x` overwrites but never removes, so extracting over an older install would
+  // leave modules a later version deleted, plus their stale __pycache__, in a directory
+  // Python imports from. But clearing first makes a network blip destroy a working
+  // install: the user ends up with no plugin and an exit 2. Staging alongside gives
+  // both — a clean tree, and an existing install that survives every failure up to the
+  // rename. Credentials live outside this directory, so the swap loses nothing.
+  const staging = `${dir}.incoming`;
+  rmDirRecursive(staging);
+  mkdirSync(staging, { recursive: true });
 
-  const fetched = run('bash', ['-c', `curl -fL ${JSON.stringify(url)} | tar -xz -C ${JSON.stringify(dir)} --strip-components=1`]);
+  // pipefail: without it the pipeline reports tar's status, so a curl that dies partway
+  // through would be judged by whether tar could still read what arrived.
+  const fetched = run('bash', [
+    '-c',
+    `set -o pipefail; curl -fL ${JSON.stringify(url)} | tar -xz -C ${JSON.stringify(staging)} --strip-components=1`,
+  ]);
   if (!fetched.ok) {
-    printMessageBox('Download failed', [`Could not fetch ${url}`, fetched.stderr.trim() || `exit ${fetched.status}`], 'red');
-    process.exit(2);
-  }
-  if (!existsSync(join(dir, 'plugin.yaml'))) {
+    rmDirRecursive(staging);
     printMessageBox(
-      'Install failed',
-      [`Extracted archive has no plugin.yaml in ${dir}`, 'Hermes discovers providers by scanning for that file, so it would not be found.'],
+      'Download failed — nothing was changed',
+      [
+        `Could not fetch ${url}`,
+        fetched.stderr.trim() || `exit ${fetched.status}`,
+        ...(existsSync(dir) ? ['', `Any existing install at ${dir} was left alone.`] : []),
+      ],
       'red',
     );
     process.exit(2);
   }
+  if (!existsSync(join(staging, 'plugin.yaml'))) {
+    rmDirRecursive(staging);
+    printMessageBox(
+      'Install failed — nothing was changed',
+      ['The downloaded archive has no plugin.yaml.', 'Hermes discovers providers by scanning for that file, so it would not be found.'],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  rmDirRecursive(dir);
+  renameSync(staging, dir);
 
   printMessageBox(
     'Plugin installed — one step left',
@@ -651,6 +713,10 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       'and saves nothing if it fails. Finish with:',
       '',
       '  hermes memory setup',
+      // Not a failure: installing the plugin ahead of the CLI is legitimate, and the
+      // plugin directory is all this command owns. But the one remaining step is a
+      // command, so say plainly that it is not runnable yet rather than let it fail.
+      ...(commandExists('hermes') ? [] : ['', '  Note: `hermes` is not on PATH yet, so that step cannot run here yet.']),
       '',
       `  URL: ${ctx.memoryUrl}`,
       '  Key: the Companion Memory API key you just probed with',
