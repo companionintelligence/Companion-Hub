@@ -1,16 +1,19 @@
 /**
  * `beforeSend` payload scrubber.
  *
- * The Hub runs the user's whole appliance, so anything on its way to Sentry is
- * treated as hostile until proven otherwise: credentials are redacted, home
- * directories are collapsed to `~` (they leak the OS account name), and
- * oversized strings are truncated so a stray blob cannot smuggle data out
- * inside an exception message.
+ * The Hub runs the user's whole appliance and proxies their apps, so anything
+ * on its way to Sentry is treated as hostile until proven otherwise:
+ * credentials are redacted, home directories are collapsed to `~` (they leak
+ * the OS account name), request bodies and cookies are dropped, and oversized
+ * strings are truncated so a stray blob cannot smuggle app data out inside an
+ * exception message.
  *
  * Kept in lockstep with CI-Server's copy at
  * `backend/apps/api/src/common/telemetry/scrubEvent.ts`, which was originally
- * ported *from* this file and has since grown the rules below. Duplicated
- * rather than shared because the two live in separate build graphs.
+ * ported *from* this file and has since grown the rules below, and with the
+ * frontend's browser twin at `packages/frontend/src/lib/sentry-scrubber.ts`.
+ * Duplicated rather than shared because the three live in separate build
+ * graphs, so a rule added here has to be added there too.
  *
  * What matters most here is the set of fields the SDK populates on its own,
  * behind our backs:
@@ -58,6 +61,9 @@ const HOME_PATH_PATTERNS = [
 
 const APPLICATION_SUPPORT_PATTERN = /Library\/Application Support\/[^\s]+/g;
 
+// `api[-_ ]?key` (not the literals `apikey|api_key`) so the hyphenated header
+// forms match too — the SDK ships request headers even with `sendDefaultPii`
+// disabled, so `x-api-key` arrives here whatever that flag is set to.
 const SENSITIVE_KEY_PATTERN = /password|secret|token|authorization|cookie|jwt|api[-_ ]?key|dsn|pepper|private[-_]?key|signature/i;
 
 // Keys that name a PERSON rather than carrying a credential. No value pattern
@@ -76,7 +82,11 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PATTERN.test(key) || IDENTITY_KEY_PATTERN.test(key);
 }
 
-/** Breadcrumb `data` keys whose value is a URL (fetch/xhr/navigation crumbs). */
+/**
+ * Breadcrumb `data` keys the SDK fills with URLs: `url` on http/fetch crumbs,
+ * `from`/`to` on navigation crumbs. A crumb for a token-bearing URL leaks it
+ * even when the event itself is clean.
+ */
 const URL_VALUED_KEYS = new Set(['url', 'from', 'to']);
 
 /**
@@ -89,10 +99,16 @@ const URL_VALUED_KEYS = new Set(['url', 'from', 'to']);
  */
 const QUERY_VALUED_KEYS = new Set(['http.query', 'http.fragment']);
 
-/** Headers whose value is a URL the user navigated from. */
+/**
+ * Headers whose value is a URL the user navigated from — same query-string
+ * exposure as `request.url`, and not caught by `SENSITIVE_KEY_PATTERN`.
+ */
 const URL_VALUED_HEADERS = ['referer', 'referrer', 'location'];
 
 const MAX_STRING_LENGTH = 8000;
+
+/** Guard against cyclic/deep structures stalling the reporting path. */
+const MAX_SCRUB_DEPTH = 8;
 
 /**
  * Strip query and hash from a URL. On this appliance those carry app slugs,
@@ -127,9 +143,9 @@ export function scrubString(value: string): string {
 }
 
 function scrubValue(value: unknown, depth = 0): unknown {
-  // Guard against cyclic/deep structures — a runaway walk in beforeSend would
-  // stall the reporting path on every captured error.
-  if (depth > 8) {
+  // A runaway walk in beforeSend would stall the reporting path on every
+  // captured error, and a cyclic payload would never terminate at all.
+  if (depth > MAX_SCRUB_DEPTH) {
     return '[Truncated]';
   }
 
@@ -283,7 +299,9 @@ export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | nul
 
   if (event.request) {
     // Query strings and bodies routinely carry app slugs, pairing codes and
-    // search terms; headers carry the session cookie.
+    // search terms; headers carry the session cookie. `include.cookies`
+    // defaults on and is NOT gated behind `sendDefaultPii`, so the session
+    // cookie and any POSTed body reach here regardless of that flag.
     delete event.request.cookies;
     delete event.request.data;
 

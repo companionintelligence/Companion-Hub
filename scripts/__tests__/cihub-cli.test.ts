@@ -827,6 +827,22 @@ describe('buildApiKeyInsertSql', () => {
   it('renders a multi-scope grant as a text[] literal', () => {
     expect(buildApiKeyInsertSql({ ...row, scopes: ['mcp', 'app'] })).toContain("ARRAY['mcp','app']::text[]");
   });
+
+  // Verified against a live 0.2.47 appliance: the column arrived after several published
+  // releases, and inserting it there fails with `column "capability" ... does not exist`,
+  // taking out the headless minting route on exactly the Hubs that most need it.
+  it('omits capability on a Hub whose api_key table predates the column', () => {
+    const sql = buildApiKeyInsertSql({ ...row, withCapability: false });
+    expect(sql).toBe(
+      "INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], " +
+        `'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+    expect(sql).not.toContain('capability');
+  });
+
+  it('still writes capability when the column is present', () => {
+    expect(buildApiKeyInsertSql({ ...row, withCapability: true })).toContain('capability');
+  });
 });
 
 describe('sqlQuote', () => {
@@ -891,5 +907,23 @@ describe('formatApiKeyRows', () => {
     expect(formatApiKeyRows('not json')).toEqual([]);
     expect(formatApiKeyRows('')).toEqual([]);
     expect(formatApiKeyRows('{"not":"an array"}')).toEqual([]);
+  });
+});
+
+describe('formatApiKeyRows on a Hub without per-key capability', () => {
+  const row = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+  // Defaulting to 'write' there would state a restriction the server does not enforce —
+  // no published Hub has the column, so every key is bounded by its scopes alone.
+  it('omits capability rather than inventing the column default', () => {
+    const [line] = formatApiKeyRows(row, false);
+    expect(line).not.toMatch(/write|read|full/);
+    expect(line).toContain('laptop');
+    expect(line).toContain('[mcp]');
+  });
+
+  it('still reports capability when the Hub has it', () => {
+    const withCap = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
+    expect(formatApiKeyRows(withCap, true)[0]).toContain('read');
   });
 });

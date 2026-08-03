@@ -57,6 +57,15 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Connect an agent',
+    entries: [
+      {
+        command: `${BASE_COMMAND} connect openclaw|hermes`,
+        description: 'Wire a locally-installed agent to this Hub\u2019s Companion Memory (--memory-url, --memory-key; --dry-run to preview)',
+      },
+    ],
+  },
+  {
     title: 'Models',
     entries: [
       { command: `${BASE_COMMAND} models list`, description: 'List installed Ollama models' },

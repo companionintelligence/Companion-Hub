@@ -28,6 +28,14 @@ vi.mock('@sentry/nestjs', () => ({
   }),
 }));
 
+function lastScope() {
+  const scope = scopes.at(-1);
+  if (!scope) {
+    throw new Error('expected Sentry.withScope to have created a scope');
+  }
+  return scope;
+}
+
 describe('ErrorReportingService', () => {
   const originalDsn = process.env.SENTRY_DSN;
 
@@ -76,7 +84,7 @@ describe('ErrorReportingService', () => {
     });
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining('rembg:ci-marketplace'), 'warning');
-    const scope = scopes.at(-1)!;
+    const scope = lastScope();
     expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'install', 'image-arch-unsupported']);
     expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'user_environment');
     expect(scope.setTag).toHaveBeenCalledWith('error_class', 'image-arch-unsupported');
@@ -95,7 +103,7 @@ describe('ErrorReportingService', () => {
     });
 
     expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.any(String), 'error');
-    const scope = scopes.at(-1)!;
+    const scope = lastScope();
     expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'home-assistant:ci-marketplace', 'start']);
   });
 

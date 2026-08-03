@@ -16,7 +16,6 @@
     "@ci-hub/common": "workspace:*",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.4.0",
-    "@codemirror/merge": "^6.10.2",
     "@hookform/resolvers": "^5.0.1",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-dialog": "^1.1.13",

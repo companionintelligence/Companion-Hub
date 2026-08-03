@@ -1,8 +1,15 @@
+# syntax=docker/dockerfile:1
 ARG NODE_VERSION="22"
 ARG ALPINE_VERSION="3.21"
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
-ARG TARGETARCH=amd64
+# NO default on TARGETARCH: a declared default OVERRIDES buildx's automatic
+# per-platform value, so `=amd64` here made the linux/arm64 manifest slot build
+# with TARGETARCH=amd64 — installing x86_64 docker-compose into arm64 images
+# and failing the runner stage's arch sanity check. Plain `docker build` (no
+# buildx) leaves it empty; the shell-level `${TARGETARCH:-amd64}` fallbacks
+# below handle that.
+ARG TARGETARCH
 ARG DOCKER_PLATFORM=linux/amd64
 
 # JS build stages run on BUILDPLATFORM for speed. Runtime stages MUST use
@@ -145,9 +152,11 @@ RUN --mount=type=secret,id=sentry_auth_token \
     find packages/frontend/dist/client -name '*.map' -delete || true
 
 # ---- RUNNER (target arch) ----
-FROM runner_base AS runner
+FROM --platform=${TARGETPLATFORM} runner_base AS runner
 
 ARG TARGETARCH
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
@@ -183,12 +192,16 @@ RUN set -eux; \
     fi; \
     chmod +x /usr/local/bin/docker-compose; \
     /usr/local/bin/docker-compose version; \
-    node -p "process.arch" | grep -E '^(arm64|x64)$'; \
-    case "${TARGETARCH:-amd64}" in \
-      arm64) node -p "process.arch" | grep -qx arm64 ;; \
-      amd64|"") node -p "process.arch" | grep -qx x64 ;; \
-      *) echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
-    esac
+    if [ "${BUILDPLATFORM}" = "${TARGETPLATFORM}" ]; then \
+      node -p "process.arch" | grep -E '^(arm64|x64)$'; \
+      case "${TARGETARCH:-amd64}" in \
+        arm64) node -p "process.arch" | grep -qx arm64 ;; \
+        amd64|"") node -p "process.arch" | grep -qx x64 ;; \
+        *) echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1 ;; \
+      esac; \
+    else \
+      echo "Cross-build ${BUILDPLATFORM} -> ${TARGETPLATFORM}: skipping in-stage process.arch check (verify-anonymous-pull validates the pushed image)"; \
+    fi
 
 COPY --from=builder /app/package.json ./
 

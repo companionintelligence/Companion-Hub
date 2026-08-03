@@ -24,6 +24,7 @@ import {
   submitPairingCode,
   waitForHubApi,
 } from './lib/register-hub';
+import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
@@ -1275,13 +1276,47 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
  * the database is unit-testable — the validation above narrows what can get here, but the quoting is
  * the last line of defence and deserves its own assertions.
  */
-export function buildApiKeyInsertSql(row: { name: string; scopes: string[]; capability: string; prefix: string; hashedKey: string }): string {
+export function buildApiKeyInsertSql(row: {
+  name: string;
+  scopes: string[];
+  capability: string;
+  prefix: string;
+  hashedKey: string;
+  /** False on a Hub released before per-key capability existed. */
+  withCapability?: boolean;
+}): string {
   const scopeArray = `ARRAY[${row.scopes.map(sqlQuote).join(',')}]::text[]`;
+
+  if (row.withCapability === false) {
+    return (
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+      `${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+    );
+  }
 
   return (
     `INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
     `${sqlQuote(row.capability)}, ${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
   );
+}
+
+/**
+ * Does this Hub's `api_key` table carry the `capability` column?
+ *
+ * Per-key capability arrived after several published Hub releases, and the CLI is run
+ * against whatever appliance is in front of it — an older one than the checkout is the
+ * normal case, not an edge case. Verified against a live 0.2.47: without this the insert
+ * dies on `column "capability" of relation "api_key" does not exist`, so the documented
+ * headless key-minting route fails outright on exactly the appliances that most need a
+ * CLI, since minting in the browser is what it exists to avoid.
+ *
+ * Unknown answers are treated as "present": that keeps the modern path first, and a
+ * genuinely missing column still surfaces as the same insert error as before.
+ */
+export function apiKeyTableHasCapability(): boolean {
+  const result = psql("SELECT 1 FROM information_schema.columns WHERE table_name='api_key' AND column_name='capability';");
+  if (!result.ok) return true;
+  return result.stdout.split('\n')[0]?.trim() === '1';
 }
 
 /**
@@ -1304,7 +1339,7 @@ export function sanitizeForBox(value: string): string {
  * Tolerates a malformed/empty document by returning no rows rather than throwing: the caller has
  * already handled the psql failure case, and a parse error here should not crash the CLI.
  */
-export function formatApiKeyRows(json: string): string[] {
+export function formatApiKeyRows(json: string, withCapability = true): string[] {
   let parsed: Array<{ id?: number; name?: string; scopes?: string[]; capability?: string; prefix?: string }>;
 
   try {
@@ -1321,7 +1356,13 @@ export function formatApiKeyRows(json: string): string[] {
     const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
     // Shown for every key, including ones minted before the column existed (which read as 'write',
     // the column default) — a listing that omitted it would make a read-only key look unrestricted.
-    const capability = typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY;
+    //
+    // But on a Hub with no capability column there is no per-key capability to report, and
+    // defaulting to 'write' there would state a restriction the server does not enforce. Omit the
+    // field entirely rather than invent one.
+    const capability = withCapability
+      ? ` ${typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY} `
+      : ' ';
 
     // Names reach this box unfiltered from the key store, and the store does not constrain them:
     // the UI's create body is `z.string().trim().min(1).max(100)`, so a name may hold ANSI escapes
@@ -1330,7 +1371,7 @@ export function formatApiKeyRows(json: string): string[] {
     // the terminal, and they count toward string length, which also skews the box width.
     const name = sanitizeForBox(String(row.name ?? ''));
 
-    return `${row.id}  ${name}  [${scopes}]  ${capability}  ${row.prefix ?? ''}…`;
+    return `${row.id}  ${name}  [${scopes}] ${capability} ${row.prefix ?? ''}…`;
   });
 }
 
@@ -1411,12 +1452,14 @@ export function runApiKeyCommand(args: string[]) {
     }
 
     const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
+    const withCapability = apiKeyTableHasCapability();
     const sql = buildApiKeyInsertSql({
       name,
       scopes,
       capability,
       prefix: rawKey.slice(0, API_KEY_PREFIX_LEN),
       hashedKey: createHash('sha256').update(rawKey).digest('hex'),
+      withCapability,
     });
 
     const result = psql(sql);
@@ -1435,7 +1478,17 @@ export function runApiKeyCommand(args: string[]) {
         `${bold('id')}      ${newId}`,
         `${bold('name')}    ${name}`,
         `${bold('scopes')}  ${scopes.join(', ')}`,
-        `${bold('can')}     ${capability}`,
+        // Reporting the requested capability on a Hub that cannot store it would be a
+        // plain untruth about how much authority the key just gained.
+        ...(withCapability
+          ? [`${bold('can')}     ${capability}`]
+          : [
+              `${bold('can')}     everything its scopes allow`,
+              '',
+              'This Hub predates per-key capability, so there is no read/write/full',
+              `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
+              'Update the Hub if you need capability-limited keys.',
+            ]),
         '',
         `${bold('key')}     ${rawKey}`,
         '',
@@ -1451,14 +1504,18 @@ export function runApiKeyCommand(args: string[]) {
     // Aggregate to a single JSON document rather than concatenating columns: key names predate this
     // command's validation (the UI accepts any string), so a name containing a newline or the
     // separator would otherwise split into bogus rows.
-    const result = psql(
-      "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'capability', capability, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
+    // Same schema split as `create`: selecting a column an older Hub does not have fails the whole
+    // query, so `api-key list` was unusable on every published release rather than degrading.
+    const withCapability = apiKeyTableHasCapability();
+    const fields = ["'id', id", "'name', name", "'scopes', scopes", ...(withCapability ? ["'capability', capability"] : []), "'prefix', prefix"].join(
+      ', ',
     );
+    const result = psql(`SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
     if (!result.ok) {
       printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
-    const rows = formatApiKeyRows(result.stdout);
+    const rows = formatApiKeyRows(result.stdout, withCapability);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;
   }
@@ -1967,4 +2024,59 @@ export function runHostUpdate(args: string[]) {
     process.exit(1);
   }
   process.exit(result.status ?? 1);
+}
+
+// --- connect an existing agent (BYO) ---
+
+/**
+ * `cihub connect openclaw|hermes` — see scripts/lib/connect-agent.ts for the design
+ * notes, in particular why the memory-slot guard has to run before the installer.
+ */
+export async function runConnectCommand(args: string[]) {
+  const usage =
+    `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
+    '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
+    '                     [--force]                          claim a foreign memory slot\n' +
+    '                     [--dry-run]                        print the plan, write nothing';
+
+  // Parsing lives in connect-agent.ts so its rules can be tested without a terminal.
+  const parsed = parseConnectArgs(args);
+  if (parsed.error || !parsed.agent) usageAndExit(parsed.error ? `${parsed.error}\n${usage}` : usage);
+
+  const agent = parsed.agent;
+  const { hubUrl, hubKey, force, dryRun } = parsed;
+  let memoryUrl = parsed.memoryUrl;
+  let memoryKey = parsed.memoryKey;
+
+  // Prompted only on a TTY. In CI or a pipe, a missing flag is a usage error rather
+  // than a hang waiting on stdin nobody is attached to.
+  if ((!memoryUrl || !memoryKey) && input.isTTY) {
+    const rl = createInterface({ input, output });
+    try {
+      if (!memoryUrl) {
+        printMessageBox(
+          'Companion Memory URL',
+          [
+            'This Hub can answer on more than one address, and the value is written once.',
+            'Use the address this machine can reach — local network, Private VPN, or your',
+            'exposed domain. See the connect docs if you are unsure which applies.',
+          ],
+          'cyan',
+        );
+        memoryUrl = (await rl.question('  Companion Memory URL: ')).trim();
+      }
+      if (!memoryKey) {
+        memoryKey = (await rl.question('  Companion Memory API key (Settings → API Keys): ')).trim();
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  // Still missing after the prompt, or never prompted because this is not a TTY.
+  if (!memoryUrl || !memoryKey) {
+    usageAndExit(`${BASE_COMMAND} connect ${agent} needs --memory-url and --memory-key (or a TTY to prompt on).`);
+  }
+
+  await connectAgent({ agent, memoryUrl: normalizeMemoryUrl(memoryUrl), memoryKey, hubUrl, hubKey, force, dryRun });
 }

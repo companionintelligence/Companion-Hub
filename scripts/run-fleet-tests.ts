@@ -84,7 +84,7 @@ function assertRefIsPushed(): void {
     return;
   }
   console.error(`\n\u274c Ref '${HUB_REF}' does not exist on origin, so no node can fetch it.`);
-  console.error("   The fleet tests whatever ref you name — it defaults to your current local branch.");
+  console.error('   The fleet tests whatever ref you name — it defaults to your current local branch.');
   console.error('   Push it, or pin one explicitly:  FLEET_HUB_REF=dev FLEET_HUB_SHA=$(git rev-parse origin/dev)\n');
   process.exit(1);
 }
@@ -185,7 +185,7 @@ async function main() {
   // for months while every batch matched zero tests, so anything wrapping it read
   // red as green.
   if (report.totalApps > 0 && report.passed === 0) {
-    console.error('\n\u274c Fleet run failed: 0 of ' + report.totalApps + ' apps passed.');
+    console.error(`\n\u274c Fleet run failed: 0 of ${report.totalApps} apps passed.`);
     process.exitCode = 1;
   }
 }

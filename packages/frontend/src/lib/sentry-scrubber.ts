@@ -39,6 +39,12 @@ const HOME_PATH_PATTERNS = [
   /\/home\/[^/\s]+/g, // Linux
 ];
 
+// Desktop builds run the same bundle inside the Tauri shell, where an error
+// message can carry the Hub's own data directory verbatim.
+const APPLICATION_SUPPORT_PATTERN = /Library\/Application Support\/[^\s]+/g;
+
+// `api[-_ ]?key`, not the literals `apikey|api_key`, so the hyphenated header
+// forms match too.
 const SENSITIVE_KEY_PATTERN = /password|secret|token|authorization|cookie|jwt|api[-_ ]?key|dsn|pepper|private[-_]?key|signature/i;
 
 // Keys that name a PERSON rather than carrying a credential. Anchored on
@@ -50,16 +56,27 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PATTERN.test(key) || IDENTITY_KEY_PATTERN.test(key);
 }
 
-/** Breadcrumb `data` keys whose value is a URL (fetch/xhr/navigation crumbs). */
+/**
+ * Breadcrumb `data` keys the SDK fills with URLs: `url` on fetch/xhr crumbs,
+ * `from`/`to` on navigation crumbs. A route change to a token-bearing URL
+ * leaves the token in the crumb even when the event itself is clean.
+ */
 const URL_VALUED_KEYS = new Set(['url', 'from', 'to']);
 
 /** Breadcrumb `data` keys that are a bare query string or fragment. */
 const QUERY_VALUED_KEYS = new Set(['http.query', 'http.fragment']);
 
-/** Request headers whose value is a URL the user navigated from. */
+/**
+ * Request headers whose value is a URL the user navigated from — same
+ * query-string exposure as `request.url`, and not caught by
+ * `SENSITIVE_KEY_PATTERN`.
+ */
 const URL_VALUED_HEADERS = ['referer', 'referrer', 'location'];
 
 const MAX_STRING_LENGTH = 8000;
+
+/** Guard against cyclic/deep structures stalling the reporting path. */
+const MAX_SCRUB_DEPTH = 8;
 
 /**
  * Strip query and hash. Deliberately a plain split rather than `new URL()`: it
@@ -76,6 +93,8 @@ export function scrubString(value: string): string {
     scrubbed = scrubbed.replace(pattern, '~');
   }
 
+  scrubbed = scrubbed.replace(APPLICATION_SUPPORT_PATTERN, '…/Application Support/…');
+
   for (const pattern of SECRET_PATTERNS) {
     scrubbed = scrubbed.replace(pattern, '[Filtered]');
   }
@@ -88,7 +107,7 @@ export function scrubString(value: string): string {
 }
 
 export function scrubValue(value: unknown, depth = 0): unknown {
-  if (depth > 8) {
+  if (depth > MAX_SCRUB_DEPTH) {
     return '[Truncated]';
   }
 
@@ -169,6 +188,22 @@ export function scrubBrowserEvent(event: ErrorEvent): ErrorEvent {
         frame.abs_path = scrubString(frame.abs_path);
       }
 
+      // Source context around the throw site is real source text — hardcoded
+      // keys and connection strings live there. The browser SDK does not attach
+      // it by default, but a source-map/`ContextLines`-style producer can, so
+      // the rule is kept in parity with the backend twin.
+      if (typeof frame.context_line === 'string') {
+        frame.context_line = scrubString(frame.context_line);
+      }
+
+      for (const key of ['pre_context', 'post_context'] as const) {
+        const lines = frame[key];
+
+        if (Array.isArray(lines)) {
+          frame[key] = lines.map((line) => (typeof line === 'string' ? scrubString(line) : line));
+        }
+      }
+
       if (frame.vars) {
         frame.vars = scrubValue(frame.vars) as Record<string, unknown>;
       }
@@ -196,7 +231,12 @@ export function scrubBrowserEvent(event: ErrorEvent): ErrorEvent {
   if (event.request) {
     delete event.request.cookies;
     delete event.request.data;
-    delete event.request.query_string;
+
+    // Replaced rather than deleted, matching the backend twin: the field's
+    // presence is diagnostic (a query existed), its contents are not.
+    if (event.request.query_string) {
+      event.request.query_string = '[Filtered]';
+    }
 
     // `httpContextIntegration` sets this to the full `window.location.href`.
     if (typeof event.request.url === 'string') {
