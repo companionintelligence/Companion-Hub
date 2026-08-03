@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,7 @@ import {
   triageMemoryAuth,
   triageMemoryProbe,
   urlProblem,
+  writeFileAtomic,
 } from '../lib/connect-agent';
 
 describe('probe triage', () => {
@@ -746,5 +747,79 @@ describe('hermes mcp_servers patch', () => {
     const { text } = patchHermesMcpServers(before, URL, 'k');
     const lines = text.split('\n');
     expect(lines.findIndex((l) => l.startsWith('  hub:'))).toBeLessThan(lines.findIndex((l) => l.startsWith('skills:')));
+  });
+});
+
+describe('hermes config write safety', () => {
+  const URL = 'http://hub.local:5002/api/mcp';
+
+  // A double quote is a legal HTTP header value, so a key containing one PASSES the Hub
+  // probe and reaches the writer. Interpolated raw, it closed the YAML scalar early and
+  // everything after it became configuration — including a second MCP server pointing
+  // wherever the rest of the string said.
+  it('cannot be escaped out of by a quote in the key', () => {
+    const key = `"\n    evil: injected\n  other:\n    url: "http://attacker/api/mcp"\n#`;
+    const { text } = patchHermesMcpServers('mcp_servers:\n  ci_server:\n    url: "http://m/api/mcp"\n', URL, key);
+
+    // The payload survives as literal text INSIDE the scalar — that is the point, the
+    // key is stored verbatim — so the test is structural, not a substring hunt.
+    expect(text).not.toMatch(/^\s*evil:/m);
+    expect(text).not.toMatch(/^\s*url: "http:\/\/attacker/m);
+    // One server added, not two.
+    expect(text.match(/^ {2}\w+:$/gm)).toEqual(['  ci_server:', '  hub:']);
+    // Six lines is the whole hub block; injection shows up as extra ones.
+    const all = text.split('\n');
+    const hubBlock = all.slice(all.indexOf('  hub:')).filter((l) => l.trim() !== '');
+    expect(hubBlock).toHaveLength(6);
+  });
+
+  it('cannot be escaped out of by a quote in the url', () => {
+    const { text } = patchHermesMcpServers('', `"\nevil: injected\n#`, 'k');
+    expect(text).not.toMatch(/^\s*evil:/m);
+    expect(text.match(/^ {2}\w+:$/gm)).toEqual(['  hub:']);
+  });
+
+  it('keeps a key with awkward characters intact rather than mangling it', () => {
+    const key = 'has"quote\\and\\backslash';
+    const { text } = patchHermesMcpServers('', URL, key);
+    // JSON.stringify output is a valid YAML 1.2 double-quoted scalar, so the value
+    // survives a round trip instead of being silently altered.
+    expect(text).toContain(JSON.stringify(`Bearer ${key}`));
+  });
+
+  // Appending a second `mcp_servers:` key is either a parse error or a silent
+  // last-one-wins that drops the user's existing servers.
+  it('refuses an inline mcp_servers mapping instead of duplicating the key', () => {
+    const before = 'mcp_servers: {}\n';
+    const { text, changed, problem } = patchHermesMcpServers(before, URL, 'k');
+    expect(changed).toBe(false);
+    expect(problem).toMatch(/inline/i);
+    expect(text).toBe(before);
+    expect(text.match(/mcp_servers:/g)).toHaveLength(1);
+  });
+});
+
+describe('writeFileAtomic', () => {
+  // writeFileSync's `mode` goes to open(2), which ignores it when the file exists. A
+  // config already at 0644 would keep 0644 while gaining a bearer token.
+  it('tightens permissions on a file that already existed at 0644', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-perm-'));
+    const target = join(dir, 'config.yaml');
+    writeFileSync(target, 'existing\n');
+    chmodSync(target, 0o644);
+
+    writeFileAtomic(target, 'with-a-token\n');
+
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  it('creates a new file at 0600 and leaves no temp file behind', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-perm-'));
+    const target = join(dir, 'nested', 'config.yaml');
+
+    writeFileAtomic(target, 'contents\n');
+
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expect(readdirSync(join(dir, 'nested'))).toEqual(['config.yaml']);
   });
 });

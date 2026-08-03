@@ -1339,7 +1339,7 @@ export function sanitizeForBox(value: string): string {
  * Tolerates a malformed/empty document by returning no rows rather than throwing: the caller has
  * already handled the psql failure case, and a parse error here should not crash the CLI.
  */
-export function formatApiKeyRows(json: string): string[] {
+export function formatApiKeyRows(json: string, withCapability = true): string[] {
   let parsed: Array<{ id?: number; name?: string; scopes?: string[]; capability?: string; prefix?: string }>;
 
   try {
@@ -1356,7 +1356,13 @@ export function formatApiKeyRows(json: string): string[] {
     const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
     // Shown for every key, including ones minted before the column existed (which read as 'write',
     // the column default) — a listing that omitted it would make a read-only key look unrestricted.
-    const capability = typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY;
+    //
+    // But on a Hub with no capability column there is no per-key capability to report, and
+    // defaulting to 'write' there would state a restriction the server does not enforce. Omit the
+    // field entirely rather than invent one.
+    const capability = withCapability
+      ? ` ${typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY} `
+      : ' ';
 
     // Names reach this box unfiltered from the key store, and the store does not constrain them:
     // the UI's create body is `z.string().trim().min(1).max(100)`, so a name may hold ANSI escapes
@@ -1365,7 +1371,7 @@ export function formatApiKeyRows(json: string): string[] {
     // the terminal, and they count toward string length, which also skews the box width.
     const name = sanitizeForBox(String(row.name ?? ''));
 
-    return `${row.id}  ${name}  [${scopes}]  ${capability}  ${row.prefix ?? ''}…`;
+    return `${row.id}  ${name}  [${scopes}] ${capability} ${row.prefix ?? ''}…`;
   });
 }
 
@@ -1498,14 +1504,18 @@ export function runApiKeyCommand(args: string[]) {
     // Aggregate to a single JSON document rather than concatenating columns: key names predate this
     // command's validation (the UI accepts any string), so a name containing a newline or the
     // separator would otherwise split into bogus rows.
-    const result = psql(
-      "SELECT COALESCE(json_agg(json_build_object('id', id, 'name', name, 'scopes', scopes, 'capability', capability, 'prefix', prefix) ORDER BY id)::text, '[]') FROM api_key;",
+    // Same schema split as `create`: selecting a column an older Hub does not have fails the whole
+    // query, so `api-key list` was unusable on every published release rather than degrading.
+    const withCapability = apiKeyTableHasCapability();
+    const fields = ["'id', id", "'name', name", "'scopes', scopes", ...(withCapability ? ["'capability', capability"] : []), "'prefix', prefix"].join(
+      ', ',
     );
+    const result = psql(`SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
     if (!result.ok) {
       printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
       process.exit(1);
     }
-    const rows = formatApiKeyRows(result.stdout);
+    const rows = formatApiKeyRows(result.stdout, withCapability);
     printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
     return;
   }

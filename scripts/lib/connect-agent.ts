@@ -456,7 +456,7 @@ export function hermesConfigPath(home = homedir()): string {
  * Returns the new text and whether anything changed, so a converged config is left
  * byte-identical instead of being rewritten (and backed up) on every run.
  */
-export function patchHermesMcpServers(configText: string, mcpUrl: string, key: string): { text: string; changed: boolean } {
+export function patchHermesMcpServers(configText: string, mcpUrl: string, key: string): { text: string; changed: boolean; problem?: string } {
   const indentOf = (line: string) => line.length - line.trimStart().length;
   const isBlankOrComment = (line: string) => line.trim() === '' || line.trim().startsWith('#');
 
@@ -464,14 +464,23 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
   // A file not ending in a newline would otherwise get the block welded onto its last line.
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
 
+  // Never interpolate either value raw. A double quote is a legal HTTP header value, so
+  // a key containing one passes the probe and then closes the YAML scalar early —
+  // letting the rest of the key become config, up to and including a second MCP server
+  // pointing anywhere. JSON.stringify is exactly right here rather than merely close:
+  // YAML 1.2 double-quoted scalars are a superset of JSON strings, so its output is a
+  // valid YAML scalar that round-trips (verified against a real parser for quotes,
+  // newlines, backslashes, tabs and non-ASCII).
+  const scalar = (value: string) => JSON.stringify(value);
+
   const blockLines = (indent: number): string[] => {
     const child = ' '.repeat(indent + 2);
     const grand = ' '.repeat(indent + 4);
     return [
       `${' '.repeat(indent)}hub:`,
-      `${child}url: "${mcpUrl}"`,
+      `${child}url: ${scalar(mcpUrl)}`,
       `${child}headers:`,
-      `${grand}Authorization: "Bearer ${key}"`,
+      `${grand}Authorization: ${scalar(`Bearer ${key}`)}`,
       `${child}timeout: 180`,
       `${child}connect_timeout: 60`,
     ];
@@ -486,6 +495,23 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
   };
 
   const mcpIndex = lines.findIndex((line) => /^\s*mcp_servers:\s*(?:#.*)?$/.test(line));
+
+  // `mcp_servers: {…}` on one line is a mapping too, but not one lines can be appended
+  // to. Treating it as absent appends a SECOND `mcp_servers:` key, and a duplicate key
+  // is either a parse error or a silent last-one-wins that drops the servers the user
+  // already had. Refuse and say so, rather than write something worse than nothing.
+  if (mcpIndex === -1) {
+    const inline = lines.findIndex((line) => /^\s*mcp_servers:\s*\S/.test(line));
+    if (inline !== -1) {
+      return {
+        text: configText,
+        changed: false,
+        problem:
+          'config.yaml declares mcp_servers inline (mcp_servers: {…}), which this cannot extend without rewriting the file. ' +
+          'Convert it to a block mapping, or add the hub server by hand.',
+      };
+    }
+  }
 
   if (mcpIndex === -1) {
     const appended = [...lines, 'mcp_servers:', ...blockLines(2), ''];
@@ -625,15 +651,27 @@ export function readJsonIfPresent(path: string): Record<string, unknown> {
  * edit: OpenClaw's schema is strict, so an invalid file gets quarantined at boot and
  * the user silently loses everything else in it.
  */
-export function writeJsonAtomic(path: string, value: unknown) {
+/**
+ * Write a credential-bearing file atomically and leave it `0600`.
+ *
+ * The `chmodSync` after the rename is not belt-and-braces. `writeFileSync`'s `mode` is
+ * passed to `open(2)`, which ignores it when the file already exists — so on a config
+ * that was already there at `0644`, the mode option alone silently leaves it
+ * world-readable while we add a bearer token to it.
+ */
+export function writeFileAtomic(path: string, contents: string) {
   mkdirSync(dirname(path), { recursive: true });
   // Per-process, so two concurrent runs cannot write the same temp file and have one
-  // rename the other's half-serialized JSON into place. It also means a temp file left
+  // rename the other's half-written contents into place. It also means a temp file left
   // by a crashed run is never reused, so its mode cannot be inherited.
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(tmp, contents, { mode: 0o600 });
   renameSync(tmp, path);
   chmodSync(path, 0o600);
+}
+
+export function writeJsonAtomic(path: string, value: unknown) {
+  writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function backupFile(path: string, stamp: string): string | undefined {
@@ -1244,14 +1282,17 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   if (ctx.hubUrl && ctx.hubKey) {
     const configPath = hermesConfigPath();
     const before = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
-    const { text, changed } = patchHermesMcpServers(before, hubMcpUrl(ctx.hubUrl), ctx.hubKey);
+    const { text, changed, problem } = patchHermesMcpServers(before, hubMcpUrl(ctx.hubUrl), ctx.hubKey);
 
-    if (changed) {
+    if (problem) {
+      ctx.lines.push(`Hub MCP was not registered: ${problem}`);
+    } else if (changed) {
       try {
-        mkdirSync(dirname(configPath), { recursive: true });
         // Only when there is something to lose; a first-time write has no prior state.
         if (before.length > 0) hubBackup = backupFile(configPath, timestampForBackup(new Date()));
-        writeFileSync(configPath, text, { mode: 0o600 });
+        // Atomic, and 0600 even when the file already existed at wider permissions —
+        // this is the moment a bearer token enters it.
+        writeFileAtomic(configPath, text);
         hubConfigPath = configPath;
         ctx.lines.push('Hub MCP server registered as `hub`.');
       } catch (error) {
