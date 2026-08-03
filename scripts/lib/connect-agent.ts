@@ -658,7 +658,12 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       'That is a command-line command, not a chat message — typed at the chat prompt,',
       'Hermes will simply answer it and nothing gets configured.',
       '',
-      'Then enable `companionintelligence` on the Hermes /plugins page.',
+      'The wizard is the whole activation. `hermes plugins list` and the /plugins page',
+      'will still show this as "not enabled" — that registry does not apply to memory',
+      'providers (Hermes routes them to its own discovery), so enabling it there changes',
+      'nothing and only raises a tool-override grant this plugin has no use for.',
+      '',
+      'Confirm with `hermes memory status` — it should report the provider as available.',
     ],
     'green',
   );
