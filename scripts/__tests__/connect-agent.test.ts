@@ -26,7 +26,9 @@ import {
   runFailureMessage,
   tarballUrl,
   timestampForBackup,
+  patchHermesMcpServers,
   triageMcpProbe,
+  triageMemoryAuth,
   triageMemoryProbe,
   urlProblem,
 } from '../lib/connect-agent';
@@ -53,6 +55,35 @@ describe('probe triage', () => {
 
   it('passes a healthy memory server', () => {
     expect(triageMemoryProbe(200).ok).toBe(true);
+  });
+
+  // /api/health is unauthenticated — verified live, it answers 200 with no key and 200
+  // with a junk one. The health leg must therefore never claim the key works, or connect
+  // reports success for a key that cannot write a single turn.
+  it('does not claim the key works on the unauthenticated health check', () => {
+    expect(triageMemoryProbe(200).message).not.toMatch(/key/i);
+  });
+
+  it('names a 403 on the memory API as the missing Memory scope, not a bad key', () => {
+    const v = triageMemoryAuth(403);
+    expect(v.ok).toBe(false);
+    expect(v.code).toBe('missing-memory-scope');
+    // The whole failure mode: an MCP-minted key authenticates and is refused here, and
+    // the plugin swallows the resulting write failures.
+    expect(v.hint).toMatch(/Memory/);
+    expect(v.hint).toMatch(/silently|never accumulates/i);
+  });
+
+  it('separates a rejected key from an under-scoped one', () => {
+    expect(triageMemoryAuth(401).code).toBe('unauthorized');
+    expect(triageMemoryAuth(403).code).not.toBe('unauthorized');
+  });
+
+  it('promises only what a read probe proves', () => {
+    const v = triageMemoryAuth(200);
+    expect(v.ok).toBe(true);
+    // Capture needs write capability, which cannot be probed without writing.
+    expect(v.message).toMatch(/read/i);
   });
 
   // The trap this exists for: the call succeeds, so nothing looks wrong.
@@ -628,5 +659,92 @@ describe('backup naming', () => {
     expect(a.endsWith('.bak')).toBe(true);
     // Colons in an ISO timestamp are not portable in filenames.
     expect(a).not.toMatch(/:/);
+  });
+});
+
+describe('hermes mcp_servers patch', () => {
+  const URL = 'http://hub.local:5002/api/mcp';
+
+  it('creates the section when the config has none', () => {
+    const { text, changed } = patchHermesMcpServers('model: gpt\n', URL, 'k');
+    expect(changed).toBe(true);
+    expect(text).toMatch(/^model: gpt$/m);
+    expect(text).toMatch(/^mcp_servers:$/m);
+    expect(text).toMatch(/^ {2}hub:$/m);
+    expect(text).toMatch(/Authorization: "Bearer k"/);
+  });
+
+  // Hermes defaults to Streamable HTTP for any entry with a url, and its only other
+  // accepted value is sse — which these servers do not serve.
+  it('never writes a transport line', () => {
+    expect(patchHermesMcpServers('', URL, 'k').text).not.toMatch(/transport:/);
+  });
+
+  it('adds hub alongside an existing server without disturbing it', () => {
+    const before = 'mcp_servers:\n  ci_server:\n    url: "http://m/api/mcp"\n    timeout: 600\n';
+    const { text } = patchHermesMcpServers(before, URL, 'k');
+    expect(text).toMatch(/ci_server:/);
+    expect(text).toMatch(/timeout: 600/);
+    expect(text).toMatch(/hub:/);
+  });
+
+  it('updates an existing hub block rather than duplicating it', () => {
+    const once = patchHermesMcpServers('', URL, 'old').text;
+    const { text, changed } = patchHermesMcpServers(once, URL, 'new');
+    expect(changed).toBe(true);
+    expect(text.match(/hub:/g)).toHaveLength(1);
+    expect(text).toMatch(/Bearer new/);
+    expect(text).not.toMatch(/Bearer old/);
+  });
+
+  // A converged config must not be rewritten — and therefore backed up — on every run.
+  it('reports no change when the block already matches', () => {
+    const once = patchHermesMcpServers('', URL, 'k').text;
+    const { text, changed } = patchHermesMcpServers(once, URL, 'k');
+    expect(changed).toBe(false);
+    expect(text).toBe(once);
+  });
+
+  // Caught on a real config, not in this suite: with a blank line between the block and
+  // the next top-level key, the comparison treated that blank as part of `hub` and so
+  // never matched. Every run rewrote the file, took another backup, and ate the blank —
+  // reformatting the user's config a line at a time.
+  it('stays idempotent when another top-level key follows the block', () => {
+    const before = 'mcp_servers:\n  ci_server:\n    url: "http://m/api/mcp"\n\nskills:\n  external_dirs:\n    - ~/.ci/skills\n';
+    const once = patchHermesMcpServers(before, URL, 'k');
+    expect(once.changed).toBe(true);
+
+    const twice = patchHermesMcpServers(once.text, URL, 'k');
+    expect(twice.changed).toBe(false);
+    expect(twice.text).toBe(once.text);
+    // The separator survives, rather than being absorbed into the block.
+    expect(once.text).toMatch(/connect_timeout: 60\n\nskills:/);
+  });
+
+  it('matches the surrounding indentation instead of assuming two spaces', () => {
+    const before = 'mcp_servers:\n    ci_server:\n        url: "http://m/api/mcp"\n';
+    const { text } = patchHermesMcpServers(before, URL, 'k');
+    // A two-space block here would be read as a sibling of mcp_servers, not a child.
+    expect(text).toMatch(/^ {4}hub:$/m);
+  });
+
+  it('keeps comments and unrelated keys', () => {
+    const before = '# my hermes config\nmodel: gpt\n\nmcp_servers:\n  ci_server:\n    url: "http://m/api/mcp"\n';
+    const { text } = patchHermesMcpServers(before, URL, 'k');
+    expect(text).toMatch(/^# my hermes config$/m);
+    expect(text).toMatch(/^model: gpt$/m);
+  });
+
+  it('does not weld the block onto a file with no trailing newline', () => {
+    const { text } = patchHermesMcpServers('model: gpt', URL, 'k');
+    expect(text).toMatch(/^model: gpt$/m);
+    expect(text).toMatch(/^mcp_servers:$/m);
+  });
+
+  it('leaves a later top-level key below the inserted block', () => {
+    const before = 'mcp_servers:\n  ci_server:\n    url: "http://m/api/mcp"\nskills:\n  external_dirs:\n    - ~/.ci/skills\n';
+    const { text } = patchHermesMcpServers(before, URL, 'k');
+    const lines = text.split('\n');
+    expect(lines.findIndex((l) => l.startsWith('  hub:'))).toBeLessThan(lines.findIndex((l) => l.startsWith('skills:')));
   });
 });
