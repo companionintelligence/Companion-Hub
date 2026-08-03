@@ -41,6 +41,13 @@ export interface StandardizedAiEnv {
   /** Native Ollama URL (not OpenAI-compatible — for direct Ollama API calls). */
   OLLAMA_HOST?: string;
   /**
+   * Native Ollama URL dedicated to embeddings. Unlike OLLAMA_HOST (only set when
+   * Ollama is the active chat backend), this is emitted whenever a healthy Ollama
+   * is reachable — so apps can run chat on vLLM/Lemonade while keeping their
+   * embedding pipeline (and any existing pgvector index) on Ollama.
+   */
+  CI_OLLAMA_EMBED_HOST?: string;
+  /**
    * Hardware-aware default context window (num_ctx) for the chat model, in
    * tokens, as a string. Scaled to the host's memory and capped by the model's
    * window so apps don't inherit Ollama's oversized memory-based default.
@@ -160,17 +167,33 @@ export class InferenceEnvResolver {
     }
     const chatModel = chatCurated?.backendModelId;
 
-    // ── Embedding model ───────────────────────────────────────────────────
-    let embeddingModel: string | undefined;
-    if (preferences.preferredEmbeddingModel) {
-      const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
-      if (curated?.backend === backendType) {
-        embeddingModel = curated.backendModelId;
+    // ── Embedding model + dedicated embed host ────────────────────────────
+    // Embeddings are split-backend capable: chat can run on vLLM/Lemonade while
+    // embeddings stay on Ollama (e.g. CI-Server's pgvector index is built on
+    // Ollama's 768-dim nomic-embed-text; moving embedders would force a full
+    // reindex). Resolve an embedder on the active backend first; when it has
+    // none (vLLM ships no embedding rows in the catalog), fall back to a
+    // healthy Ollama and expose its host separately as CI_OLLAMA_EMBED_HOST.
+    const resolveEmbedding = (type: InferenceBackendType): string | undefined => {
+      if (preferences.preferredEmbeddingModel) {
+        const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
+        if (curated?.backend === type) return curated.backendModelId;
       }
-    }
-    if (!embeddingModel) {
-      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, backendType);
-      embeddingModel = recommended?.backendModelId;
+      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type)?.backendModelId;
+    };
+
+    let embeddingModel = resolveEmbedding(backendType);
+    let embedHost = backendType === 'ollama' ? backendBaseUrl : undefined;
+    if (backendType !== 'ollama') {
+      const ollamaHealth = await this.ollamaBackend.healthCheck().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
+        return { running: false, healthy: false, modelsLoaded: [] as string[] };
+      });
+      if (ollamaHealth.running && ollamaHealth.healthy) {
+        embedHost = this.ollamaBackend.getBaseUrl();
+        if (!embeddingModel) embeddingModel = resolveEmbedding('ollama');
+      }
     }
 
     // ── Vision model ──────────────────────────────────────────────────────
@@ -193,6 +216,9 @@ export class InferenceEnvResolver {
     // OLLAMA_HOST is Ollama's native (non-OpenAI-compatible) protocol URL — only meaningful,
     // and only ever populated, when Ollama is the active backend.
     if (backendType === 'ollama') env.OLLAMA_HOST = backendBaseUrl;
+    // The embeddings host, by contrast, points at Ollama whenever one is healthy —
+    // even when chat runs on another backend (split-backend embeddings).
+    if (embedHost) env.CI_OLLAMA_EMBED_HOST = embedHost;
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;

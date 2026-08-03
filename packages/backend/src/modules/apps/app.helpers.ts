@@ -597,6 +597,7 @@ export class AppHelpers {
           embedding_model: aiEnv.CI_EMBEDDING_MODEL,
           vision_model: aiEnv.CI_VISION_MODEL,
           ollama_host: aiEnv.OLLAMA_HOST,
+          ollama_embed_host: aiEnv.CI_OLLAMA_EMBED_HOST,
           num_ctx: aiEnv.CI_LLM_NUM_CTX,
         };
         for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {

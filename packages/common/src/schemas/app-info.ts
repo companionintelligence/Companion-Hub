@@ -15,6 +15,11 @@ export const INFERENCE_VARIABLES = [
   'embedding_model',
   'vision_model',
   'ollama_host',
+  // Native Ollama URL dedicated to embeddings. Unlike `ollama_host` (only set
+  // when Ollama is the active chat backend), this is emitted whenever a healthy
+  // Ollama is reachable — so an app can run chat on vLLM/Lemonade while keeping
+  // its embedding pipeline (and existing pgvector index) on Ollama.
+  'ollama_embed_host',
   'num_ctx',
 ] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
