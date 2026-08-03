@@ -1,182 +1,710 @@
+
 /**
  * Auto-generated app catalog tests for server batch 4
- * Generated: 2026-06-06T04:28:32.811Z
- * Apps: 17
+ * Generated: 2026-08-03T06:03:25.007Z
+ * Apps: 50
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
   {
-    id: 'comfyui',
-    storeSlug: 'ci-apps',
-    name: 'ComfyUI',
-    expectedPort: 8188,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['ai', 'featured'],
-    priority: 'low',
+    "id": "campfire",
+    "storeSlug": "ci-apps",
+    "name": "Campfire",
+    "expectedPort": 8712,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'cypht',
-    storeSlug: 'ci-apps',
-    name: 'Cypht',
-    expectedPort: 8077,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['social'],
-    priority: 'low',
+    "id": "changedetection",
+    "storeSlug": "ci-apps",
+    "name": "changedetection.io",
+    "expectedPort": 8210,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "automation",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'deepseek-ocr-webui',
-    storeSlug: 'ci-apps',
-    name: 'DeepSeek-OCR-WebUI',
-    expectedPort: 8001,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['ai'],
-    priority: 'low',
+    "id": "chatwoot",
+    "storeSlug": "ci-apps",
+    "name": "Chatwoot",
+    "expectedPort": 18830,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'docmost',
-    storeSlug: 'ci-apps',
-    name: 'Docmost',
-    expectedPort: 3040,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data', 'utilities'],
-    priority: 'low',
+    "id": "chess-mcp",
+    "storeSlug": "ci-apps",
+    "name": "MCP Chess",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "ai",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": true,
+    "mcpTransport": "stdio"
   },
   {
-    id: 'documenso',
-    storeSlug: 'ci-apps',
-    name: 'Documenso',
-    expectedPort: 8319,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "chromium",
+    "storeSlug": "ci-apps",
+    "name": "Chromium",
+    "expectedPort": 18917,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'docuseal',
-    storeSlug: 'ci-apps',
-    name: 'Docuseal',
-    expectedPort: 5341,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "chrony",
+    "storeSlug": "ci-apps",
+    "name": "chrony",
+    "expectedPort": 18866,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'doordash-mcp',
-    storeSlug: 'ci-apps',
-    name: 'DoorDash MCP Server',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'network', 'utilities'],
-    priority: 'low',
+    "id": "ci-hermes",
+    "storeSlug": "ci-apps",
+    "name": "Hermes",
+    "expectedPort": 18790,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "agents",
+      "ai",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'dropgate',
-    storeSlug: 'ci-apps',
-    name: 'Dropgate',
-    expectedPort: 8395,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "ci-import-tools",
+    "storeSlug": "ci-apps",
+    "name": "Import Tools",
+    "expectedPort": 18802,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'element',
-    storeSlug: 'ci-apps',
-    name: 'Element',
-    expectedPort: 8088,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['social'],
-    priority: 'low',
+    "id": "ci-just-in-case",
+    "storeSlug": "ci-apps",
+    "name": "Just In Case",
+    "expectedPort": 18806,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'espocrm',
-    storeSlug: 'ci-apps',
-    name: 'EspoCRM',
-    expectedPort: 8922,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data'],
-    priority: 'low',
+    "id": "ci-local-bench",
+    "storeSlug": "ci-apps",
+    "name": "Local Bench",
+    "expectedPort": 18807,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'excalidraw',
-    storeSlug: 'ci-apps',
-    name: 'Excalidraw',
-    expectedPort: 4422,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data', 'featured'],
-    priority: 'low',
+    "id": "ci-memory",
+    "storeSlug": "ci-apps",
+    "name": "Companion Memory",
+    "expectedPort": 8642,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "ai",
+      "utilities",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'excalidraw-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Excalidraw MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'utilities'],
-    priority: 'low',
+    "id": "ci-openclaw",
+    "storeSlug": "ci-apps",
+    "name": "OpenClaw WebCLI",
+    "expectedPort": 18789,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'fetch-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Fetch MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'network'],
-    priority: 'low',
+    "id": "ci-planning",
+    "storeSlug": "ci-apps",
+    "name": "Companion Planning",
+    "expectedPort": 18829,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'file-browser',
-    storeSlug: 'ci-apps',
-    name: 'File Browser',
-    expectedPort: 7421,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data'],
-    priority: 'low',
+    "id": "ci-spatial-companion-webxr",
+    "storeSlug": "ci-apps",
+    "name": "Spatial Companion",
+    "expectedPort": 8123,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'filesystem-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Filesystem MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'utilities'],
-    priority: 'low',
+    "id": "ci-spellbook",
+    "storeSlug": "ci-apps",
+    "name": "Spellbook",
+    "expectedPort": 18805,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'flowise',
-    storeSlug: 'ci-apps',
-    name: 'Flowise',
-    expectedPort: 3002,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['ai'],
-    priority: 'low',
+    "id": "ci-tools-cache-mounts",
+    "storeSlug": "ci-apps",
+    "name": "Tools Cache Mount",
+    "expectedPort": 18808,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'freeter',
-    storeSlug: 'ci-apps',
-    name: 'Freeter',
-    expectedPort: 8989,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "cloudreve",
+    "storeSlug": "ci-apps",
+    "name": "Cloudreve",
+    "expectedPort": 5212,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
+  {
+    "id": "cmproxy",
+    "storeSlug": "ci-apps",
+    "name": "ChatGPT Web Midjourney Proxy",
+    "expectedPort": 3002,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "colanode",
+    "storeSlug": "ci-apps",
+    "name": "Colanode",
+    "expectedPort": 4011,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "collabora-online",
+    "storeSlug": "ci-apps",
+    "name": "Collabora Online",
+    "expectedPort": 9980,
+    "healthEndpoint": "/browser/dist/admin/admin.html",
+    "hasGui": true,
+    "categories": [
+      "featured",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "comfyui",
+    "storeSlug": "ci-apps",
+    "name": "ComfyUI",
+    "expectedPort": 8188,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "convertx",
+    "storeSlug": "ci-apps",
+    "name": "ConvertX",
+    "expectedPort": 8714,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "copyparty",
+    "storeSlug": "ci-apps",
+    "name": "copyparty",
+    "expectedPort": 8715,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cryptgeon",
+    "storeSlug": "ci-apps",
+    "name": "Cryptgeon",
+    "expectedPort": 18856,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cryptpad",
+    "storeSlug": "ci-apps",
+    "name": "CryptPad",
+    "expectedPort": 18831,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cyberchef",
+    "storeSlug": "ci-apps",
+    "name": "CyberChef",
+    "expectedPort": 18850,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "utilities",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cypht",
+    "storeSlug": "ci-apps",
+    "name": "Cypht",
+    "expectedPort": 8077,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "databag",
+    "storeSlug": "ci-apps",
+    "name": "Databag",
+    "expectedPort": 8716,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "deepseek-ocr-webui",
+    "storeSlug": "ci-apps",
+    "name": "DeepSeek-OCR-WebUI",
+    "expectedPort": 8001,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "deerflow",
+    "storeSlug": "ci-apps",
+    "name": "DeerFlow",
+    "expectedPort": 2026,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "degoog",
+    "storeSlug": "ci-apps",
+    "name": "Degoog",
+    "expectedPort": 4444,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "deluge",
+    "storeSlug": "ci-apps",
+    "name": "Deluge",
+    "expectedPort": 8112,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "dnsmasq",
+    "storeSlug": "ci-apps",
+    "name": "dnsmasq",
+    "expectedPort": 18863,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "docmost",
+    "storeSlug": "ci-apps",
+    "name": "Docmost",
+    "expectedPort": 3040,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "documenso",
+    "storeSlug": "ci-apps",
+    "name": "Documenso",
+    "expectedPort": 8319,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "docuseal",
+    "storeSlug": "ci-apps",
+    "name": "Docuseal",
+    "expectedPort": 5341,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "domain-locker",
+    "storeSlug": "ci-apps",
+    "name": "Domain Locker",
+    "expectedPort": 8717,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "donetick",
+    "storeSlug": "ci-apps",
+    "name": "Donetick",
+    "expectedPort": 8718,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "doordash-mcp",
+    "storeSlug": "ci-apps",
+    "name": "DoorDash MCP Server",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": true,
+    "mcpTransport": "stdio"
+  },
+  {
+    "id": "dropgate",
+    "storeSlug": "ci-apps",
+    "name": "Dropgate",
+    "expectedPort": 8395,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "dtan-server",
+    "storeSlug": "ci-apps",
+    "name": "DTAN Server",
+    "expectedPort": 8719,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "dub",
+    "storeSlug": "ci-apps",
+    "name": "Dub",
+    "expectedPort": 18832,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "dumbpad",
+    "storeSlug": "ci-apps",
+    "name": "DumbPad",
+    "expectedPort": 8720,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "duplicati",
+    "storeSlug": "ci-apps",
+    "name": "Duplicati",
+    "expectedPort": 18877,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "electrs",
+    "storeSlug": "ci-apps",
+    "name": "Electrs (Electrum Server)",
+    "expectedPort": 50001,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "finance",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "element",
+    "storeSlug": "ci-apps",
+    "name": "Element",
+    "expectedPort": 8088,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "embeddinggemma",
+    "storeSlug": "ci-apps",
+    "name": "EmbeddingGemma",
+    "expectedPort": 8090,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "enclosed",
+    "storeSlug": "ci-apps",
+    "name": "Enclosed",
+    "expectedPort": 8723,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "endurain",
+    "storeSlug": "ci-apps",
+    "name": "Endurain",
+    "expectedPort": 8724,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "espocrm",
+    "storeSlug": "ci-apps",
+    "name": "EspoCRM",
+    "expectedPort": 8922,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  }
 ];
 
 test.describe('App Catalog Batch 4', () => {

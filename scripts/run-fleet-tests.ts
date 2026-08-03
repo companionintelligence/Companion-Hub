@@ -71,6 +71,23 @@ const SSH_OPTIONS = '-o StrictHostKeyChecking=no -o ConnectTimeout=30';
 const RESULTS_DIR = 'e2e/results';
 const SCREENSHOTS_DIR = 'e2e/screenshots';
 const HUB_REF = process.env.FLEET_HUB_REF ?? execSync('git branch --show-current', { encoding: 'utf-8' }).trim();
+
+/**
+ * The ref defaults to whatever branch the control machine happens to have checked
+ * out, and every node then fetches it by name. A local-only branch makes all nine
+ * fail identically with `couldn't find remote ref`, ~60 chars of which survive the
+ * error truncation below. One ls-remote turns that into an instant local message.
+ */
+function assertRefIsPushed(): void {
+  const remote = execSync(`git ls-remote --heads origin ${HUB_REF}`, { encoding: 'utf-8' }).trim();
+  if (remote) {
+    return;
+  }
+  console.error(`\n\u274c Ref '${HUB_REF}' does not exist on origin, so no node can fetch it.`);
+  console.error("   The fleet tests whatever ref you name — it defaults to your current local branch.");
+  console.error('   Push it, or pin one explicitly:  FLEET_HUB_REF=dev FLEET_HUB_SHA=$(git rev-parse origin/dev)\n');
+  process.exit(1);
+}
 const HUB_SHA = process.env.FLEET_HUB_SHA ?? execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
 const APPS_PER_BATCH = (() => {
   try {
@@ -109,6 +126,9 @@ async function main() {
     console.log('🔍 Dry run mode - not executing tests. Pass --execute to run.\n');
     return;
   }
+
+  // Cheapest check first: a ref no node can fetch fails all of them identically.
+  assertRefIsPushed();
 
   // Check connectivity first
   console.log('🔌 Checking server connectivity...\n');
@@ -160,6 +180,14 @@ async function main() {
 
   // Print summary
   printSummary(report);
+
+  // A fleet run where nothing passed is a failure, not a success. This exited 0
+  // for months while every batch matched zero tests, so anything wrapping it read
+  // red as green.
+  if (report.totalApps > 0 && report.passed === 0) {
+    console.error('\n\u274c Fleet run failed: 0 of ' + report.totalApps + ' apps passed.');
+    process.exitCode = 1;
+  }
 }
 
 async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise<TestResult> {
@@ -173,7 +201,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
     git checkout --detach ${HUB_SHA} &&
     git rev-parse --short HEAD &&
     (pnpm install --silent 2>/dev/null || true) &&
-    pnpm exec playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
+    E2E_RUN_CATALOG_TESTS=true pnpm exec playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
       --reporter=json \
       --timeout=300000 \
       2>&1
