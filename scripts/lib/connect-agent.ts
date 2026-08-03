@@ -287,8 +287,29 @@ export function tarballUrl(pkg: string, version: string): string {
 
 // --- paths ------------------------------------------------------------------
 
+/**
+ * Resolve the config file OpenClaw itself will read.
+ *
+ * This has to agree with the CLI exactly, because `connect` edits the same file
+ * `openclaw plugins install` does. Disagreeing is worse than not writing at all: the
+ * installer takes the memory slot in the REAL config while the merge lands in a file
+ * nothing reads, so the machine ends up with the plugin selected and unconfigured — and
+ * the slot guard, which reads this path, checks the wrong file and cannot protect a
+ * foreign provider it never sees.
+ *
+ * Verified against the CLI with a marker config: `OPENCLAW_CONFIG_PATH` (a full file
+ * path) redirects it and wins when both are set; `OPENCLAW_STATE_DIR` relocates the
+ * state directory and is read as `<dir>/openclaw.json`. `--profile <name>` is sugar for
+ * setting them under `~/.openclaw-<name>`.
+ *
+ * `OPENCLAW_CONFIG_DIR` — what this used to read — is honored by nothing. Under it the
+ * CLI silently kept using the real config while we wrote somewhere else.
+ */
 export function openClawConfigPath(home = homedir()): string {
-  return join(process.env.OPENCLAW_CONFIG_DIR || join(home, '.openclaw'), 'openclaw.json');
+  const explicit = process.env.OPENCLAW_CONFIG_PATH?.trim();
+  if (explicit) return explicit;
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
+  return join(stateDir || join(home, '.openclaw'), 'openclaw.json');
 }
 
 export function hermesPluginDir(home = homedir()): string {

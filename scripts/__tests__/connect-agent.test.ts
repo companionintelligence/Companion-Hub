@@ -11,6 +11,7 @@ import {
   lintFindingsForOurKeys,
   mergeOpenClawConfig,
   normalizeMemoryUrl,
+  openClawConfigPath,
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
   PLUGIN_ID,
@@ -319,6 +320,56 @@ describe('lint finding attribution', () => {
 
   it('survives unparseable lint output', () => {
     expect(lintFindingsForOurKeys('not json')).toEqual([]);
+  });
+});
+
+/**
+ * These must match the CLI, not merely be plausible. The original used
+ * OPENCLAW_CONFIG_DIR, which OpenClaw honors nowhere — so under it the installer edited
+ * the real config while the merge went to a phantom file, and the slot guard inspected
+ * that phantom instead of the config it was protecting.
+ */
+describe('openclaw config path resolution', () => {
+  const saved = { path: process.env.OPENCLAW_CONFIG_PATH, state: process.env.OPENCLAW_STATE_DIR };
+
+  afterEach(() => {
+    for (const [key, value] of [
+      ['OPENCLAW_CONFIG_PATH', saved.path],
+      ['OPENCLAW_STATE_DIR', saved.state],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('defaults to ~/.openclaw/openclaw.json', () => {
+    delete process.env.OPENCLAW_CONFIG_PATH;
+    delete process.env.OPENCLAW_STATE_DIR;
+    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
+  });
+
+  it('honors OPENCLAW_CONFIG_PATH as a full file path', () => {
+    delete process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_CONFIG_PATH = '/tmp/elsewhere/openclaw.json';
+    expect(openClawConfigPath('/home/someone')).toBe('/tmp/elsewhere/openclaw.json');
+  });
+
+  it('reads OPENCLAW_STATE_DIR as a directory containing openclaw.json', () => {
+    delete process.env.OPENCLAW_CONFIG_PATH;
+    process.env.OPENCLAW_STATE_DIR = '/tmp/state';
+    expect(openClawConfigPath('/home/someone')).toBe('/tmp/state/openclaw.json');
+  });
+
+  it('lets OPENCLAW_CONFIG_PATH win over OPENCLAW_STATE_DIR, as the CLI does', () => {
+    process.env.OPENCLAW_STATE_DIR = '/tmp/state';
+    process.env.OPENCLAW_CONFIG_PATH = '/tmp/elsewhere/openclaw.json';
+    expect(openClawConfigPath('/home/someone')).toBe('/tmp/elsewhere/openclaw.json');
+  });
+
+  it('ignores an empty value rather than resolving to a bare filename', () => {
+    delete process.env.OPENCLAW_CONFIG_PATH;
+    process.env.OPENCLAW_STATE_DIR = '   ';
+    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
   });
 });
 
