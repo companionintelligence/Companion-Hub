@@ -564,6 +564,7 @@ pub fn run() {
             }
             error_reporting::init_from_env(
                 &env_path,
+                &data_dir,
                 option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
             );
             let traefik_preflight = initialization.traefik_preflight;
@@ -866,6 +867,7 @@ fn run_detached_mode() -> Result<String, String> {
     // otherwise Linux/SSH deployments would report nothing.
     error_reporting::init_from_env(
         &env_path,
+        &data_dir,
         option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
     );
 

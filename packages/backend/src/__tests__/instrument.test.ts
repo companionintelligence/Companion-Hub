@@ -45,7 +45,9 @@ describe('backend instrument', () => {
         dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0',
         environment: 'production',
         release: 'v0.2.27',
-        sendDefaultPii: true,
+        // No PII. This flag governs `user.ip_address` and the IP-bearing request
+        // headers, and the Sentry org does not scrub IPs server-side.
+        sendDefaultPii: false,
       }),
     );
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
@@ -58,5 +60,46 @@ describe('backend instrument', () => {
     await import('../instrument');
 
     expect(init).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CI_LOCAL_ONLY', 'true'],
+    ['CI_TELEMETRY', 'off'],
+  ])('does not construct a transport when %s=%s', async (key, value) => {
+    process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
+    process.env[key] = value;
+
+    await import('../instrument');
+
+    // The env kill switches cannot change without a restart, so an opted-out
+    // process never initialises at all rather than dropping events one by one.
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  it('gates every event on consent in beforeSend, so a flip needs no restart', async () => {
+    process.env.SENTRY_DSN = 'https://examplePublicKey@o0.ingest.sentry.io/0';
+
+    await import('../instrument');
+    const { setUserConsent } = await import('../core/error-reporting/telemetry-consent');
+
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: Record<string, unknown>, hint: Record<string, unknown>) => unknown)
+      | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+
+    const event = { exception: { values: [{ type: 'Error', value: 'a real bug' }] } };
+
+    setUserConsent(true);
+    expect(beforeSend?.(event, {})).not.toBeNull();
+
+    setUserConsent(false);
+    expect(beforeSend?.(event, {})).toBeNull();
+
+    setUserConsent(true);
+    expect(beforeSend?.(event, {})).not.toBeNull();
+
+    // Unreadable settings fail closed.
+    setUserConsent('unreadable');
+    expect(beforeSend?.(event, {})).toBeNull();
   });
 });

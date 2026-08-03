@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/react';
 import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
+import { isTelemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -266,14 +267,34 @@ export function initHubSentry(): void {
     return;
   }
 
+  // Initialise eagerly and gate in `beforeSend`, rather than awaiting consent
+  // before init: that way a mid-session flip of "Allow error monitoring" takes
+  // effect on the next capture in BOTH directions, with no reload. Nothing is
+  // sent until the consent fetch below resolves — `isTelemetryAllowed()` is
+  // false while the answer is unknown.
+  void refreshTelemetryConsent();
+
   Sentry.init({
     dsn,
     environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
     release: getSentryRelease(),
     enabled: true,
     tracesSampleRate: 0,
-    sendDefaultPii: true,
+    // No PII, matching the rest of the fleet. The Sentry org has
+    // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the one
+    // component storing users' real IP addresses. Device attribution comes from
+    // the explicit `device_id` tag/user id set below, not from the SDK.
+    sendDefaultPii: false,
     beforeSend(event, hint) {
+      if (!isTelemetryAllowed()) {
+        // Keep the cached answer fresh for subsequent events; an in-app settings
+        // save publishes its result immediately and does not wait for this.
+        refreshTelemetryConsentIfStale();
+        return null;
+      }
+
+      refreshTelemetryConsentIfStale();
+
       if (shouldDropSentryEvent(event)) {
         return null;
       }

@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/nestjs';
 import { DEFAULT_DEV_CI_CLOUD_URL, DEFAULT_PROD_CI_CLOUD_URL } from './common/constants';
 import { scrubEvent } from './core/error-reporting/sentry-scrubber';
+import { envTelemetryBlock, isReportingAllowed } from './core/error-reporting/telemetry-consent';
 
 const dsn = process.env.SENTRY_DSN?.trim();
 const deviceId = process.env.DEVICE_ID?.trim();
@@ -45,7 +46,27 @@ function hubImageTag(image: string): string | null {
   return tag || null;
 }
 
-if (dsn) {
+/**
+ * The `beforeSend` consent gate.
+ *
+ * Evaluated per event rather than once at init, so flipping "Allow error
+ * monitoring" in Settings stops (or resumes) reporting on the very next capture
+ * without restarting the Hub. Returning `null` drops the event before the
+ * transport ever sees it.
+ */
+function gateAndScrub(event: Parameters<typeof scrubEvent>[0], hint: Parameters<typeof scrubEvent>[1]): ReturnType<typeof scrubEvent> {
+  if (!isReportingAllowed(process.env)) {
+    return null;
+  }
+
+  return scrubEvent(event, hint);
+}
+
+// `CI_LOCAL_ONLY` / `CI_TELEMETRY` are process-lifetime env switches, so an
+// opted-out process should never construct a transport at all. The *user's*
+// switch is deliberately not consulted here — gating it in `beforeSend` instead
+// is what lets a mid-session flip work in both directions.
+if (dsn && !envTelemetryBlock(process.env)) {
   Sentry.init({
     dsn,
     environment: process.env.SENTRY_ENV ?? process.env.CI_HUB_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
@@ -53,9 +74,15 @@ if (dsn) {
     enabled: true,
     tracesSampleRate: 0,
     profilesSampleRate: 0,
-    sendDefaultPii: true,
+    // The rest of the fleet sends no PII, and the Sentry org has
+    // `scrubIPAddresses` disabled — leaving this on made the Hub the one
+    // component storing users' real IP addresses. In @sentry/core 10.x this
+    // flag governs exactly `user.ip_address` and the IP-bearing request headers
+    // (`x-forwarded-for` and friends); `user.id` — our `device_id` — is set
+    // explicitly below and is unaffected, so triage loses nothing.
+    sendDefaultPii: false,
     integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
-    beforeSend: scrubEvent,
+    beforeSend: gateAndScrub,
   });
 
   if (deviceId) {

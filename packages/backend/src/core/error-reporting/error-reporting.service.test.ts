@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Sentry from '@sentry/nestjs';
 import { classifyAppFailure, ErrorReportingService } from './error-reporting.service';
+import { setUserConsent } from './telemetry-consent';
 
 const { scopes } = vi.hoisted(() => ({
   scopes: [] as Array<{
@@ -114,6 +115,77 @@ describe('ErrorReportingService', () => {
       'Marketplace app crashed: comfyui:ci-marketplace: App transitioned from running to stopped during status sync',
       'error',
     );
+  });
+});
+
+describe('ErrorReportingService consent gating', () => {
+  const originalEnv = { ...process.env };
+
+  const serviceWith = (allowErrorMonitoring: unknown) => new ErrorReportingService({ get: vi.fn(() => ({ allowErrorMonitoring })) } as any);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopes.length = 0;
+    process.env.SENTRY_DSN = 'https://example@ingest.sentry.io/123';
+    delete process.env.CI_TELEMETRY;
+    delete process.env.CI_LOCAL_ONLY;
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('reports when the user has consented and a DSN is configured', () => {
+    expect(serviceWith(true).isEnabled()).toBe(true);
+  });
+
+  it('stops reporting when the user turns the switch off', () => {
+    const service = serviceWith(false);
+
+    expect(service.isEnabled()).toBe(false);
+
+    service.captureException(new Error('boom'));
+    service.captureMessage('nope');
+    service.addBreadcrumb('test', 'nope');
+    service.reportAppFailure({ appUrn: 'x:ci-marketplace', phase: 'install', message: 'nope' });
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+  });
+
+  it('still requires a DSN', () => {
+    delete process.env.SENTRY_DSN;
+    expect(serviceWith(true).isEnabled()).toBe(false);
+  });
+
+  it('honours the fleet kill switches over the user setting', () => {
+    process.env.CI_TELEMETRY = 'off';
+    expect(serviceWith(true).isEnabled()).toBe(false);
+
+    delete process.env.CI_TELEMETRY;
+    process.env.CI_LOCAL_ONLY = 'true';
+    expect(serviceWith(true).isEnabled()).toBe(false);
+  });
+
+  it('falls back to the disk-backed value when configuration is not ready', () => {
+    const service = new ErrorReportingService({
+      get: vi.fn(() => {
+        throw new Error('configuration not ready');
+      }),
+    } as any);
+
+    setUserConsent(false);
+    expect(service.isEnabled()).toBe(false);
+
+    setUserConsent(true);
+    expect(service.isEnabled()).toBe(true);
+  });
+
+  it('falls back to the disk-backed value when the setting is not a boolean', () => {
+    setUserConsent(false);
+    expect(serviceWith('yes').isEnabled()).toBe(false);
+    expect(serviceWith(undefined).isEnabled()).toBe(false);
   });
 });
 
