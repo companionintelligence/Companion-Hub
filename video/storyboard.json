@@ -81,7 +81,7 @@
       "chapter": "setup",
       "seconds": 5.5,
       "caption": "Local models, network, apps. Then Install & Finish.",
-      "narration": "First boot is one pass. Local models, remote access, a few apps.",
+      "narration": "First boot is one pass. Local models, network, apps.",
       "shots": [
         {
           "id": "onboarding-wizard",
@@ -132,7 +132,7 @@
       "chapter": "run",
       "seconds": 5.5,
       "caption": "The App Store, fed by the open Hub market.",
-      "narration": "The store is fed by the open Hub market. Search it, or browse by category.",
+      "narration": "The store is fed by the open Hub market. Search, or browse.",
       "shots": [
         {
           "id": "hub-store",
@@ -239,7 +239,7 @@
       "chapter": "dials",
       "seconds": 4.5,
       "caption": "Per-app CPU and memory, sampled live.",
-      "narration": "The resource monitor charts every app's CPU and memory.",
+      "narration": "Resource Monitor charts CPU and memory.",
       "shots": [
         {
           "id": "hub-resource-monitor",
@@ -261,7 +261,7 @@
       "kind": "feature",
       "seconds": 5,
       "caption": "Your hardware. Your domain. Your data.",
-      "narration": "Your own hardware, your own domain, your own data. Nothing to cancel.",
+      "narration": "Your hardware, your domain, your data. Nothing to cancel.",
       "items": [
         { "label": "Hardware", "value": "Yours" },
         { "label": "Domain", "value": "Yours" },
@@ -276,7 +276,7 @@
       "caption": "ci.computer",
       "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Intelligence. ci dot computer. UnCloud your life."
+      "narration": "Companion Intelligence. UnCloud your life."
     }
   ]
 }
