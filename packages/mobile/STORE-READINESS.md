@@ -52,7 +52,7 @@ Fixed as part of this prep — no action needed:
 
 **iOS**
 - `PrivacyInfo.xcprivacy` — required-reason APIs (FileTimestamp `C617.1`, SystemBootTime `35F9.1`, UserDefaults `CA92.1`), `NSPrivacyTracking=false`, email+credentials declared app-functionality. Registered as a bundle resource in `project.yml`.
-- 1024 marketing icon **alpha flattened** (ASC rejects transparent marketing icons at upload) — both the asset catalog and the `icons/ios` source.
+- 1024 marketing icon **alpha flattened** (ASC rejects transparent marketing icons at upload) — both the asset catalog and the `icons/ios` source. Verified in a built bundle 2026-08-03: the 1024 entry is `Opaque: True` with PNG colorType 2 (no alpha channel at all). The *runtime* icons do carry an alpha channel (`Opaque: False` in `assetutil`), but their alpha range is 254–255 — anti-aliasing from the downscale, not real transparency — which is normal and not a rejection cause. Don't "fix" it on the basis of an `assetutil` glance alone.
 - `NSLocalNetworkUsageDescription` (the LAN Hub URLs trigger iOS's local-network prompt) and `ITSAppUsesNonExemptEncryption=false` (pre-answers export compliance).
 - iOS 16 deployment target; UIScene lifecycle adopted; App Intents shipped.
 
