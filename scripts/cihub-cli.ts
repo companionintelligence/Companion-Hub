@@ -24,6 +24,7 @@ import {
   submitPairingCode,
   waitForHubApi,
 } from './lib/register-hub';
+import { type Agent as ConnectAgent, connectAgent, normalizeMemoryUrl } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
@@ -1967,4 +1968,68 @@ export function runHostUpdate(args: string[]) {
     process.exit(1);
   }
   process.exit(result.status ?? 1);
+}
+
+// --- connect an existing agent (BYO) ---
+
+/**
+ * `cihub connect openclaw|hermes` — see scripts/lib/connect-agent.ts for the design
+ * notes, in particular why the memory-slot guard has to run before the installer.
+ */
+export async function runConnectCommand(args: string[]) {
+  const agent = args[0] as ConnectAgent;
+  if (agent !== 'openclaw' && agent !== 'hermes') {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
+        '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
+        '                     [--force]                          claim a foreign memory slot\n' +
+        '                     [--dry-run]                        print the plan, write nothing',
+    );
+  }
+
+  const flagValue = (name: string) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const force = args.includes('--force');
+  const dryRun = args.includes('--dry-run');
+
+  let memoryUrl = flagValue('--memory-url');
+  let memoryKey = flagValue('--memory-key');
+  const hubUrl = flagValue('--hub-url');
+  const hubKey = flagValue('--hub-key');
+
+  // Prompted only on a TTY. In CI or a pipe, a missing flag is a usage error rather
+  // than a hang waiting on stdin nobody is attached to.
+  if ((!memoryUrl || !memoryKey) && input.isTTY) {
+    const rl = createInterface({ input, output });
+    try {
+      if (!memoryUrl) {
+        printMessageBox(
+          'Companion Memory URL',
+          [
+            'This Hub can answer on more than one address, and the value is written once.',
+            'Use the address this machine can reach — local network, Private VPN, or your',
+            'exposed domain. See the connect docs if you are unsure which applies.',
+          ],
+          'cyan',
+        );
+        memoryUrl = (await rl.question('  Companion Memory URL: ')).trim();
+      }
+      if (!memoryKey) {
+        memoryKey = (await rl.question('  Companion Memory API key (Settings → API Keys): ')).trim();
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  if (!memoryUrl || !memoryKey) {
+    usageAndExit(`${BASE_COMMAND} connect ${agent} needs --memory-url and --memory-key (or a TTY to prompt on).`);
+  }
+  if ((hubUrl && !hubKey) || (hubKey && !hubUrl)) {
+    usageAndExit('--hub-url and --hub-key go together: one without the other cannot authenticate.');
+  }
+
+  await connectAgent({ agent, memoryUrl: normalizeMemoryUrl(memoryUrl), memoryKey, hubUrl, hubKey, force, dryRun });
 }
