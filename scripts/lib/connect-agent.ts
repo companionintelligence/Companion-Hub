@@ -61,7 +61,7 @@ export type Agent = 'openclaw' | 'hermes';
 export type ProbeVerdict = {
   ok: boolean;
   /** Short machine-ish label, used in tests and the summary box. */
-  code: 'ok' | 'unauthorized' | 'wrong-path' | 'missing-intents-scope' | 'pre-g1-gateway' | 'unreachable' | 'http-error';
+  code: 'ok' | 'unauthorized' | 'wrong-path' | 'missing-intents-scope' | 'pre-g1-gateway' | 'unreachable' | 'http-error' | 'rpc-error';
   message: string;
   /** What the operator should actually do. */
   hint?: string;
@@ -143,7 +143,15 @@ export function triageMcpProbe(status: number | undefined, toolCount: number | u
     };
   }
   if (status >= 200 && status < 300) {
-    return { ok: true, code: 'ok', message: `Hub MCP is reachable and the key sees ${toolCount} tools.` };
+    // An unreadable body still means the endpoint answered, so this stays a pass — but
+    // it must not claim a count it does not have. "sees undefined tools" was the old
+    // give-away that the 0-tool check had been skipped.
+    return {
+      ok: true,
+      code: 'ok',
+      message:
+        toolCount === undefined ? 'Hub MCP is reachable and the key authenticates.' : `Hub MCP is reachable and the key sees ${toolCount} tools.`,
+    };
   }
   return { ok: false, code: 'http-error', message: `Hub MCP returned HTTP ${status}.` };
 }
@@ -277,6 +285,33 @@ export function mergeOpenClawConfig(existing: Record<string, unknown>, input: Me
 export function normalizeMemoryUrl(url: string): string {
   const base = url.trim().replace(/\/+$/, '');
   return base.endsWith('/api/mcp') ? base.slice(0, -'/api/mcp'.length) : base;
+}
+
+/**
+ * Reject a URL `fetch` cannot use, before it becomes a misleading network error.
+ *
+ * A bare `memory.example.com:8642` parses as a URL whose scheme is the hostname, so
+ * `fetch` throws and the probe reports "Could not reach Companion Memory" with a hint
+ * about firewalls and routing — sending people to inspect a network that is fine.
+ *
+ * No scheme is guessed. `http` is right for a hub on the local network and `https` for
+ * an exposed domain; picking one silently would connect the wrong way or fail just as
+ * opaquely. The Hermes wizard does prefix `http://`, so this says so explicitly rather
+ * than leaving the two tools quietly disagreeing.
+ */
+export function urlProblem(url: string, label: string): string | undefined {
+  const trimmed = url.trim();
+  if (trimmed === '') return `${label} is empty.`;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return `${label} is not a URL: ${trimmed}\n  It needs a scheme — http:// on a local network or Private VPN, https:// for an exposed domain.`;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `${label} uses ${parsed.protocol}, and only http:// and https:// can be probed: ${trimmed}\n  A bare host:port parses this way, with the host read as the scheme.`;
+  }
+  return undefined;
 }
 
 /** The anonymous, predictable registry URL the Hermes docs also tell users to curl. */
@@ -480,17 +515,61 @@ export async function probeHubMcp(baseUrl: string, key: string): Promise<ProbeVe
   const alternating = (first.status === 400) !== (second.status === 400);
   if (alternating) return triageMcpProbe(second.status, undefined, true);
 
-  let toolCount: number | undefined;
-  // The transport may answer as SSE, so the JSON can be wrapped in `data:` lines.
-  const payload = second.body.includes('"result"') ? second.body.slice(second.body.indexOf('{', second.body.indexOf('"result"') - 40)) : second.body;
-  try {
-    const line = payload.split('\n').find((l) => l.includes('"tools"')) ?? payload;
-    const json = JSON.parse(line.replace(/^data:\s*/, '')) as { result?: { tools?: unknown[] } };
-    toolCount = json.result?.tools?.length;
-  } catch {
-    toolCount = undefined;
+  const parsed = parseToolsListBody(second.body);
+  // JSON-RPC carries application errors INSIDE a 200, so the status alone says nothing.
+  // Reporting "reachable" here would wave through a server that just refused the call.
+  if (parsed.rpcError && second.status !== undefined && second.status >= 200 && second.status < 300) {
+    return { ok: false, code: 'rpc-error', message: `Hub MCP answered tools/list with an error: ${parsed.rpcError}` };
   }
-  return triageMcpProbe(second.status, toolCount);
+  return triageMcpProbe(second.status, parsed.toolCount);
+}
+
+/**
+ * Pull the tool count out of a `tools/list` response.
+ *
+ * Handles both shapes the streamable-HTTP transport can answer with: a plain JSON body,
+ * and an SSE stream where the JSON arrives in `data:` lines. Per the SSE grammar,
+ * consecutive `data:` lines in one event concatenate with newlines, and a blank line
+ * ends the event.
+ *
+ * This replaces a scan that started slicing 40 characters before `"result"`. That held
+ * only while `"result"` stayed within 40 characters of the envelope's opening brace —
+ * any field ahead of it (a `_meta` block, a string request id) pushed it past, the slice
+ * landed on the inner `{"tools":...}` brace, and the parse failed. A failed parse then
+ * read as "reachable, sees undefined tools": success, with the 0-tool check — the whole
+ * reason for counting — silently skipped.
+ */
+export function parseToolsListBody(body: string): { toolCount?: number; rpcError?: string } {
+  const candidates: string[] = [];
+  let event: string[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (line === '') {
+      if (event.length > 0) candidates.push(event.join('\n'));
+      event = [];
+      continue;
+    }
+    // `data:foo` and `data: foo` are the same field; only one leading space is stripped.
+    if (line.startsWith('data:')) event.push(line.slice(5).replace(/^ /, ''));
+  }
+  if (event.length > 0) candidates.push(event.join('\n'));
+  // A plain JSON body has no `data:` lines at all, so try it whole as well.
+  candidates.push(body.trim());
+
+  let rpcError: string | undefined;
+  for (const candidate of candidates) {
+    if (candidate === '') continue;
+    let json: { result?: { tools?: unknown[] }; error?: { message?: string; code?: number } };
+    try {
+      json = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (Array.isArray(json.result?.tools)) return { toolCount: json.result.tools.length };
+    // Keep looking — an SSE stream may carry notifications before the real answer.
+    if (json.error && rpcError === undefined) rpcError = json.error.message ?? `code ${json.error.code}`;
+  }
+  return { rpcError };
 }
 
 // --- orchestration ----------------------------------------------------------
@@ -513,6 +592,16 @@ export type ConnectOptions = {
  */
 export async function connectAgent(options: ConnectOptions): Promise<never> {
   const { agent, memoryUrl, memoryKey, hubUrl, hubKey, force, dryRun } = options;
+
+  // Before probing, so a malformed URL is named as such instead of surfacing as an
+  // unreachable host with a hint about firewalls.
+  const urlProblems = [urlProblem(memoryUrl, '--memory-url'), ...(hubUrl ? [urlProblem(hubUrl, '--hub-url')] : [])].filter(
+    (p): p is string => p !== undefined,
+  );
+  if (urlProblems.length > 0) {
+    printMessageBox('Cannot connect — nothing was written', urlProblems, 'red');
+    process.exit(1);
+  }
 
   const memoryVerdict = await probeMemory(memoryUrl, memoryKey);
   const hubVerdict = hubUrl && hubKey ? await probeHubMcp(hubUrl, hubKey) : undefined;
@@ -600,6 +689,11 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   const backup = backupFile(configPath, stamp);
 
   // The installer edits config too, so the backup has to be taken before it runs.
+  //
+  // Its `--force` is unrelated to ours: it means "overwrite an existing installed
+  // plugin", which is what re-running connect to upgrade should do. It grants nothing
+  // about the memory slot — the installer claims that either way, which is why the
+  // guard above had to run first.
   const install = run('openclaw', ['plugins', 'install', spec, '--force']);
   if (!install.ok) {
     printMessageBox('Install failed', [install.stderr.trim() || install.stdout.trim() || `openclaw plugins install exited ${install.status}`], 'red');
@@ -608,8 +702,20 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   }
 
   // Re-read: the installer just wrote its own entry, and merging onto the pre-install
-  // copy would drop it.
-  const afterInstall = readJsonIfPresent(configPath);
+  // copy would drop it. This can throw — the installer owns the file between the backup
+  // and here — and exit 2 promises the backup goes back, so it cannot escape.
+  let afterInstall: Record<string, unknown>;
+  try {
+    afterInstall = readJsonIfPresent(configPath);
+  } catch (error) {
+    if (backup) restoreBackup(configPath, backup);
+    printMessageBox(
+      'Config unreadable after install',
+      [String((error as Error).message), '', ...(backup ? [`Restored ${configPath} from ${backup}`] : [])],
+      'red',
+    );
+    process.exit(2);
+  }
   const { config: finalConfig, changes: finalChanges } = mergeOpenClawConfig(afterInstall, { url: ctx.memoryUrl, token: ctx.memoryKey });
   writeJsonAtomic(configPath, finalConfig);
 
@@ -618,8 +724,16 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   if (ourFindings.length > 0) {
     if (backup) restoreBackup(configPath, backup);
     printMessageBox(
-      'Config rejected — restored from backup',
-      [...ourFindings, '', ...(backup ? [`Restored ${configPath} from ${backup}`] : ['No previous config existed to restore.'])],
+      // Only claim a restore when one happened. With no prior config there is no
+      // known-good state to return to, and saying otherwise hides a file still on disk.
+      backup ? 'Config rejected — restored from backup' : 'Config rejected — left in place',
+      [
+        ...ourFindings,
+        '',
+        ...(backup
+          ? [`Restored ${configPath} from ${backup}`]
+          : ['There was no config before this run, so nothing was restored.', `Review or delete ${configPath}, then re-run.`]),
+      ],
       'red',
     );
     process.exit(2);

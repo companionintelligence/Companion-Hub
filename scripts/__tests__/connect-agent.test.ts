@@ -14,6 +14,7 @@ import {
   openClawConfigPath,
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
+  parseToolsListBody,
   PLUGIN_ID,
   probeHubMcp,
   readJsonIfPresent,
@@ -21,6 +22,7 @@ import {
   timestampForBackup,
   triageMcpProbe,
   triageMemoryProbe,
+  urlProblem,
 } from '../lib/connect-agent';
 
 describe('probe triage', () => {
@@ -90,8 +92,8 @@ describe('probeHubMcp against a server enforcing the Hub session contract', () =
   });
 
   /** Mirrors mcp.controller.ts handlePost + handleDelete. */
-  function startHub(options: { stateless?: boolean; toolCount?: number } = {}): Promise<string> {
-    const { stateless = false, toolCount = 76 } = options;
+  function startHub(options: { stateless?: boolean; toolCount?: number; rpcError?: string } = {}): Promise<string> {
+    const { stateless = false, toolCount = 76, rpcError } = options;
     const sessions = new Set<string>();
     const deleted: string[] = [];
 
@@ -152,6 +154,8 @@ describe('probeHubMcp against a server enforcing the Hub session contract', () =
           );
         }
         if (body.method === 'tools/list') {
+          // JSON-RPC application errors ride inside a 200, which is the trap.
+          if (rpcError) return send(200, { jsonrpc: '2.0', id: body.id, error: { code: -32000, message: rpcError } });
           return send(200, { jsonrpc: '2.0', id: body.id, result: { tools: Array.from({ length: toolCount }, (_, i) => ({ name: `tool_${i}` })) } });
         }
         return send(200, { jsonrpc: '2.0', id: body.id, result: {} });
@@ -181,6 +185,14 @@ describe('probeHubMcp against a server enforcing the Hub session contract', () =
     // from any MCP server, so the header stays conditional on one being issued.
     const verdict = await probeHubMcp(await startHub({ stateless: true }), 'testkey');
     expect(verdict.code).toBe('ok');
+  });
+
+  it('fails on a JSON-RPC error even though the status is 200', async () => {
+    // Status alone says nothing here: the transport succeeded, the CALL was refused.
+    const verdict = await probeHubMcp(await startHub({ rpcError: 'key lacks intents scope' }), 'testkey');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('rpc-error');
+    expect(verdict.message).toMatch(/key lacks intents scope/);
   });
 
   it('still reports a 0-tool listing as the missing intents scope', async () => {
@@ -276,6 +288,27 @@ describe('url handling', () => {
     expect(normalizeMemoryUrl('  https://memory.example.com/api/mcp/  ')).toBe('https://memory.example.com');
   });
 
+  it('accepts http and https', () => {
+    expect(urlProblem('http://192.168.1.10:8642', '--memory-url')).toBeUndefined();
+    expect(urlProblem('https://memory.example.com', '--memory-url')).toBeUndefined();
+  });
+
+  // A bare host:port parses as a URL whose SCHEME is the hostname, so fetch throws and
+  // the probe blamed the network — sending people to inspect a firewall that was fine.
+  it('names a missing scheme instead of letting it surface as unreachable', () => {
+    const problem = urlProblem('memory.example.com:8642', '--memory-url');
+    expect(problem).toMatch(/needs a scheme|read as the scheme/);
+    expect(problem).toMatch(/--memory-url/);
+  });
+
+  it('rejects a scheme that cannot be probed', () => {
+    expect(urlProblem('ftp://memory.example.com', '--memory-url')).toMatch(/only http:\/\/ and https:\/\//);
+  });
+
+  it('rejects an empty url', () => {
+    expect(urlProblem('   ', '--memory-url')).toMatch(/empty/);
+  });
+
   // Asserted against the shape actually published — the Hermes README hands this exact
   // URL to users, so a change here breaks a documented copy-paste install.
   it('builds the registry tarball URL the docs publish', () => {
@@ -320,6 +353,60 @@ describe('lint finding attribution', () => {
 
   it('survives unparseable lint output', () => {
     expect(lintFindingsForOurKeys('not json')).toEqual([]);
+  });
+});
+
+describe('tools/list body parsing', () => {
+  const tools = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ name: `tool_${i}` })));
+  const envelope = (n: number) => `{"jsonrpc":"2.0","id":2,"result":{"tools":${tools(n)}}}`;
+
+  it('reads a plain JSON body', () => {
+    expect(parseToolsListBody(envelope(76))).toEqual({ toolCount: 76 });
+  });
+
+  it('reads an SSE body', () => {
+    expect(parseToolsListBody(`event: message\ndata: ${envelope(76)}\n\n`)).toEqual({ toolCount: 76 });
+  });
+
+  it('reads an SSE body carrying id and retry fields', () => {
+    expect(parseToolsListBody(`event: message\nid: 12345678\nretry: 3000\ndata: ${envelope(3)}\n\n`)).toEqual({ toolCount: 3 });
+  });
+
+  // The old scan sliced 40 characters before `"result"`. Anything ahead of `result`
+  // pushed it past the envelope brace, onto the inner `{"tools":`, and the parse failed
+  // — which then read as a healthy server, with the 0-tool check skipped.
+  it('survives fields ahead of result, which used to break the offset scan', () => {
+    expect(parseToolsListBody(`{"jsonrpc":"2.0","id":2,"_meta":{"traceId":"abc123def456"},"result":{"tools":${tools(2)}}}`)).toEqual({
+      toolCount: 2,
+    });
+    expect(parseToolsListBody(`{"jsonrpc":"2.0","id":"3f7c1e2a-9b44-4c1d-8a55-0d6e2f1b7c99","result":{"tools":${tools(2)}}}`)).toEqual({
+      toolCount: 2,
+    });
+  });
+
+  it('distinguishes an empty tool list from an unreadable one', () => {
+    expect(parseToolsListBody(envelope(0))).toEqual({ toolCount: 0 });
+    expect(parseToolsListBody('not json at all')).toEqual({ rpcError: undefined });
+  });
+
+  it('surfaces a JSON-RPC error, which rides inside a 200', () => {
+    const body = '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"key lacks intents scope"}}';
+    expect(parseToolsListBody(body)).toEqual({ rpcError: 'key lacks intents scope' });
+  });
+
+  it('skips notifications preceding the real answer in one stream', () => {
+    const stream = `event: message\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\n\nevent: message\ndata: ${envelope(5)}\n\n`;
+    expect(parseToolsListBody(stream)).toEqual({ toolCount: 5 });
+  });
+
+  it('joins the consecutive data lines of one event, per the SSE grammar', () => {
+    const split = envelope(2);
+    // Split between tokens (right after `"id":2,`) so the newline the SSE grammar
+    // inserts on join is legal JSON whitespace — then a correct join parses, and
+    // treating each data line as its own message cannot.
+    const at = '{"jsonrpc":"2.0","id":2,'.length;
+    const body = `event: message\ndata: ${split.slice(0, at)}\ndata: ${split.slice(at)}\n\n`;
+    expect(parseToolsListBody(body)).toEqual({ toolCount: 2 });
   });
 });
 
