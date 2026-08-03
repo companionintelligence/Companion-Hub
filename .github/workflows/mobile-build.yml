@@ -290,3 +290,181 @@ jobs:
           name: companion-hub-ios-sim-app
           path: ${{ steps.findapp.outputs.app }}
           if-no-files-found: warn
+
+  # ── iOS release IPA (App Store Connect / TestFlight) ─────────────────────
+  # Skipped entirely until the Apple signing secrets exist, so it never reds
+  # the pipeline — same shape as `android-release` above. Once set, this
+  # produces the signed .ipa that App Store Connect accepts.
+  # See packages/mobile/STORE-READINESS.md for obtaining the cert + profile.
+  ios-release:
+    name: Build — iOS (release IPA)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Check for signing secrets
+        id: secrets
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE_BASE64 }}" ] && [ -n "${{ secrets.APPLE_DEVELOPMENT_TEAM }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::APPLE_CERTIFICATE_BASE64 / APPLE_DEVELOPMENT_TEAM not set — skipping the release IPA. See packages/mobile/STORE-READINESS.md."
+          fi
+          # TestFlight upload is independently optional: the IPA is still
+          # produced and uploaded as an artifact without an ASC API key.
+          if [ -n "${{ secrets.APPSTORE_API_KEY_ID }}" ]; then
+            echo "testflight=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "testflight=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::APPSTORE_API_KEY_ID not set — IPA will be built but not uploaded to TestFlight."
+          fi
+
+      - name: Checkout
+        if: steps.secrets.outputs.present == 'true'
+        uses: actions/checkout@v6
+
+      - name: Install Rust (stable) + iOS device target
+        if: steps.secrets.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Rust cache
+        if: steps.secrets.outputs.present == 'true'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/mobile/src-tauri -> target
+
+      - name: Install pnpm
+        if: steps.secrets.outputs.present == 'true'
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        if: steps.secrets.outputs.present == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        if: steps.secrets.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          NODE_ENV: production
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
+        run: |
+          pnpm run --filter=@ci-hub/common build
+          pnpm run --filter=frontend build
+
+      # ASC requires CFBundleVersion to strictly increase per upload of a given
+      # marketing version. `github.run_number` is monotonic per workflow, so it
+      # is a valid build number and never repeats.
+      #
+      # NOTE: do NOT use tauri's `--build-number` flag here. It *appends* to the
+      # app version, yielding `0.1.0.<n>` — four components. Apple allows a
+      # CFBundleVersion of at most THREE period-separated integers, so ASC
+      # rejects that build at upload (verified against a real archive).
+      - name: Stamp version + build number
+        if: steps.secrets.outputs.present == 'true'
+        working-directory: packages/mobile
+        env:
+          IOS_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          node scripts/set-ios-version.mjs
+          grep -E 'CFBundleShortVersionString|CFBundleVersion' src-tauri/gen/apple/project.yml
+
+      # Certificate goes into a throwaway keychain scoped to this runner, so it
+      # never touches the default login keychain and dies with the job.
+      - name: Import signing certificate
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          # Let codesign use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          rm -f "$CERT_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Install provisioning profile
+        if: steps.secrets.outputs.present == 'true'
+        env:
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PROFILES="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode \
+            > "$PROFILES/build.mobileprovision"
+          echo "Installed profile:"
+          security cms -D -i "$PROFILES/build.mobileprovision" 2>/dev/null \
+            | plutil -extract Name raw - 2>/dev/null || true
+
+      - name: Build signed IPA (App Store)
+        if: steps.secrets.outputs.present == 'true'
+        working-directory: packages/mobile
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+        run: |
+          pnpm exec tauri ios build --ci \
+            --target aarch64 \
+            --export-method app-store-connect
+
+      - name: Locate IPA
+        if: steps.secrets.outputs.present == 'true'
+        id: findipa
+        run: |
+          IPA="$(find packages/mobile/src-tauri/gen/apple/build -name '*.ipa' | head -1)"
+          if [ -z "$IPA" ]; then
+            echo "::error::No .ipa produced — check the build step log."
+            exit 1
+          fi
+          echo "Found: $IPA"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA artifact
+        if: steps.secrets.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: companion-hub-ios-release-ipa
+          path: ${{ steps.findipa.outputs.ipa }}
+          if-no-files-found: error
+
+      # Optional: hand the build straight to TestFlight. Needs an App Store
+      # Connect API key (Users and Access ▸ Integrations ▸ App Store Connect API).
+      # Without those three secrets the IPA is still available as an artifact
+      # above and can be uploaded manually via Transporter.
+      - name: Upload to TestFlight
+        if: steps.secrets.outputs.present == 'true' && steps.secrets.outputs.testflight == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.APPSTORE_API_PRIVATE_KEY_BASE64 }}
+        run: |
+          KEYDIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEYDIR"
+          echo "$ASC_KEY_BASE64" | base64 --decode > "$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app \
+            -f "${{ steps.findipa.outputs.ipa }}" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+          rm -f "$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
