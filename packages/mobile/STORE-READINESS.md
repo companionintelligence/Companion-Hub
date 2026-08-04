@@ -4,9 +4,11 @@ Delivery checklist for shipping `packages/mobile` to the **App Store** and
 **Google Play**, from a review of the app against current (2025-26) store
 requirements.
 
-**Status: code is ready; the remaining gates are account/ops work.** Everything
-that could be fixed in the repo has been. What's left needs an Apple Developer
-account, a Play Console account, and a decision about how App Review signs in.
+**Status: code and both release pipelines are ready; the remaining gates are
+account/ops work.** Everything that could be fixed in the repo has been,
+including the signed-IPA lane (`ios-release`) and the ASC build-number
+stamping. What's left needs an Apple Developer account, a Play Console
+account, and a decision about how App Review signs in.
 
 - App: **Companion Hub** · id **`computer.ci.app.hub`** · version **0.1.0**
 - Roadmap for post-v1 capabilities: [`ROADMAP.md`](./ROADMAP.md)
@@ -27,6 +29,21 @@ account, a Play Console account, and a decision about how App Review signs in.
 **Android signing secrets** (used by the `android-release` job):
 `ANDROID_KEY_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_STORE_PASSWORD`
 
+**iOS signing secrets** (used by the `ios-release` job — the lane is wired, it
+just needs the values from blocker §1.1):
+
+| Secret | What it is |
+|---|---|
+| `APPLE_CERTIFICATE_BASE64` | Distribution cert `.p12`, base64'd (`base64 -i cert.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password you set when exporting the `.p12` |
+| `APPLE_PROVISIONING_PROFILE_BASE64` | App Store provisioning profile, base64'd |
+| `APPLE_DEVELOPMENT_TEAM` | 10-char Team ID from developer.apple.com ▸ Membership |
+
+Optional — only to push straight to TestFlight (otherwise the `.ipa` is a
+downloadable artifact you can send with Transporter):
+`APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`, `APPSTORE_API_PRIVATE_KEY_BASE64`
+(App Store Connect ▸ Users and Access ▸ Integrations).
+
 ---
 
 ## 2. Done in-repo ✅
@@ -35,7 +52,7 @@ Fixed as part of this prep — no action needed:
 
 **iOS**
 - `PrivacyInfo.xcprivacy` — required-reason APIs (FileTimestamp `C617.1`, SystemBootTime `35F9.1`, UserDefaults `CA92.1`), `NSPrivacyTracking=false`, email+credentials declared app-functionality. Registered as a bundle resource in `project.yml`.
-- 1024 marketing icon **alpha flattened** (ASC rejects transparent marketing icons at upload) — both the asset catalog and the `icons/ios` source.
+- 1024 marketing icon **alpha flattened** (ASC rejects transparent marketing icons at upload) — both the asset catalog and the `icons/ios` source. Verified in a built bundle 2026-08-03: the 1024 entry is `Opaque: True` with PNG colorType 2 (no alpha channel at all). The *runtime* icons do carry an alpha channel (`Opaque: False` in `assetutil`), but their alpha range is 254–255 — anti-aliasing from the downscale, not real transparency — which is normal and not a rejection cause. Don't "fix" it on the basis of an `assetutil` glance alone.
 - `NSLocalNetworkUsageDescription` (the LAN Hub URLs trigger iOS's local-network prompt) and `ITSAppUsesNonExemptEncryption=false` (pre-answers export compliance).
 - iOS 16 deployment target; UIScene lifecycle adopted; App Intents shipped.
 
@@ -91,12 +108,21 @@ Fixed as part of this prep — no action needed:
 ## 5. Release process
 
 ```bash
-# Android AAB (needs the 4 signing secrets)
-gh workflow run mobile-build.yml     # → companion-hub-android-release-aab
-
-# iOS: needs an Apple team; the release lane isn't wired yet (blocker §1.1)
+# Both lanes are secrets-gated and skip cleanly when the secrets are absent.
+gh workflow run mobile-build.yml
+#   → companion-hub-android-release-aab   (needs the 4 Android secrets)
+#   → companion-hub-ios-release-ipa       (needs the 4 Apple secrets)
 ```
 
-- **Versioning:** bump `version` in `tauri.conf.json` — Android `versionName`/`versionCode` derive from it (`major*1e6 + minor*1e3 + patch`). Play requires a strictly increasing `versionCode`; ASC requires an increasing `CFBundleVersion` per upload (currently the literal `0.1.0` in `project.yml` — wire it to a CI counter for repeat uploads).
-- **Ship-blocking caveat:** the app has only ever been verified on the **iOS Simulator + Android emulator**. Deep links from the system browser (`cihub://auth` SSO), App Intents via Siri, and the local-network prompt all need a **signed device build via TestFlight** before submission.
+- **Versioning:** bump `version` in `tauri.conf.json` — it is the single source for both platforms. Android `versionName`/`versionCode` derive from it (`major*1e6 + minor*1e3 + patch`); iOS gets it via `scripts/set-ios-version.mjs`, which stamps `CFBundleShortVersionString` from that same field and sets `CFBundleVersion` to `$IOS_BUILD_NUMBER` (CI passes `github.run_number`, which is monotonic). Run `node scripts/set-ios-version.mjs --check` to catch marketing-version drift.
+
+> ⚠️ **Do not use tauri's `--build-number` flag for App Store builds.** It
+> *appends* to the app version rather than replacing the build number, so
+> `--build-number 4242` yields `CFBundleVersion = 0.1.0.4242`. Apple allows at
+> most **three** period-separated integers, so ASC rejects that at upload.
+> Verified 2026-08-03 by inspecting the resulting `.xcarchive`. The
+> `set-ios-version.mjs` step in the `ios-release` job exists precisely because
+> the built-in flag can't be used here.
+- **Ship-blocking caveat:** the app has only ever been verified on the **iOS Simulator + Android emulator**. Deep links from the system browser (`cihub://auth` SSO), App Intents via Siri, and the local-network prompt all need a **signed device build via TestFlight** before submission. The `ios-release` lane now produces that build — it is the *account*, not the pipeline, that is missing.
+- **Last simulator verification:** 2026-08-03, Xcode 27.0 / iOS 27.0 sim (iPhone 17 Pro), against `dev` after the mobile PR merged. App installs, launches, stays alive, loads all webview assets over the `tauri://` scheme with no failed loads or JS errors, and boots the SPA (confirmed by the `i18nextLng` key appearing in the app's WebKit `localstorage.sqlite3` — React/i18next only writes it after mount). `cihub` is registered in the built bundle's `CFBundleURLTypes`, and the app survives an incoming `cihub://` deep link. Note `simctl io screenshot` renders the WKWebView layer **black** — that is a simulator capture artifact, not a blank screen; verify via the storage/log evidence above or Safari ▸ Develop.
 - **iOS + Xcode 27:** local device builds currently need the vendored `swift-rs` workarounds in [`README.md`](./README.md). CI's stable Xcode doesn't (verified), so CI is the reliable iOS build path today.
