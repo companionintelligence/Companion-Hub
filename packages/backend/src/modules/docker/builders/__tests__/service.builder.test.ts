@@ -281,10 +281,11 @@ describe('ServiceBuilder', () => {
         expect(built.volumes).toEqual(['pgdata:/data']);
       });
 
-      it('drops a volume that names neither a host path nor a volume rather than emitting an undefined source', () => {
-        const built = service.setVolume({ containerPath: '/container' }).build();
-
-        expect(built.volumes).toEqual([]);
+      // Rendering the service without the mount would be the dangerous outcome: it starts, writes
+      // to the container layer, and loses the data on the next recreate. Failing the build keeps
+      // the bad manifest visible.
+      it('refuses a volume that names neither a host path nor a volume', () => {
+        expect(() => service.setVolume({ containerPath: '/container' })).toThrow(/neither hostPath nor volumeName/);
       });
     });
   });

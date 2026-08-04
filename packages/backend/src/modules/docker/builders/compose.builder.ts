@@ -30,26 +30,42 @@ interface Network {
 type ServiceVolume = NonNullable<Service['volumes']>[number];
 
 /**
- * Turns a container mount point into a stable docker volume name (`/var/lib/postgresql` →
- * `var-lib-postgresql`). Derived from the mount point rather than the service so that sidecars
- * sharing a data directory land on the same volume, and so the name survives app updates —
- * a name that drifted between builds would orphan the app's data.
+ * Turns a bind mount's host path into a stable docker volume name (`${APP_DATA_DIR}/data/db` →
+ * `data-db`). Derived from the host path rather than the mount point or the service: sidecars that
+ * share a data directory declare the same host path and so land on the same volume, while two
+ * databases in one app land on different ones. Keying on the mount point instead would merge them —
+ * `fastgpt`'s two postgres services and `postiz`' two postgres services each declare distinct host
+ * directories under the same `/var/lib/postgresql/data`, and sharing one volume would put two
+ * servers (postiz': two different major versions) on a single data directory. The host path is also
+ * stable across app updates; a name that drifted between builds would orphan the app's data.
  *
- * Separators are escaped rather than simply replaced: mapping both `/` and `-` onto `-` would give
- * `/data/db` and `/data-db` the same volume, silently merging two unrelated data directories.
- * Doubling an existing `-` keeps them distinct while leaving hyphen-free paths — every database
- * directory in practice — reading exactly as before.
+ * Characters that stand in for a separator are escaped rather than simply replaced, so distinct
+ * paths cannot converge: `-` doubles before `/` becomes `-`, and `_` doubles before invalid runs
+ * become `_`. Without that, `/data/db` and `/data-db` — or `/a b` and `/a_b` — would share a volume
+ * and silently merge unrelated data. Paths made only of `[a-z0-9/]`, which is every database
+ * directory in this catalog, are unaffected and read exactly as the path does.
+ *
+ * A leading non-alphanumeric is prefixed rather than trimmed: trimming is what would undo the
+ * escaping above and re-merge the paths it exists to keep apart.
  */
-function deriveVolumeName(containerPath: string): string {
-  const slug = containerPath
-    .replace(/^\/+/, '')
+function deriveVolumeName(hostPath: string): string {
+  const slug = hostPath
+    // The app-data root is the same for every volume, so it carries no identity.
+    .replace(/\$\{APP_DATA_DIR\}/g, '')
+    // Leading and trailing separators are not part of the path's identity: `/data/db/` and
+    // `/data/db` are the same directory and must resolve to the same volume.
+    .replace(/^\/+|\/+$/g, '')
     .replace(/-/g, '--')
+    .replace(/_/g, '__')
     .replace(/\//g, '-')
-    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
-    .replace(/^[-._]+/, '')
-    .replace(/[-_]+$/, '');
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_');
 
-  return slug || 'data';
+  if (!slug) {
+    return 'data';
+  }
+
+  // Docker requires a volume name to start with an alphanumeric.
+  return /^[a-zA-Z0-9]/.test(slug) ? slug : `v${slug}`;
 }
 
 export class DockerComposeBuilder {
@@ -60,7 +76,7 @@ export class DockerComposeBuilder {
   private cloudflareOriginHostname?: string;
   private defaultCpuLimit?: string;
   private defaultMemoryLimit?: string;
-  private posixPermissionsSupported = true;
+  private readonly posixPermissionsSupported: boolean;
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -131,7 +147,7 @@ export class DockerComposeBuilder {
       return volume;
     }
 
-    const volumeName = deriveVolumeName(volume.containerPath);
+    const volumeName = deriveVolumeName(volume.hostPath);
     this.volumes[volumeName] = {};
 
     return { ...volume, hostPath: undefined, volumeName };
@@ -158,9 +174,15 @@ export class DockerComposeBuilder {
     const securityViolations = collectServiceSecurityViolations(params, TRUSTED_APP_SECURITY_ALLOWLIST[appName]);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');
+      // An unusable volume name is rejected on its shape, before any grant is consulted, so
+      // pointing the operator at the allowlist would send them after a fix that cannot work.
+      const grantable = securityViolations.some((v) => v.message !== 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
       throw new Error(
-        `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
-          'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.',
+        grantable
+          ? `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
+              'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.'
+          : `App "${appName}" service "${params.name}" declares an unusable volume name: ${details}. ` +
+              'A volume name must start with a letter or number; a path belongs in hostPath, which is checked against the app sandbox.',
       );
     }
 

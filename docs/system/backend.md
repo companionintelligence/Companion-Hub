@@ -44,7 +44,10 @@ ownership. Windows-backed host paths (drvfs/9p) accept `chown`/`chmod` and silen
 so postgres' `initdb`, mysql's `mysqld`, and mongo's WiredTiger all abort with `EPERM` on such a
 mount. `supportsPosixPermissions()` (`common/helpers/bind-mount-helpers.ts`) probes the app-data
 filesystem once per process by flipping a scratch file's mode and reading it back; when the mode
-does not stick, the builder mounts those volumes as named volumes instead.
+does not stick, the builder mounts those volumes as named volumes instead. The redirected volume is
+named after the bind's **host path**, not its mount point — apps like `fastgpt` and `postiz` run two
+postgres services that both mount `/var/lib/postgresql/data`, and naming by mount point would put
+both servers on one data directory.
 
 The probe reports "supported" on any error **by design** — the opposite would move a working app's
 data directory into an empty named volume over what may be a transient IO failure. For the same

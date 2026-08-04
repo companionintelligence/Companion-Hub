@@ -366,35 +366,88 @@ describe('DockerComposeBuilder', () => {
     it('redirects an ownership-sensitive bind mount to a named volume when the filesystem cannot', async () => {
       const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([dbService()], {}, urn, subnet));
 
-      expect(yamlObject.services.database.volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
-      expect(yamlObject.volumes).toEqual({ 'var-lib-postgresql': {} });
+      expect(yamlObject.services.database.volumes).toEqual(['data-db:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toEqual({ 'data-db': {} });
     });
 
-    it('gives sidecars sharing a mount point the same volume so they still share data', async () => {
+    it('gives sidecars sharing a data directory the same volume so they still share data', async () => {
       const sidecar = dbService({ name: 'fix-permissions', image: 'busybox' });
       const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([dbService(), sidecar], {}, urn, subnet));
 
-      expect(yamlObject.services.database.volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
-      expect(yamlObject.services['fix-permissions'].volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
-      expect(yamlObject.volumes).toEqual({ 'var-lib-postgresql': {} });
+      expect(yamlObject.services.database.volumes).toEqual(['data-db:/var/lib/postgresql']);
+      expect(yamlObject.services['fix-permissions'].volumes).toEqual(['data-db:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toEqual({ 'data-db': {} });
     });
 
-    it('gives mount points that differ only by a hyphen distinct volumes', async () => {
-      // `/data/db` and `/data-db` are unrelated directories; collapsing both onto `data-db` would
+    it('gives two databases sharing a mount point distinct volumes', async () => {
+      // fastgpt and postiz each run two postgres services, both mounting their own host directory
+      // at `/var/lib/postgresql/data`. Naming the volume after the mount point would put both
+      // servers — postiz' are different major versions — on one data directory.
+      const pg = (name: string, dir: string): ServiceInput => ({
+        name,
+        image: 'postgres:18',
+        volumes: [{ hostPath: `\${APP_DATA_DIR}/data/${dir}`, containerPath: '/var/lib/postgresql/data', requiresPosixPermissions: true }],
+      });
+
+      const yamlObject = yaml.parse(
+        await permissionlessBuilder().getDockerCompose([pg('db', 'postgres'), pg('temporal-db', 'temporal-postgres')], {}, urn, subnet),
+      );
+
+      expect(yamlObject.services.db.volumes).toEqual(['data-postgres:/var/lib/postgresql/data']);
+      expect(yamlObject.services['temporal-db'].volumes).toEqual(['data-temporal--postgres:/var/lib/postgresql/data']);
+      expect(Object.keys(yamlObject.volumes).sort()).toEqual(['data-postgres', 'data-temporal--postgres']);
+    });
+
+    it('gives data directories that differ only by a hyphen distinct volumes', async () => {
+      // `data/db` and `data-db` are unrelated directories; collapsing both onto `data-db` would
       // silently merge them into one volume.
       const service: ServiceInput = {
         name: 'svc',
         image: 'image',
         volumes: [
-          { hostPath: '${APP_DATA_DIR}/a', containerPath: '/data/db', requiresPosixPermissions: true },
-          { hostPath: '${APP_DATA_DIR}/b', containerPath: '/data-db', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/a', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/data-db', containerPath: '/b', requiresPosixPermissions: true },
         ],
       };
 
       const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
 
-      expect(yamlObject.services.svc.volumes).toEqual(['data-db:/data/db', 'data--db:/data-db']);
+      expect(yamlObject.services.svc.volumes).toEqual(['data-db:/a', 'data--db:/b']);
       expect(Object.keys(yamlObject.volumes).sort()).toEqual(['data--db', 'data-db']);
+    });
+
+    it('keeps every derived name valid for docker and distinct across separator-like characters', async () => {
+      // A trailing trim would re-merge exactly the paths the escaping above keeps apart, and a
+      // leading `.` or `-` is not a legal docker volume name.
+      const paths = ['${APP_DATA_DIR}/data/db', '${APP_DATA_DIR}/data-db', '${APP_DATA_DIR}/data_db', '${APP_DATA_DIR}/.cache'];
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: paths.map((hostPath, index) => ({ hostPath, containerPath: `/m${index}`, requiresPosixPermissions: true })),
+      };
+
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
+      const names = Object.keys(yamlObject.volumes);
+
+      expect(names).toHaveLength(paths.length);
+      for (const name of names) {
+        expect(name).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
+      }
+    });
+
+    it('resolves a trailing slash to the same volume, since it is the same directory', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [
+          { hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/a', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/data/db/', containerPath: '/b', requiresPosixPermissions: true },
+        ],
+      };
+
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
+
+      expect(Object.keys(yamlObject.volumes)).toEqual(['data-db']);
     });
 
     it('leaves bind mounts that do not need ownership alone on a permission-less filesystem', async () => {

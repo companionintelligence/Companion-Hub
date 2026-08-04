@@ -55,8 +55,11 @@ describe('bind-mount-helpers', () => {
   describe('supportsPosixPermissions', () => {
     // The mode the probe reads back is the whole signal, and it is exactly what varies by host
     // filesystem — so stat is stubbed rather than trusting the machine the suite happens to run on.
+    // S_IFREG is included deliberately: a real stat returns 0o100640, not 0o640, so a stub without
+    // the file-type bits would let the `& 0o777` mask be deleted with the suite still green — and
+    // losing that mask reports "unsupported" on every Linux Hub, relocating every database.
     const stubObservedMode = (mode: number) =>
-      vi.spyOn(fs.promises, 'stat').mockResolvedValue({ mode } as Awaited<ReturnType<typeof fs.promises.stat>>);
+      vi.spyOn(fs.promises, 'stat').mockResolvedValue({ mode: 0o100000 | mode } as Awaited<ReturnType<typeof fs.promises.stat>>);
 
     beforeEach(() => {
       resetPosixPermissionSupportCache();
@@ -79,8 +82,33 @@ describe('bind-mount-helpers', () => {
       await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(false);
     });
 
-    it('reports supported when the probe itself fails, so a transient error never relocates app data', async () => {
+    it('reports supported when a filesystem that was never measured cannot be probed', async () => {
       vi.spyOn(fs.promises, 'writeFile').mockRejectedValue(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+      await expect(supportsPosixPermissions(join(tmpRoot, 'never-measured'))).resolves.toBe(true);
+    });
+
+    // The failure this guards: an app already redirected onto a named volume gets its compose
+    // re-rendered with the bind mount restored, and postgres initdb's an empty directory while the
+    // real database sits in a volume nothing references any more.
+    it('keeps the last measured answer when a later probe cannot measure', async () => {
+      stubObservedMode(0o777);
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(false);
+
+      vi.restoreAllMocks();
+      resetPosixPermissionSupportCache();
+      vi.spyOn(fs.promises, 'writeFile').mockRejectedValue(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(false);
+    });
+
+    it('lets a fresh measurement overrule the recorded answer', async () => {
+      stubObservedMode(0o777);
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(false);
+
+      vi.restoreAllMocks();
+      resetPosixPermissionSupportCache();
+      stubObservedMode(0o640);
 
       await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(true);
     });
@@ -106,17 +134,37 @@ describe('bind-mount-helpers', () => {
     });
 
     it('gives concurrent probes distinct files so neither deletes the other mid-flight', async () => {
+      // The probe files must really be created, or nothing can clobber anything and this asserts
+      // only on strings the test itself recorded.
       const probeNames: string[] = [];
-      vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (target) => {
-        probeNames.push(String(target).split(/[\\/]/).pop() ?? '');
+      const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+      vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (target, ...rest) => {
+        const name = String(target).split(/[\\/]/).pop() ?? '';
+        // The recorded-verdict file is written through here too; only probe files race.
+        if (name.startsWith('.ci-hub-permission-probe-')) {
+          probeNames.push(name);
+        }
+        // @ts-expect-error — forwarding the caller's own arguments through to the real implementation
+        return realWriteFile(target, ...rest);
       });
-      stubObservedMode(0o640);
 
       // Two directories, so the per-directory cache does not collapse this into a single probe.
       await Promise.all([supportsPosixPermissions(join(tmpRoot, 'a')), supportsPosixPermissions(join(tmpRoot, 'b'))]);
 
       expect(probeNames).toHaveLength(2);
       expect(new Set(probeNames).size).toBe(2);
+      // Each probe removed its own file and nothing else's.
+      for (const dir of ['a', 'b']) {
+        expect(fs.readdirSync(join(tmpRoot, dir)).filter((name) => name.startsWith('.ci-hub-permission-probe-'))).toEqual([]);
+      }
+    });
+
+    it('runs one probe for concurrent callers rather than one each', async () => {
+      const stat = stubObservedMode(0o640);
+
+      await Promise.all([supportsPosixPermissions(tmpRoot), supportsPosixPermissions(tmpRoot), supportsPosixPermissions(tmpRoot)]);
+
+      expect(stat).toHaveBeenCalledTimes(1);
     });
 
     it('cleans up its probe file', async () => {

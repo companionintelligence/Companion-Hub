@@ -261,12 +261,18 @@ export class ServiceBuilder {
       this.service.volumes = [];
     }
 
-    // A volume mounts either a named volume or a host path. The schema rejects manifests that
-    // declare both or neither, but the compose builder only warns on schema failure, so drop an
-    // unusable entry rather than emitting an `undefined:/path` mount that docker would reject.
+    // A volume mounts either a named volume or a host path. The schema rejects manifests declaring
+    // both or neither, but the compose builder only warns on a schema failure, so this has to fail
+    // loudly on its own. Skipping the entry instead would render a database service with no mount
+    // at all: it would start, write to the container's writable layer, and lose everything on the
+    // next `--force-recreate`. Aborting the build surfaces the bad manifest while the data is still
+    // safe — the same reason the sandbox check throws rather than dropping the offending volume.
     const source = volume.volumeName ?? volume.hostPath;
     if (!source) {
-      return this;
+      throw new Error(
+        `Volume for "${volume.containerPath}" declares neither hostPath nor volumeName. ` +
+          'Refusing to render a service whose data would live only in the container layer.',
+      );
     }
 
     // Propagation is a bind-only concept; named volumes have no host mount to propagate.

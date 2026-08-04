@@ -81,7 +81,10 @@ export async function writeHealableTextFile(filePath: string, content: string, f
   }
 }
 
-const posixPermissionSupport = new Map<string, boolean>();
+const posixPermissionSupport = new Map<string, Promise<boolean>>();
+
+/** Records the last measured answer so a later failed probe does not contradict it. */
+const PERMISSION_VERDICT_FILE = '.ci-hub-fs-permissions';
 
 /**
  * Windows-backed bind mounts (drvfs/9p) accept chmod/chown and silently discard them. A container
@@ -89,42 +92,76 @@ const posixPermissionSupport = new Map<string, boolean>();
  * on first start. Probe by flipping the mode on a scratch file and reading it back: a filesystem
  * that cannot carry permissions cannot host those data directories either.
  *
- * A failed probe reports "supported" on purpose. Reporting the opposite would relocate an app's
- * data directory into a fresh named volume, so on the platforms where bind mounts already work we
- * would strand existing data over what may be a transient IO error.
+ * The answer decides where an app's data lives, so a probe that cannot measure must never
+ * contradict one that could. Each successful measurement is recorded next to the directory and
+ * reused when a later probe fails; only a filesystem that has never been measured falls back to
+ * "supported". Without that record, one transient IO error on a Windows Hub would re-render the
+ * compose file with the bind mount restored, and postgres would `initdb` an empty directory while
+ * the real database sat in a named volume nothing referenced any more.
  *
- * Cached per directory: a mounted filesystem does not change its permission semantics underneath a
- * running Hub, and the Hub process restarts on update.
+ * The in-flight promise is cached, not the resolved value: lifecycle events run concurrently, and
+ * caching after the await would let every one of them run its own probe.
  */
 export async function supportsPosixPermissions(dirPath: string): Promise<boolean> {
-  const cached = posixPermissionSupport.get(dirPath);
-  if (cached !== undefined) {
-    return cached;
+  const inFlight = posixPermissionSupport.get(dirPath);
+  if (inFlight !== undefined) {
+    return inFlight;
   }
 
-  const supported = await probePosixPermissions(dirPath);
-  posixPermissionSupport.set(dirPath, supported);
-  return supported;
+  const pending = resolvePosixPermissions(dirPath);
+  posixPermissionSupport.set(dirPath, pending);
+  return pending;
+}
+
+async function resolvePosixPermissions(dirPath: string): Promise<boolean> {
+  const measured = await probePosixPermissions(dirPath);
+  if (measured !== undefined) {
+    await recordPermissionVerdict(dirPath, measured);
+    return measured;
+  }
+
+  return (await readPermissionVerdict(dirPath)) ?? true;
+}
+
+async function recordPermissionVerdict(dirPath: string, supported: boolean): Promise<void> {
+  try {
+    await fs.promises.writeFile(path.join(dirPath, PERMISSION_VERDICT_FILE), supported ? 'supported' : 'unsupported', 'utf-8');
+  } catch {
+    /* Losing the record only costs us the fallback on a future failed probe. */
+  }
+}
+
+async function readPermissionVerdict(dirPath: string): Promise<boolean | undefined> {
+  try {
+    const recorded = (await fs.promises.readFile(path.join(dirPath, PERMISSION_VERDICT_FILE), 'utf-8')).trim();
+    if (recorded === 'supported') return true;
+    if (recorded === 'unsupported') return false;
+  } catch {
+    /* Never measured, or unreadable — the caller falls back to "supported". */
+  }
+  return undefined;
 }
 
 let probeSequence = 0;
 
-async function probePosixPermissions(dirPath: string): Promise<boolean> {
+/** `undefined` means the probe could not measure — distinct from measuring "not supported". */
+async function probePosixPermissions(dirPath: string): Promise<boolean | undefined> {
   // The counter, not just pid+timestamp, is what guarantees uniqueness: concurrent installs can
   // probe within the same millisecond, and sharing a filename would let one probe unlink the
-  // other's file mid-flight. That reads as an error, and an errored probe reports "supported" —
-  // leaving an app broken on exactly the filesystem this is meant to detect.
+  // other's file mid-flight — which reads as a failure to measure.
   probeSequence += 1;
   const probePath = path.join(dirPath, `.ci-hub-permission-probe-${process.pid}-${Date.now()}-${probeSequence}`);
 
   try {
     await fs.promises.mkdir(dirPath, { recursive: true });
+    // 0o600 -> 0o640 flips a bit in each of the group/other nibbles, so a filesystem that reports a
+    // fixed mode (drvfs forces 0o777) cannot coincidentally match the value we asked for.
     await fs.promises.writeFile(probePath, '', { mode: 0o600 });
     await fs.promises.chmod(probePath, 0o640);
     const stats = await fs.promises.stat(probePath);
     return (stats.mode & 0o777) === 0o640;
   } catch {
-    return true;
+    return undefined;
   } finally {
     // try/catch, not `.catch()`: anything thrown from a finally block replaces the value the
     // function already decided on, so a cleanup failure would propagate out of a probe whose
