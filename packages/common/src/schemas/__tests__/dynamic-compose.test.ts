@@ -181,6 +181,48 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           const result = safeParse(serviceSchema, service);
           expect(result.success).toBe(false);
         });
+
+        const withVolume = (volume: Record<string, unknown>) => ({
+          image: 'postgres:18',
+          name: 'database',
+          volumes: [volume],
+        });
+
+        it('should accept a named volume in place of a host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject a volume that declares both a host path and a named volume', () => {
+          const result = safeParse(serviceSchema, withVolume({ hostPath: '/host/path', volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject a volume name docker itself would not accept', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: '/pg data', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should accept requiresPosixPermissions on a bind mount', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject requiresPosixPermissions on a named volume, which always has them', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(false);
+        });
+
+        it('should not treat a named volume as a denied host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'etc', containerPath: '/etc/postgresql' }));
+          expect(result.success).toBe(true);
+        });
       });
 
       describe('Command Configuration', () => {

@@ -10,7 +10,10 @@ interface ServicePort {
 }
 
 interface ServiceVolume {
-  hostPath: string;
+  /** Host bind source. Mutually exclusive with `volumeName`. */
+  hostPath?: string;
+  /** Docker-managed named volume source. Mutually exclusive with `hostPath`. */
+  volumeName?: string;
   containerPath: string;
   readOnly?: boolean;
   bind?: {
@@ -258,10 +261,19 @@ export class ServiceBuilder {
       this.service.volumes = [];
     }
 
-    if (volume.bind?.propagation) {
+    // A volume mounts either a named volume or a host path. The schema rejects manifests that
+    // declare both or neither, but the compose builder only warns on schema failure, so drop an
+    // unusable entry rather than emitting an `undefined:/path` mount that docker would reject.
+    const source = volume.volumeName ?? volume.hostPath;
+    if (!source) {
+      return this;
+    }
+
+    // Propagation is a bind-only concept; named volumes have no host mount to propagate.
+    if (volume.bind?.propagation && volume.volumeName === undefined) {
       const longFormVolume: VolumeLongForm = {
         type: 'bind',
-        source: volume.hostPath,
+        source,
         target: volume.containerPath,
         read_only: volume.readOnly,
         bind: {
@@ -271,7 +283,7 @@ export class ServiceBuilder {
       this.service.volumes.push(longFormVolume);
     } else {
       const readOnly = volume.readOnly ? ':ro' : '';
-      this.service.volumes.push(`${volume.hostPath}:${volume.containerPath}${readOnly}`);
+      this.service.volumes.push(`${source}:${volume.containerPath}${readOnly}`);
     }
 
     return this;

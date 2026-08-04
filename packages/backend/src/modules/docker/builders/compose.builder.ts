@@ -27,16 +27,42 @@ interface Network {
   };
 }
 
+type ServiceVolume = NonNullable<Service['volumes']>[number];
+
+/**
+ * Turns a container mount point into a stable docker volume name (`/var/lib/postgresql` →
+ * `var-lib-postgresql`). Derived from the mount point rather than the service so that sidecars
+ * sharing a data directory land on the same volume, and so the name survives app updates —
+ * a name that drifted between builds would orphan the app's data.
+ */
+function deriveVolumeName(containerPath: string): string {
+  const slug = containerPath
+    .replace(/^\/+/, '')
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/^[-.]+|-+$/g, '');
+
+  return slug || 'data';
+}
+
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
+  private volumes: Record<string, Record<string, never>> = {};
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private defaultCpuLimit?: string;
   private defaultMemoryLimit?: string;
+  private posixPermissionsSupported = true;
 
-  constructor(_domain: string, localDomain: string) {
+  /**
+   * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
+   * ownership/permissions. False on Windows-backed host paths, where volumes marked
+   * `requiresPosixPermissions` are mounted as named volumes instead. Defaults to true so callers
+   * that cannot probe keep bind mounts.
+   */
+  constructor(_domain: string, localDomain: string, posixPermissionsSupported = true) {
     this.localDomain = localDomain;
+    this.posixPermissionsSupported = posixPermissionsSupported;
   }
 
   addService(service: BuiltService) {
@@ -70,12 +96,38 @@ export class DockerComposeBuilder {
 
   build() {
     const hasNetworks = Object.keys(this.networks).length > 0;
+    const hasVolumes = Object.keys(this.volumes).length > 0;
 
     return yaml.stringify({
       services: this.services,
       networks: hasNetworks ? this.networks : undefined,
+      // Declared at the top level so compose scopes them to this app's project and
+      // `down --volumes` (uninstall with data, reset) still reclaims them.
+      volumes: hasVolumes ? this.volumes : undefined,
     });
   }
+
+  /**
+   * Picks the mount source for a volume. A manifest that names a volume outright gets it declared
+   * at the top level; a bind mount that needs real ownership is redirected onto a named volume when
+   * the host filesystem cannot carry permissions. Everything else stays a plain bind mount, so
+   * platforms where binds already work keep their existing data in place.
+   */
+  private resolveVolume = (volume: ServiceVolume) => {
+    if (volume.volumeName) {
+      this.volumes[volume.volumeName] = {};
+      return volume;
+    }
+
+    if (!volume.requiresPosixPermissions || this.posixPermissionsSupported || volume.hostPath === undefined) {
+      return volume;
+    }
+
+    const volumeName = deriveVolumeName(volume.containerPath);
+    this.volumes[volumeName] = {};
+
+    return { ...volume, hostPath: undefined, volumeName };
+  };
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -132,7 +184,7 @@ export class DockerComposeBuilder {
       .setCommand(params.command)
       .setHealthCheck(params.healthCheck)
       .setDependsOn(params.dependsOn)
-      .setVolumes(params.volumes)
+      .setVolumes(params.volumes?.map(this.resolveVolume))
       .setRestartPolicy(params.restart ?? 'unless-stopped')
       .setExtraHosts(params.extraHosts)
       .setUlimits(params.ulimits)

@@ -302,6 +302,67 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:440']);
   });
 
+  describe('named volumes', () => {
+    const dbService = (extra: Partial<ServiceInput> = {}): ServiceInput => ({
+      name: 'database',
+      image: 'postgres:18',
+      volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }],
+      ...extra,
+    });
+
+    it('mounts a manifest-declared named volume and declares it at the top level', async () => {
+      const service: ServiceInput = {
+        name: 'service',
+        image: 'image',
+        volumes: [{ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }],
+      };
+
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([service], {}, urn, subnet));
+
+      expect(yamlObject.services.service.volumes).toEqual(['pgdata:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toEqual({ pgdata: {} });
+    });
+
+    /** A Hub whose app-data filesystem cannot carry ownership — i.e. a Windows host path. */
+    const permissionlessBuilder = () => new DockerComposeBuilder('ci.computer', 'ci.lan', false);
+
+    it('keeps a bind mount when the filesystem carries POSIX permissions', async () => {
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([dbService()], {}, urn, subnet));
+
+      expect(yamlObject.services.database.volumes).toEqual(['${APP_DATA_DIR}/data/db:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toBeUndefined();
+    });
+
+    it('redirects an ownership-sensitive bind mount to a named volume when the filesystem cannot', async () => {
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([dbService()], {}, urn, subnet));
+
+      expect(yamlObject.services.database.volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toEqual({ 'var-lib-postgresql': {} });
+    });
+
+    it('gives sidecars sharing a mount point the same volume so they still share data', async () => {
+      const sidecar = dbService({ name: 'fix-permissions', image: 'busybox' });
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([dbService(), sidecar], {}, urn, subnet));
+
+      expect(yamlObject.services.database.volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
+      expect(yamlObject.services['fix-permissions'].volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
+      expect(yamlObject.volumes).toEqual({ 'var-lib-postgresql': {} });
+    });
+
+    it('leaves bind mounts that do not need ownership alone on a permission-less filesystem', async () => {
+      const service: ServiceInput = {
+        name: 'service',
+        image: 'image',
+        volumes: [{ hostPath: '${APP_DATA_DIR}/data/media', containerPath: '/media' }],
+      };
+
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
+
+      expect(yamlObject.services.service.volumes).toEqual(['${APP_DATA_DIR}/data/media:/media']);
+      expect(yamlObject.volumes).toBeUndefined();
+    });
+  });
+
   it('should add port mapping when openPort is enabled', async () => {
     const service: ServiceInput = {
       name: 'service',

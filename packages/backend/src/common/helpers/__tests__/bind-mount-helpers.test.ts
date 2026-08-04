@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { quarantineStalePath, readTextFileIfExists, writeHealableTextFile } from '../bind-mount-helpers';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  quarantineStalePath,
+  readTextFileIfExists,
+  resetPosixPermissionSupportCache,
+  supportsPosixPermissions,
+  writeHealableTextFile,
+} from '../bind-mount-helpers';
 
 describe('bind-mount-helpers', () => {
   const tmpRoot = join(process.cwd(), '.tmp-bind-mount-helpers-test');
@@ -44,5 +50,67 @@ describe('bind-mount-helpers', () => {
     if (!quarantinePath) return;
     expect(fs.readFileSync(quarantinePath, 'utf-8')).toBe('secret-token');
     expect(readTextFileIfExists(filePath)).toBeNull();
+  });
+
+  describe('supportsPosixPermissions', () => {
+    // The mode the probe reads back is the whole signal, and it is exactly what varies by host
+    // filesystem — so stat is stubbed rather than trusting the machine the suite happens to run on.
+    const stubObservedMode = (mode: number) =>
+      vi.spyOn(fs.promises, 'stat').mockResolvedValue({ mode } as Awaited<ReturnType<typeof fs.promises.stat>>);
+
+    beforeEach(() => {
+      resetPosixPermissionSupportCache();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('reports supported when the requested mode sticks', async () => {
+      stubObservedMode(0o640);
+
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(true);
+    });
+
+    it('reports unsupported when the filesystem silently discards the chmod', async () => {
+      // What a Windows-backed drvfs/9p mount does: chmod succeeds, mode stays 0777.
+      stubObservedMode(0o777);
+
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(false);
+    });
+
+    it('reports supported when the probe itself fails, so a transient error never relocates app data', async () => {
+      vi.spyOn(fs.promises, 'writeFile').mockRejectedValue(Object.assign(new Error('EIO'), { code: 'EIO' }));
+
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(true);
+    });
+
+    it('never throws out of cleanup, which would abort the install that called it', async () => {
+      stubObservedMode(0o640);
+      // A throw from the finally block replaces the decided return value, so cleanup failing
+      // must not escape — this is what a partially-stubbed fs looks like to the probe.
+      vi.spyOn(fs.promises, 'unlink').mockImplementation(() => {
+        throw new TypeError('unlink is not a function');
+      });
+
+      await expect(supportsPosixPermissions(tmpRoot)).resolves.toBe(true);
+    });
+
+    it('probes a directory only once', async () => {
+      const stat = stubObservedMode(0o640);
+
+      await supportsPosixPermissions(tmpRoot);
+      await supportsPosixPermissions(tmpRoot);
+
+      expect(stat).toHaveBeenCalledTimes(1);
+    });
+
+    it('cleans up its probe file', async () => {
+      stubObservedMode(0o640);
+
+      await supportsPosixPermissions(tmpRoot);
+
+      expect(fs.readdirSync(tmpRoot).filter((name) => name.startsWith('.ci-hub-permission-probe-'))).toEqual([]);
+    });
   });
 });

@@ -81,6 +81,60 @@ export async function writeHealableTextFile(filePath: string, content: string, f
   }
 }
 
+const posixPermissionSupport = new Map<string, boolean>();
+
+/**
+ * Windows-backed bind mounts (drvfs/9p) accept chmod/chown and silently discard them. A container
+ * that must own its data directory — postgres' `initdb`, mysql's `mysqld` — then aborts with EPERM
+ * on first start. Probe by flipping the mode on a scratch file and reading it back: a filesystem
+ * that cannot carry permissions cannot host those data directories either.
+ *
+ * A failed probe reports "supported" on purpose. Reporting the opposite would relocate an app's
+ * data directory into a fresh named volume, so on the platforms where bind mounts already work we
+ * would strand existing data over what may be a transient IO error.
+ *
+ * Cached per directory: a mounted filesystem does not change its permission semantics underneath a
+ * running Hub, and the Hub process restarts on update.
+ */
+export async function supportsPosixPermissions(dirPath: string): Promise<boolean> {
+  const cached = posixPermissionSupport.get(dirPath);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const supported = await probePosixPermissions(dirPath);
+  posixPermissionSupport.set(dirPath, supported);
+  return supported;
+}
+
+async function probePosixPermissions(dirPath: string): Promise<boolean> {
+  const probePath = path.join(dirPath, `.ci-hub-permission-probe-${process.pid}-${Date.now()}`);
+
+  try {
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    await fs.promises.writeFile(probePath, '', { mode: 0o600 });
+    await fs.promises.chmod(probePath, 0o640);
+    const stats = await fs.promises.stat(probePath);
+    return (stats.mode & 0o777) === 0o640;
+  } catch {
+    return true;
+  } finally {
+    // try/catch, not `.catch()`: anything thrown from a finally block replaces the value the
+    // function already decided on, so a cleanup failure would propagate out of a probe whose
+    // whole contract is never to throw.
+    try {
+      await fs.promises.unlink(probePath);
+    } catch {
+      /* probe file may never have been created */
+    }
+  }
+}
+
+/** Test seam — the probe result is cached for the life of the process. */
+export function resetPosixPermissionSupportCache(): void {
+  posixPermissionSupport.clear();
+}
+
 export function readTextFileIfExists(filePath: string): string | null {
   try {
     if (!fs.existsSync(filePath)) return null;

@@ -261,5 +261,31 @@ describe('ServiceBuilder', () => {
         expect(built.volumes).toEqual(['/host:/container:ro']);
       });
     });
+
+    describe('Named volumes', () => {
+      it('mounts a named volume as the source', () => {
+        const built = service.setVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }).build();
+
+        expect(built.volumes).toEqual(['pgdata:/var/lib/postgresql']);
+      });
+
+      it('honours readOnly on a named volume', () => {
+        const built = service.setVolume({ volumeName: 'config', containerPath: '/config', readOnly: true }).build();
+
+        expect(built.volumes).toEqual(['config:/config:ro']);
+      });
+
+      it('ignores bind propagation on a named volume, which has no host mount to propagate', () => {
+        const built = service.setVolume({ volumeName: 'pgdata', containerPath: '/data', bind: { propagation: 'rshared' } }).build();
+
+        expect(built.volumes).toEqual(['pgdata:/data']);
+      });
+
+      it('drops a volume that names neither a host path nor a volume rather than emitting an undefined source', () => {
+        const built = service.setVolume({ containerPath: '/container' }).build();
+
+        expect(built.volumes).toEqual([]);
+      });
+    });
   });
 });
