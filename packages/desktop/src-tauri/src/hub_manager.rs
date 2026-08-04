@@ -2422,6 +2422,70 @@ fn host_cli_install_dir() -> Option<PathBuf> {
     None
 }
 
+/// Install `source` at `installed_path` by staging a copy in `install_dir` and
+/// renaming it into place. A plain `fs::copy` onto the destination writes
+/// *through* an existing symlink (clobbering the link target) and fails with
+/// ENOENT on a broken one; the rename replaces the link itself and never leaves
+/// a half-copied binary on PATH.
+fn replace_installed_cli(
+    source: &Path,
+    install_dir: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    let staged = install_dir.join(format!("{}.staging-{}", HOST_CLI_FILENAME, std::process::id()));
+    let result = (|| {
+        std::fs::copy(source, &staged)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        }
+        move_staged_cli_into_place(install_dir, &staged, installed_path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_staged_cli_into_place(
+    _install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    std::fs::rename(staged, installed_path)
+}
+
+#[cfg(target_os = "windows")]
+fn move_staged_cli_into_place(
+    install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    // Windows `rename` refuses to replace an existing destination, so move it
+    // aside instead of deleting it — if the final rename fails, the previous
+    // binary is restored rather than leaving no CLI at the install path.
+    let backup = install_dir.join(format!("{}.backup-{}", HOST_CLI_FILENAME, std::process::id()));
+    let had_existing = installed_path.symlink_metadata().is_ok();
+    if had_existing {
+        std::fs::rename(installed_path, &backup)?;
+    }
+    match std::fs::rename(staged, installed_path) {
+        Ok(()) => {
+            if had_existing {
+                let _ = std::fs::remove_file(&backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = std::fs::rename(&backup, installed_path);
+            }
+            Err(error)
+        }
+    }
+}
+
 fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
     let candidates = bundled_cli_resource_candidates(resource_dir);
     let Some(source) = candidates.into_iter().find(|path| path.exists()) else {
@@ -2463,9 +2527,18 @@ fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
     }
 
     let installed_path = install_dir.join(HOST_CLI_FILENAME);
-    let already_current = files_match(&source, &installed_path).unwrap_or(false);
+    // A symlink at the install path (e.g. left behind by a dev-checkout setup)
+    // is never "current" even if it resolves to identical bytes: the CLI on
+    // PATH would silently track whatever the link points at instead of this
+    // bundle's binary.
+    let installed_is_symlink = installed_path
+        .symlink_metadata()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false);
+    let already_current =
+        !installed_is_symlink && files_match(&source, &installed_path).unwrap_or(false);
     if !already_current {
-        if let Err(error) = std::fs::copy(&source, &installed_path) {
+        if let Err(error) = replace_installed_cli(&source, &install_dir, &installed_path) {
             let _ = append_desktop_log_for(
                 data_dir,
                 "cli",
@@ -10360,6 +10433,64 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         std::fs::write(&installed, b"diffsize!").expect("write installed");
 
         assert!(!files_match(&source, &installed).expect("compare files"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replaces_broken_symlink_at_cli_install_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let install_dir = tempdir.path().join("bin");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        let source = tempdir.path().join("bundled-cihub");
+        std::fs::write(&source, b"cli-bytes").expect("write source");
+
+        // Symlink into a checkout that no longer exists — fs::copy onto this
+        // path fails with ENOENT.
+        let installed = install_dir.join("cihub");
+        std::os::unix::fs::symlink(tempdir.path().join("gone/checkout/cihub"), &installed)
+            .expect("create broken symlink");
+
+        super::replace_installed_cli(&source, &install_dir, &installed).expect("install CLI");
+
+        let metadata = installed.symlink_metadata().expect("installed metadata");
+        assert!(metadata.file_type().is_file());
+        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        let leftovers: Vec<_> = std::fs::read_dir(&install_dir)
+            .expect("list install dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains("staging"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging file left behind");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replaces_symlink_without_writing_through_to_its_target() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let install_dir = tempdir.path().join("bin");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        let source = tempdir.path().join("bundled-cihub");
+        std::fs::write(&source, b"cli-bytes").expect("write source");
+
+        // Symlink to a live file elsewhere (e.g. a dev checkout binary) — the
+        // install must replace the link, not overwrite what it points at.
+        let checkout_binary = tempdir.path().join("checkout-cihub");
+        std::fs::write(&checkout_binary, b"checkout-bytes").expect("write checkout binary");
+        let installed = install_dir.join("cihub");
+        std::os::unix::fs::symlink(&checkout_binary, &installed).expect("create symlink");
+
+        super::replace_installed_cli(&source, &install_dir, &installed).expect("install CLI");
+
+        assert!(installed
+            .symlink_metadata()
+            .expect("installed metadata")
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        assert_eq!(
+            std::fs::read(&checkout_binary).expect("read checkout binary"),
+            b"checkout-bytes"
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
