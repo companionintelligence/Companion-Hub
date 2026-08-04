@@ -12,6 +12,7 @@ import {
   hermesPluginDir,
   hubMcpUrl,
   lintFindingsForOurKeys,
+  memoryProbeUserAgent,
   mergeOpenClawConfig,
   normalizeMemoryUrl,
   openClawConfigPath,
@@ -21,6 +22,7 @@ import {
   parseToolsListBody,
   PLUGIN_ID,
   probeHubMcp,
+  probeMemory,
   readJsonIfPresent,
   run,
   runFailureMessage,
@@ -80,6 +82,28 @@ describe('probe triage', () => {
     expect(triageMemoryAuth(403).code).not.toBe('unauthorized');
   });
 
+  // Companion Memory answers in JSON, errors included, so an HTML body came from
+  // something in front of it. Both legs need this: the remedy is the opposite of a
+  // credential fault, and sending someone to re-mint a working key is the worst
+  // possible answer to an edge rule.
+  const interstitial = '<!DOCTYPE html><html><head><title>Access denied</title></head></html>';
+
+  it('names an HTML error page as an intermediary, not a credential fault', () => {
+    for (const v of [triageMemoryProbe(403, undefined, interstitial), triageMemoryAuth(403, undefined, interstitial)]) {
+      expect(v.ok).toBe(false);
+      expect(v.code).toBe('blocked-upstream');
+      expect(v.hint).toMatch(/key is not the problem/i);
+    }
+  });
+
+  it('does not blame an intermediary for a JSON refusal from the server itself', () => {
+    // A real scope failure still has to read as one — the discriminator is the body
+    // shape, and it must not swallow the diagnosis it was added next to.
+    expect(triageMemoryAuth(403, undefined, '{"error":"insufficient scope"}').code).toBe('missing-memory-scope');
+    expect(triageMemoryAuth(401, undefined, '{"error":"bad key"}').code).toBe('unauthorized');
+    expect(triageMemoryProbe(200, undefined, '{}').ok).toBe(true);
+  });
+
   it('promises only what a read probe proves', () => {
     const v = triageMemoryAuth(200);
     expect(v.ok).toBe(true);
@@ -115,11 +139,78 @@ describe('probe triage', () => {
 });
 
 /**
- * The triage tests above take a status code as an argument, so they can say nothing
- * about whether the probe elicits the right status from a real server. It did not: the
- * probe sent `tools/list` with no session header, the Hub answered 400, and a healthy
- * Hub was reported as the pre-G1 gateway on every single run. Only a server that
- * enforces the contract catches that, so this stands one up.
+ * The triage tests above take a status code as an argument, so they cannot say whether
+ * the probe elicits the right one. It did not: the probe runs on node's fetch while the
+ * hermes plugin runs on urllib, and the edge in front of an exposed hub rejects urllib's
+ * default `Python-urllib/x.y` outright — so this probe passed while every call the
+ * plugin made was refused, invisibly, because the plugin swallows failed writes. Only a
+ * server that answers on identity catches that.
+ */
+describe('probeMemory identifies itself as the plugin being installed', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = undefined;
+  });
+
+  /** A server that answers on User-Agent, the way an edge bot rule does. */
+  function startMemory(allow?: (userAgent: string) => boolean): Promise<{ url: string; seen: string[] }> {
+    const seen: string[] = [];
+    server = createServer((req, res) => {
+      const userAgent = req.headers['user-agent'] ?? '';
+      seen.push(userAgent);
+      if (allow && !allow(userAgent)) {
+        res.writeHead(403, { 'content-type': 'text/html' });
+        res.end('<!DOCTYPE html><html><head><title>Access denied</title></head></html>');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    return new Promise((resolve) =>
+      server?.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${(server?.address() as AddressInfo).port}`, seen })),
+    );
+  }
+
+  it('sends the hermes plugin User-Agent on both legs', async () => {
+    const { url, seen } = await startMemory();
+    const verdict = await probeMemory(url, 'k', 'hermes');
+    expect(verdict.ok).toBe(true);
+    // Health and context: the plugin calls both, so a header on only one proves nothing.
+    expect(seen).toHaveLength(2);
+    for (const userAgent of seen) expect(userAgent).toBe(memoryProbeUserAgent('hermes'));
+  });
+
+  it('carries the version connect is about to install', () => {
+    expect(memoryProbeUserAgent('hermes')).toBe(`companionintelligence-hermes-memory/${PINNED_VERSIONS.hermes}`);
+  });
+
+  it('leaves openclaw on the default, which is already what its plugin sends', async () => {
+    // That plugin runs on node, so undici's own User-Agent is the truthful one here.
+    // Overriding it would make the probe less faithful, not more.
+    expect(memoryProbeUserAgent('openclaw')).toBeUndefined();
+    const { url, seen } = await startMemory();
+    await probeMemory(url, 'k', 'openclaw');
+    expect(seen).toHaveLength(2);
+    for (const userAgent of seen) expect(userAgent).not.toMatch(/hermes-memory/);
+  });
+
+  it('fails where the plugin would fail, and says the key is not at fault', async () => {
+    // The point of probing as the plugin: when the edge rejects that identity the probe
+    // has to reject too. Passing here is how a working key got blamed for an edge rule.
+    const { url } = await startMemory(() => false);
+    const verdict = await probeMemory(url, 'k', 'hermes');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe('blocked-upstream');
+    expect(verdict.hint).toMatch(/key is not the problem/i);
+  });
+});
+
+/**
+ * The same gap on the Hub side: the probe sent `tools/list` with no session header, the
+ * Hub answered 400, and a healthy Hub was reported as the pre-G1 gateway on every single
+ * run. Only a server that enforces the contract catches that, so this stands one up.
  */
 describe('probeHubMcp against a server enforcing the Hub session contract', () => {
   let server: Server | undefined;
