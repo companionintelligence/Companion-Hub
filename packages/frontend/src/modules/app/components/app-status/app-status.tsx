@@ -6,9 +6,34 @@ import { useTranslation } from 'react-i18next';
 
 type AppStatusVariant = 'inline' | 'pill';
 
+/** Init containers for multi-service stacks (ci-memory setup/migrate jobs, etc.). */
+const EPHEMERAL_INIT_CONTAINER = /-(setup-|migrate-|fix-db-permissions)/i;
+
 /** One-shot compose jobs (e.g. ci-memory setup-secrets) exit 0 and should not alarm the UI. */
 export function isCompletedOneShotContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'exitCode'>) {
   return container.state === 'exited' && (container.exitCode === 0 || container.exitCode === null);
+}
+
+/**
+ * Ephemeral init jobs should not keep a running app in "Initializing" once the
+ * long-lived services are up. Failed init containers (non-zero exit) stay in
+ * the monitored set so the pill can surface "Needs attention".
+ */
+export function isEphemeralInitContainer(container: Pick<AppContainerRuntimeStats, 'name' | 'state' | 'exitCode'>) {
+  if (!EPHEMERAL_INIT_CONTAINER.test(container.name)) {
+    return isCompletedOneShotContainer(container);
+  }
+
+  if (container.state === 'exited') {
+    return container.exitCode === 0 || container.exitCode === null;
+  }
+
+  // Not started yet — do not wait on it when judging readiness.
+  if (container.state === 'created') {
+    return true;
+  }
+
+  return false;
 }
 
 export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'health' | 'exitCode'>) {
@@ -28,7 +53,7 @@ export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 
 }
 
 function containersExpectedToRun(containers: AppContainerRuntimeStats[]) {
-  return containers.filter((container) => !isCompletedOneShotContainer(container));
+  return containers.filter((container) => !isEphemeralInitContainer(container));
 }
 
 const friendlyStatusLabels: Partial<Record<AppStatusType, string>> = {
@@ -104,7 +129,10 @@ export function getAppStatusPresentation(
       };
     }
 
-    if (monitoredContainers.length === 0 || hasTransitionalContainer || runningContainers < monitoredContainers.length) {
+    // Trust the durable Hub status until runtime stats arrive; an empty snapshot
+    // is indistinguishable from "still loading" and left ci-memory stuck on
+    // Initializing even when every long-lived container was healthy.
+    if (runtimeHealth && (monitoredContainers.length === 0 || hasTransitionalContainer || runningContainers < monitoredContainers.length)) {
       return {
         labelKey: 'APP_STATUS_INITIALIZING',
         fallbackLabel: 'Initializing',
