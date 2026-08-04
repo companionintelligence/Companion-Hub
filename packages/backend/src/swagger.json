@@ -1352,17 +1352,7 @@
     "/api/inference/onboarding-profile": {
       "get": {
         "operationId": "getOnboardingProfile",
-        "parameters": [
-          {
-            "name": "backend",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": ["ollama", "vllm", "lemonade"]
-            }
-          }
-        ],
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""

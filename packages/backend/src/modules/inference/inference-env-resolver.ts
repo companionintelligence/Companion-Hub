@@ -166,7 +166,19 @@ export class InferenceEnvResolver {
         );
       }
     }
-    const chatModel = chatCurated?.backendModelId;
+    let chatModel = chatCurated?.backendModelId;
+    // Host-managed vLLM/Lemonade can serve models outside the Hub catalog (e.g. an
+    // operator's existing `vllm serve` on :8000). When nothing catalog-shaped matches
+    // but the backend reports loaded models, emit the first runtime id so apps get a
+    // working default instead of omitting CI_CHAT_MODEL entirely.
+    if (chatModel && modelsLoaded.length > 0 && backendType !== 'ollama' && !modelsLoaded.includes(chatModel)) {
+      const runtimeModel = modelsLoaded[0];
+      this.logger.info(`[InferenceEnvResolver] catalog chat model ${chatModel} is not loaded on ${backendType}; using runtime ${runtimeModel}`);
+      chatModel = runtimeModel;
+    } else if (!chatModel && modelsLoaded.length > 0 && backendType !== 'ollama') {
+      chatModel = modelsLoaded[0];
+      this.logger.info(`[InferenceEnvResolver] no catalog ${backendType} chat model matched runtime; using ${chatModel}`);
+    }
 
     // ── Embedding model + dedicated embed host ────────────────────────────
     // Embeddings are split-backend capable: chat can run on vLLM/Lemonade while

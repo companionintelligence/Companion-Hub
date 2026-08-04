@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { VllmBackend } from '../backends/vllm.backend';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -10,12 +11,25 @@ vi.mock('axios');
 describe('VllmBackend', () => {
   let backend: VllmBackend;
   let loggerService: MockProxy<LoggerService>;
+  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
+    configurationService = mock<ConfigurationService>();
+    configurationService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: null,
+    });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [VllmBackend, { provide: LoggerService, useValue: loggerService }],
+      providers: [
+        VllmBackend,
+        { provide: LoggerService, useValue: loggerService },
+        { provide: ConfigurationService, useValue: configurationService },
+      ],
     }).compile();
 
     backend = module.get<VllmBackend>(VllmBackend);
@@ -44,6 +58,24 @@ describe('VllmBackend', () => {
 
       expect(health.running).toBe(false);
       expect(health.error).toBeDefined();
+    });
+
+    it('should send the configured vLLM API key when probing /v1/models', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+      });
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck();
+
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({ headers: { Authorization: 'Bearer vllm-local' } }),
+      );
     });
   });
 
