@@ -61,9 +61,9 @@ const SUPPORTED_TARGETS = [
 function readPackageVersion() {
   // Release builds pass the tag via CI_HUB_BUILD_VERSION; package.json is not
   // bumped per release, so falling back to it under-reports `cihub version`.
-  const buildVersion = (process.env.CI_HUB_BUILD_VERSION || '').trim();
+  const buildVersion = (process.env.CI_HUB_BUILD_VERSION || '').trim().replace(/^v/, '');
   if (buildVersion) {
-    return buildVersion.replace(/^v/, '');
+    return buildVersion;
   }
   const pkg = JSON.parse(readFileSync(PACKAGE_JSON, 'utf8'));
   if (!pkg.version || typeof pkg.version !== 'string') {

@@ -2439,19 +2439,51 @@ fn replace_installed_cli(
         {
             std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
         }
-        #[cfg(target_os = "windows")]
-        {
-            // Windows `rename` refuses to replace an existing destination.
-            if installed_path.symlink_metadata().is_ok() {
-                std::fs::remove_file(installed_path)?;
-            }
-        }
-        std::fs::rename(&staged, installed_path)
+        move_staged_cli_into_place(install_dir, &staged, installed_path)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&staged);
     }
     result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_staged_cli_into_place(
+    _install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    std::fs::rename(staged, installed_path)
+}
+
+#[cfg(target_os = "windows")]
+fn move_staged_cli_into_place(
+    install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    // Windows `rename` refuses to replace an existing destination, so move it
+    // aside instead of deleting it — if the final rename fails, the previous
+    // binary is restored rather than leaving no CLI at the install path.
+    let backup = install_dir.join(format!("{}.backup-{}", HOST_CLI_FILENAME, std::process::id()));
+    let had_existing = installed_path.symlink_metadata().is_ok();
+    if had_existing {
+        std::fs::rename(installed_path, &backup)?;
+    }
+    match std::fs::rename(staged, installed_path) {
+        Ok(()) => {
+            if had_existing {
+                let _ = std::fs::remove_file(&backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = std::fs::rename(&backup, installed_path);
+            }
+            Err(error)
+        }
+    }
 }
 
 fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
