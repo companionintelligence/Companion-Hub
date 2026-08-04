@@ -32,6 +32,9 @@
     "packages/openclaw-plugin": {
       "entry": ["src/index.ts", "scripts/**/*.{js,mjs}"]
     },
+    "packages/mobile": {
+      "entry": ["scripts/**/*.{js,mjs}"]
+    },
     "packages/desktop": {}
   }
 }
