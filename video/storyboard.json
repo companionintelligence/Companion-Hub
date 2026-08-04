@@ -15,6 +15,7 @@
     "claim": "Claim the machine",
     "setup": "First boot",
     "run": "Day to day",
+    "extend": "Make it yours",
     "dials": "Under the hood"
   },
   "media": {
@@ -91,7 +92,14 @@
           "capture": {
             "path": "/onboarding",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='finish-setup-btn']",
+            "waitFor": "input[placeholder='you@example.com']",
+            "before": [
+              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='Enter your password']", "password"] },
+              { "click": "button[type='submit']" },
+              { "waitFor": "[data-testid='finish-setup-btn']" },
+              { "wait": 1500 }
+            ],
             "settle": 1200
           }
         }
@@ -149,6 +157,29 @@
       ]
     },
     {
+      "id": "open-alternatives",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 6,
+      "caption": "Alternatives: the app you rent, and the one you own.",
+      "narration": "For the software you rent, the store names the open replacement you can own.",
+      "shots": [
+        {
+          "id": "store-alternatives",
+          "url": "hub.ci.lan/store",
+          "alt": "The store's Alternatives view: a table pairing proprietary products with the open source apps that replace them.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/store?category=alternatives",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "text=Open source replacements for proprietary software",
+            "before": [{ "waitFor": "table tbody tr" }, { "wait": 800 }],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
       "id": "app-privacy",
       "kind": "screen",
       "chapter": "run",
@@ -159,7 +190,7 @@
         {
           "id": "app-details",
           "url": "hub.ci.lan/store",
-          "alt": "An app detail page: description, Information panel, and the App Privacy card.",
+          "alt": "An app detail page scrolled to the App Privacy card, beside the Information panel.",
           "motion": "push-in",
           "capture": {
             "path": "/store",
@@ -168,7 +199,38 @@
             "before": [
               { "click": "a[href^='/store/']" },
               { "waitFor": "[data-testid='app-header-actions-row']" },
-              { "wait": 1500 }
+              { "wait": 1500 },
+              { "hover": "text=App Privacy" },
+              { "wait": 600 }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "configure-install",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 6.5,
+      "caption": "Ports, paths and secrets, shown before anything runs.",
+      "narration": "You see every port, path and secret an app wants before it ever runs.",
+      "shots": [
+        {
+          "id": "install-dialog",
+          "url": "hub.ci.lan/store",
+          "alt": "The install dialog open over an app page, listing the ports, paths and settings the app is asking for.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/store",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "a[href^='/store/']",
+            "before": [
+              { "click": "a[href^='/store/']" },
+              { "waitFor": "[data-testid='action-install']" },
+              { "click": "[data-testid='action-install']" },
+              { "waitFor": "[role='dialog']" },
+              { "wait": 1200 }
             ],
             "settle": 1200
           }
@@ -184,16 +246,104 @@
       "narration": "Install it, and the Hub works until that badge turns green.",
       "shots": [
         {
-          "id": "app-installing",
-          "url": "hub.ci.lan/apps",
-          "alt": "An installed app mid-lifecycle: the status pill moving from installing to running.",
+          "id": "running-app",
+          "url": "hub.ci.lan/apps/immich",
+          "alt": "An installed app on the Hub: a running status pill beside Open, Stop and Restart.",
           "motion": "push-in",
           "capture": {
-            "path": "/store",
+            "path": "/apps/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='app-status-pill']",
-            "settle": 1200,
-            "mask": ["text=Installing"]
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "bring-your-own-app",
+      "kind": "screen",
+      "chapter": "extend",
+      "seconds": 6,
+      "caption": "Bring your own containers. They become a real app.",
+      "narration": "Your own containers become a first class app, with a name and an address.",
+      "shots": [
+        {
+          "id": "custom-app-create",
+          "url": "hub.ci.lan/apps/create",
+          "alt": "The custom app form: an App Name field above the multi-service Docker Compose editor.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/apps/create",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='Enter a unique name for your app']",
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "expose-a-port",
+      "kind": "screen",
+      "chapter": "extend",
+      "seconds": 6.5,
+      "caption": "This device, your private VPN, or the public web.",
+      "narration": "Anything already running here gets a name, a certificate, and a door you choose.",
+      "shots": [
+        {
+          "id": "port-expose",
+          "url": "hub.ci.lan/apps/expose",
+          "alt": "The Expose a port form, with the three exposure modes: this device, private VPN, or public web.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/apps/expose",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "text=Publish a service already running on this Hub",
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "local-models",
+      "kind": "screen",
+      "chapter": "dials",
+      "seconds": 6,
+      "caption": "The Hub reads the hardware, then picks the models.",
+      "narration": "The Hub reads your hardware and picks models it can actually run at home.",
+      "shots": [
+        {
+          "id": "ai-hardware",
+          "url": "hub.ci.lan/settings",
+          "alt": "The AI tab's hardware card: CPU, RAM, GPU, VRAM and storage, with a capability tier badge.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/settings?tab=ai",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='hw-card-title']",
+            "before": [{ "waitFor": "[data-testid='tier-badge']" }, { "wait": 800 }],
+            "settle": 1500
+          }
+        }
+      ]
+    },
+    {
+      "id": "own-your-agents",
+      "kind": "screen",
+      "chapter": "dials",
+      "seconds": 6,
+      "caption": "MCP tools you can read. Keys you issue, scoped.",
+      "narration": "Agents drive your Hub through tools you can read, scoped by keys you issue.",
+      "shots": [
+        {
+          "id": "mcp-tools",
+          "url": "hub.ci.lan/settings",
+          "alt": "The MCP tab: server status, the active key count, and the searchable catalog of tools the Hub publishes.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/settings?tab=mcp",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='mcp-settings']",
+            "settle": 1200
           }
         }
       ]
@@ -224,10 +374,9 @@
           "alt": "The Security tab of Hub settings.",
           "motion": "push-in",
           "capture": {
-            "path": "/settings",
+            "path": "/settings?tab=security",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='settings-scroll-container']",
-            "before": [{ "click": "button[role='tab']:has-text('Security')" }, { "wait": 900 }],
             "settle": 1200
           }
         }

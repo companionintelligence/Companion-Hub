@@ -74,6 +74,22 @@
  *    visitor straight to /home. The stage must seed the `test@test.com` /
  *    `password` admin (e2e/helpers/constants.ts + e2e/fixtures/fixtures.ts
  *    `createTestUser`) before capture runs.
+ *
+ *    The two FTUE shots are the exception: `onboarding-wizard` and
+ *    `device-registration` are captured in their own later passes with their own
+ *    fresh BrowserContext (.github/workflows/video.yml), so `onboarding-wizard`
+ *    carries its own login in `before`.
+ *
+ * 8. HARDWARE PROFILE — the `ai-hardware` shot films the AI tab's hardware card,
+ *    which reads `/api/inference/onboarding-profile`. Free RAM and free disk on a
+ *    GitHub runner differ on every run, so an untouched capture would produce a
+ *    `chore/video-shot-refresh` PR every Monday for two changed numbers — the
+ *    same objection that keeps Settings -> Logs out of this storyboard.
+ *    HANDLED: the response is fetched for real and only the volatile fields are
+ *    overwritten (below), so the CPU/GPU/OS readout stays genuinely this
+ *    machine's while the shot stays byte-stable. If the fetch or the patch
+ *    fails for any reason the real response is passed through untouched — a
+ *    drifting shot is better than a broken one.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -94,6 +110,18 @@ const PINNED_SYSTEM_LOAD = {
   percentUsedMemory: 41,
   hasVmWedge: false,
   runtimeKind: "linux-native",
+};
+
+/**
+ * Hazard 8. Only the fields that move between runs. Everything else in
+ * `HardwareProfileResponse` (packages/frontend/src/modules/onboarding/helpers/
+ * ai-setup-types.ts) is left exactly as the Hub reported it.
+ */
+const PINNED_PROFILE_VOLATILES = {
+  ramAvailableMb: 9216,
+  availableMemoryMb: 9216,
+  availableDiskMb: 42_000,
+  diskTotalMb: 76_800,
 };
 
 export default {
@@ -127,6 +155,35 @@ export default {
         body: JSON.stringify(PINNED_SYSTEM_LOAD),
       }),
     );
+
+    // Hazard 8: pin only the volatile numbers in the hardware profile. Passing
+    // the real response through on any failure keeps a bad patch from turning a
+    // cosmetic drift into a failed shot.
+    await context.route("**/api/inference/onboarding-profile", async (route) => {
+      let response;
+      let body;
+      try {
+        response = await route.fetch();
+        body = await response.json();
+        const ram = body?.hardware?.ram;
+        if (ram) {
+          ram.availableMb = PINNED_PROFILE_VOLATILES.ramAvailableMb;
+        }
+        const estimate = body?.resourceEstimate;
+        if (estimate) {
+          estimate.availableMemoryMb = PINNED_PROFILE_VOLATILES.availableMemoryMb;
+          estimate.availableDiskMb = PINNED_PROFILE_VOLATILES.availableDiskMb;
+          estimate.diskTotalMb = PINNED_PROFILE_VOLATILES.diskTotalMb;
+        }
+      } catch (err) {
+        console.warn(`  ! could not pin the hardware profile (${err.message}) — passing it through`);
+        body = undefined;
+      }
+
+      if (response && body !== undefined) await route.fulfill({ response, json: body });
+      else if (response) await route.fulfill({ response });
+      else await route.continue();
+    });
 
     // Sentry is off on the E2E stage (ALLOW_ERROR_MONITORING=false), but a
     // developer capturing against their own Hub may have it on. Never let a
