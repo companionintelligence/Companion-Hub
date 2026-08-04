@@ -160,6 +160,62 @@ describe('AppStatus', () => {
     expect(presentation.detail).toBe('The app is running. Its public web address is still coming up.');
   });
 
+  it('keeps a plain green Running when runtime stats have not loaded yet', () => {
+    const presentation = getAppStatusPresentation('running');
+
+    expect(presentation.labelKey).toBe('APP_STATUS_RUNNING');
+    expect(presentation.tone).toBe('success');
+  });
+
+  it('reports running when every long-lived ci-memory container is up', () => {
+    const longLived = ['gateway', 'summary-service', 'hbpe-service', 'api', 'orchestrator', 'object-store', 'database'].map((name, index) => ({
+      containerId: String(index),
+      name: `ci-memory_ci-marketplace-${name}-1`,
+      state: 'running',
+      status: 'Up 2 minutes',
+      health: name === 'database' ? 'healthy' : null,
+      exitCode: null,
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+    }));
+
+    const presentation = getAppStatusPresentation('running', {
+      appUrn: 'ci-memory:ci-marketplace',
+      appName: 'ci-memory',
+      status: 'running',
+      cpuPercent: 1,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+      highCpu: false,
+      sustainedHighCpu: false,
+      responsive: true,
+      degraded: false,
+      forceStopEligible: false,
+      reason: null,
+      cpuLimit: null,
+      usesDefaultCpuLimit: false,
+      sampledAt: new Date().toISOString(),
+      containers: [
+        ...longLived,
+        {
+          containerId: 'migrate',
+          name: 'ci-memory_ci-marketplace-migrate-database-1',
+          state: 'exited',
+          status: 'Exited (0) 2 minutes ago',
+          health: null,
+          exitCode: 0,
+          cpuPercent: 0,
+          memoryUsageBytes: 0,
+          memoryLimitBytes: 0,
+        },
+      ],
+    });
+
+    expect(presentation.labelKey).toBe('APP_STATUS_RUNNING');
+    expect(presentation.tone).toBe('success');
+  });
+
   it('keeps a plain green Running when the route is not propagating', () => {
     const presentation = getAppStatusPresentation('running', healthyRuntime(), { propagating: false, detail: null });
 
