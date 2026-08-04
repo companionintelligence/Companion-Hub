@@ -237,14 +237,18 @@ npm, merges the settings the installer does not write — `plugins.slots.memory`
 and `hooks.allowConversationAccess`, an additive `tools.alsoAllow`, and disabling the bundled
 `session-memory` hook — then validates with `openclaw doctor --lint --json`, restoring the backup if
 the lint faults any of the keys it wrote. (It ignores findings about anything else, so a config that
-was already untidy is not blamed on this command.) Restart the gateway afterwards.
+was already untidy is not blamed on this command.) Restart the gateway afterwards with
+`openclaw daemon restart` — that manages a service install; a gateway you started by hand has to
+be stopped and started yourself. `openclaw daemon status` says which you have.
 
 For **hermes** it stages the pinned plugin tarball into `~/.hermes/plugins/companionintelligence`,
 swapping it in only once the download succeeded, and writes the `mcp_servers.hub` block into
 `config.yaml` when the Hub flags are given — atomically, `0600`, after a backup, and skipped entirely
 if the block is already correct. Memory credentials stay with `hermes memory setup`, which owns them
-and runs its own connection test, so you still finish with that command. Restart Hermes if a Hub
-server was written; `mcp_servers` is read at startup.
+and runs its own connection test, so you still finish with that command. If a Hub server was
+written, start a new Hermes session — `mcp_servers` is read at startup. Not
+`hermes gateway restart`: that subcommand manages the messaging gateway and does not reload
+`config.yaml`.
 
 It configures **the machine it runs on**. For an agent on another machine, follow the per-agent
 instructions in the [connect docs](https://docs.ci.computer/docs/connect) — they need no Hub CLI.
