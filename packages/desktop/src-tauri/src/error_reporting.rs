@@ -406,6 +406,8 @@ fn is_benign_hub_start_message(message: &str) -> bool {
     lower.contains("recreate was requested, but no existing traefik container was present")
         || ((lower.contains("no such container") || lower.contains("no such object"))
             && lower.contains("traefik"))
+        || lower.contains("cannot connect to the docker daemon")
+        || lower.contains("failed to connect to the docker api")
         || is_benign_compose_optional_env_warning(&lower)
 }
 
