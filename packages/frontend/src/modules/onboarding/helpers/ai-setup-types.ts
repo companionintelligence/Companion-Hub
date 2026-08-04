@@ -41,8 +41,12 @@ export interface AiSetupConfig {
    */
   exposureMode?: ExposureMode;
   skipped: boolean;
-  /** Catalog ids already present in Ollama — install skips re-download for these. */
+  /** Catalog ids already present on the active backend (and Ollama embeddings when chat uses vLLM). */
   installedCatalogIds: string[];
+  /** Selected catalog ids backed by Ollama (pull/pin only applies to these). */
+  ollamaSelectedModelIds?: string[];
+  /** Optional custom API key for host vLLM (persisted to Hub settings as inferenceVllmApiKey). */
+  vllmApiKey?: string;
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
@@ -78,11 +82,22 @@ export interface OllamaStatus {
   error?: string;
 }
 
+export interface VllmStatus {
+  ready: boolean;
+  running: boolean;
+  endpointUrl: string;
+  displayEndpoint?: string;
+  remediationCommand?: string;
+  hint?: string;
+  error?: string;
+}
+
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;
   preferredEmbeddingModel: string | null;
   preferredVisionModel: string | null;
+  preferredVllmApiKey?: string | null;
 }
 
 export interface RuntimeModelInfo {
@@ -103,7 +118,7 @@ export interface HardwareProfileResponse {
   tier: HardwareTier;
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
-  /** Catalog ids already pulled in Ollama (from live /api/tags). */
+  /** Catalog ids already pulled for the active chat backend (+ Ollama embeddings when backend=vllm). */
   installedCatalogIds: string[];
   memoryBudget: MemoryBudget;
   backends: {

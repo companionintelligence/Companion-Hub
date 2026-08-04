@@ -132,7 +132,8 @@ export class InferenceEnvResolver {
 
     // ── Base URL + API key ────────────────────────────────────────────────
     const baseUrl = `${backendBaseUrl}/v1`;
-    const apiKey = BACKEND_API_KEY[backendType];
+    const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
+    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : BACKEND_API_KEY[backendType];
 
     // ── Chat model ────────────────────────────────────────────────────────
     // Prefer a model that is actually present on the active backend: this env is

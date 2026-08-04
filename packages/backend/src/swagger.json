@@ -1352,7 +1352,17 @@
     "/api/inference/onboarding-profile": {
       "get": {
         "operationId": "getOnboardingProfile",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "backend",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["ollama", "vllm", "lemonade"]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
@@ -1366,6 +1376,20 @@
     "/api/inference/ollama/status": {
       "get": {
         "operationId": "getOllamaStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/vllm/status": {
+      "get": {
+        "operationId": "getVllmStatus",
         "parameters": [],
         "responses": {
           "200": {

@@ -326,6 +326,20 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text');
     });
 
+    it('uses a custom vLLM API key from Hub settings when set', async () => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_API_KEY).toBe('vllm-local');
+    });
+
     it('omits the embed host and embedding model when no Ollama is reachable', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
 

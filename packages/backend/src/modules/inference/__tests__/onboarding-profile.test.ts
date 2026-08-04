@@ -28,6 +28,7 @@ describe('InferenceController — onboarding-profile', () => {
   let router: MockProxy<InferenceRouterService>;
   let hostMetrics: MockProxy<HostMetricsService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let vllmBackend: MockProxy<VllmBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -98,7 +99,9 @@ describe('InferenceController — onboarding-profile', () => {
     router = moduleRef.get(InferenceRouterService);
     hostMetrics = moduleRef.get(HostMetricsService);
     ollamaBackend = moduleRef.get(OllamaBackend);
+    vllmBackend = moduleRef.get(VllmBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
+    vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);
@@ -127,7 +130,7 @@ describe('InferenceController — onboarding-profile', () => {
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
-    const result = await controller.getOnboardingProfile();
+    const result = await controller.getOnboardingProfile({ backend: 'ollama' });
 
     expect(result.hardware).toEqual(fakeProfile);
     expect(result.tier).toBe('high');
@@ -135,6 +138,25 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.available).toHaveLength(2);
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
     expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
+  });
+
+  it('maps vLLM served models and Ollama embeddings when backend=vllm', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+    vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen/Qwen2.5-7B-Instruct'] });
+    modelRegistry.getCatalog.mockReturnValue([
+      { id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama', modality: 'llm' },
+      { id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', backend: 'ollama', modality: 'embedding' },
+      { id: 'qwen-vllm', backendModelId: 'Qwen/Qwen2.5-7B-Instruct', backend: 'vllm', modality: 'llm' },
+    ] as any);
+
+    const result = await controller.getOnboardingProfile({ backend: 'vllm' });
+
+    expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen-vllm', 'nomic-embed-text']));
   });
 
   it('should recommend ollama (not vllm) for AMD GPU with runtime — vLLM has no maintained ROCm image', async () => {

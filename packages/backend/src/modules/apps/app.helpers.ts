@@ -9,7 +9,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppInfo, MemoryUrlStyle } from '@ci-hub/common/schemas';
+import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -18,7 +18,8 @@ import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
-import { InferenceEnvResolver } from '../inference/inference-env-resolver';
+import { InferenceEnvResolver, type StandardizedAiEnv } from '../inference/inference-env-resolver';
+import { CloudFallbackService } from '../inference/cloud-fallback.service';
 import { ApiKeyService } from '../api-keys/api-key.service';
 import type { ApiKeyScope } from '../api-keys/api-key.scopes';
 import { isOfficialStoreApp } from './official-store.predicate';
@@ -73,6 +74,49 @@ function memoryUrlForStyle(brokeredUrl: string, style: MemoryUrlStyle | undefine
   }
 
   return `${brokeredUrl.replace(/\/+$/, '')}${GATEWAY_API_PREFIX}`;
+}
+
+const HUB_INFERENCE_RESOLVED: Record<string, keyof StandardizedAiEnv> = {
+  llm_base_url: 'CI_LLM_BASE_URL',
+  llm_api_key: 'CI_LLM_API_KEY',
+  chat_model: 'CI_CHAT_MODEL',
+  embedding_model: 'CI_EMBEDDING_MODEL',
+  vision_model: 'CI_VISION_MODEL',
+  ollama_host: 'OLLAMA_HOST',
+  ollama_embed_host: 'CI_OLLAMA_EMBED_HOST',
+  num_ctx: 'CI_LLM_NUM_CTX',
+};
+
+/** Maps resolved Hub inference env into an app's env file (tested directly). */
+export function applyHubInferenceEnv(options: {
+  hubIntegration: HubIntegration | undefined;
+  aiEnv: StandardizedAiEnv;
+  envMap: Map<string, string>;
+}): void {
+  const inferenceMapping = options.hubIntegration?.inference;
+  if (!inferenceMapping) {
+    return;
+  }
+
+  const stripV1 = options.hubIntegration?.llm_base_url_strip_v1 === true;
+
+  for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
+    const resolvedKey = HUB_INFERENCE_RESOLVED[hubKey as keyof typeof HUB_INFERENCE_RESOLVED];
+    if (!resolvedKey || !appEnvVar) {
+      continue;
+    }
+
+    let resolved = options.aiEnv[resolvedKey];
+    if (resolved === undefined) {
+      continue;
+    }
+
+    if (hubKey === 'llm_base_url' && stripV1) {
+      resolved = resolved.replace(/\/v1\/?$/, '');
+    }
+
+    options.envMap.set(appEnvVar, resolved);
+  }
 }
 
 /**
@@ -130,6 +174,7 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
+    private readonly cloudFallback: CloudFallbackService,
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
     private readonly portalClient: PortalClientService,
@@ -590,21 +635,17 @@ export class AppHelpers {
         // matches the credentials.env endpoint and never emits a sub-minimum
         // num_ctx that would make the app abort at startup.
         const aiEnv = await this.inferenceEnv.resolve({ minContextLength: appMinContextLength(appName) });
-        const HUB_TO_RESOLVED: Record<string, string | undefined> = {
-          llm_base_url: aiEnv.CI_LLM_BASE_URL,
-          llm_api_key: aiEnv.CI_LLM_API_KEY,
-          chat_model: aiEnv.CI_CHAT_MODEL,
-          embedding_model: aiEnv.CI_EMBEDDING_MODEL,
-          vision_model: aiEnv.CI_VISION_MODEL,
-          ollama_host: aiEnv.OLLAMA_HOST,
-          ollama_embed_host: aiEnv.CI_OLLAMA_EMBED_HOST,
-          num_ctx: aiEnv.CI_LLM_NUM_CTX,
-        };
-        for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
-          const resolved = HUB_TO_RESOLVED[hubKey];
-          if (resolved !== undefined && appEnvVar) {
-            envMap.set(appEnvVar, resolved);
-          }
+        applyHubInferenceEnv({
+          hubIntegration: config.hub_integration,
+          aiEnv,
+          envMap,
+        });
+
+        const providerSwitch = config.hub_integration?.inference_provider;
+        if (providerSwitch) {
+          const usesOpenAiCompatible =
+            this.cloudFallback.getEnabledProviders().length > 0 || (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
+          envMap.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
         }
       } catch (err) {
         this.logger.warn(`[AppHelpers] Failed to resolve inference env for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);

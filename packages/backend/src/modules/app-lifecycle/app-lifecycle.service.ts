@@ -1779,7 +1779,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
         try {
           const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
-          if (!info?.categories?.includes('ai')) {
+          const inferenceMapping = info?.hub_integration?.inference;
+          const hasInferenceIntegration = inferenceMapping && Object.keys(inferenceMapping).length > 0;
+          if (!info?.categories?.includes('ai') && !hasInferenceIntegration) {
             return;
           }
           this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);

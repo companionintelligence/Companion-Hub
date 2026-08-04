@@ -132,6 +132,7 @@ export class ConfigurationService {
       inferenceModel: string | undefined;
       inferenceEmbeddingModel: string | undefined;
       inferenceVisionModel: string | undefined;
+      inferenceVllmApiKey: string | undefined;
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
@@ -142,6 +143,7 @@ export class ConfigurationService {
       inferenceModel: undefined,
       inferenceEmbeddingModel: undefined,
       inferenceVisionModel: undefined,
+      inferenceVllmApiKey: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -158,6 +160,7 @@ export class ConfigurationService {
           inferenceModel: settings.inferenceModel,
           inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
           inferenceVisionModel: settings.inferenceVisionModel,
+          inferenceVllmApiKey: settings.inferenceVllmApiKey,
         };
       }
     } catch (_e) {
@@ -219,6 +222,7 @@ export class ConfigurationService {
         inferenceModel: settingsValues.inferenceModel,
         inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
         inferenceVisionModel: settingsValues.inferenceVisionModel,
+        inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -299,6 +303,7 @@ export class ConfigurationService {
       preferredModel: this.config.userSettings.inferenceModel ?? null,
       preferredEmbeddingModel: this.config.userSettings.inferenceEmbeddingModel ?? null,
       preferredVisionModel: this.config.userSettings.inferenceVisionModel ?? null,
+      preferredVllmApiKey: this.config.userSettings.inferenceVllmApiKey ?? null,
     };
   }
 
@@ -312,12 +317,14 @@ export class ConfigurationService {
     model?: string | null,
     embeddingModel?: string | null,
     visionModel?: string | null,
+    vllmApiKey?: string | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
       inferenceModel?: string;
       inferenceEmbeddingModel?: string;
       inferenceVisionModel?: string;
+      inferenceVllmApiKey?: string;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -327,6 +334,9 @@ export class ConfigurationService {
     }
     if (visionModel !== undefined) {
       settings.inferenceVisionModel = visionModel ?? undefined;
+    }
+    if (vllmApiKey !== undefined) {
+      settings.inferenceVllmApiKey = vllmApiKey?.trim() ? vllmApiKey.trim() : undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
