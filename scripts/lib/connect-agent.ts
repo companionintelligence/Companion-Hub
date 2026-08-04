@@ -1106,7 +1106,15 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
       ...(backup ? [`${bold('backup')}     ${backup}`] : []),
       ...(finalChanges.length > 0 ? ['', 'Changed:', ...finalChanges.map((c) => `  ${c}`)] : []),
       '',
-      'Restart the OpenClaw gateway, then verify:',
+      // Naming the command matters more here than anywhere else: this box is what the
+      // operator is looking at the moment they need it, and nothing above has told them
+      // how. `daemon restart` covers a service install (launchd/systemd/schtasks) and is
+      // a no-op against a gateway someone started by hand, hence the second line.
+      'Restart the OpenClaw gateway:',
+      '  openclaw daemon restart          (if it runs as a service — check with: openclaw daemon status)',
+      '  otherwise stop and start the process you launched yourself',
+      '',
+      'Then verify:',
       '  openclaw plugins inspect companionintelligence --runtime --json',
       'Look for "status": "loaded" and "activationReason": "selected memory slot".',
       'Or run /ci-memory in a session to check connectivity.',
@@ -1339,7 +1347,9 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       'Confirm with `hermes memory status` — it should report the provider as available.',
       // Only when a server was actually registered: Hermes reads mcp_servers at startup,
       // so the tools are absent until a restart and that reads as a failed write.
-      ...(hubConfigPath ? ['', 'Restart Hermes for the Hub MCP server — `mcp_servers` is read at startup.'] : []),
+      // Not `hermes gateway restart` — that manages the messaging gateway (Telegram,
+      // Discord, WhatsApp) and does nothing for config.yaml, which is read per session.
+      ...(hubConfigPath ? ['', 'Start a new Hermes session for the Hub MCP server — mcp_servers is read at startup.'] : []),
     ],
     'green',
   );
