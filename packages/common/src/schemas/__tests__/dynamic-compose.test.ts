@@ -1082,6 +1082,28 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc/localtime' }, { hostPath: '/etc/timezone' }] })).toHaveLength(0);
   });
 
+  it('does not flag a genuine named volume, which exposes no host path', () => {
+    expect(collectServiceSecurityViolations({ volumes: [{ volumeName: 'pgdata' }] })).toHaveLength(0);
+  });
+
+  // Compose reads `/var/run/docker.sock` in the source slot as a BIND, whatever field it arrived in,
+  // so volumeName must not become an unchecked route to a host path.
+  it('flags a volumeName that is really a host path', () => {
+    for (const volumeName of ['/var/run/docker.sock', './host-dir', '../escape', '/', '~/secrets']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ volumeName }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+    }
+  });
+
+  it('flags a path-shaped volumeName even for an app granted that exact host path', () => {
+    // The grant covers binds the app declares honestly via hostPath; it must not turn the
+    // volumeName field into a second, unvalidated way to ask for the same access.
+    const violations = collectServiceSecurityViolations(
+      { volumes: [{ volumeName: '/var/run/docker.sock' }] },
+      { hostPaths: ['/var/run/docker.sock'] },
+    );
+    expect(violations.map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+  });
+
   it('keeps the trusted allowlist tight and self-consistent', () => {
     // Guard against accidental broadening: every allowlisted app must resolve to zero
     // violations for exactly the access it is granted, and nothing else.

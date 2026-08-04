@@ -34,12 +34,20 @@ type ServiceVolume = NonNullable<Service['volumes']>[number];
  * `var-lib-postgresql`). Derived from the mount point rather than the service so that sidecars
  * sharing a data directory land on the same volume, and so the name survives app updates —
  * a name that drifted between builds would orphan the app's data.
+ *
+ * Separators are escaped rather than simply replaced: mapping both `/` and `-` onto `-` would give
+ * `/data/db` and `/data-db` the same volume, silently merging two unrelated data directories.
+ * Doubling an existing `-` keeps them distinct while leaving hyphen-free paths — every database
+ * directory in practice — reading exactly as before.
  */
 function deriveVolumeName(containerPath: string): string {
   const slug = containerPath
     .replace(/^\/+/, '')
-    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
-    .replace(/^[-.]+|-+$/g, '');
+    .replace(/-/g, '--')
+    .replace(/\//g, '-')
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+    .replace(/^[-._]+/, '')
+    .replace(/[-_]+$/, '');
 
   return slug || 'data';
 }

@@ -105,6 +105,20 @@ describe('bind-mount-helpers', () => {
       expect(stat).toHaveBeenCalledTimes(1);
     });
 
+    it('gives concurrent probes distinct files so neither deletes the other mid-flight', async () => {
+      const probeNames: string[] = [];
+      vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (target) => {
+        probeNames.push(String(target).split(/[\\/]/).pop() ?? '');
+      });
+      stubObservedMode(0o640);
+
+      // Two directories, so the per-directory cache does not collapse this into a single probe.
+      await Promise.all([supportsPosixPermissions(join(tmpRoot, 'a')), supportsPosixPermissions(join(tmpRoot, 'b'))]);
+
+      expect(probeNames).toHaveLength(2);
+      expect(new Set(probeNames).size).toBe(2);
+    });
+
     it('cleans up its probe file', async () => {
       stubObservedMode(0o640);
 

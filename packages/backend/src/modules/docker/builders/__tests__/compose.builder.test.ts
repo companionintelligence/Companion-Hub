@@ -166,6 +166,36 @@ describe('DockerComposeBuilder', () => {
       };
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).resolves.toContain('services:');
     });
+
+    // Compose's short syntax decides bind-vs-volume from the source's shape, so a path in the
+    // volumeName slot renders as a host bind. The schema's charset rule only warns at this sink,
+    // which would leave the volumeName field as an unchecked route to any host path.
+    it('rejects a path-shaped volumeName, which compose would render as a host bind', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [{ volumeName: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' } as never],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+    });
+
+    it('rejects a relative volumeName, which compose also treats as a bind source', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [{ volumeName: './host-dir', containerPath: '/data' } as never],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+    });
+
+    it('still allows a legitimate named volume', async () => {
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [{ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }],
+      };
+      await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).resolves.toContain('pgdata:/var/lib/postgresql');
+    });
   });
 
   it('should correctly format entrypoint as string', async () => {
@@ -347,6 +377,24 @@ describe('DockerComposeBuilder', () => {
       expect(yamlObject.services.database.volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
       expect(yamlObject.services['fix-permissions'].volumes).toEqual(['var-lib-postgresql:/var/lib/postgresql']);
       expect(yamlObject.volumes).toEqual({ 'var-lib-postgresql': {} });
+    });
+
+    it('gives mount points that differ only by a hyphen distinct volumes', async () => {
+      // `/data/db` and `/data-db` are unrelated directories; collapsing both onto `data-db` would
+      // silently merge them into one volume.
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [
+          { hostPath: '${APP_DATA_DIR}/a', containerPath: '/data/db', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/b', containerPath: '/data-db', requiresPosixPermissions: true },
+        ],
+      };
+
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
+
+      expect(yamlObject.services.svc.volumes).toEqual(['data-db:/data/db', 'data--db:/data-db']);
+      expect(Object.keys(yamlObject.volumes).sort()).toEqual(['data--db', 'data-db']);
     });
 
     it('leaves bind mounts that do not need ownership alone on a permission-less filesystem', async () => {

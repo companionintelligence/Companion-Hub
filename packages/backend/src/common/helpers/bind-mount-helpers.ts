@@ -107,8 +107,15 @@ export async function supportsPosixPermissions(dirPath: string): Promise<boolean
   return supported;
 }
 
+let probeSequence = 0;
+
 async function probePosixPermissions(dirPath: string): Promise<boolean> {
-  const probePath = path.join(dirPath, `.ci-hub-permission-probe-${process.pid}-${Date.now()}`);
+  // The counter, not just pid+timestamp, is what guarantees uniqueness: concurrent installs can
+  // probe within the same millisecond, and sharing a filename would let one probe unlink the
+  // other's file mid-flight. That reads as an error, and an errored probe reports "supported" —
+  // leaving an app broken on exactly the filesystem this is meant to detect.
+  probeSequence += 1;
+  const probePath = path.join(dirPath, `.ci-hub-permission-probe-${process.pid}-${Date.now()}-${probeSequence}`);
 
   try {
     await fs.promises.mkdir(dirPath, { recursive: true });

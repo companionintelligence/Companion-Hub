@@ -129,7 +129,7 @@ interface SecurityCheckedService {
   privileged?: boolean;
   networkMode?: string;
   pid?: string;
-  volumes?: { hostPath?: string }[];
+  volumes?: { hostPath?: string; volumeName?: string }[];
 }
 
 /**
@@ -153,7 +153,16 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
 
   const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
   for (const [index, volume] of (service.volumes ?? []).entries()) {
-    // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
+    // Compose's short syntax decides bind-vs-volume from the shape of the source: `/var/run/docker.sock`
+    // in the volumeName slot is rendered as a HOST BIND, not a named volume. The schema's charset rule
+    // is only advisory at the install sink (parse failures there warn), so a volumeName that is not a
+    // plain docker volume name has to be rejected here or it would smuggle a bind past every check below.
+    if (volume.volumeName !== undefined && !DOCKER_VOLUME_NAME_PATTERN.test(volume.volumeName)) {
+      violations.push({ path: ['volumes', index, 'volumeName'], message: 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', hostPath: volume.volumeName });
+      continue;
+    }
+
+    // A genuine named volume is docker-managed and exposes no host path, so it cannot escape the sandbox.
     if (volume.hostPath === undefined) {
       continue;
     }
