@@ -121,6 +121,8 @@ cihub status              # show running containers + resolved config
 cihub up                  # start the Hub stack
 cihub app status          # color-coded container health
 cihub app logs <name>     # stream container logs
+cihub api-key create      # mint an API key for an MCP client
+cihub connect openclaw    # give a local agent passive memory (also: hermes)
 cihub --help              # full command reference
 ```
 
