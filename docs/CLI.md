@@ -231,6 +231,12 @@ was. Memory is checked twice — `/api/health` for reachability, then `/api/memo
 scope-guarded and therefore actually exercises the key. Hub, when its flags are given, is checked
 with a real `initialize` + `tools/list` handshake and the tool count is reported.
 
+Both memory legs go out under the User-Agent the agent's own plugin sends, because a probe that
+identifies as a different client can only prove something about itself: the hermes plugin talks
+urllib, whose default `Python-urllib/x.y` an edge in front of an exposed hub rejects outright. And
+because Companion Memory answers in JSON, an HTML error body is reported as a CDN or proxy refusing
+the request — not as a bad key, which is the one piece of advice that cannot help there.
+
 For **openclaw** it guards the memory slot first (the guard cannot be delegated: installing by hand
 can switch a foreign slot without asking), backs up `openclaw.json`, installs the pinned plugin from
 npm, merges the settings the installer does not write — `plugins.slots.memory`, the plugin's `config`

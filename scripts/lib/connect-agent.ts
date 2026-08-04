@@ -68,6 +68,7 @@ export type ProbeVerdict = {
     | 'missing-intents-scope'
     | 'missing-memory-scope'
     | 'pre-g1-gateway'
+    | 'blocked-upstream'
     | 'unreachable'
     | 'http-error'
     | 'rpc-error';
@@ -77,6 +78,30 @@ export type ProbeVerdict = {
 };
 
 /**
+ * Did an intermediary answer instead of Companion Memory?
+ *
+ * Companion Memory replies in JSON on every path this command touches, errors included.
+ * An HTML body therefore did not come from it: a CDN, WAF or authenticating proxy in
+ * front of it refused the request and the server never saw it. Worth its own verdict
+ * because the remedy is the opposite of a credential fault — the key is fine, and the
+ * address is what has to change.
+ */
+function looksLikeInterstitial(body?: string): boolean {
+  return /^\s*(<!doctype html|<html)/i.test(body ?? '');
+}
+
+function blockedUpstream(status: number): ProbeVerdict {
+  return {
+    ok: false,
+    code: 'blocked-upstream',
+    message: `Something in front of Companion Memory refused the request (HTTP ${status}).`,
+    hint:
+      'The reply was an HTML error page and Companion Memory answers in JSON, so a CDN, WAF or proxy answered and the server never saw this. ' +
+      "Your key is not the problem. Use the hub's LAN or VPN address rather than its public one, or allow the agent through at the edge.",
+  };
+}
+
+/**
  * Diagnose a Companion Memory `GET /api/health` response.
  *
  * Reachability only. `/api/health` is UNAUTHENTICATED — verified live: it answers 200
@@ -84,7 +109,7 @@ export type ProbeVerdict = {
  * and nothing whatsoever about the credential, and this function must never claim
  * otherwise. `triageMemoryAuth` below is what actually exercises the key.
  */
-export function triageMemoryProbe(status: number | undefined, transportError?: string): ProbeVerdict {
+export function triageMemoryProbe(status: number | undefined, transportError?: string, body?: string): ProbeVerdict {
   if (status === undefined) {
     return {
       ok: false,
@@ -93,6 +118,10 @@ export function triageMemoryProbe(status: number | undefined, transportError?: s
       hint: 'Check the URL is reachable from THIS machine. A hub answers on up to three addresses (local network, Private VPN, exposed domain) and only some are routable from here.',
     };
   }
+  // Ahead of the credential branch below, which would otherwise send someone to re-mint a
+  // perfectly good key over an edge rule. Especially wrong here: this endpoint takes no
+  // key, so a refusal on it was never about one.
+  if (status >= 400 && looksLikeInterstitial(body)) return blockedUpstream(status);
   if (status === 401 || status === 403) {
     return {
       ok: false,
@@ -135,7 +164,7 @@ export function triageMemoryProbe(status: number | undefined, transportError?: s
  * writing something, so the success message promises reads only rather than overstating
  * what was proven.
  */
-export function triageMemoryAuth(status: number | undefined, transportError?: string): ProbeVerdict {
+export function triageMemoryAuth(status: number | undefined, transportError?: string, body?: string): ProbeVerdict {
   if (status === undefined) {
     return {
       ok: false,
@@ -143,6 +172,7 @@ export function triageMemoryAuth(status: number | undefined, transportError?: st
       message: `Could not reach Companion Memory: ${transportError ?? 'no response'}`,
     };
   }
+  if (status >= 400 && looksLikeInterstitial(body)) return blockedUpstream(status);
   if (status === 401) {
     return {
       ok: false,
@@ -765,17 +795,41 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<{ statu
  * authenticate, so on its own it reports success for a key that cannot write a single
  * turn.
  */
-export async function probeMemory(baseUrl: string, key: string): Promise<ProbeVerdict> {
+export async function probeMemory(baseUrl: string, key: string, agent: Agent): Promise<ProbeVerdict> {
   // x-api-key, not Bearer. Both adapters send it this way and the server only reads it
   // from that header; sending Bearer here is a silent 401.
-  const headers = { 'x-api-key': key, Accept: 'application/json' };
+  const headers: Record<string, string> = { 'x-api-key': key, Accept: 'application/json' };
+  const userAgent = memoryProbeUserAgent(agent);
+  if (userAgent) headers['User-Agent'] = userAgent;
 
   const health = await fetchWithTimeout(`${baseUrl}/api/health`, { method: 'GET', headers });
-  const reachable = triageMemoryProbe(health.status, health.error);
+  const reachable = triageMemoryProbe(health.status, health.error, health.body);
   if (!reachable.ok) return reachable;
 
   const auth = await fetchWithTimeout(`${baseUrl}/api/memory/context`, { method: 'GET', headers });
-  return triageMemoryAuth(auth.status, auth.error);
+  return triageMemoryAuth(auth.status, auth.error, auth.body);
+}
+
+/**
+ * The User-Agent the agent's own plugin will send, so the probe is answered the way the
+ * plugin will be.
+ *
+ * A probe that identifies as a different client than the one being installed can only
+ * prove something about itself, and that gap has already cost a full diagnosis: the
+ * hermes plugin talks urllib, whose default `Python-urllib/x.y` is rejected outright by
+ * the edge in front of a publicly-exposed hub (Cloudflare answers it 403 before the
+ * server sees it) — while this probe, on node's fetch, sailed through. Setup passed and
+ * every call the plugin then made was refused, invisibly, because the plugin swallows
+ * failed writes rather than break a session.
+ *
+ * This is the string the pinned plugin sends, which is the state that matters: it is the
+ * version `connect` is about to install, not whatever may already be on disk.
+ *
+ * openclaw needs no entry. Its plugin runs on node, so undici's default User-Agent here
+ * is already the one it will send — overriding it would make the probe LESS faithful.
+ */
+export function memoryProbeUserAgent(agent: Agent): string | undefined {
+  return agent === 'hermes' ? `companionintelligence-hermes-memory/${PINNED_VERSIONS.hermes}` : undefined;
 }
 
 /**
@@ -916,7 +970,7 @@ export async function connectAgent(options: ConnectOptions): Promise<never> {
     process.exit(1);
   }
 
-  const memoryVerdict = await probeMemory(memoryUrl, memoryKey);
+  const memoryVerdict = await probeMemory(memoryUrl, memoryKey, agent);
   const hubVerdict = hubUrl && hubKey ? await probeHubMcp(hubUrl, hubKey) : undefined;
 
   const failed = [memoryVerdict, ...(hubVerdict ? [hubVerdict] : [])].filter((v) => !v.ok);
