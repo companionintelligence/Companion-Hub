@@ -178,16 +178,15 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 
 ```bash
 cihub api-key create --name "laptop"   # operator keys carry the 'mcp' scope
-cihub api-key list                     # id, name, scopes, prefix
+cihub api-key list                     # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
 **Settings → Security**.
 
-`create` also accepts `--capability read|write|full`. Per-key capability arrived after several
-published Hub releases, so on a Hub whose `api_key` table lacks the column the flag is accepted and
-stores nothing — the command says so rather than implying a restriction the server will not enforce,
-and `list` omits the field instead of reporting a default it cannot verify.
+`create` also accepts `--capability read|write|full`, which decides what the key may do on the
+surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
+**Settings → Security**; the CLI has `create` and `list` only.
 
 Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
 installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
