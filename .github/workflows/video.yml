@@ -63,7 +63,10 @@ jobs:
       CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
       CI_HUB_TUNNEL_DIR: /tmp/ci-hub-e2e/tunnel
       CI_HUB_VERSION: video
-      CI_MARKETPLACE_DIR: ${{ github.workspace }}/../CI-Marketplace
+      # Must sit INSIDE the workspace — actions/checkout rejects any `path:`
+      # that escapes $GITHUB_WORKSPACE, which is why `../CI-Marketplace` silently
+      # produced an empty catalog for every run before this.
+      CI_MARKETPLACE_DIR: ${{ github.workspace }}/CI-Marketplace
 
     services:
       postgres:
@@ -95,19 +98,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The store and app-details shots render the catalog that
-      # e2e/start-backend.sh symlinks from $CI_MARKETPLACE_DIR/apps. Without this
-      # checkout the script prints "app store will be empty" and both shots fail
-      # their waitFor. CI-Marketplace is private, so this needs a cross-repo
-      # token; it is non-fatal so the rest of the cut still captures without one.
+      # CI-Marketplace is private, so the checkout below needs a cross-repo PAT —
+      # secrets.GITHUB_TOKEN is scoped to CI-Hub and cannot read it. Name the
+      # missing secret here, because actions/checkout would otherwise fail with a
+      # bare "Repository not found" that reads like the repo was deleted.
+      - name: Require the cross-repo read token
+        env:
+          CI_ORG_READ_TOKEN: ${{ secrets.CI_ORG_READ_TOKEN }}
+        run: |
+          if [ -z "${CI_ORG_READ_TOKEN}" ]; then
+            echo "::error::CI_ORG_READ_TOKEN is not set. It is a PAT with read access to the private" \
+                 "companionintelligence/CI-Marketplace repo. Without it the Hub's app store has no" \
+                 "catalog and the app-details, install-dialog, running-app and hub-home shots cannot" \
+                 "be filmed. Add it as a repo or org Actions secret and re-run."
+            exit 1
+          fi
+
+      # Four shots render app info that only exists in the CI-Marketplace
+      # catalog: `app-details`, `install-dialog`, `running-app`, and the
+      # installed-app tiles inside `hub-home`. e2e/start-backend.sh symlinks
+      # $CI_MARKETPLACE_DIR/apps into $CI_HUB_DATA_DIR/repos/ci-marketplace/apps;
+      # without it the script prints "app store will be empty".
+      #
+      # No longer `continue-on-error`: swallowing this failure is exactly how
+      # four shots became "capture pending" slates without anyone noticing.
       - name: Check out CI-Marketplace (store catalog)
-        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: companionintelligence/CI-Marketplace
           ref: dev
-          path: ../CI-Marketplace
-          token: ${{ secrets.CI_ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          path: CI-Marketplace
+          token: ${{ secrets.CI_ORG_READ_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
@@ -162,22 +183,93 @@ jobs:
           timeout 420 bash -c 'until curl -sf http://localhost:3000/api/health > /dev/null; do sleep 3; done'
           timeout 180 bash -c 'until curl -sf http://localhost:9091 > /dev/null; do sleep 2; done'
 
+          # The store and app-details shots need the `ci-marketplace` app store
+          # row, which app.service.ts registers exactly once at boot. If the
+          # symlink is missing, four shots film app info that does not exist —
+          # so fail here rather than three minutes later inside `capture`.
+          if ! grep -q 'CI-Marketplace: linked' /tmp/backend.log; then
+            echo "::error::e2e/start-backend.sh did not link the CI-Marketplace catalog." \
+                 "CI_MARKETPLACE_DIR=$CI_MARKETPLACE_DIR"
+            tail -n 40 /tmp/backend.log || true
+            exit 1
+          fi
+
           # Seed the local admin the storyboard's hub-home shot signs in as
           # (test@test.com / password, e2e/helpers/constants.ts). Reuses the
           # repo's own fixtures rather than duplicating the argon2 hash here.
+          #
+          # NO clearDatabase() here. It deletes schema.appStore, and the
+          # `ci-marketplace` row is only ever created by registerCloudAppStore()
+          # at boot — wiping it left the store page with no app store to render.
+          # The Postgres service container is fresh on every run anyway.
+          #
+          # The app rows are DB-only on purpose: populateAppInfo falls back to
+          # the marketplace catalog when the installed files are absent
+          # (packages/backend/src/modules/apps/apps.service.ts), so `hub-home`
+          # gets real tiles and `running-app` gets a real status pill without a
+          # Docker install in flight.
           pnpm exec tsx -e "
             const f = await import('./e2e/fixtures/fixtures.ts');
-            const db = await import('./e2e/helpers/db.ts');
-            await db.clearDatabase();
-            await db.seedOrganization();
+            const dbh = await import('./e2e/helpers/db.ts');
+            const schema = await import('./packages/backend/src/core/database/drizzle/schema.ts');
+            await dbh.seedOrganization();
             await f.createTestUser();
+            await dbh.db.insert(schema.app).values([
+              { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'immich' },
+              { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'jellyfin' },
+              { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'home-assistant' },
+            ]);
           "
 
           echo "stage up: http://localhost:9091"
 
-      - name: Capture
-        working-directory: video
-        run: npm run capture
+      # Pass 1 of 3 — everything except the two FTUE shots, which need Hub state
+      # that is mutually exclusive with an operational, onboarded Hub. The shot
+      # list is derived from the storyboard so a new scene is picked up
+      # automatically; only the two exclusions are named here.
+      - name: Capture (main pass)
+        run: |
+          set -euo pipefail
+          ONLY=$(node -e "
+            const sb = require('./video/storyboard.json');
+            const ftue = new Set(['device-registration', 'onboarding-wizard']);
+            const ids = sb.scenes.flatMap((s) => s.shots ?? []).map((s) => s.id).filter((id) => !ftue.has(id));
+            if (!ids.length) { console.error('no shots to capture'); process.exit(1); }
+            process.stdout.write(ids.join(','));
+          ")
+          echo "capturing: $ONLY"
+          cd video && npm run capture -- --only "$ONLY"
+
+      # Pass 2 of 3 — the onboarding wizard. /onboarding redirects to /home when
+      # hasCompletedOnboarding is true, which the seeded admin must be for every
+      # shot above, so re-arm the wizard and film it on its own. The shot carries
+      # its own login in `before` because each pass gets a fresh BrowserContext.
+      - name: Capture the onboarding wizard (pass 2)
+        run: |
+          set -euo pipefail
+          pnpm exec tsx -e "
+            const s = await import('./e2e/helpers/settings.ts');
+            await s.setWelcomeSeen(false);
+          "
+          cd video && npm run capture -- --only onboarding-wizard
+
+      # Pass 3 of 3, and it must stay last: freshUnregistered() clears the
+      # database, so nothing after this can sign in. root.tsx sends an
+      # operational Hub from /device-registration to /login, so the mock portal
+      # is flipped to `unregistered` and the tunnel token e2e/start-backend.sh
+      # wrote is removed. POST /api/registration/prepare-fresh is NOT usable
+      # here — it refuses while the Hub is operational.
+      - name: Capture device registration (pass 3)
+        run: |
+          set -euo pipefail
+          curl -sf -X POST http://localhost:4444/___control \
+            -H 'content-type: application/json' \
+            -d '{"scenario":"unregistered"}'
+          pnpm exec tsx -e "
+            const s = await import('./e2e/fixtures/hub-states.ts');
+            await s.freshUnregistered();
+          "
+          cd video && npm run capture -- --only device-registration
 
       # A failed shot is almost always the stage, not the storyboard.
       - name: Stage logs
