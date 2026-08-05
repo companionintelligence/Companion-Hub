@@ -2,6 +2,11 @@ name: Install dependencies
 
 description: Install dependencies
 
+inputs:
+  node-auth-token:
+    description: Token for @companionintelligence GitHub Packages (typically secrets.GITHUB_TOKEN)
+    required: true
+
 runs:
   using: "composite"
   steps:
@@ -19,7 +24,7 @@ runs:
       shell: bash
       run: pnpm install --frozen-lockfile
       env:
-        NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        NODE_AUTH_TOKEN: ${{ inputs.node-auth-token }}
 
     - name: Build
       shell: bash
