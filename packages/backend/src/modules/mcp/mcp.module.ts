@@ -21,6 +21,8 @@ import { McpAdminController } from './mcp-admin.controller';
 import { McpAppsController } from './mcp-apps.controller';
 import { McpService } from './mcp.service';
 import { McpServerFactory } from './mcp-server.factory';
+import { McpV2ServerFactory } from './mcp-v2-server.factory';
+import { McpModernHandlerService } from './mcp-modern-handler.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpAdminService } from './mcp-admin.service';
 import { McpToolRegistry } from './mcp-tool-registry.service';
@@ -79,6 +81,8 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
   providers: [
     McpService,
     McpServerFactory,
+    McpV2ServerFactory,
+    McpModernHandlerService,
     McpSessionRegistry,
     McpAdminService,
     McpToolRegistry,

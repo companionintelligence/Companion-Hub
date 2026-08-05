@@ -25,6 +25,7 @@ interface McpStatus {
   enabled: boolean;
   server: { name: string; version: string };
   protocolVersion: string;
+  protocolVersions?: string[];
   toolCount: number;
   activeSessions: number;
   activeKeyCount: number;
@@ -254,7 +255,7 @@ export const McpSettingsContainer = () => {
             value={status.enabled ? t('MCP_SETTINGS_STATUS_ENABLED') : t('MCP_SETTINGS_STATUS_DISABLED')}
           />
           <StatItem label={t('MCP_SETTINGS_SERVER')} value={`${status.server.name} ${status.server.version}`} />
-          <StatItem label={t('MCP_SETTINGS_PROTOCOL')} value={status.protocolVersion} />
+          <StatItem label={t('MCP_SETTINGS_PROTOCOL')} value={(status.protocolVersions ?? [status.protocolVersion]).join(', ')} />
           <StatItem label={t('MCP_SETTINGS_TOOL_COUNT')} value={String(status.toolCount)} />
           <StatItem label={t('MCP_SETTINGS_ACTIVE_SESSIONS')} value={String(status.activeSessions)} />
           <StatItem

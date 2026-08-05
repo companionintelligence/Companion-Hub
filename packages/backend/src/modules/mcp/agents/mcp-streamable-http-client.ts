@@ -1,5 +1,5 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client } from '@modelcontextprotocol/client';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 export type StreamableHttpMcpTool = {
   name: string;
@@ -15,7 +15,8 @@ export type StreamableHttpClientConnectOptions = {
 
 /**
  * Thin wrapper around the official MCP SDK Streamable HTTP client for upstream
- * marketplace MCP servers (context7, ad4m, etc.).
+ * marketplace MCP servers (context7, ad4m, etc.). Uses v2 client auto negotiation
+ * so both 2025 sessionful and 2026 stateless upstream servers work.
  */
 export class McpStreamableHttpClient {
   private client: Client | null = null;
@@ -41,7 +42,7 @@ export class McpStreamableHttpClient {
       sessionId: options.sessionId,
       requestInit: { headers },
     });
-    this.client = new Client({ name: 'ci-hub-mcp-bridge', version: '1.0.0' });
+    this.client = new Client({ name: 'ci-hub-mcp-bridge', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } });
     await this.client.connect(this.transport);
   }
 

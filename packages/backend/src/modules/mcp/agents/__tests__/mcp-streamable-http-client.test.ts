@@ -5,17 +5,18 @@ const mockListTools = vi.fn();
 const mockCallTool = vi.fn();
 const mockConnect = vi.fn();
 const mockClose = vi.fn();
+const mockClientConstructor = vi.fn();
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+vi.mock('@modelcontextprotocol/client', () => ({
   Client: class {
+    constructor(...args: unknown[]) {
+      mockClientConstructor(...args);
+    }
     connect = mockConnect;
     close = mockClose;
     listTools = mockListTools;
     callTool = mockCallTool;
   },
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
   StreamableHTTPClientTransport: class {
     sessionId = 'test-session';
     close = vi.fn();
@@ -43,6 +44,12 @@ describe('McpStreamableHttpClient', () => {
     const tools = await client.listTools();
     expect(tools).toEqual([{ name: 'search', description: 'Search docs', inputSchema: { type: 'object' } }]);
     expect(mockConnect).toHaveBeenCalledOnce();
+  });
+
+  it('uses v2 auto version negotiation when connecting', async () => {
+    const client = new McpStreamableHttpClient();
+    await client.connect({ url: 'http://context7:8080/mcp' });
+    expect(mockClientConstructor).toHaveBeenCalledWith({ name: 'ci-hub-mcp-bridge', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } });
   });
 
   it('forwards tool calls through the SDK client', async () => {

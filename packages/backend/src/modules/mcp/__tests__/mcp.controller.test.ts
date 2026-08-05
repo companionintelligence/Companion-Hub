@@ -7,9 +7,24 @@ import type { Request, Response } from 'express';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { McpSessionRegistry } from '../mcp-session.registry';
+import { McpModernHandlerService } from '../mcp-modern-handler.service';
 import { mcpCallContext } from '../mcp-call-context';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { LoggerService } from '@/core/logger/logger.service';
+
+vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/server')>();
+  return { ...actual, isLegacyRequest: vi.fn().mockResolvedValue(true) };
+});
+
+vi.mock('@modelcontextprotocol/node', () => ({
+  toWebRequest: vi.fn(
+    async (req: Request, body?: unknown) =>
+      new Request('http://test/api/mcp', { method: req.method ?? 'POST', body: JSON.stringify(body ?? req.body) }),
+  ),
+}));
+
+import { isLegacyRequest } from '@modelcontextprotocol/server';
 
 // A minimal, schema-valid MCP initialize request body (what a fresh client POSTs first).
 const INITIALIZE_BODY = {
@@ -30,12 +45,14 @@ function fakeRes(): Response & { status: ReturnType<typeof vi.fn>; json: ReturnT
 describe('McpController (Streamable HTTP)', () => {
   let controller: McpController;
   let sessions: MockProxy<McpSessionRegistry>;
+  let modernHandler: MockProxy<McpModernHandlerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [McpController],
       providers: [
         { provide: McpSessionRegistry, useValue: mock<McpSessionRegistry>() },
+        { provide: McpModernHandlerService, useValue: mock<McpModernHandlerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     })
@@ -48,6 +65,8 @@ describe('McpController (Streamable HTTP)', () => {
 
     controller = module.get<McpController>(McpController);
     sessions = module.get(McpSessionRegistry);
+    modernHandler = module.get(McpModernHandlerService);
+    vi.mocked(isLegacyRequest).mockResolvedValue(true);
   });
 
   it('should be defined', () => {
@@ -141,6 +160,17 @@ describe('McpController (Streamable HTTP)', () => {
       await controller.handlePost(req, res);
 
       expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('routes modern (2026) POSTs to the stateless handler', async () => {
+      vi.mocked(isLegacyRequest).mockResolvedValueOnce(false);
+      const req = { headers: {}, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } } as unknown as Request;
+      const res = fakeRes();
+
+      await controller.handlePost(req, res);
+
+      expect(modernHandler.handleRequest).toHaveBeenCalledWith(req, res, req.body);
+      expect(sessions.createConnectedTransport).not.toHaveBeenCalled();
     });
   });
 

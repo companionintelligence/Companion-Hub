@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { McpService } from '../mcp.service';
 import { McpServerFactory } from '../mcp-server.factory';
+import { McpV2ServerFactory } from '../mcp-v2-server.factory';
+import { McpModernHandlerService } from '../mcp-modern-handler.service';
 import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpController } from '../mcp.controller';
@@ -41,6 +43,8 @@ describe('McpModule', () => {
       providers: [
         McpService,
         McpServerFactory,
+        McpV2ServerFactory,
+        McpModernHandlerService,
         McpSessionRegistry,
         McpToolRegistry,
         McpAuthGuard,
