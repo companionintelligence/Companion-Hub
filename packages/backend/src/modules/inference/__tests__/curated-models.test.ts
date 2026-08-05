@@ -10,10 +10,11 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (69 Ollama LLMs + 4 Lemonade LLMs + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (69 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(69);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
-    expect(llms.length).toBe(73);
+    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
+    expect(llms.length).toBe(81);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -35,6 +36,23 @@ describe('curated-models (TOON catalog)', () => {
     for (const m of llms.filter((m) => m.backend === 'lemonade')) {
       expect(m.backendModelId, `${m.id} tag`).not.toContain(':');
     }
+    // vLLM LLM tags are HuggingFace repo ids (`org/model`) served as-is by `vllm serve`,
+    // and their quantization reflects the served precision, never Ollama's q4_K_M default.
+    for (const m of llms.filter((m) => m.backend === 'vllm')) {
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
+      expect(['bf16', 'mxfp4'], `${m.id} quantization`).toContain(m.runtime.quantization);
+    }
+  });
+
+  it('surfaces vLLM chat models so selecting the vLLM backend yields usable recommendations', () => {
+    const vllm = llms.filter((m) => m.backend === 'vllm');
+    // At least one per hardware tier the backend realistically serves (GPU boxes).
+    expect(vllm.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(vllm.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(vllm.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE rows carry active-params so the hardware-fit ranking doesn't treat them as dense.
+    const coder = byId.get('qwen3-coder-30b-vllm');
+    expect(coder?.activeParameterScale).toBe(3);
   });
 
   it('derives requirements + context from the TOON row (gemma4-31b)', () => {

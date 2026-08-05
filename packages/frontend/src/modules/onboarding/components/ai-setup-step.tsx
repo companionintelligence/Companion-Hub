@@ -1,4 +1,10 @@
-import { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, rescanInferenceHardware } from '@/lib/inference/inference-api';
+import {
+  fetchInferenceOnboardingProfile,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  rescanInferenceHardware,
+} from '@/lib/inference/inference-api';
+import { openExternal } from '@/lib/helpers/open-external';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
 import {
@@ -9,6 +15,7 @@ import {
   type ExposureMode,
   type HardwareProfileResponse,
   type OllamaStatus,
+  type VllmStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
@@ -16,15 +23,16 @@ import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
 import { AccessMethodsCard } from './ai-setup/access-methods-card';
 import { CompanionAppsCard } from './ai-setup/companion-apps-card';
 import { StepSection } from './ai-setup/primitives';
-// Inference backend selection hidden — Ollama is the only option, so no choice is needed.
-// import { BackendCard } from './ai-setup/backend-selection-card';
+import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selection-card';
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
+import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
+import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '../helpers/inference-backend-availability';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -35,9 +43,6 @@ import { useTranslation } from 'react-i18next';
 const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
-
-// Onboarding currently runs everything on Ollama; vLLM/Lemonade are shown but disabled.
-const ONBOARDING_BACKEND: InferenceBackendType = 'ollama';
 
 interface AiSetupStepProps {
   onComplete?: (config: AiSetupConfig) => void;
@@ -94,7 +99,11 @@ export const AiSetupStep = ({
   const [remoteAccess, setRemoteAccess] = useState<RemoteAccessMode[]>(defaultRemoteAccess(cloudflareAvailable, tailscaleAvailable));
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
+  const [checkingVllm, setCheckingVllm] = useState(false);
+  const [vllmApiKey, setVllmApiKey] = useState('');
+  const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
   // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
@@ -128,21 +137,30 @@ export const AiSetupStep = ({
     return data.availableModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id))?.id;
   };
 
-  // Pre-select only models already present in Ollama. New downloads require an explicit checkbox.
+  // Pre-select models already present on the active backend (and Ollama embeddings when chat is vLLM).
   const getDefaultSelectedModelIds = (data: HardwareProfileResponse, backend: InferenceBackendType): string[] => {
     const installed = new Set(data.installedCatalogIds ?? []);
-    return data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
+    return data.availableModels
+      .filter((m) => {
+        if (!installed.has(m.id)) return false;
+        if (m.backend === backend) return true;
+        return backend === 'vllm' && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
+      })
+      .map((m) => m.id);
   };
 
-  const fetchProfile = async (isRescan = false) => {
+  const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile();
+      const backend = backendOverride ?? selectedBackend;
+      const data = await fetchInferenceOnboardingProfile(backend);
       setProfile(data);
-      const defaultSelected = getDefaultSelectedModelIds(data, ONBOARDING_BACKEND);
+      const resolvedBackend = backendOverride ?? data.backends.recommended;
+      setSelectedBackend(resolvedBackend);
+      const defaultSelected = getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
-      setPreferredModelId(getDefaultPreferredModelId(data, ONBOARDING_BACKEND, defaultSelected));
+      setPreferredModelId(getDefaultPreferredModelId(data, resolvedBackend, defaultSelected));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -165,10 +183,24 @@ export const AiSetupStep = ({
     }
   };
 
+  const checkVllmStatus = async () => {
+    setCheckingVllm(true);
+    try {
+      const data = (await fetchVllmInstallStatus()) as VllmStatus;
+      setVllmStatus(data);
+    } catch (_e) {
+      setVllmStatus({ ready: false, running: false, endpointUrl: '' });
+    } finally {
+      setCheckingVllm(false);
+    }
+  };
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
-    fetchProfile();
-    checkOllamaStatus();
+    void (async () => {
+      await fetchProfile(false);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus()]);
+    })();
   }, []);
 
   const handleRescan = async () => {
@@ -182,14 +214,41 @@ export const AiSetupStep = ({
     }
   };
 
+  const handleSelectBackend = async (backend: InferenceBackendType) => {
+    if (!profile || backend === selectedBackend) {
+      return;
+    }
+
+    setSelectedBackend(backend);
+    try {
+      const data = await fetchInferenceOnboardingProfile(backend);
+      setProfile(data);
+      const defaultSelected = getDefaultSelectedModelIds(data, backend);
+      setSelectedModelIds(defaultSelected);
+      setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    if (backend === 'vllm') {
+      void checkVllmStatus();
+    }
+  };
+
   const handleToggleModel = (modelId: string) => {
+    const model = profile?.availableModels.find((m) => m.id === modelId);
+    const installed = new Set(profile?.installedCatalogIds ?? []);
+    if (model?.backend === 'vllm' && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+      openExternal(`https://huggingface.co/${model.backendModelId}`);
+      return;
+    }
+
     const isRemoving = selectedModelIds.includes(modelId);
     const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
     setSelectedModelIds(next);
-    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === ONBOARDING_BACKEND && isAgentModel(m)) ?? false;
+    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === selectedBackend && isAgentModel(m)) ?? false;
     if (isRemoving && modelId === preferredModelId) {
       // The agent's preferred model was removed — fall back to another selected agent model.
-      const fallback = profile?.availableModels.find((m) => m.backend === ONBOARDING_BACKEND && isAgentModel(m) && next.includes(m.id))?.id;
+      const fallback = profile?.availableModels.find((m) => m.backend === selectedBackend && isAgentModel(m) && next.includes(m.id))?.id;
       setPreferredModelId(fallback);
     } else if (!isRemoving && isAgent && !preferredModelId) {
       // First agent model added back — make it the preferred default.
@@ -210,7 +269,11 @@ export const AiSetupStep = ({
   const buildConfig = (): AiSetupConfig | null => {
     if (!profile) return null;
     const backendCompatibleSelectedModels = profile.availableModels
-      .filter((model) => model.backend === ONBOARDING_BACKEND && selectedModelIds.includes(model.id))
+      .filter(
+        (model) =>
+          selectedModelIds.includes(model.id) &&
+          (model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && model.modality === 'embedding')),
+      )
       .map((model) => model.id);
     const validProviders = cloudProviders.filter((p) => {
       if (!p.apiKey.trim()) return false;
@@ -240,13 +303,14 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, ONBOARDING_BACKEND, isEmbeddingModel, selectedModels);
-    const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, ONBOARDING_BACKEND, isVisionModel, selectedModels);
+    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, selectedModels);
+    const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels);
 
     return {
       agentFrameworks,
       selectedModels,
-      backend: ONBOARDING_BACKEND,
+      ollamaSelectedModelIds: profile.availableModels.filter((m) => selectedModels.includes(m.id) && m.backend === 'ollama').map((m) => m.id),
+      backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
       ...(effectivePreferredEmbeddingModelId ? { preferredEmbeddingModelId: effectivePreferredEmbeddingModelId } : {}),
@@ -257,6 +321,7 @@ export const AiSetupStep = ({
       installedCatalogIds,
       installBlocked,
       installBlockReason,
+      ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
     };
   };
 
@@ -276,7 +341,18 @@ export const AiSetupStep = ({
     if (!embedded || !onConfigChange || !profile) return;
     const config = buildConfig();
     if (config) onConfigChange(config);
-  }, [embedded, profile, agentFrameworks, selectedModelIds, preferredModelId, remoteAccess, cloudProviders, onConfigChange]);
+  }, [
+    embedded,
+    profile,
+    agentFrameworks,
+    selectedModelIds,
+    preferredModelId,
+    selectedBackend,
+    remoteAccess,
+    cloudProviders,
+    vllmApiKey,
+    onConfigChange,
+  ]);
 
   if (loading) {
     return (
@@ -337,14 +413,20 @@ export const AiSetupStep = ({
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === ONBOARDING_BACKEND);
-  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === ONBOARDING_BACKEND);
+  const backendRecommendedModels = profile.recommendedModels.filter(
+    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && model.modality === 'embedding'),
+  );
+  const backendAvailableModels = profile.availableModels.filter(
+    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && model.modality === 'embedding'),
+  );
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const installedCatalogIds = profile.installedCatalogIds ?? [];
   const availableDiskMb = profile.resourceEstimate.availableDiskMb;
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
-  const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
+  const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
+  const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
+  const ollamaEmbeddingsWarning = selectedBackend === 'vllm' && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
@@ -370,9 +452,48 @@ export const AiSetupStep = ({
 
           <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
 
-          <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
-            <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
-          </StepSection>
+          <BackendSelectionCard
+            recommended={profile.backends.recommended}
+            available={profile.backends.available}
+            selected={selectedBackend}
+            onSelect={handleSelectBackend}
+            unavailableTypes={unavailableInferenceBackends(profile)}
+          />
+
+          {selectedBackend === 'vllm' ? (
+            <StepSection number={3} badge="required" title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
+              <VllmSetupCard
+                status={vllmStatus}
+                checking={checkingVllm}
+                onRecheck={checkVllmStatus}
+                apiKey={vllmApiKey}
+                onApiKeyChange={setVllmApiKey}
+              />
+            </StepSection>
+          ) : (
+            <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+            </StepSection>
+          )}
+
+          {selectedBackend === 'vllm' && (
+            <StepSection
+              number={3}
+              badge="recommended"
+              title={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}
+              description={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}
+            >
+              {ollamaEmbeddingsWarning && (
+                <div
+                  className="mb-3 rounded-md border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200"
+                  data-testid="ollama-embeddings-warning"
+                >
+                  {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
+                </div>
+              )}
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+            </StepSection>
+          )}
 
           <ResourceSummaryBar
             selectedModels={selectedModels}
@@ -389,6 +510,7 @@ export const AiSetupStep = ({
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
+            chatBackend={selectedBackend}
           >
             <OtherModelsSection
               recommendedModels={backendRecommendedModels}
@@ -397,6 +519,7 @@ export const AiSetupStep = ({
               selectedModelIds={selectedModelIds}
               onToggleModel={handleToggleModel}
               preferredModelId={preferredModelId}
+              chatBackend={selectedBackend}
             />
           </RecommendedModels>
 
@@ -421,7 +544,12 @@ export const AiSetupStep = ({
               intent="primary"
               onClick={handleContinue}
               data-testid="ai-continue-btn"
-              disabled={needsOllama && !isInsufficient && (checkingOllama || !ollamaStatus?.ready)}
+              disabled={
+                (needsOllamaForContinue || needsVllmForContinue) &&
+                !isInsufficient &&
+                ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
+                  (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)))
+              }
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
                 ? t('ONBOARDING_CONTINUE_PRIVATE_VPN_WITHOUT_AI')

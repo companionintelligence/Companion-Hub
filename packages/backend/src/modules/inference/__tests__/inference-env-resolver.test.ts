@@ -14,10 +14,10 @@ import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub
 
 const OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
 
-const makeLlm = (id: string, backendModelId: string, vision = false): CuratedModel =>
+const makeLlm = (id: string, backendModelId: string, vision = false, backend = 'ollama'): CuratedModel =>
   ({
     id,
-    backend: 'ollama',
+    backend,
     backendModelId,
     modality: 'llm',
     purpose: 'general',
@@ -157,6 +157,7 @@ describe('InferenceEnvResolver', () => {
       CI_EMBEDDING_MODEL: 'nomic-embed-text',
       CI_VISION_MODEL: 'gemma4:27b',
       OLLAMA_HOST: OLLAMA_BASE_URL,
+      CI_OLLAMA_EMBED_HOST: OLLAMA_BASE_URL,
       // 24576 MB inference budget, zero-footprint test model, 131072 window → top tier.
       CI_LLM_NUM_CTX: '65536',
     });
@@ -290,6 +291,64 @@ describe('InferenceEnvResolver', () => {
     const env = await service.resolve();
 
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
+  });
+
+  describe('vLLM backend with split-backend embeddings', () => {
+    const VLLM_BASE_URL = 'http://ci-hub-vllm:8000';
+
+    beforeEach(() => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen/Qwen3-8B'] });
+      vllmBackend.getBaseUrl.mockReturnValue(VLLM_BASE_URL);
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('qwen3-8b-vllm', 'Qwen/Qwen3-8B', false, 'vllm')]);
+      // Realistic catalog: embedders exist on Ollama only.
+      modelRegistry.getRecommendedEmbeddingModel.mockImplementation((_tier, backend) =>
+        backend === 'ollama' ? makeEmbedding('nomic-embed-text', 'nomic-embed-text') : undefined,
+      );
+      modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+    });
+
+    it('emits vLLM chat env plus the Ollama embed host + embedder when Ollama is healthy', async () => {
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toBe(`${VLLM_BASE_URL}/v1`);
+      expect(env.CI_LLM_API_KEY).toBe('vllm');
+      expect(env.CI_CHAT_MODEL).toBe('Qwen/Qwen3-8B');
+      // Chat runs on vLLM, so the native-Ollama chat host stays unset…
+      expect(env.OLLAMA_HOST).toBeUndefined();
+      // …but embeddings split to the healthy Ollama: dedicated host + its embedder.
+      expect(env.CI_OLLAMA_EMBED_HOST).toBe(OLLAMA_BASE_URL);
+      expect(env.CI_EMBEDDING_MODEL).toBe('nomic-embed-text');
+    });
+
+    it('uses a custom vLLM API key from Hub settings when set', async () => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+      });
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_API_KEY).toBe('vllm-local');
+    });
+
+    it('omits the embed host and embedding model when no Ollama is reachable', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+
+      const env = await service.resolve();
+
+      expect(env.CI_CHAT_MODEL).toBe('Qwen/Qwen3-8B');
+      expect(env.CI_OLLAMA_EMBED_HOST).toBeUndefined();
+      expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
+    });
   });
 
   it('honors preferred chat and embedding models and falls back for non-vision preferences', async () => {

@@ -12,6 +12,7 @@ export const inferencePreferencesSchema = z.object({
   embeddingModel: z.string().trim().min(1).nullable().optional(),
   // Default vision-capable LLM (catalog id). Used for image-understanding tasks.
   visionModel: z.string().trim().min(1).nullable().optional(),
+  vllmApiKey: z.string().trim().nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
@@ -21,6 +22,12 @@ const runtimeModelsQuerySchema = z.object({
 });
 
 export class RuntimeModelsQueryDto extends createZodDto(runtimeModelsQuerySchema) {}
+
+const onboardingProfileQuerySchema = z.object({
+  backend: inferenceBackendSchema.optional(),
+});
+
+export class OnboardingProfileQueryDto extends createZodDto(onboardingProfileQuerySchema) {}
 
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 

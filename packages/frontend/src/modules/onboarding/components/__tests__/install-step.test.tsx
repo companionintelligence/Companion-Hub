@@ -201,6 +201,7 @@ describe('InstallStep', () => {
         model: null,
         embeddingModel: null,
         visionModel: null,
+        vllmApiKey: null,
       });
     });
   });
@@ -236,6 +237,7 @@ describe('InstallStep', () => {
           model: 'llama3-3-70b',
           embeddingModel: null,
           visionModel: null,
+          vllmApiKey: null,
         });
       },
       { timeout: 5000 },
@@ -282,6 +284,7 @@ describe('InstallStep', () => {
           model: 'chat-model',
           embeddingModel: 'embedding-model',
           visionModel: null,
+          vllmApiKey: null,
         });
       },
       { timeout: 5000 },

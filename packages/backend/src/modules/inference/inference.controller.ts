@@ -19,11 +19,11 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody } from './inference.dto';
+import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody, OnboardingProfileQueryDto } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { resolveInstalledCatalogIds } from './model-availability.util';
+import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -106,7 +106,13 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    const result = await this.configurationService.setInferencePreferences(body.backend, body.model, body.embeddingModel, body.visionModel);
+    const result = await this.configurationService.setInferencePreferences(
+      body.backend,
+      body.model,
+      body.embeddingModel,
+      body.visionModel,
+      body.vllmApiKey,
+    );
 
     // Restart running apps that use AI models so they pick up the new inference
     // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
@@ -320,9 +326,10 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('onboarding-profile')
-  async getOnboardingProfile() {
+  async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto) {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
+    const installBackend = query?.backend ?? recommendedBackend;
     const tier = this.getOnboardingTier(profile, recommendedBackend);
     const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
@@ -342,16 +349,32 @@ export class InferenceController {
     const diskTotalMb = diskTotalGb * 1024;
     const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
 
+    const catalog = this.modelRegistry.getCatalog();
+    const getTrackedState = (id: string) => this.modelRegistry.getTrackedModel(id)?.state;
+
     const ollamaHealth = await this.ollamaBackend.healthCheck().catch(() => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
     }));
-    const installedCatalogIds = resolveInstalledCatalogIds(
-      this.modelRegistry.getCatalog(),
-      ollamaHealth.modelsLoaded ?? [],
-      (id) => this.modelRegistry.getTrackedModel(id)?.state,
-    );
+    const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
+
+    let installedCatalogIds: string[];
+    if (installBackend === 'vllm') {
+      const vllmHealth = await this.vllmBackend.healthCheck().catch(() => ({
+        running: false,
+        healthy: false,
+        modelsLoaded: [] as string[],
+      }));
+      const vllmInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, vllmHealth.modelsLoaded ?? [], 'vllm', getTrackedState);
+      const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
+        const model = catalog.find((m) => m.id === id);
+        return model?.modality === 'embedding';
+      });
+      installedCatalogIds = [...new Set([...vllmInstalled, ...ollamaEmbeddingIds])];
+    } else {
+      installedCatalogIds = ollamaInstalled;
+    }
 
     return {
       hardware: profile,
@@ -380,6 +403,29 @@ export class InferenceController {
   @Get('ollama/status')
   async getOllamaStatus() {
     return this.ollamaInstaller.checkInstallation();
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('vllm/status')
+  async getVllmStatus() {
+    const endpointUrl = this.vllmBackend.getBaseUrl();
+    const health = await this.vllmBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    const displayEndpoint = ready ? `${endpointUrl}/v1` : undefined;
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint,
+      error: ready ? undefined : health.error,
+      remediationCommand: ready ? undefined : 'vllm serve Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 8000 --api-key YOUR_KEY',
+      hint: ready ? undefined : 'Run vLLM on the host machine (not inside Docker). Hub reaches it via host.docker.internal:8000.',
+    };
   }
 
   @UseGuards(AuthGuard)

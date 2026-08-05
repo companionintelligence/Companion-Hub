@@ -4,6 +4,8 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
   saveCloudProviderConfig,
@@ -29,6 +31,10 @@ import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
+import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
+import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
+import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
 // Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
@@ -69,6 +75,11 @@ export const AiSettingsContainer = () => {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
+  const [vllmApiKey, setVllmApiKey] = useState('');
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [checkingOllama, setCheckingOllama] = useState(false);
+  const [checkingVllm, setCheckingVllm] = useState(false);
   const suppressBackendEffectRef = useRef(true);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
@@ -110,17 +121,20 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
-  const fetchProfile = async (isRescan = false) => {
+  const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile();
+      const data = await fetchInferenceOnboardingProfile(backendOverride);
       setProfile(data);
 
-      let preferredBackend = data.backends.recommended;
+      let preferredBackend = backendOverride ?? data.backends.recommended;
       const prefData = await fetchInferencePreferences();
       if (prefData) {
-        preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
+        preferredBackend = backendOverride ?? prefData.preferredBackend ?? data.backends.recommended;
+        if (prefData.preferredVllmApiKey) {
+          setVllmApiKey(prefData.preferredVllmApiKey);
+        }
       }
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       suppressBackendEffectRef.current = true;
@@ -128,6 +142,10 @@ export const AiSettingsContainer = () => {
 
       await fetchTrackedModels();
       await fetchRuntimeModels(preferredBackend);
+      void checkOllamaStatus();
+      if (preferredBackend === 'vllm') {
+        void checkVllmStatus();
+      }
 
       const configured = await fetchConfiguredCloudProviders();
       if (configured.length > 0) {
@@ -140,6 +158,28 @@ export const AiSettingsContainer = () => {
       setRescanning(false);
     }
   };
+
+  const checkOllamaStatus = async () => {
+    setCheckingOllama(true);
+    try {
+      setOllamaStatus((await fetchOllamaInstallStatus()) as OllamaStatus);
+    } catch {
+      setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
+    } finally {
+      setCheckingOllama(false);
+    }
+  };
+
+  const checkVllmStatus = useCallback(async () => {
+    setCheckingVllm(true);
+    try {
+      setVllmStatus((await fetchVllmInstallStatus()) as VllmStatus);
+    } catch {
+      setVllmStatus({ ready: false, running: false, endpointUrl: '' });
+    } finally {
+      setCheckingVllm(false);
+    }
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -166,15 +206,19 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
-  // Refresh runtime model list whenever user changes inference backend in settings.
+  // Refresh profile + runtime models whenever user changes inference backend in settings.
   useEffect(() => {
     if (!profile) return;
     if (suppressBackendEffectRef.current) {
       suppressBackendEffectRef.current = false;
       return;
     }
+    void fetchInferenceOnboardingProfile(selectedBackend).then(setProfile);
     fetchRuntimeModels(selectedBackend);
-  }, [selectedBackend, fetchRuntimeModels, profile]);
+    if (selectedBackend === 'vllm') {
+      void checkVllmStatus();
+    }
+  }, [selectedBackend, fetchRuntimeModels, profile, checkVllmStatus]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -200,12 +244,14 @@ export const AiSettingsContainer = () => {
       }
 
       const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => {
+        const model = availableModelById.get(modelId);
+        if (!model) return false;
+        return model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
+      });
 
-      // Resolve the default model for each role from the user's selection so agents/RAG/vision
-      // tasks have a usable default. null clears any previously stored preference for that role.
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, selectedBackend, isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       await saveInferencePreferences({
@@ -213,6 +259,7 @@ export const AiSettingsContainer = () => {
         model: preferredModel,
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
+        vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
       });
 
       // Save cloud providers — for already-configured providers (masked key),
@@ -225,9 +272,10 @@ export const AiSettingsContainer = () => {
         }
       }
 
-      const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
       const modelOperationErrors: string[] = [];
-      const modelsToPull = compatibleSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (modelsToPull.length > 0) {
         await ensurePullsStarted(modelsToPull, false);
@@ -314,8 +362,12 @@ export const AiSettingsContainer = () => {
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
-  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
+  const backendCompatibleRecommendedModels = profile.recommendedModels.filter(
+    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
+  );
+  const backendAvailableModels = profile.availableModels.filter(
+    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
+  );
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
@@ -450,8 +502,29 @@ export const AiSettingsContainer = () => {
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
-            unavailableTypes={['vllm', 'lemonade']}
+            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade']}
           />
+
+          {selectedBackend === 'vllm' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_VLLM_SECTION_DESC')}</p>
+              </div>
+              <VllmSetupCard
+                status={vllmStatus}
+                checking={checkingVllm}
+                onRecheck={checkVllmStatus}
+                apiKey={vllmApiKey}
+                onApiKeyChange={setVllmApiKey}
+              />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+              </div>
+            </section>
+          )}
 
           <ResourceSummaryBar
             selectedModels={selectedModels}

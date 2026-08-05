@@ -15,6 +15,11 @@ export const INFERENCE_VARIABLES = [
   'embedding_model',
   'vision_model',
   'ollama_host',
+  // Native Ollama URL dedicated to embeddings. Unlike `ollama_host` (only set
+  // when Ollama is the active chat backend), this is emitted whenever a healthy
+  // Ollama is reachable — so an app can run chat on vLLM/Lemonade while keeping
+  // its embedding pipeline (and existing pgvector index) on Ollama.
+  'ollama_embed_host',
   'num_ctx',
 ] as const;
 export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
@@ -24,6 +29,23 @@ export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
 // be a partial record — otherwise marketplace config fails safeParse and the
 // Hub reports "App ci-memory:ci-marketplace not found".
 export const inferenceEnvMappingSchema = z.partialRecord(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+
+/**
+ * Dual-provider apps (e.g. AnythingLLM) expose an internal provider switch env var.
+ * The Hub sets it from the active inference backend: Ollama vs OpenAI-compatible
+ * (vLLM, Lemonade, cloud).
+ */
+export const inferenceProviderSchema = z.object({
+  /** Env variable the app reads its LLM provider mode from (e.g. APP_LLM_PROVIDER). */
+  env: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'env must be a valid environment variable name'),
+  /** Value to write when Hub AI Settings use Ollama as the chat backend. */
+  ollama: z.string().min(1),
+  /** Value to write when Hub AI Settings use vLLM, Lemonade, or cloud. */
+  openai_compatible: z.string().min(1),
+});
 
 export const hubIntegrationSchema = z
   .object({
@@ -48,6 +70,18 @@ export const hubIntegrationSchema = z
      * ```
      */
     inference: inferenceEnvMappingSchema.optional(),
+    /**
+     * Optional provider-mode switch for dual-provider marketplace apps. When
+     * declared alongside `inference`, the Hub writes `env` to `ollama` or
+     * `openai_compatible` based on the active chat backend at env-generation time.
+     */
+    inference_provider: inferenceProviderSchema.optional(),
+    /**
+     * When true, strip a trailing `/v1` from resolved `llm_base_url` before writing
+     * it into the app's env. Use when the app expects a bare origin (e.g. vLLM on
+     * :8000) rather than an OpenAI-compatible `/v1` suffix.
+     */
+    llm_base_url_strip_v1: z.boolean().optional(),
     /**
      * Opt-in Portal OIDC issuer injection. Apps that "Sign in with CI-Portal"
      * must authenticate against the *paired* Portal IdP (CI_CLOUD_URL), not a

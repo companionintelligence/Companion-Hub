@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
@@ -9,7 +10,10 @@ export class VllmBackend implements InferenceBackend {
   readonly type = 'vllm' as const;
   private baseUrl: string;
 
-  constructor(private readonly logger: LoggerService) {
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly configuration: ConfigurationService,
+  ) {
     this.baseUrl = process.env.VLLM_URL || 'http://ci-hub-vllm:8000';
   }
 
@@ -17,9 +21,17 @@ export class VllmBackend implements InferenceBackend {
     return this.baseUrl;
   }
 
+  private vllmAuthHeaders(): Record<string, string> | undefined {
+    const apiKey = this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
+    return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  }
+
   async healthCheck(): Promise<BackendHealthStatus> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/models`, { timeout: 5000 });
+      const response = await axios.get(`${this.baseUrl}/v1/models`, {
+        timeout: 5000,
+        headers: this.vllmAuthHeaders(),
+      });
       const models = response.data?.data ?? [];
       return {
         running: true,
@@ -38,7 +50,10 @@ export class VllmBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/models`, { timeout: 10000 });
+      const response = await axios.get(`${this.baseUrl}/v1/models`, {
+        timeout: 10000,
+        headers: this.vllmAuthHeaders(),
+      });
       const models = response.data?.data ?? [];
       return models.map((m: { id: string; owned_by?: string }) => ({
         id: m.id,

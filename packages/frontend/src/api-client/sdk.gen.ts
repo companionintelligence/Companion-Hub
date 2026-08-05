@@ -2,7 +2,7 @@
 
 import { type Client, formDataBodySerializer, type Options as Options2, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { AcknowledgeWelcomeData, AcknowledgeWelcomeResponses, AppContextData, AppContextResponses, AppEventsData, AppEventsResponses, AppLogsEventsData, AppLogsEventsResponses, BackupAllAppsData, BackupAllAppsResponses, BackupAppData, BackupAppResponses, CancelOperationData, CancelOperationResponses, CancelResetPasswordData, CancelResetPasswordResponses, ChangePasswordData, ChangePasswordResponses, ChangeUsernameData, ChangeUsernameResponses, CheckAppPortsData, CheckAppPortsResponses, CheckAuthData, CheckAuthResponses, CheckAvailabilityData, CheckAvailabilityResponses, CheckData, CheckDataIntegrityData, CheckDataIntegrityResponses, CheckDnsAvailabilityData, CheckDnsAvailabilityResponses, CheckErrors, CheckForUpdatesData, CheckForUpdatesResponses, CheckResetPasswordRequestData, CheckResetPasswordRequestResponses, CheckResponses, CheckUrlAvailabilityData, CheckUrlAvailabilityResponses, CompleteOnboardingData, CompleteOnboardingResponses, CompletePasswordResetData, CompletePasswordResetResponses, ConnectWithAuthKeyData, ConnectWithAuthKeyResponses, CreateAppStoreData, CreateAppStoreResponses, CreateCustomAppData, CreateCustomAppResponses, CreateLinkData, CreateLinkResponses, DeleteAppBackupData, DeleteAppBackupResponses, DeleteAppStoreData, DeleteAppStoreResponses, DeleteLinkData, DeleteLinkResponses, DetectServicesData, DetectServicesResponses, DisableTotpData, DisableTotpResponses, DisableUserConfigData, DisableUserConfigResponses, DisconnectData, DisconnectResponses, DownloadBackupData, DownloadBackupResponses, DownloadHubLogsData, DownloadHubLogsResponses, DownloadLocalCertificateData, DownloadLocalCertificateResponses, EditLinkData, EditLinkResponses, EnableUserConfigData, EnableUserConfigResponses, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponses, ExecuteRehydrateData, ExecuteRehydrateResponses, FactoryResetData, FactoryResetErrors, FactoryResetResponses, ForceStopAppData, ForceStopAppResponses, GetAllAllocationsData, GetAllAllocationsResponses, GetAllAppStoresData, GetAllAppStoresResponses, GetAppBackupsData, GetAppBackupsResponses, GetAppComposeDiffData, GetAppComposeDiffResponses, GetAppConfigDiffData, GetAppConfigDiffResponses, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv0Responses, GetAppCredentialsEnv1Data, GetAppCredentialsEnv1Responses, GetAppCredentialsResponses, GetAppData, GetAppImageSizeData, GetAppImageSizeResponses, GetAppPortsData, GetAppPortsResponses, GetAppResponses, GetAutoUpdatesData, GetAutoUpdatesResponses, GetCatalogData, GetCatalogResponses, GetCloudProvidersData, GetCloudProvidersResponses, GetConfigData, GetConfigResponses, GetContainersData, GetContainersResponses, GetDeviceIdData, GetDeviceIdResponses, GetDiagnostics2Data, GetDiagnostics2Responses, GetDiagnosticsData, GetDiagnosticsResponses, GetDomainsData, GetDomainsResponses, GetEnabledAppStoresData, GetEnabledAppStoresResponses, GetFullInspectionData, GetFullInspectionResponses, GetGuestAppsData, GetGuestAppsResponses, GetGuestLinksData, GetGuestLinksResponses, GetHardwareData, GetHardwareResponses, GetHealthData, GetHealthResponses, GetHostListenerTokenData, GetHostListenerTokenResponses, GetImageData, GetImageResponses, GetInstalledAppsData, GetInstalledAppsResponses, GetInstallQueueData, GetInstallQueueResponses, GetLinksData, GetLinksResponses, GetMemoryData, GetMemoryResponses, GetOllamaStatusData, GetOllamaStatusResponses, GetOnboardingProfileData, GetOnboardingProfileResponses, GetPortalConfigData, GetPortalConfigResponses, GetPortsData, GetPortsResponses, GetPreferencesData, GetPreferencesResponses, GetRandomPortData, GetRandomPortResponses, GetRehydratePlanData, GetRehydratePlanResponses, GetRehydrateStatusData, GetRehydrateStatusResponses, GetResourceMonitorData, GetResourceMonitorResponses, GetRocmStatusData, GetRocmStatusResponses, GetRuntimeHealthData, GetRuntimeHealthResponses, GetRuntimeModelsData, GetRuntimeModelsResponses, GetServeStatusData, GetServeStatusResponses, GetStateDriftData, GetStateDriftResponses, GetStatus2Data, GetStatus2Responses, GetStatus3Data, GetStatus3Responses, GetStatus4Data, GetStatus4Responses, GetStatusData, GetStatusResponses, GetStoreAlternativesData, GetStoreAlternativesErrors, GetStoreAlternativesResponses, GetStoreListingsData, GetStoreListingsErrors, GetStoreListingsResponses, GetTotpUriData, GetTotpUriResponses, GetTrackedModelsData, GetTrackedModelsResponses, GetTranslationData, GetTranslationResponses, GetUserConfigData, GetUserConfigResponses, HandleCallbackData, HandleCallbackErrors, HandleCallbackPostData, HandleCallbackPostErrors, HandleCallbackPostResponses, HandleCallbackResponses, HealthData, HealthResponses, HubLogsEventsData, HubLogsEventsResponses, IgnoreAppVersionData, IgnoreAppVersionResponses, IncrementAllAppVersionsData, IncrementAllAppVersionsResponses, InstallAppData, InstallAppResponses, InstallOllamaData, InstallOllamaResponses, LiveData, LiveResponses, LoadModelData, LoadModelResponses, LoginData, LoginResponses, LogoutData, LogoutResponses, MarkRestoreIntentData, MarkRestoreIntentResponses, MessagesData, MessagesResponses, PairDeviceData, PairDeviceErrors, PairDeviceResponses, PerformUpdateData, PerformUpdateResponses, PinModelData, PinModelResponses, PortalCallbackData, PortalCallbackResponses, PortalSessionHintData, PortalSessionHintResponses, PrepareFreshSetupData, PrepareFreshSetupResponses, ProbeDomainData, ProbeDomainResponses, PullAppStoresData, PullAppStoresResponses, PullModelData, PullModelResponses, RefreshSessionData, RefreshSessionResponses, RegisterData, RegisterDeviceData, RegisterDeviceErrors, RegisterDeviceResponses, RegisterResponses, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponses, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponses, RepairData, RepairOrphansData, RepairOrphansResponses, RepairResponses, RequestPasswordResetData, RequestPasswordResetResponses, RescanHardwareData, RescanHardwareResponses, ResetAppData, ResetAppResponses, ResetPasswordData, ResetPasswordResponses, ResetRegistrationData, ResetRegistrationResponses, ResolveAvailabilityData, ResolveAvailabilityResponses, RestartAllAppsData, RestartAllAppsResponses, RestartAppData, RestartAppResponses, RestartOnboardingData, RestartOnboardingResponses, RestoreAppBackupData, RestoreAppBackupResponses, SearchAppsData, SearchAppsResponses, SeedDatabaseData, SeedDatabaseResponses, SetAllAppSubnetToNullData, SetAllAppSubnetToNullResponses, SetAllAppUpdateAvailableData, SetAllAppUpdateAvailableResponses, SetAutoUpdatesData, SetAutoUpdatesResponses, SetCloudProviderData, SetCloudProviderResponses, SetupTotpData, SetupTotpResponses, SseData, SseResponses, StartAllApps2Data, StartAllApps2Responses, StartAllAppsData, StartAllAppsResponses, StartAppData, StartAppResponses, StartAuthData, StartAuthResponses, StartPortalLoginData, StartPortalLoginResponses, StartPullModelData, StartPullModelResponses, StopAllAppsData, StopAllAppsResponses, StopAppData, StopAppResponses, SyncExposureData, SyncExposureResponses, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponses, SystemLoadData, SystemLoadResponses, SystemResourcesData, SystemResourcesResponses, TraefikData, TraefikResponses, UnignoreAppVersionData, UnignoreAppVersionResponses, UninstallAllAppsData, UninstallAllAppsResponses, UninstallAppData, UninstallAppResponses, UnloadModelData, UnloadModelResponses, UnpinModelData, UnpinModelResponses, UpdateAdvancedModeData, UpdateAdvancedModeResponses, UpdateAllAppsData, UpdateAllAppsResponses, UpdateAppConfigData, UpdateAppConfigResponses, UpdateAppData, UpdateAppMetadataData, UpdateAppMetadataResponses, UpdateAppResponses, UpdateAppStoreData, UpdateAppStoreResponses, UpdateCustomAppData, UpdateCustomAppResponses, UpdatePreferencesData, UpdatePreferencesResponses, UpdateRocmInstallStateData, UpdateRocmInstallStateResponses, UpdateUserConfigData, UpdateUserConfigResponses, UpdateUserSettingsData, UpdateUserSettingsResponses, UploadAppImageData, UploadAppImageResponses, UploadBackupData, UploadBackupResponses, UserContextData, UserContextResponses, ValidateOrganizationNameData, ValidateOrganizationNameResponses, VerifyPairingCodeData, VerifyPairingCodeErrors, VerifyPairingCodeResponses, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponses, VerifyTotpData, VerifyTotpResponses } from './types.gen';
+import type { AcknowledgeWelcomeData, AcknowledgeWelcomeResponses, AppContextData, AppContextResponses, AppEventsData, AppEventsResponses, AppLogsEventsData, AppLogsEventsResponses, BackupAllAppsData, BackupAllAppsResponses, BackupAppData, BackupAppResponses, CallbackData, CallbackResponses, CallToolData, CallToolResponses, CancelOperationData, CancelOperationResponses, CancelResetPasswordData, CancelResetPasswordResponses, ChangePasswordData, ChangePasswordResponses, ChangeUsernameData, ChangeUsernameResponses, CheckAppPortsData, CheckAppPortsResponses, CheckAuthData, CheckAuthResponses, CheckAvailabilityData, CheckAvailabilityResponses, CheckData, CheckDataIntegrityData, CheckDataIntegrityResponses, CheckDnsAvailabilityData, CheckDnsAvailabilityResponses, CheckErrors, CheckForUpdatesData, CheckForUpdatesResponses, CheckResetPasswordRequestData, CheckResetPasswordRequestResponses, CheckResponses, CheckUrlAvailabilityData, CheckUrlAvailabilityResponses, CompleteOnboardingData, CompleteOnboardingResponses, CompletePasswordResetData, CompletePasswordResetResponses, ConnectWithAuthKeyData, ConnectWithAuthKeyResponses, ConsumeBrowserHandoffData, ConsumeBrowserHandoffResponses, ConsumersData, ConsumersResponses, CreateAppStoreData, CreateAppStoreResponses, CreateCustomAppData, CreateCustomAppResponses, CreateKeyData, CreateKeyResponses, CreateLinkData, CreateLinkResponses, CreatePortExposeAppData, CreatePortExposeAppResponses, DeleteAppBackupData, DeleteAppBackupResponses, DeleteAppStoreData, DeleteAppStoreResponses, DeleteLinkData, DeleteLinkResponses, DetectServicesData, DetectServicesResponses, DisableTotpData, DisableTotpResponses, DisableUserConfigData, DisableUserConfigResponses, Disconnect2Data, Disconnect2Responses, DisconnectData, DisconnectResponses, DownloadBackupData, DownloadBackupResponses, DownloadHubLogsData, DownloadHubLogsResponses, DownloadLocalCertificateData, DownloadLocalCertificateResponses, EdgeSsoData, EdgeSsoResponses, EditLinkData, EditLinkResponses, EnableUserConfigData, EnableUserConfigResponses, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponses, ExecuteRehydrateData, ExecuteRehydrateResponses, FactoryResetData, FactoryResetErrors, FactoryResetResponses, ForceStopAppData, ForceStopAppResponses, GetAllAllocationsData, GetAllAllocationsResponses, GetAllAppStoresData, GetAllAppStoresResponses, GetAppBackupsData, GetAppBackupsResponses, GetAppComposeDiffData, GetAppComposeDiffResponses, GetAppConfigDiffData, GetAppConfigDiffResponses, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv0Responses, GetAppCredentialsEnv1Data, GetAppCredentialsEnv1Responses, GetAppCredentialsResponses, GetAppData, GetAppImageSizeData, GetAppImageSizeResponses, GetAppPortsData, GetAppPortsResponses, GetAppResponses, GetAutoUpdatesData, GetAutoUpdatesResponses, GetCatalogData, GetCatalogResponses, GetCloudProvidersData, GetCloudProvidersResponses, GetConfigData, GetConfigResponses, GetContainersData, GetContainersResponses, GetDeviceIdData, GetDeviceIdResponses, GetDiagnostics2Data, GetDiagnostics2Responses, GetDiagnosticsData, GetDiagnosticsResponses, GetDomainsData, GetDomainsResponses, GetEnabledAppStoresData, GetEnabledAppStoresResponses, GetFullInspectionData, GetFullInspectionResponses, GetGuestAppsData, GetGuestAppsResponses, GetGuestLinksData, GetGuestLinksResponses, GetHardwareData, GetHardwareResponses, GetHealthData, GetHealthResponses, GetHostListenerTokenData, GetHostListenerTokenResponses, GetHubAccessData, GetHubAccessResponses, GetImageData, GetImageResponses, GetInstalledAppsData, GetInstalledAppsResponses, GetInstallQueueData, GetInstallQueueResponses, GetLinksData, GetLinksResponses, GetMemoryData, GetMemoryResponses, GetOllamaStatusData, GetOllamaStatusResponses, GetOnboardingProfileData, GetOnboardingProfileResponses, GetPortalConfigData, GetPortalConfigResponses, GetPortsData, GetPortsResponses, GetPreferencesData, GetPreferencesResponses, GetRandomPortData, GetRandomPortResponses, GetRehydratePlanData, GetRehydratePlanResponses, GetRehydrateStatusData, GetRehydrateStatusResponses, GetResourceMonitorData, GetResourceMonitorResponses, GetRocmStatusData, GetRocmStatusResponses, GetRuntimeHealthData, GetRuntimeHealthResponses, GetRuntimeModelsData, GetRuntimeModelsResponses, GetServeStatusData, GetServeStatusResponses, GetStateDriftData, GetStateDriftResponses, GetStatus2Data, GetStatus2Responses, GetStatus3Data, GetStatus3Responses, GetStatus4Data, GetStatus4Responses, GetStatus5Data, GetStatus5Responses, GetStatusData, GetStatusResponses, GetStoreAlternativesData, GetStoreAlternativesErrors, GetStoreAlternativesResponses, GetStoreListingsData, GetStoreListingsErrors, GetStoreListingsResponses, GetTotpUriData, GetTotpUriResponses, GetTrackedModelsData, GetTrackedModelsResponses, GetTranslationData, GetTranslationResponses, GetUserConfigData, GetUserConfigResponses, GetVllmStatusData, GetVllmStatusResponses, HandleCallbackData, HandleCallbackErrors, HandleCallbackPostData, HandleCallbackPostErrors, HandleCallbackPostResponses, HandleCallbackResponses, HandleDeleteData, HandleDeleteResponses, HandleGetData, HandleGetResponses, HandlePostData, HandlePostResponses, HealthData, HealthResponses, HubLogsEventsData, HubLogsEventsResponses, IgnoreAppVersionData, IgnoreAppVersionResponses, IncrementAllAppVersionsData, IncrementAllAppVersionsResponses, InstallAppData, InstallAppResponses, InstallOllamaData, InstallOllamaResponses, ListKeysData, ListKeysResponses, ListToolsData, ListToolsResponses, LiveData, LiveResponses, LoadModelData, LoadModelResponses, LoginData, LoginResponses, LogoutData, LogoutResponses, MarkRestoreIntentData, MarkRestoreIntentResponses, MintBrowserHandoffData, MintBrowserHandoffResponses, PairDeviceData, PairDeviceErrors, PairDeviceResponses, PerformUpdateData, PerformUpdateResponses, PinModelData, PinModelResponses, PortalCallbackData, PortalCallbackResponses, PortalSessionHintData, PortalSessionHintResponses, PrepareFreshSetupData, PrepareFreshSetupResponses, ProbeDomainData, ProbeDomainResponses, PullAppStoresData, PullAppStoresResponses, PullModelData, PullModelResponses, ReconnectTunnelData, ReconnectTunnelResponses, RefreshSessionData, RefreshSessionResponses, RegisterData, RegisterDeviceData, RegisterDeviceErrors, RegisterDeviceResponses, RegisterResponses, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponses, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponses, RepairData, RepairOrphansData, RepairOrphansResponses, RepairResponses, RequestPasswordResetData, RequestPasswordResetResponses, RescanHardwareData, RescanHardwareResponses, ResetAppData, ResetAppResponses, ResetPasswordData, ResetPasswordResponses, ResetRegistrationData, ResetRegistrationResponses, ResolveAvailabilityData, ResolveAvailabilityResponses, RestartAllAppsData, RestartAllAppsResponses, RestartAppData, RestartAppResponses, RestartOnboardingData, RestartOnboardingResponses, RestoreAppBackupData, RestoreAppBackupResponses, RevokeKeyData, RevokeKeyResponses, RotateHubAccessData, RotateHubAccessResponses, SearchAppsData, SearchAppsResponses, SeedDatabaseData, SeedDatabaseResponses, SetAllAppSubnetToNullData, SetAllAppSubnetToNullResponses, SetAllAppUpdateAvailableData, SetAllAppUpdateAvailableResponses, SetAutoUpdatesData, SetAutoUpdatesResponses, SetCloudProviderData, SetCloudProviderResponses, SetupTotpData, SetupTotpResponses, SkipData, SkipResponses, StartAllApps2Data, StartAllApps2Responses, StartAllAppsData, StartAllAppsResponses, StartAppData, StartAppResponses, StartAuthData, StartAuthResponses, StartData, StartPortalLoginData, StartPortalLoginResponses, StartPullModelData, StartPullModelResponses, StartResponses, StateData, StateResponses, StatusData, StatusResponses, StopAllAppsData, StopAllAppsResponses, StopAppData, StopAppResponses, SyncExposureData, SyncExposureResponses, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponses, SystemLoadData, SystemLoadResponses, SystemResourcesData, SystemResourcesResponses, TraefikData, TraefikResponses, UnignoreAppVersionData, UnignoreAppVersionResponses, UninstallAllAppsData, UninstallAllAppsResponses, UninstallAppData, UninstallAppResponses, UnloadModelData, UnloadModelResponses, UnpinModelData, UnpinModelResponses, UpdateAdvancedModeData, UpdateAdvancedModeResponses, UpdateAllAppsData, UpdateAllAppsResponses, UpdateAppConfigData, UpdateAppConfigResponses, UpdateAppData, UpdateAppMetadataData, UpdateAppMetadataResponses, UpdateAppResponses, UpdateAppStoreData, UpdateAppStoreResponses, UpdateCustomAppData, UpdateCustomAppResponses, UpdateKeyData, UpdateKeyResponses, UpdatePortExposeAppData, UpdatePortExposeAppResponses, UpdatePreferencesData, UpdatePreferencesResponses, UpdateRocmInstallStateData, UpdateRocmInstallStateResponses, UpdateUserConfigData, UpdateUserConfigResponses, UpdateUserSettingsData, UpdateUserSettingsResponses, UploadAppImageData, UploadAppImageResponses, UploadBackupData, UploadBackupResponses, UserContextData, UserContextResponses, ValidateOrganizationNameData, ValidateOrganizationNameResponses, VerifyPairingCodeData, VerifyPairingCodeErrors, VerifyPairingCodeResponses, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponses, VerifyTotpData, VerifyTotpResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -111,6 +111,16 @@ export const resetRegistration = <ThrowOnError extends boolean = false>(options?
 export const getStatus = <ThrowOnError extends boolean = false>(options?: Options<GetStatusData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetStatusResponses, unknown, ThrowOnError>({
         url: '/api/registration/status',
+        ...options
+    });
+};
+
+/**
+ * Recover public/remote access for a registered but tunnel-degraded Hub
+ */
+export const reconnectTunnel = <ThrowOnError extends boolean = false>(options?: Options<ReconnectTunnelData, ThrowOnError>) => {
+    return (options?.client ?? client).post<ReconnectTunnelResponses, unknown, ThrowOnError>({
+        url: '/api/registration/reconnect-tunnel',
         ...options
     });
 };
@@ -547,6 +557,13 @@ export const getOllamaStatus = <ThrowOnError extends boolean = false>(options?: 
     });
 };
 
+export const getVllmStatus = <ThrowOnError extends boolean = false>(options?: Options<GetVllmStatusData, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetVllmStatusResponses, unknown, ThrowOnError>({
+        url: '/api/inference/vllm/status',
+        ...options
+    });
+};
+
 export const installOllama = <ThrowOnError extends boolean = false>(options?: Options<InstallOllamaData, ThrowOnError>) => {
     return (options?.client ?? client).post<InstallOllamaResponses, unknown, ThrowOnError>({
         url: '/api/inference/ollama/install',
@@ -779,6 +796,42 @@ export const updateAppStore = <ThrowOnError extends boolean = false>(options: Op
     });
 };
 
+export const listKeys = <ThrowOnError extends boolean = false>(options?: Options<ListKeysData, ThrowOnError>) => {
+    return (options?.client ?? client).get<ListKeysResponses, unknown, ThrowOnError>({
+        url: '/api/api-keys',
+        ...options
+    });
+};
+
+export const createKey = <ThrowOnError extends boolean = false>(options: Options<CreateKeyData, ThrowOnError>) => {
+    return (options.client ?? client).post<CreateKeyResponses, unknown, ThrowOnError>({
+        url: '/api/api-keys',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const revokeKey = <ThrowOnError extends boolean = false>(options: Options<RevokeKeyData, ThrowOnError>) => {
+    return (options.client ?? client).delete<RevokeKeyResponses, unknown, ThrowOnError>({
+        url: '/api/api-keys/{id}',
+        ...options
+    });
+};
+
+export const updateKey = <ThrowOnError extends boolean = false>(options: Options<UpdateKeyData, ThrowOnError>) => {
+    return (options.client ?? client).patch<UpdateKeyResponses, unknown, ThrowOnError>({
+        url: '/api/api-keys/{id}',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
 export const getTranslation = <ThrowOnError extends boolean = false>(options: Options<GetTranslationData, ThrowOnError>) => {
     return (options.client ?? client).get<GetTranslationResponses, unknown, ThrowOnError>({
         url: '/api/i18n/locales/{ns}/{lng}.json',
@@ -829,6 +882,24 @@ export const logout = <ThrowOnError extends boolean = false>(options?: Options<L
 export const refreshSession = <ThrowOnError extends boolean = false>(options?: Options<RefreshSessionData, ThrowOnError>) => {
     return (options?.client ?? client).post<RefreshSessionResponses, unknown, ThrowOnError>({
         url: '/api/auth/session/refresh',
+        ...options
+    });
+};
+
+export const mintBrowserHandoff = <ThrowOnError extends boolean = false>(options: Options<MintBrowserHandoffData, ThrowOnError>) => {
+    return (options.client ?? client).post<MintBrowserHandoffResponses, unknown, ThrowOnError>({
+        url: '/api/auth/browser-handoff/mint',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const consumeBrowserHandoff = <ThrowOnError extends boolean = false>(options?: Options<ConsumeBrowserHandoffData, ThrowOnError>) => {
+    return (options?.client ?? client).get<ConsumeBrowserHandoffResponses, unknown, ThrowOnError>({
+        url: '/api/auth/browser-handoff',
         ...options
     });
 };
@@ -977,6 +1048,13 @@ export const traefik = <ThrowOnError extends boolean = false>(options?: Options<
     });
 };
 
+export const edgeSso = <ThrowOnError extends boolean = false>(options?: Options<EdgeSsoData, ThrowOnError>) => {
+    return (options?.client ?? client).get<EdgeSsoResponses, unknown, ThrowOnError>({
+        url: '/api/auth/edge-sso',
+        ...options
+    });
+};
+
 export const getRehydratePlan = <ThrowOnError extends boolean = false>(options?: Options<GetRehydratePlanData, ThrowOnError>) => {
     return (options?.client ?? client).get<GetRehydratePlanResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/rehydrate/plan',
@@ -994,6 +1072,20 @@ export const getRehydrateStatus = <ThrowOnError extends boolean = false>(options
 export const executeRehydrate = <ThrowOnError extends boolean = false>(options?: Options<ExecuteRehydrateData, ThrowOnError>) => {
     return (options?.client ?? client).post<ExecuteRehydrateResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/rehydrate',
+        ...options
+    });
+};
+
+export const getHubAccess = <ThrowOnError extends boolean = false>(options: Options<GetHubAccessData, ThrowOnError>) => {
+    return (options.client ?? client).get<GetHubAccessResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/{urn}/hub-access',
+        ...options
+    });
+};
+
+export const rotateHubAccess = <ThrowOnError extends boolean = false>(options: Options<RotateHubAccessData, ThrowOnError>) => {
+    return (options.client ?? client).post<RotateHubAccessResponses, unknown, ThrowOnError>({
+        url: '/api/app-lifecycle/{urn}/hub-access/rotate',
         ...options
     });
 };
@@ -1051,7 +1143,11 @@ export const uninstallApp = <ThrowOnError extends boolean = false>(options: Opti
 export const resetApp = <ThrowOnError extends boolean = false>(options: Options<ResetAppData, ThrowOnError>) => {
     return (options.client ?? client).post<ResetAppResponses, unknown, ThrowOnError>({
         url: '/api/app-lifecycle/{urn}/reset',
-        ...options
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
     });
 };
 
@@ -1366,9 +1462,31 @@ export const disableUserConfig = <ThrowOnError extends boolean = false>(options:
     });
 };
 
+export const createPortExposeApp = <ThrowOnError extends boolean = false>(options: Options<CreatePortExposeAppData, ThrowOnError>) => {
+    return (options.client ?? client).post<CreatePortExposeAppResponses, unknown, ThrowOnError>({
+        url: '/api/custom-apps/port-expose',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
 export const createCustomApp = <ThrowOnError extends boolean = false>(options: Options<CreateCustomAppData, ThrowOnError>) => {
     return (options.client ?? client).post<CreateCustomAppResponses, unknown, ThrowOnError>({
         url: '/api/custom-apps',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
+    });
+};
+
+export const updatePortExposeApp = <ThrowOnError extends boolean = false>(options: Options<UpdatePortExposeAppData, ThrowOnError>) => {
+    return (options.client ?? client).patch<UpdatePortExposeAppResponses, unknown, ThrowOnError>({
+        url: '/api/custom-apps/port-expose/{urn}',
         ...options,
         headers: {
             'Content-Type': 'application/json',
@@ -1446,6 +1564,55 @@ export const getHostListenerToken = <ThrowOnError extends boolean = false>(optio
     });
 };
 
+export const start = <ThrowOnError extends boolean = false>(options?: Options<StartData, ThrowOnError>) => {
+    return (options?.client ?? client).get<StartResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/start',
+        ...options
+    });
+};
+
+export const callback = <ThrowOnError extends boolean = false>(options?: Options<CallbackData, ThrowOnError>) => {
+    return (options?.client ?? client).get<CallbackResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/callback',
+        ...options
+    });
+};
+
+export const state = <ThrowOnError extends boolean = false>(options: Options<StateData, ThrowOnError>) => {
+    return (options.client ?? client).get<StateResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/apps/{urn}/state',
+        ...options
+    });
+};
+
+export const status = <ThrowOnError extends boolean = false>(options: Options<StatusData, ThrowOnError>) => {
+    return (options.client ?? client).get<StatusResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/apps/{urn}/status',
+        ...options
+    });
+};
+
+export const consumers = <ThrowOnError extends boolean = false>(options?: Options<ConsumersData, ThrowOnError>) => {
+    return (options?.client ?? client).get<ConsumersResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/consumers',
+        ...options
+    });
+};
+
+export const skip = <ThrowOnError extends boolean = false>(options: Options<SkipData, ThrowOnError>) => {
+    return (options.client ?? client).post<SkipResponses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/apps/{urn}/skip',
+        ...options
+    });
+};
+
+export const disconnect2 = <ThrowOnError extends boolean = false>(options: Options<Disconnect2Data, ThrowOnError>) => {
+    return (options.client ?? client).post<Disconnect2Responses, unknown, ThrowOnError>({
+        url: '/api/memory-connect/apps/{urn}/disconnect',
+        ...options
+    });
+};
+
 export const seedDatabase = <ThrowOnError extends boolean = false>(options?: Options<SeedDatabaseData, ThrowOnError>) => {
     return (options?.client ?? client).post<SeedDatabaseResponses, unknown, ThrowOnError>({
         url: '/api/debug/seed',
@@ -1495,16 +1662,48 @@ export const uninstallAllApps = <ThrowOnError extends boolean = false>(options?:
     });
 };
 
-export const sse = <ThrowOnError extends boolean = false>(options?: Options<SseData, ThrowOnError>) => {
-    return (options?.client ?? client).get<SseResponses, unknown, ThrowOnError>({
-        url: '/api/mcp/sse',
+export const handleDelete = <ThrowOnError extends boolean = false>(options?: Options<HandleDeleteData, ThrowOnError>) => {
+    return (options?.client ?? client).delete<HandleDeleteResponses, unknown, ThrowOnError>({
+        url: '/api/mcp',
         ...options
     });
 };
 
-export const messages = <ThrowOnError extends boolean = false>(options?: Options<MessagesData, ThrowOnError>) => {
-    return (options?.client ?? client).post<MessagesResponses, unknown, ThrowOnError>({
-        url: '/api/mcp/messages',
+export const handleGet = <ThrowOnError extends boolean = false>(options?: Options<HandleGetData, ThrowOnError>) => {
+    return (options?.client ?? client).get<HandleGetResponses, unknown, ThrowOnError>({
+        url: '/api/mcp',
         ...options
+    });
+};
+
+export const handlePost = <ThrowOnError extends boolean = false>(options?: Options<HandlePostData, ThrowOnError>) => {
+    return (options?.client ?? client).post<HandlePostResponses, unknown, ThrowOnError>({
+        url: '/api/mcp',
+        ...options
+    });
+};
+
+export const getStatus5 = <ThrowOnError extends boolean = false>(options?: Options<GetStatus5Data, ThrowOnError>) => {
+    return (options?.client ?? client).get<GetStatus5Responses, unknown, ThrowOnError>({
+        url: '/api/mcp-admin/status',
+        ...options
+    });
+};
+
+export const listTools = <ThrowOnError extends boolean = false>(options?: Options<ListToolsData, ThrowOnError>) => {
+    return (options?.client ?? client).get<ListToolsResponses, unknown, ThrowOnError>({
+        url: '/api/mcp-admin/tools',
+        ...options
+    });
+};
+
+export const callTool = <ThrowOnError extends boolean = false>(options: Options<CallToolData, ThrowOnError>) => {
+    return (options.client ?? client).post<CallToolResponses, unknown, ThrowOnError>({
+        url: '/api/mcp-admin/tools/{name}/call',
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+        }
     });
 };

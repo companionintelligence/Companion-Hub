@@ -1392,6 +1392,20 @@
         ]
       }
     },
+    "/api/inference/vllm/status": {
+      "get": {
+        "operationId": "getVllmStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/ollama/install": {
       "post": {
         "operationId": "installOllama",
