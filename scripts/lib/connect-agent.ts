@@ -28,9 +28,22 @@
  *   2  write failed — the backup was restored and its path printed
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { isCompiledCihubBinary } from '../port-availability';
 import { bold, printMessageBox } from './cli-ui';
 
@@ -794,7 +807,18 @@ export function npmShimEntry(name: string, pathDirs: string[]): string | undefin
     if (!existsSync(join(dir, `${name}.cmd`))) continue;
     const manifest = join(dir, 'node_modules', name, 'package.json');
     if (!existsSync(manifest)) continue;
-    const pkg = readJsonIfPresent(manifest) as { bin?: string | Record<string, string> };
+    // Not `readJsonIfPresent`: that throws on malformed or non-object JSON, which is the
+    // right contract for the user's OWN config — there, a broken file is the thing to
+    // stop and report. Here we are guessing at directories on PATH, and one unparseable
+    // package.json in any of them would abort the whole `connect` run instead of moving
+    // on to the next candidate. A shim we cannot read is simply not the shim we want.
+    let pkg: { bin?: string | Record<string, string> };
+    try {
+      pkg = JSON.parse(readFileSync(manifest, 'utf8')) as { bin?: string | Record<string, string> };
+    } catch {
+      continue;
+    }
+    if (typeof pkg !== 'object' || pkg === null) continue;
     const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.[name];
     if (typeof bin !== 'string' || bin === '') continue;
     const entry = join(dirname(manifest), bin);
@@ -1690,16 +1714,23 @@ function rmFileQuietly(path: string) {
  * Errors come back rather than throwing, because every caller's next move is to print
  * the reason inside a message box and exit 2 — the same contract `run()` has.
  */
-async function downloadFile(url: string, path: string): Promise<string | undefined> {
+export async function downloadFile(url: string, path: string): Promise<string | undefined> {
   try {
     const response = await fetch(url);
     // The `-f` in the old `curl -fL`: without it a 404 is written out as a body and
     // tar then fails with "not in gzip format" instead of "that version is not there".
     if (!response.ok) return `HTTP ${response.status} ${response.statusText}`;
-    const body = Buffer.from(await response.arrayBuffer());
-    if (body.length === 0) return 'the server returned an empty body';
+    if (!response.body) return 'the server returned an empty body';
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, body);
+    // Streamed, not buffered. `arrayBuffer()` holds the whole archive in memory before a
+    // byte reaches disk, which the `curl -fL | tar` pipeline this replaced never did —
+    // and the length is whatever the remote chooses to send, so there is no bound on it
+    // that we set. Piping keeps the footprint flat regardless of what arrives.
+    await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(path));
+    // Checked after the fact rather than on a Buffer: a 200 with a zero-length body ends
+    // as an empty file, and tar's "unexpected end of file" is a worse thing to show than
+    // saying the server sent nothing.
+    if (statSync(path).size === 0) return 'the server returned an empty body';
     return undefined;
   } catch (error) {
     return String((error as Error)?.message ?? error);

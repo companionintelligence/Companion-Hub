@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import {
   backupFile,
   backupPathFor,
   checkMemorySlot,
+  downloadFile,
   HERMES_PACKAGE,
   hermesConfigPath,
   hermesPluginDir,
@@ -879,6 +880,71 @@ function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs', parent = 
  * key as an argv element. Resolving the shim to the JS entrypoint keeps the spawn
  * shell-free.
  */
+/**
+ * The download replaced a `curl -fL | tar` pipeline, so it inherits that pipeline's
+ * obligations: refuse a non-2xx rather than writing the error page to disk, and keep
+ * memory flat regardless of what the remote sends.
+ */
+describe('downloadFile', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = undefined;
+  });
+
+  function serve(handler: (req: unknown, res: { writeHead: (c: number) => void; end: (b?: Buffer | string) => void }) => void): Promise<string> {
+    server = createServer(handler as never);
+    return new Promise((resolve) => server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo).port}`)));
+  }
+
+  it('writes the body to disk byte for byte', async () => {
+    // 4 MiB of non-zero bytes: large enough that a buffered read would be visible in
+    // memory, and verified by content rather than by length alone.
+    const payload = Buffer.alloc(4 * 1024 * 1024, 0xab);
+    const url = await serve((_req, res) => {
+      res.writeHead(200);
+      res.end(payload);
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'nested', 'archive.tgz');
+
+    expect(await downloadFile(url, target)).toBeUndefined();
+    expect(readFileSync(target).equals(payload)).toBe(true);
+  });
+
+  it('refuses a non-2xx instead of writing the error page to disk', async () => {
+    const url = await serve((_req, res) => {
+      res.writeHead(404);
+      res.end('{"error":"Not found"}');
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+
+    // The `-f` in `curl -fL`: without it tar gets the JSON and fails with "not in gzip
+    // format" instead of the version simply not existing.
+    expect(await downloadFile(url, target)).toMatch(/404/);
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it('names an empty body rather than leaving tar to report a truncated archive', async () => {
+    const url = await serve((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+
+    expect(await downloadFile(url, target)).toMatch(/empty body/);
+  });
+
+  it('returns the reason rather than throwing when the host is unreachable', async () => {
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+    // Every caller's next move is to print this inside a message box and exit 2, so a
+    // throw here would escape that handler entirely.
+    const problem = await downloadFile('http://127.0.0.1:1/nothing', target);
+    expect(problem).toBeTruthy();
+    expect(typeof problem).toBe('string');
+  });
+});
+
 describe('npm shim resolution', () => {
   it('follows a shim to the entrypoint named in the package bin map', () => {
     const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
@@ -888,6 +954,36 @@ describe('npm shim resolution', () => {
   it('accepts the string form of bin', () => {
     const prefix = fakePrefix('openclaw', 'cli.mjs');
     expect(npmShimEntry('openclaw', [prefix])).toBeDefined();
+  });
+
+  // A directory on PATH is a guess, not the user's own config, so an unreadable
+  // package.json there must cost us that candidate and nothing more. Throwing would
+  // abort the whole `connect` run over a broken file in some unrelated npm prefix.
+  it('skips a candidate whose package.json is unparseable, and finds the real one', () => {
+    const broken = mkdtempSync(join(tmpdir(), 'connect-agent-broken-'));
+    mkdirSync(join(broken, 'node_modules', 'openclaw'), { recursive: true });
+    writeFileSync(join(broken, 'openclaw.cmd'), '@ECHO off\n');
+    writeFileSync(join(broken, 'node_modules', 'openclaw', 'package.json'), '{ this is not json');
+
+    const good = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+
+    expect(() => npmShimEntry('openclaw', [broken, good])).not.toThrow();
+    expect(npmShimEntry('openclaw', [broken, good])).toBe(join(good, 'node_modules', 'openclaw', 'cli.mjs'));
+    // And with no good candidate behind it, it gives up rather than propagating.
+    expect(npmShimEntry('openclaw', [broken])).toBeUndefined();
+  });
+
+  // Valid JSON that is not an object — `"openclaw"`, `[]`, `null` — reaches the `.bin`
+  // read and must not be dereferenced blindly either.
+  it('skips a package.json that is valid JSON but not an object', () => {
+    for (const contents of ['"just-a-string"', '[]', 'null', '42']) {
+      const dir = mkdtempSync(join(tmpdir(), 'connect-agent-nonobj-'));
+      mkdirSync(join(dir, 'node_modules', 'openclaw'), { recursive: true });
+      writeFileSync(join(dir, 'openclaw.cmd'), '@ECHO off\n');
+      writeFileSync(join(dir, 'node_modules', 'openclaw', 'package.json'), contents);
+      expect(() => npmShimEntry('openclaw', [dir])).not.toThrow();
+      expect(npmShimEntry('openclaw', [dir])).toBeUndefined();
+    }
   });
 
   // A same-named script sitting in some earlier PATH directory must not stop the
