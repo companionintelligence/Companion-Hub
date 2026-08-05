@@ -935,7 +935,9 @@ export type CreateCustomAppDto = {
             user?: string;
             volumes?: Array<{
                 containerPath: string;
-                hostPath: string;
+                hostPath?: string;
+                volumeName?: string;
+                requiresPosixPermissions?: boolean;
                 bind?: {
                     propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
                 };
@@ -1046,7 +1048,9 @@ export type CreateCustomAppDto = {
                 user?: string;
                 volumes?: Array<{
                     containerPath: string;
-                    hostPath: string;
+                    hostPath?: string;
+                    volumeName?: string;
+                    requiresPosixPermissions?: boolean;
                     bind?: {
                         propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
                     };
@@ -1171,7 +1175,9 @@ export type UpdateCustomAppDto = {
             user?: string;
             volumes?: Array<{
                 containerPath: string;
-                hostPath: string;
+                hostPath?: string;
+                volumeName?: string;
+                requiresPosixPermissions?: boolean;
                 bind?: {
                     propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
                 };
@@ -1282,7 +1288,9 @@ export type UpdateCustomAppDto = {
                 user?: string;
                 volumes?: Array<{
                     containerPath: string;
-                    hostPath: string;
+                    hostPath?: string;
+                    volumeName?: string;
+                    requiresPosixPermissions?: boolean;
                     bind?: {
                         propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
                     };
