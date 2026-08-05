@@ -171,7 +171,7 @@ const tauriBaseUrlReady: Promise<void> = isTauriRelease
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
   { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
-  { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap' },
+  { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap' },
   { rel: 'stylesheet', href: stylesheet },
   { rel: 'stylesheet', href: globalsStylesheet },
   { rel: 'icon', type: 'image/x-icon', href: '/icons/favicon.ico' },
