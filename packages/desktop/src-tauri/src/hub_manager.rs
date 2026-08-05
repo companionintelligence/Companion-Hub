@@ -5843,6 +5843,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 }
 
 pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+    if !is_docker_available() {
+        return Ok(None);
+    }
+
     let output = docker_command()
         .args(managed_app_container_ps_args())
         .output()
