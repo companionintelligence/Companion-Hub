@@ -30,7 +30,8 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
+import { isCompiledCihubBinary } from '../port-availability';
 import { bold, printMessageBox } from './cli-ui';
 
 /**
@@ -751,8 +752,16 @@ export function backupFile(path: string, stamp: string): string | undefined {
 
 export type RunResult = { ok: boolean; stdout: string; stderr: string; status: number | null; error?: string };
 
+/** The directories PATH names, in order, as the environment block spells them. */
+function pathDirectories(): string[] {
+  return (process.env.PATH ?? '')
+    .split(delimiter)
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((entry) => entry !== '');
+}
+
 /**
- * Resolve a `where`-style listing to the JS entrypoint an npm shim wraps.
+ * Resolve the JS entrypoint an npm shim wraps, searching the given PATH directories.
  *
  * npm installs a Node CLI on Windows as a `.cmd`/`.ps1` shim, and Node cannot spawn
  * either without a shell — `spawnSync('openclaw', …)` fails ENOENT, because libuv
@@ -763,21 +772,27 @@ export type RunResult = { ok: boolean; stdout: string; stderr: string; status: n
  * shape via a quote in a key.
  *
  * So instead of a shell, follow the shim back to what it runs: the sibling
- * `node_modules/<name>/` package, whose `bin` names the entrypoint. That is spawned
- * under this same Node with the arguments untouched.
+ * `node_modules/<name>/` package, whose `bin` names the entrypoint.
  *
- * Pure and exported so the resolution can be tested without a global install. Returns
- * undefined when the listing has no shim we recognise, and the caller then spawns the
- * name as given — the POSIX path, and a correct fallback on a non-npm install.
+ * The candidates come from PATH and NOT from `where.exe`, which gets both halves of
+ * this wrong. `where` searches the CURRENT DIRECTORY first, so an `openclaw.cmd` with a
+ * `node_modules\openclaw\` planted beside it in whatever folder the user happened to
+ * run from would win over the real global install — and then be handed the Hub key in
+ * its argv. And `where` writes its output in the console's OEM codepage, so a prefix
+ * under `C:\Users\José\…` decodes to U+FFFD and matches nothing. The environment block
+ * has neither problem.
+ *
+ * Exported so the resolution can be tested without a global install. Returns undefined
+ * when no PATH directory holds a shim we recognise, and the caller then spawns the name
+ * as given — the POSIX path, and a correct fallback on a non-npm install.
  */
-export function npmShimEntry(name: string, whereOutput: string): string | undefined {
-  for (const line of whereOutput.split(/\r?\n/)) {
-    const shim = line.trim();
-    if (shim === '') continue;
-    // `<prefix>\<name>.cmd` sits alongside `<prefix>\node_modules\<name>\`. Entries
-    // that do not (a stray same-named script earlier on PATH, which `where` lists
-    // first when it is in the cwd) simply fail this test and we keep looking.
-    const manifest = join(dirname(shim), 'node_modules', name, 'package.json');
+export function npmShimEntry(name: string, pathDirs: string[]): string | undefined {
+  for (const dir of pathDirs) {
+    // `<prefix>\<name>.cmd` sits alongside `<prefix>\node_modules\<name>\`. A directory
+    // with one and not the other — a stray same-named script earlier on PATH — simply
+    // fails this test and we keep looking.
+    if (!existsSync(join(dir, `${name}.cmd`))) continue;
+    const manifest = join(dir, 'node_modules', name, 'package.json');
     if (!existsSync(manifest)) continue;
     const pkg = readJsonIfPresent(manifest) as { bin?: string | Record<string, string> };
     const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.[name];
@@ -788,14 +803,38 @@ export function npmShimEntry(name: string, whereOutput: string): string | undefi
   return undefined;
 }
 
+/**
+ * Something that will actually EXECUTE a script path we hand it, or undefined.
+ *
+ * `process.execPath` is that only while this runs under node or bun. The shipped
+ * Windows `cihub` is a Bun-compiled single-file binary, so execPath is `cihub.exe`,
+ * which ignores a leading script path and forwards it as an argument — spawning it
+ * would re-enter our own dispatcher, which reports `Unknown command: …\openclaw.mjs`
+ * and exits non-zero, so the agent CLI never runs at all. port-availability.ts refuses
+ * to spawn execPath for the same reason, and shares the check.
+ */
+function jsRuntimeForScript(pathDirs: string[]): string | undefined {
+  if (!isCompiledCihubBinary()) return process.execPath;
+  // A globally npm-installed agent CLI implies a Node install, so this normally hits.
+  for (const dir of pathDirs) {
+    for (const exe of ['node.exe', 'bun.exe']) {
+      const candidate = join(dir, exe);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 /** What to actually hand spawnSync for `command`, per platform. */
-function resolveSpawn(command: string, args: string[]): { command: string; args: string[] } {
+export function resolveSpawn(command: string, args: string[]): { command: string; args: string[] } {
   if (process.platform !== 'win32') return { command, args };
-  // `where.exe` is a real executable, so this needs no shell of its own.
-  const probe = spawnSync('where', [command], { encoding: 'utf8' });
-  if (probe.status !== 0) return { command, args };
-  const entry = npmShimEntry(command, probe.stdout ?? '');
-  return entry ? { command: process.execPath, args: [entry, ...args] } : { command, args };
+  const pathDirs = pathDirectories();
+  const entry = npmShimEntry(command, pathDirs);
+  if (entry === undefined) return { command, args };
+  const runtime = jsRuntimeForScript(pathDirs);
+  // Nothing to run the entrypoint with: spawn the name as given, so the failure is the
+  // plain ENOENT rather than this process re-executing itself with a script it ignores.
+  return runtime ? { command: runtime, args: [entry, ...args] } : { command, args };
 }
 
 export function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): RunResult {
@@ -825,6 +864,22 @@ export function runFailureMessage(result: RunResult, what: string): string {
   const stdout = result.stdout.trim();
   if (stdout !== '') return stdout;
   return `${what} exited ${result.status}`;
+}
+
+/**
+ * How to invoke `tar` so a Windows path never reaches `-f`.
+ *
+ * GNU tar reads an argument with a `:` before any `/` as a remote `host:file` spec, so
+ * `-xzf C:\Users\…\x.tgz` aborts with "Cannot connect to C: resolve failed". That is
+ * not a corner case here: Git for Windows ships GNU tar at `usr\bin\tar.exe` and puts
+ * it ahead of System32's bsdtar for anything launched from a Git Bash shell — the one
+ * setup the old `curl | tar` pipeline actually worked on, which piped the archive in on
+ * stdin and so never gave `-f` a path at all. Naming both the archive and the
+ * destination relative to a cwd keeps the drive letter out of the argv entirely, and
+ * bsdtar and GNU tar both take it.
+ */
+export function tarExtractCommand(archive: string, staging: string): { args: string[]; cwd: string } {
+  return { args: ['-xzf', basename(archive), '-C', basename(staging), '--strip-components=1'], cwd: dirname(staging) };
 }
 
 export function commandExists(name: string): boolean {
@@ -1345,7 +1400,9 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     process.exit(2);
   }
 
-  const extracted = run('tar', ['-xzf', archive, '-C', staging, '--strip-components=1']);
+  // The archive was downloaded beside the staging directory, so one cwd names both.
+  const extract = tarExtractCommand(archive, staging);
+  const extracted = run('tar', extract.args, { cwd: extract.cwd });
   rmFileQuietly(archive);
   if (!extracted.ok) {
     rmDirQuietly(staging);

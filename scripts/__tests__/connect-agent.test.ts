@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   backupFile,
@@ -26,10 +26,12 @@ import {
   probeHubMcp,
   probeMemory,
   readJsonIfPresent,
+  resolveSpawn,
   restoreBackupOutcome,
   run,
   runFailureMessage,
   tarballUrl,
+  tarExtractCommand,
   timestampForBackup,
   patchHermesMcpServers,
   triageMcpProbe,
@@ -859,6 +861,18 @@ describe('backup naming', () => {
   });
 });
 
+/** A minimal npm global prefix: the shim, and the package it points at. */
+function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs', parent = tmpdir()) {
+  const prefix = mkdtempSync(join(parent, 'connect-agent-shim-'));
+  const pkgDir = join(prefix, 'node_modules', name);
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(prefix, `${name}.cmd`), '@ECHO off\n');
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name, bin }));
+  // Prints its own argv, so a real spawn can be asserted rather than just its shape.
+  if (entryFile) writeFileSync(join(pkgDir, entryFile), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  return prefix;
+}
+
 /**
  * Windows npm installs a CLI as a `.cmd`/`.ps1` shim, which Node cannot spawn without a
  * shell — and a shell is not an option here, because `mcp add` carries the user's API
@@ -866,43 +880,183 @@ describe('backup naming', () => {
  * shell-free.
  */
 describe('npm shim resolution', () => {
-  /** A minimal npm global prefix: the shims, and the package they point at. */
-  function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs') {
-    const prefix = mkdtempSync(join(tmpdir(), 'connect-agent-shim-'));
-    const pkgDir = join(prefix, 'node_modules', name);
-    mkdirSync(pkgDir, { recursive: true });
-    writeFileSync(join(prefix, `${name}.cmd`), '@ECHO off\n');
-    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name, bin }));
-    if (entryFile) writeFileSync(join(pkgDir, entryFile), '#!/usr/bin/env node\n');
-    return prefix;
-  }
-
   it('follows a shim to the entrypoint named in the package bin map', () => {
     const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
-    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+    expect(npmShimEntry('openclaw', [prefix])).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
   });
 
   it('accepts the string form of bin', () => {
     const prefix = fakePrefix('openclaw', 'cli.mjs');
-    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBeDefined();
+    expect(npmShimEntry('openclaw', [prefix])).toBeDefined();
   });
 
-  // `where` lists a match in the current directory FIRST, so an unrelated same-named
-  // script shadowing the real install must not stop the search.
-  it('skips a listed path that has no package beside it and keeps looking', () => {
+  // A same-named script sitting in some earlier PATH directory must not stop the
+  // search, or a stray `openclaw.cmd` anywhere ahead of the npm prefix hides the real
+  // install.
+  it('skips a directory that has no package beside the shim and keeps looking', () => {
     const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
-    const decoy = join(mkdtempSync(join(tmpdir(), 'connect-agent-decoy-')), 'openclaw.cmd');
-    writeFileSync(decoy, '@ECHO off\n');
-    expect(npmShimEntry('openclaw', `${decoy}\r\n${join(prefix, 'openclaw.cmd')}\r\n`)).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+    const decoy = mkdtempSync(join(tmpdir(), 'connect-agent-decoy-'));
+    writeFileSync(join(decoy, 'openclaw.cmd'), '@ECHO off\n');
+    expect(npmShimEntry('openclaw', [decoy, prefix])).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+  });
+
+  // A prefix is a prefix because it holds the shim. Without that test any directory on
+  // PATH that happens to contain a `node_modules/<name>` — a project checkout — would
+  // answer for the global install.
+  it('ignores a node_modules that no shim points at', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    rmSync(join(prefix, 'openclaw.cmd'));
+    expect(npmShimEntry('openclaw', [prefix])).toBeUndefined();
   });
 
   it('gives up rather than guessing when the entrypoint is missing', () => {
     // A bin map naming a file that is not there: returning it would produce a spawn
     // failure further away from the cause than simply falling back to the plain name.
     const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' }, '');
-    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBeUndefined();
-    expect(npmShimEntry('openclaw', '')).toBeUndefined();
-    expect(npmShimEntry('openclaw', 'C:\\nowhere\\openclaw.cmd\n')).toBeUndefined();
+    expect(npmShimEntry('openclaw', [prefix])).toBeUndefined();
+    expect(npmShimEntry('openclaw', [])).toBeUndefined();
+    expect(npmShimEntry('openclaw', ['C:\\nowhere'])).toBeUndefined();
+  });
+});
+
+/**
+ * The substitution, not just the lookup. Nothing else covers the wiring in
+ * `resolveSpawn`, so without this the whole Windows fix can be deleted with the suite
+ * still green — and the no-shell guarantee the API key rests on has nothing pinning it.
+ */
+describe('spawning a Windows npm shim', () => {
+  const realPlatform = process.platform;
+  const realExecPath = process.execPath;
+  const realPath = process.env.PATH;
+  const realCwd = process.cwd();
+
+  function asPlatform(platform: NodeJS.Platform) {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+
+  function asExecPath(path: string) {
+    Object.defineProperty(process, 'execPath', { value: path, configurable: true });
+  }
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    Object.defineProperty(process, 'execPath', { value: realExecPath, configurable: true });
+    if (realPath === undefined) delete process.env.PATH;
+    else process.env.PATH = realPath;
+    process.chdir(realCwd);
+  });
+
+  it('runs the entrypoint under this runtime, with the argv byte-identical', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+
+    const entry = join(prefix, 'node_modules', 'faux-agent', 'cli.mjs');
+    expect(resolveSpawn('faux-agent', ['--version'])).toEqual({ command: process.execPath, args: [entry, '--version'] });
+
+    // `&`, `|` and `%VAR%` are all live under cmd.exe, so a key shaped like this only
+    // arrives intact while the spawn stays shell-free.
+    const args = ['mcp', 'add', 'ci-hub', '--header', 'Authorization=Bearer a&b|c %PATH%'];
+    const result = run('faux-agent', args);
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  });
+
+  /**
+   * `where` lists the CURRENT DIRECTORY before PATH, so trusting its first hit turns a
+   * planted `openclaw.cmd` plus `node_modules\openclaw\` in whatever folder the user ran
+   * from — a clone, a Downloads directory — into arbitrary code holding the Hub key.
+   * Before the shim resolution existed those files were inert, because spawnSync cannot
+   * start a `.cmd` at all.
+   */
+  it('never resolves a shim planted in the current directory', () => {
+    const genuine = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    const planted = fakePrefix('faux-agent', { 'faux-agent': 'evil.mjs' }, 'evil.mjs');
+    process.env.PATH = `${genuine}${delimiter}${realPath ?? ''}`;
+    process.chdir(planted);
+    asPlatform('win32');
+
+    expect(resolveSpawn('faux-agent', ['mcp', 'add']).args[0]).toBe(join(genuine, 'node_modules', 'faux-agent', 'cli.mjs'));
+  });
+
+  /**
+   * `where` writes its output in the console's OEM codepage, so `C:\Users\José\…` comes
+   * back with a U+FFFD in it and every path derived from it misses. PATH comes from the
+   * environment block, which does not have that problem.
+   */
+  it('resolves a prefix whose path is not ASCII', () => {
+    const parent = join(mkdtempSync(join(tmpdir(), 'connect-agent-enc-')), 'José');
+    mkdirSync(parent, { recursive: true });
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' }, 'cli.mjs', parent);
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+
+    expect(resolveSpawn('faux-agent', []).args[0]).toBe(join(prefix, 'node_modules', 'faux-agent', 'cli.mjs'));
+  });
+
+  /**
+   * The shipped Windows `cihub` is a Bun-compiled single-file binary: execPath is
+   * `cihub.exe`, which does not run a script path handed to it, it forwards it as an
+   * argument — so this substitution would re-enter our own dispatcher and the agent CLI
+   * would never run.
+   */
+  it('does not hand the entrypoint to a compiled cihub binary', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    // A stand-in node.exe ahead of any real one, so the choice is the same everywhere.
+    const runtime = join(prefix, 'node.exe');
+    writeFileSync(runtime, '');
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+    asExecPath(join('C:\\Program Files\\CI Hub', 'cihub.exe'));
+
+    const target = resolveSpawn('faux-agent', ['plugins', 'install']);
+    expect(target.command).toBe(runtime);
+    expect(target.args).toEqual([join(prefix, 'node_modules', 'faux-agent', 'cli.mjs'), 'plugins', 'install']);
+  });
+
+  // With no runtime to hand it to, the entrypoint is worse than useless: spawning the
+  // compiled binary with it reports "Unknown command" from our own dispatcher instead
+  // of the ENOENT that says the agent CLI is what could not be started.
+  it('falls back to the bare name when no JS runtime is on PATH', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    process.env.PATH = prefix;
+    asPlatform('win32');
+    asExecPath(join('C:\\Program Files\\CI Hub', 'cihub.exe'));
+
+    expect(resolveSpawn('faux-agent', ['--version'])).toEqual({ command: 'faux-agent', args: ['--version'] });
+  });
+});
+
+/**
+ * `tar -xzf C:\…\x.tgz` is a remote `host:file` spec to GNU tar, which Git for Windows
+ * ships and puts ahead of System32's bsdtar in any Git Bash shell — the one setup the
+ * pipeline this replaced actually worked on.
+ */
+describe('tar invocation', () => {
+  it('keeps drive letters out of the argv', () => {
+    const { args, cwd } = tarExtractCommand('C:\\Users\\a\\.plugin.incoming.tgz', 'C:\\Users\\a\\.plugin.incoming');
+    expect(cwd).toBe('C:\\Users\\a');
+    expect(args).toEqual(['-xzf', '.plugin.incoming.tgz', '-C', '.plugin.incoming', '--strip-components=1']);
+    for (const arg of args) expect(arg).not.toMatch(/:/);
+  });
+
+  it('extracts a real archive with whichever tar is first on PATH', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-tar-'));
+    const source = join(dir, 'pkg');
+    mkdirSync(source);
+    writeFileSync(join(source, '__init__.py'), '# plugin\n');
+    const archive = join(dir, '.plugin.incoming.tgz');
+    // Built relative for the same reason it is read relative.
+    const built = run('tar', ['-czf', '.plugin.incoming.tgz', 'pkg'], { cwd: dir });
+    expect(built.ok).toBe(true);
+
+    const staging = join(dir, '.plugin.incoming');
+    mkdirSync(staging);
+    const { args, cwd } = tarExtractCommand(archive, staging);
+    const extracted = run('tar', args, { cwd });
+
+    expect(extracted.ok, runFailureMessage(extracted, 'tar')).toBe(true);
+    expect(existsSync(join(staging, '__init__.py'))).toBe(true);
   });
 });
 
