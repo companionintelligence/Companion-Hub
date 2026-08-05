@@ -257,13 +257,18 @@ const serviceSchemaV2Object = z.object({
     .array(
       z
         .object({
-          hostPath: z.string('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED').optional(),
+          // `.min(1)` because `assertVolumeSource` only asks whether the field is present: an empty
+          // string reads as "declared", passes the source check, and then makes `setVolume` throw
+          // "declares neither hostPath nor volumeName" — a message that contradicts the manifest.
+          hostPath: z.string('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED').min(1, 'CUSTOM_APP_ERROR_HOST_PATH_REQUIRED').optional(),
           /**
            * Docker-managed named volume, mounted instead of a host bind. Compose scopes the name to
            * the app's project, so `db` becomes `<app>_<store>_db` and cannot collide across apps.
            */
           volumeName: z.string().regex(DOCKER_VOLUME_NAME_PATTERN, 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID').optional(),
-          containerPath: z.string('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED'),
+          // An empty target renders as `source:` — compose rejects it, but only once the app is
+          // already installing, and the error names the generated file rather than the manifest.
+          containerPath: z.string('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED').min(1, 'CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED'),
           readOnly: z.boolean().optional(),
           /**
            * Marks a bind mount whose contents need real POSIX ownership/permissions — database data

@@ -207,6 +207,20 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED');
         });
 
+        // An empty string is "present" as far as the source check is concerned, so without the
+        // length rule it reaches the builder and throws an error naming the opposite problem.
+        it('should reject an empty host path rather than reporting it as no source at build time', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED');
+        });
+
+        it('should reject an empty container path, which would render as a bare `source:` mount', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '${APP_DATA_DIR}/data', containerPath: '' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED');
+        });
+
         it('should reject a volume name docker itself would not accept', () => {
           const result = safeParse(serviceSchema, withVolume({ volumeName: '/pg data', containerPath: '/var/lib/postgresql' }));
           expect(result.success).toBe(false);
