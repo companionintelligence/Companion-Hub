@@ -28,6 +28,10 @@ concurrency:
   group: mobile-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   # ── Android ──────────────────────────────────────────────────────────────
   android:
@@ -74,9 +78,13 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build frontend
         env:
@@ -176,10 +184,14 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         if: steps.secrets.outputs.present == 'true'
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build frontend
         if: steps.secrets.outputs.present == 'true'
@@ -254,9 +266,13 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build frontend
         env:
@@ -345,10 +361,14 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         if: steps.secrets.outputs.present == 'true'
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build frontend
         if: steps.secrets.outputs.present == 'true'

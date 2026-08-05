@@ -36,3 +36,6 @@ allowBuilds:
   msw: true
   protobufjs: true
   ssh2: true
+
+minimumReleaseAgeExclude:
+  - '@companionintelligence/tokens@0.3.0'

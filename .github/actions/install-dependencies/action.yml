@@ -9,6 +9,8 @@ runs:
       name: Install Node.js
       with:
         node-version: "22"
+        registry-url: "https://npm.pkg.github.com"
+        scope: "@companionintelligence"
 
     - uses: pnpm/action-setup@v4
       name: Install pnpm
@@ -16,6 +18,8 @@ runs:
     - name: Install dependencies
       shell: bash
       run: pnpm install --frozen-lockfile
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build
       shell: bash
