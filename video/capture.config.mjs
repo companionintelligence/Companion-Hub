@@ -109,7 +109,7 @@ const PINNED_SYSTEM_LOAD = {
   memoryUsed: 13,
   percentUsedMemory: 41,
   hasVmWedge: false,
-  runtimeKind: "linux-native",
+  runtimeKind: 'linux-native',
 };
 
 /**
@@ -125,14 +125,14 @@ const PINNED_PROFILE_VOLATILES = {
 };
 
 export default {
-  baseURL: process.env.APP_URL ?? "http://localhost:9091",
+  baseURL: process.env.APP_URL ?? 'http://localhost:9091',
 
   // CI apps are dark-first. Pinned locale/timezone/clock keep captures stable.
   // The stage itself also runs with TZ=UTC (playwright.config.ts backendEnv).
-  colorScheme: "dark",
-  locale: "en-US",
-  timezoneId: "UTC",
-  fixedTime: "2026-06-15T15:04:00Z",
+  colorScheme: 'dark',
+  locale: 'en-US',
+  timezoneId: 'UTC',
+  fixedTime: '2026-06-15T15:04:00Z',
 
   // No storageState — see hazard 7 above. The login happens inside the
   // `hub-home` shot's `before` block and persists for the rest of the run.
@@ -141,17 +141,17 @@ export default {
     // Warn loudly if an external asset fails — an unstyled capture looks like a
     // UI regression but is really a network failure. Montserrat is vendored by
     // the frontend build, so a googleapis hit here means something regressed.
-    context.on("requestfailed", (req) => {
+    context.on('requestfailed', (req) => {
       if (/fonts\.(googleapis|gstatic)|cdn\./.test(req.url())) {
         console.warn(`  ! external asset failed: ${req.url()}`);
       }
     });
 
     // Hazard 1: pin the three-second host-metrics poll.
-    await context.route("**/api/system/load", (route) =>
+    await context.route('**/api/system/load', (route) =>
       route.fulfill({
         status: 200,
-        contentType: "application/json",
+        contentType: 'application/json',
         body: JSON.stringify(PINNED_SYSTEM_LOAD),
       }),
     );
@@ -159,7 +159,7 @@ export default {
     // Hazard 8: pin only the volatile numbers in the hardware profile. Passing
     // the real response through on any failure keeps a bad patch from turning a
     // cosmetic drift into a failed shot.
-    await context.route("**/api/inference/onboarding-profile", async (route) => {
+    await context.route('**/api/inference/onboarding-profile', async (route) => {
       let response;
       let body;
       try {
@@ -190,6 +190,9 @@ export default {
     // capture run phone home.
     await context.route(/ingest\.sentry\.io|sentry\.io\/api/, (route) => route.abort());
 
-    if (process.env.VIDEO_DEBUG) console.log(`  · stage ready for ${viewport}`);
+    if (process.env.VIDEO_DEBUG) {
+      // biome-ignore lint/suspicious/noConsole: opt-in capture diagnostics
+      console.log(`  · stage ready for ${viewport}`);
+    }
   },
 };
