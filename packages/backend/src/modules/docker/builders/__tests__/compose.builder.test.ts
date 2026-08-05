@@ -450,6 +450,52 @@ describe('DockerComposeBuilder', () => {
       expect(Object.keys(yamlObject.volumes)).toEqual(['data-db']);
     });
 
+    it('rejects two different directories that derive the same volume name', async () => {
+      // `deriveVolumeName` is not injective for every host path: `/a-/b` and `/a/-b` both derive
+      // `a---b`. Rendering them anyway would mount two unrelated directories on one volume and merge
+      // their data. The build must fail loudly instead.
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [
+          { hostPath: '${APP_DATA_DIR}/a-/b', containerPath: '/x', requiresPosixPermissions: true },
+          { hostPath: '${APP_DATA_DIR}/a/-b', containerPath: '/y', requiresPosixPermissions: true },
+        ],
+      };
+
+      await expect(permissionlessBuilder().getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/claimed by two different sources/);
+    });
+
+    it('rejects a redirected bind whose derived name collides with a declared volume', async () => {
+      // A named volume declared as `data-db` and a redirected bind at `/data/db` (which also derives
+      // `data-db`) would land on the same volume. Different sources, one name — reject it.
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [
+          { volumeName: 'data-db', containerPath: '/x' },
+          { hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/y', requiresPosixPermissions: true },
+        ],
+      };
+
+      await expect(permissionlessBuilder().getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/claimed by two different sources/);
+    });
+
+    it('does not redirect a volume whose requiresPosixPermissions is a non-boolean', async () => {
+      // The flag is only warn-validated at this sink, so a malformed `"false"` must not read as
+      // truthy and redirect a bind the author never marked for it.
+      const service: ServiceInput = {
+        name: 'svc',
+        image: 'image',
+        volumes: [{ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/x', requiresPosixPermissions: 'false' as never }],
+      };
+
+      const yamlObject = yaml.parse(await permissionlessBuilder().getDockerCompose([service], {}, urn, subnet));
+
+      expect(yamlObject.services.svc.volumes).toEqual(['${APP_DATA_DIR}/data/db:/x']);
+      expect(yamlObject.volumes).toBeUndefined();
+    });
+
     it('leaves bind mounts that do not need ownership alone on a permission-less filesystem', async () => {
       const service: ServiceInput = {
         name: 'service',

@@ -39,11 +39,14 @@ type ServiceVolume = NonNullable<Service['volumes']>[number];
  * servers (postiz': two different major versions) on a single data directory. The host path is also
  * stable across app updates; a name that drifted between builds would orphan the app's data.
  *
- * Characters that stand in for a separator are escaped rather than simply replaced, so distinct
- * paths cannot converge: `-` doubles before `/` becomes `-`, and `_` doubles before invalid runs
- * become `_`. Without that, `/data/db` and `/data-db` — or `/a b` and `/a_b` — would share a volume
- * and silently merge unrelated data. Paths made only of `[a-z0-9/]`, which is every database
- * directory in this catalog, are unaffected and read exactly as the path does.
+ * Characters that stand in for a separator are escaped rather than simply replaced, to keep
+ * distinct paths apart: `-` doubles before `/` becomes `-`, and `_` doubles before invalid runs
+ * become `_`. This is injective across `[a-z0-9/]` — every database directory in this catalog —
+ * which read exactly as the path does. It is NOT injective across every possible host path: a `-`
+ * adjacent to a `/` (`/a-/b` vs `/a/-b`), distinct invalid characters collapsing to one `_`
+ * (`/a b` vs `/a:b`), or the leading-`v` prefix meeting a real `v` all converge. The caller
+ * (`registerVolume`) rejects any such collision at build time rather than merge two directories, so
+ * this function does not need to guarantee injectivity for inputs the catalog never produces.
  *
  * A leading non-alphanumeric is prefixed rather than trimmed: trimming is what would undo the
  * escaping above and re-merge the paths it exists to keep apart.
@@ -72,6 +75,14 @@ export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
   private volumes: Record<string, Record<string, never>> = {};
+  /**
+   * Which source claimed each top-level volume name, so a collision can be caught. A declared
+   * `volumeName` is keyed by its own name; a redirected bind by its host path. `deriveVolumeName`
+   * aims to be injective but is not provably so for every possible host path, and a derived name
+   * can also land on an explicitly declared one — either way, two different sources mapping to one
+   * volume would silently merge two data directories. This turns that into a build-time error.
+   */
+  private volumeSources: Record<string, string> = {};
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private defaultCpuLimit?: string;
@@ -137,18 +148,45 @@ export class DockerComposeBuilder {
    * the host filesystem cannot carry permissions. Everything else stays a plain bind mount, so
    * platforms where binds already work keep their existing data in place.
    */
+  /**
+   * Registers a top-level named volume, rejecting a name already claimed by a different source.
+   * The same source registering twice is fine — sidecars sharing one data directory declare the
+   * same host path on purpose and must land on the same volume.
+   */
+  private registerVolume(name: string, source: string) {
+    const existing = this.volumeSources[name];
+    if (existing !== undefined && existing !== source) {
+      throw new Error(
+        `Volume name "${name}" is claimed by two different sources (${existing} and ${source}). ` +
+          'Refusing to merge two distinct data directories into one volume.',
+      );
+    }
+    this.volumeSources[name] = source;
+    this.volumes[name] = {};
+  }
+
   private resolveVolume = (volume: ServiceVolume) => {
     if (volume.volumeName) {
-      this.volumes[volume.volumeName] = {};
+      this.registerVolume(volume.volumeName, `volumeName:${volume.volumeName}`);
       return volume;
     }
 
-    if (!volume.requiresPosixPermissions || this.posixPermissionsSupported || volume.hostPath === undefined) {
+    // `=== true`, not truthiness: `requiresPosixPermissions` is only warn-validated at the build
+    // sink, so a malformed non-boolean (e.g. the string "false") would otherwise read as truthy and
+    // redirect a bind the author never marked.
+    if (volume.requiresPosixPermissions !== true || this.posixPermissionsSupported || volume.hostPath === undefined) {
       return volume;
     }
 
+    // Key the collision check on the directory identity, not the raw string, so `/data/db` and
+    // `/data/db/` — the same directory — share a volume, while genuinely different directories that
+    // happen to derive the same name are rejected.
+    const identity = volume.hostPath
+      .replace(/\$\{APP_DATA_DIR\}/g, '')
+      .replace(/\/+/g, '/')
+      .replace(/^\/+|\/+$/g, '');
     const volumeName = deriveVolumeName(volume.hostPath);
-    this.volumes[volumeName] = {};
+    this.registerVolume(volumeName, `hostPath:${identity}`);
 
     return { ...volume, hostPath: undefined, volumeName };
   };
