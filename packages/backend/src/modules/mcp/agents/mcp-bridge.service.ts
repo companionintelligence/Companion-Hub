@@ -7,6 +7,7 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
+import { McpStreamableHttpClient } from './mcp-streamable-http-client';
 
 interface McpConnection {
   appUrn: AppUrn;
@@ -16,8 +17,10 @@ interface McpConnection {
   retryCount: number;
   retryTimer?: ReturnType<typeof setTimeout>;
   abortController?: AbortController;
-  /** Streamable-HTTP session id returned by the server's initialize response, if any. */
+  /** Streamable-HTTP session id returned by the upstream server, if any. */
   sessionId?: string;
+  /** SDK client for upstream Streamable HTTP MCP servers. */
+  httpClient?: McpStreamableHttpClient;
 }
 
 /**
@@ -31,26 +34,15 @@ const INITIALIZE_PARAMS = {
   clientInfo: { name: 'ci-hub-mcp-bridge', version: '1.0.0' },
 } as const;
 
+/** Legacy `sse` alias and canonical `streamable-http` both mean Streamable HTTP transport. */
+const isStreamableHttpTransport = (transport: string): boolean => transport === 'streamable-http' || transport === 'sse';
+
 /** A stdio server exited without emitting a single JSON-RPC line — it never got our input. */
 class StdioSilentExitError extends Error {
   constructor(appUrn: string, code: number | null) {
     super(`MCP stdio server for ${appUrn} exited (code ${code}) without emitting any response`);
     this.name = 'StdioSilentExitError';
   }
-}
-
-/** Parse a JSON-RPC response that may arrive as plain JSON or as an SSE `data:` frame. */
-async function parseJsonRpcHttpResponse(response: Response): Promise<Record<string, unknown>> {
-  const text = await response.text();
-  if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
-    for (const line of text.split('\n')) {
-      if (line.startsWith('data:')) {
-        return JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
-      }
-    }
-    throw new Error('SSE response contained no data frame');
-  }
-  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
 }
 
 export interface BridgedToolInfo {
@@ -61,7 +53,7 @@ export interface BridgedToolInfo {
 
 /**
  * Connects to app MCP servers and bridges their tools.
- * Implements AMB-1 (SSE), AMB-2 (stdio), AMB-3 (lifecycle).
+ * Implements AMB-1 (Streamable HTTP), AMB-2 (stdio), AMB-3 (lifecycle).
  */
 @Injectable()
 export class McpBridgeService implements OnModuleDestroy {
@@ -193,8 +185,8 @@ export class McpBridgeService implements OnModuleDestroy {
     }
 
     try {
-      if (conn.config.transport === 'sse') {
-        return await this.connectSse(appUrn, conn);
+      if (isStreamableHttpTransport(conn.config.transport)) {
+        return await this.connectStreamableHttp(appUrn, conn);
       }
       return await this.connectStdio(appUrn, conn);
     } catch (err) {
@@ -205,77 +197,42 @@ export class McpBridgeService implements OnModuleDestroy {
   }
 
   /**
-   * S-AMB-1.1: Connect to app SSE MCP server
+   * S-AMB-1.1: Connect to an upstream Streamable HTTP MCP server via the official SDK client.
    */
-  private async connectSse(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
+  private async connectStreamableHttp(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
     if (!conn.config.url) {
       throw new Error(`No MCP URL configured for ${appUrn}`);
     }
 
     const url = this.resolveTemplateUrl(conn.config.url, appUrn);
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-    };
+    const headers = await this.buildStreamableHttpHeaders(appUrn, conn);
 
-    // Auth — prefer installed app.env; fall back to Hub process env for legacy configs.
+    if (!conn.httpClient) {
+      conn.httpClient = new McpStreamableHttpClient();
+    }
+
+    await conn.httpClient.connect({ url, headers, sessionId: conn.sessionId });
+    conn.sessionId = conn.httpClient.sessionId;
+
+    const tools = await conn.httpClient.listTools();
+
+    conn.connected = true;
+    conn.tools = tools;
+    conn.retryCount = 0;
+
+    this.logger.info(`Connected to ${appUrn} MCP server via Streamable HTTP, discovered ${tools.length} tools`);
+    return tools;
+  }
+
+  private async buildStreamableHttpHeaders(appUrn: AppUrn, conn: McpConnection): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
     if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
       const token = await this.resolveAuthToken(appUrn, conn.config.auth.token_env);
       if (token) {
         headers.Authorization = `Bearer ${token}`;
       }
     }
-
-    // Full handshake (#936): initialize with spec-required params, capture the
-    // streamable-HTTP session id, acknowledge with notifications/initialized.
-    const initResponse = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: INITIALIZE_PARAMS }),
-    });
-
-    if (!initResponse.ok) {
-      throw new Error(`MCP initialize failed for ${appUrn}: HTTP ${initResponse.status}`);
-    }
-    await parseJsonRpcHttpResponse(initResponse).catch(() => ({}));
-
-    const sessionId = initResponse.headers.get('mcp-session-id');
-    if (sessionId) {
-      conn.sessionId = sessionId;
-      headers['mcp-session-id'] = sessionId;
-    }
-
-    await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-    }).catch(() => undefined);
-
-    // Discover tools
-    const listResponse = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/list',
-        params: {},
-      }),
-    });
-
-    if (!listResponse.ok) {
-      throw new Error(`MCP tools/list failed for ${appUrn}: HTTP ${listResponse.status}`);
-    }
-
-    const listResult = (await parseJsonRpcHttpResponse(listResponse)) as { result?: { tools?: McpConnection['tools'] } };
-    const tools = listResult.result?.tools ?? [];
-
-    conn.connected = true;
-    conn.tools = tools;
-    conn.retryCount = 0;
-
-    this.logger.info(`Connected to ${appUrn} MCP server via SSE, discovered ${tools.length} tools`);
-    return tools;
+    return headers;
   }
 
   /**
@@ -472,49 +429,38 @@ export class McpBridgeService implements OnModuleDestroy {
       }
     }
 
-    if (conn.config.transport === 'sse') {
-      return this.callViaSse(appUrn, conn, toolName, params);
+    if (isStreamableHttpTransport(conn.config.transport)) {
+      return this.callViaStreamableHttp(appUrn, conn, toolName, params);
     }
 
     return this.callViaStdio(appUrn, conn, toolName, params);
   }
 
-  private async callViaSse(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
-    const url = this.resolveTemplateUrl(conn.config.url ?? '', appUrn);
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-    };
-    if (conn.sessionId) {
-      headers['mcp-session-id'] = conn.sessionId;
+  private async callViaStreamableHttp(
+    appUrn: AppUrn,
+    conn: McpConnection,
+    toolName: string,
+    params: Record<string, unknown>,
+    retried = false,
+  ): Promise<unknown> {
+    if (!conn.httpClient?.connected) {
+      await this.connectStreamableHttp(appUrn, conn);
     }
 
-    if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
-      const token = await this.resolveAuthToken(appUrn, conn.config.auth.token_env);
-      if (token) headers.Authorization = `Bearer ${token}`;
+    try {
+      return await conn.httpClient!.callTool(toolName, params);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'MCP Streamable HTTP call failed';
+      if (!retried && /session|404|not connected/i.test(message)) {
+        conn.connected = false;
+        conn.sessionId = undefined;
+        await conn.httpClient?.close();
+        conn.httpClient = undefined;
+        await this.connectStreamableHttp(appUrn, conn);
+        return this.callViaStreamableHttp(appUrn, conn, toolName, params, true);
+      }
+      return { error: message, isError: true };
     }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'tools/call',
-        params: { name: toolName, arguments: params },
-      }),
-    });
-
-    // A 404 with a session header means the server dropped our session — reconnect once.
-    if (response.status === 404 && conn.sessionId) {
-      conn.connected = false;
-      conn.sessionId = undefined;
-      await this.connectAndDiscover(appUrn, conn);
-      return this.callViaSse(appUrn, conn, toolName, params);
-    }
-
-    const result = await parseJsonRpcHttpResponse(response);
-    return (result as { result?: unknown }).result ?? result;
   }
 
   private async callViaStdio(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
@@ -582,6 +528,9 @@ export class McpBridgeService implements OnModuleDestroy {
     if (conn.abortController) {
       conn.abortController.abort();
     }
+    void conn.httpClient?.close();
+    conn.httpClient = undefined;
+    conn.sessionId = undefined;
     conn.connected = false;
   }
 

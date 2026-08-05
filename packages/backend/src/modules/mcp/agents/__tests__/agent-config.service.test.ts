@@ -182,7 +182,24 @@ describe('AgentConfigService', () => {
       expect(result?.mcp.config?.command).toEqual(['npx', '-y', '@modelcontextprotocol/server-filesystem', '/data']);
     });
 
-    it('wires bearer auth for http listings with a required secret env', async () => {
+    it('prefers explicit mcp.auth over inferred secret env', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({
+          transport: 'http',
+          command: '',
+          args: [],
+          url: 'http://ad4m:3001/mcp',
+          auth: { type: 'bearer', token_env: 'ADMIN_CREDENTIAL' },
+          env: [{ key: 'ADMIN_CREDENTIAL', required: true, secret: true }],
+        }),
+      );
+
+      expect(result?.mcp.config?.auth).toEqual({ type: 'bearer', token_env: 'ADMIN_CREDENTIAL' });
+    });
+
+    it('infers bearer auth from required secret mcp.env when mcp.auth is absent', async () => {
       filesystem.pathExists.mockResolvedValue(false);
       const result = await service.getAgentConfig(
         MCP_URN,
@@ -214,7 +231,7 @@ describe('AgentConfigService', () => {
       );
 
       expect(result?.mcp.enabled).toBe(true);
-      expect(result?.mcp.config?.transport).toBe('sse');
+      expect(result?.mcp.config?.transport).toBe('streamable-http');
       expect(result?.mcp.config?.url).toBe('http://miro.example/mcp');
     });
 

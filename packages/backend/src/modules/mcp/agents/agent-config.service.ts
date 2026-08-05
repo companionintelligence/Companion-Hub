@@ -78,23 +78,22 @@ export class AgentConfigService {
    *   `command: string[]`. The bridge reaches the server with `docker exec -i <container>`,
    *   so resolve the concrete compose container name of the app's main service here
    *   (`<app>_<store>-<service>-1`) rather than leaving the bridge to guess.
-   * - http: bridged over the existing HTTP JSON-RPC client (`transport: 'sse'` in bridge
-   *   terms) when the listing pins a URL. Hosted/remote listings without a URL (e.g.
-   *   miro-mcp) have nothing the Hub can connect to — not bridgeable.
+   * - http: bridged over Streamable HTTP when the listing pins a URL. Hosted/remote listings
+   *   without a URL (e.g. miro-mcp) have nothing the Hub can connect to — not bridgeable.
    */
   private async resolveMarketplaceMcp(appUrn: AppUrn, appInfo: AppInfo): Promise<AgentMcpConfig | null> {
     const mcp = appInfo.mcp;
     if (!mcp) return null;
 
     const appEnv = await this.loadAppEnvRecord(appUrn);
-    const auth = this.inferMarketplaceMcpAuth(mcp);
+    const auth = this.resolveMarketplaceMcpAuth(mcp);
 
     if (mcp.transport === 'http') {
       if (!mcp.url) {
         this._logger.warn(`MCP app ${appUrn}: transport=http but mcp.url is missing — not bridgeable through Hub`);
         return null;
       }
-      return { enabled: true, transport: 'sse', url: mcp.url, command: undefined, container: undefined, auth };
+      return { enabled: true, transport: 'streamable-http', url: mcp.url, command: undefined, container: undefined, auth };
     }
 
     if (!mcp.command) return null;
@@ -123,10 +122,19 @@ export class AgentConfigService {
   }
 
   /**
-   * When a listing declares a required secret in mcp.env (e.g. ad4m ADMIN_CREDENTIAL),
-   * wire bearer auth so the bridge reads the token from app.env at call time.
+   * Resolve HTTP MCP auth from an explicit `mcp.auth` block, falling back to the first
+   * required secret in `mcp.env` (legacy listings without `mcp.auth`).
    */
-  private inferMarketplaceMcpAuth(mcp: MarketplaceMcp): AgentOpenApiAuth | undefined {
+  private resolveMarketplaceMcpAuth(mcp: MarketplaceMcp): AgentOpenApiAuth | undefined {
+    if (mcp.auth?.token_env) {
+      return {
+        type: mcp.auth.type ?? 'bearer',
+        token_env: mcp.auth.token_env,
+        header: mcp.auth.header,
+        api_key_name: mcp.auth.api_key_name,
+        api_key_in: mcp.auth.api_key_in,
+      };
+    }
     const secretEnv = mcp.env?.find((entry) => entry.secret && entry.required);
     if (!secretEnv?.key) return undefined;
     return { type: 'bearer', token_env: secretEnv.key };
