@@ -263,6 +263,15 @@ export const mcpEnvVarSchema = z.looseObject({
   secret: z.boolean().optional().default(false),
 });
 
+/** Auth the Hub bridge sends when connecting to an HTTP MCP server. */
+export const marketplaceMcpAuthSchema = z.looseObject({
+  type: z.enum(['bearer', 'basic', 'api_key', 'none']).default('bearer'),
+  token_env: z.string(),
+  header: z.string().optional(),
+  api_key_name: z.string().optional(),
+  api_key_in: z.enum(['header', 'query']).optional(),
+});
+
 export const mcpManifestSchema = z.looseObject({
   tools: z
     .array(z.looseObject({ name: z.string(), description: z.string().optional().default('') }))
@@ -279,6 +288,8 @@ export const marketplaceMcpSchema = z.looseObject({
   args: z.array(z.string()).optional().default([]),
   /** Endpoint for http-transport servers, when the listing pins one. */
   url: z.string().optional(),
+  /** Bearer/basic auth for HTTP MCP endpoints (token read from app.env at bridge time). */
+  auth: marketplaceMcpAuthSchema.optional(),
   env: z.array(mcpEnvVarSchema).optional().default([]),
   requires: z
     .looseObject({

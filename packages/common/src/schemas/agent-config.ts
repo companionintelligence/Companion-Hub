@@ -18,7 +18,8 @@ export const agentOpenApiConfigSchema = z.object({
 
 export const agentMcpConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  transport: z.enum(['sse', 'stdio']).default('sse'),
+  /** `streamable-http` is the canonical name; `sse` is a legacy alias for the same transport. */
+  transport: z.enum(['stdio', 'streamable-http', 'sse']).default('streamable-http'),
   url: z.string().optional(),
   command: z.array(z.string()).optional(),
   container: z.string().optional(),
