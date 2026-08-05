@@ -13,6 +13,7 @@
     "tsc": "react-router typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@companionintelligence/tokens": "^0.3.1",
     "@ci-hub/common": "workspace:*",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.4.0",

@@ -338,6 +338,9 @@ importers:
       '@codemirror/lang-markdown':
         specifier: ^6.4.0
         version: 6.5.0
+      '@companionintelligence/tokens':
+        specifier: ^0.3.1
+        version: 0.3.1
       '@hookform/resolvers':
         specifier: ^5.0.1
         version: 5.2.2(react-hook-form@7.72.1(react@19.2.5))
@@ -976,6 +979,9 @@ packages:
   '@colors/colors@1.6.0':
     resolution: {integrity: sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA==}
     engines: {node: '>=0.1.90'}
+
+  '@companionintelligence/tokens@0.3.1':
+    resolution: {integrity: sha512-a5Ii5c3RECMMw5Zzxxy1qazq71KijNgi3wtSfLeWf0jVPfQ9qFdZZEApm7bweeMY1ekigW7fASCToYZ9BgcHow==, tarball: https://npm.pkg.github.com/download/@companionintelligence/tokens/0.3.1/0f7bd6bd60754087277b25a876c736a090ac894d}
 
   '@csstools/color-helpers@6.0.2':
     resolution: {integrity: sha512-LMGQLS9EuADloEFkcTBR3BwV/CGHV7zyDxVRtVDTwdI2Ca4it0CCVTT9wCkxSgokjE5Ho41hEPgb8OEUwoXr6Q==}
@@ -8220,6 +8226,8 @@ snapshots:
     optional: true
 
   '@colors/colors@1.6.0': {}
+
+  '@companionintelligence/tokens@0.3.1': {}
 
   '@csstools/color-helpers@6.0.2': {}
 
