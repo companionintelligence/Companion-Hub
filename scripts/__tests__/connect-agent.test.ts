@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,7 @@ import {
   memoryProbeUserAgent,
   mergeOpenClawConfig,
   normalizeMemoryUrl,
+  npmShimEntry,
   openClawConfigPath,
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
@@ -35,6 +36,21 @@ import {
   urlProblem,
   writeFileAtomic,
 } from '../lib/connect-agent';
+
+/**
+ * POSIX mode bits are not representable on Windows: NTFS has no group or other
+ * permission, and Node's chmod maps 0o600 onto the read-only attribute alone, so the
+ * mode reads back as 0o666. The hardening these tests cover is real on the platforms
+ * that have it and a documented no-op elsewhere, so assert it only where it can hold —
+ * a suite that is permanently red on a platform stops reporting anything.
+ */
+function expectPrivateMode(path: string) {
+  if (process.platform === 'win32') {
+    expect(statSync(path).isFile()).toBe(true);
+    return;
+  }
+  expect(statSync(path).mode & 0o777).toBe(0o600);
+}
 
 describe('probe triage', () => {
   it('names the x-api-key mistake rather than just reporting 401', () => {
@@ -561,7 +577,7 @@ describe('openclaw config path resolution', () => {
   it('defaults to ~/.openclaw/openclaw.json', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     delete process.env.OPENCLAW_STATE_DIR;
-    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/home/someone', '.openclaw', 'openclaw.json'));
   });
 
   it('honors OPENCLAW_CONFIG_PATH as a full file path', () => {
@@ -573,7 +589,7 @@ describe('openclaw config path resolution', () => {
   it('reads OPENCLAW_STATE_DIR as a directory containing openclaw.json', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     process.env.OPENCLAW_STATE_DIR = '/tmp/state';
-    expect(openClawConfigPath('/home/someone')).toBe('/tmp/state/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/tmp/state', 'openclaw.json'));
   });
 
   it('lets OPENCLAW_CONFIG_PATH win over OPENCLAW_STATE_DIR, as the CLI does', () => {
@@ -585,7 +601,7 @@ describe('openclaw config path resolution', () => {
   it('ignores an empty value rather than resolving to a bare filename', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     process.env.OPENCLAW_STATE_DIR = '   ';
-    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/home/someone', '.openclaw', 'openclaw.json'));
   });
 });
 
@@ -685,18 +701,18 @@ describe('hermes plugin dir', () => {
 
   it('defaults to ~/.hermes', () => {
     delete process.env.HERMES_HOME;
-    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
   });
 
   it('honors HERMES_HOME', () => {
     process.env.HERMES_HOME = '/tmp/elsewhere';
-    expect(hermesPluginDir('/home/someone')).toBe('/tmp/elsewhere/plugins/companionintelligence');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/tmp/elsewhere', 'plugins', 'companionintelligence'));
   });
 
   // Without the trim, join roots the install under a directory literally named "   ".
   it('treats a whitespace-only value as unset, not as a path', () => {
     process.env.HERMES_HOME = '   ';
-    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
   });
 });
 
@@ -734,7 +750,7 @@ describe('backups', () => {
     expect(target).toBeDefined();
     // copyFileSync carries the source mode over, so without the explicit chmod this
     // would be a 0644 copy of a secret-bearing file that we chose to create.
-    expect(statSync(target as string).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target as string);
   });
 
   it('reports no backup when there was no file to copy', () => {
@@ -751,6 +767,53 @@ describe('backup naming', () => {
     expect(a.endsWith('.bak')).toBe(true);
     // Colons in an ISO timestamp are not portable in filenames.
     expect(a).not.toMatch(/:/);
+  });
+});
+
+/**
+ * Windows npm installs a CLI as a `.cmd`/`.ps1` shim, which Node cannot spawn without a
+ * shell — and a shell is not an option here, because `mcp add` carries the user's API
+ * key as an argv element. Resolving the shim to the JS entrypoint keeps the spawn
+ * shell-free.
+ */
+describe('npm shim resolution', () => {
+  /** A minimal npm global prefix: the shims, and the package they point at. */
+  function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs') {
+    const prefix = mkdtempSync(join(tmpdir(), 'connect-agent-shim-'));
+    const pkgDir = join(prefix, 'node_modules', name);
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(prefix, `${name}.cmd`), '@ECHO off\n');
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name, bin }));
+    if (entryFile) writeFileSync(join(pkgDir, entryFile), '#!/usr/bin/env node\n');
+    return prefix;
+  }
+
+  it('follows a shim to the entrypoint named in the package bin map', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+  });
+
+  it('accepts the string form of bin', () => {
+    const prefix = fakePrefix('openclaw', 'cli.mjs');
+    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBeDefined();
+  });
+
+  // `where` lists a match in the current directory FIRST, so an unrelated same-named
+  // script shadowing the real install must not stop the search.
+  it('skips a listed path that has no package beside it and keeps looking', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    const decoy = join(mkdtempSync(join(tmpdir(), 'connect-agent-decoy-')), 'openclaw.cmd');
+    writeFileSync(decoy, '@ECHO off\n');
+    expect(npmShimEntry('openclaw', `${decoy}\r\n${join(prefix, 'openclaw.cmd')}\r\n`)).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+  });
+
+  it('gives up rather than guessing when the entrypoint is missing', () => {
+    // A bin map naming a file that is not there: returning it would produce a spawn
+    // failure further away from the cause than simply falling back to the plain name.
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' }, '');
+    expect(npmShimEntry('openclaw', `${join(prefix, 'openclaw.cmd')}\n`)).toBeUndefined();
+    expect(npmShimEntry('openclaw', '')).toBeUndefined();
+    expect(npmShimEntry('openclaw', 'C:\\nowhere\\openclaw.cmd\n')).toBeUndefined();
   });
 });
 
@@ -795,6 +858,29 @@ describe('hermes mcp_servers patch', () => {
     const { text, changed } = patchHermesMcpServers(once, URL, 'k');
     expect(changed).toBe(false);
     expect(text).toBe(once);
+  });
+
+  // A config.yaml touched by a Windows editor is CRLF. Splitting on '\n' alone left a
+  // trailing '\r' on every line: the block was still found (the regexes end in `\s*$`,
+  // and \r is whitespace), but the convergence check compared '\r'-suffixed existing
+  // lines against LF-built replacements and could never match — so a config that was
+  // already correct was rewritten and backed up, and came out with mixed endings.
+  it('is idempotent on a CRLF config, and leaves its endings alone', () => {
+    const before = 'model: gpt\r\nmcp_servers:\r\n  ci_server:\r\n    url: "http://m/api/mcp"\r\n';
+    const once = patchHermesMcpServers(before, URL, 'k');
+    expect(once.changed).toBe(true);
+    expect(once.text).toMatch(/hub:/);
+    // Written back the way it arrived: no LF-only lines spliced into a CRLF file.
+    expect(once.text.split('\n').filter((line) => line !== '' && !line.endsWith('\r'))).toEqual([]);
+
+    const twice = patchHermesMcpServers(once.text, URL, 'k');
+    expect(twice.changed).toBe(false);
+    expect(twice.text).toBe(once.text);
+  });
+
+  it('keeps an LF config LF', () => {
+    const once = patchHermesMcpServers('model: gpt\n', URL, 'k');
+    expect(once.text).not.toMatch(/\r/);
   });
 
   // Caught on a real config, not in this suite: with a blank line between the block and
@@ -901,7 +987,7 @@ describe('writeFileAtomic', () => {
 
     writeFileAtomic(target, 'with-a-token\n');
 
-    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target);
   });
 
   it('creates a new file at 0600 and leaves no temp file behind', () => {
@@ -910,7 +996,7 @@ describe('writeFileAtomic', () => {
 
     writeFileAtomic(target, 'contents\n');
 
-    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target);
     expect(readdirSync(join(dir, 'nested'))).toEqual(['config.yaml']);
   });
 });

@@ -490,7 +490,16 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
   const indentOf = (line: string) => line.length - line.trimStart().length;
   const isBlankOrComment = (line: string) => line.trim() === '' || line.trim().startsWith('#');
 
-  const lines = configText.length > 0 ? configText.split('\n') : [];
+  // Split on either ending and remember which the file uses, so the result is written
+  // back the way it arrived. Splitting on '\n' alone left a trailing '\r' on every line
+  // of a CRLF file — which a Windows editor produces. The block regexes tolerate that
+  // (their `\s*$` matches the \r), so the hub block was still FOUND, but the
+  // convergence check at the end compared '\r'-suffixed existing lines against
+  // LF-built replacement lines and could never be equal. A config that was already
+  // correct therefore read as changed: one needless backup and rewrite, and the file
+  // came out with mixed endings — untouched lines keeping CRLF, spliced ones LF.
+  const eol = configText.includes('\r\n') ? '\r\n' : '\n';
+  const lines = configText.length > 0 ? configText.split(/\r?\n/) : [];
   // A file not ending in a newline would otherwise get the block welded onto its last line.
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
 
@@ -545,7 +554,7 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
 
   if (mcpIndex === -1) {
     const appended = [...lines, 'mcp_servers:', ...blockLines(2), ''];
-    return { text: appended.join('\n'), changed: true };
+    return { text: appended.join(eol), changed: true };
   }
 
   const mcpIndent = indentOf(lines[mcpIndex]);
@@ -570,7 +579,7 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
     let insertAt = mcpEnd;
     while (insertAt - 1 > mcpIndex && isBlankOrComment(lines[insertAt - 1])) insertAt--;
     lines.splice(insertAt, 0, ...replacement);
-    return { text: `${lines.join('\n')}\n`, changed: true };
+    return { text: `${lines.join(eol)}${eol}`, changed: true };
   }
 
   const start = mcpIndex + 1 + hubIndex;
@@ -585,7 +594,7 @@ export function patchHermesMcpServers(configText: string, mcpUrl: string, key: s
   if (existing.join('\n') === replacement.join('\n')) return { text: configText, changed: false };
 
   lines.splice(start, end - start, ...replacement);
-  return { text: `${lines.join('\n')}\n`, changed: true };
+  return { text: `${lines.join(eol)}${eol}`, changed: true };
 }
 
 /** The Hub MCP endpoint, with any trailing slashes folded so `//api/mcp` cannot appear. */
@@ -688,6 +697,11 @@ export function readJsonIfPresent(path: string): Record<string, unknown> {
  * passed to `open(2)`, which ignores it when the file already exists — so on a config
  * that was already there at `0644`, the mode option alone silently leaves it
  * world-readable while we add a bearer token to it.
+ *
+ * POSIX only, and deliberately not guarded: on Windows `chmod` maps 0o600 onto the
+ * read-only attribute and cannot express group or other at all, so the file is left to
+ * inherit its directory's ACLs. Under `%USERPROFILE%` those are already user-private,
+ * which is why this is documented rather than replaced with an `icacls` call.
  */
 export function writeFileAtomic(path: string, contents: string) {
   mkdirSync(dirname(path), { recursive: true });
@@ -719,8 +733,60 @@ export function backupFile(path: string, stamp: string): string | undefined {
 
 export type RunResult = { ok: boolean; stdout: string; stderr: string; status: number | null; error?: string };
 
+/**
+ * Resolve a `where`-style listing to the JS entrypoint an npm shim wraps.
+ *
+ * npm installs a Node CLI on Windows as a `.cmd`/`.ps1` shim, and Node cannot spawn
+ * either without a shell — `spawnSync('openclaw', …)` fails ENOENT, because libuv
+ * resolves only extensionless `.com`/`.exe`. Adding `shell: true` would fix the spawn
+ * and open a much worse hole: `mcp add` passes `Authorization=Bearer <key>` as an argv
+ * element, so the user's API key would go through cmd.exe parsing, where `&`, `|` and
+ * `%VAR%` are all live. This repo has already shipped one injection of exactly that
+ * shape via a quote in a key.
+ *
+ * So instead of a shell, follow the shim back to what it runs: the sibling
+ * `node_modules/<name>/` package, whose `bin` names the entrypoint. That is spawned
+ * under this same Node with the arguments untouched.
+ *
+ * Pure and exported so the resolution can be tested without a global install. Returns
+ * undefined when the listing has no shim we recognise, and the caller then spawns the
+ * name as given — the POSIX path, and a correct fallback on a non-npm install.
+ */
+export function npmShimEntry(name: string, whereOutput: string): string | undefined {
+  for (const line of whereOutput.split(/\r?\n/)) {
+    const shim = line.trim();
+    if (shim === '') continue;
+    // `<prefix>\<name>.cmd` sits alongside `<prefix>\node_modules\<name>\`. Entries
+    // that do not (a stray same-named script earlier on PATH, which `where` lists
+    // first when it is in the cwd) simply fail this test and we keep looking.
+    const manifest = join(dirname(shim), 'node_modules', name, 'package.json');
+    if (!existsSync(manifest)) continue;
+    const pkg = readJsonIfPresent(manifest) as { bin?: string | Record<string, string> };
+    const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.[name];
+    if (typeof bin !== 'string' || bin === '') continue;
+    const entry = join(dirname(manifest), bin);
+    if (existsSync(entry)) return entry;
+  }
+  return undefined;
+}
+
+/** What to actually hand spawnSync for `command`, per platform. */
+function resolveSpawn(command: string, args: string[]): { command: string; args: string[] } {
+  if (process.platform !== 'win32') return { command, args };
+  // `where.exe` is a real executable, so this needs no shell of its own.
+  const probe = spawnSync('where', [command], { encoding: 'utf8' });
+  if (probe.status !== 0) return { command, args };
+  const entry = npmShimEntry(command, probe.stdout ?? '');
+  return entry ? { command: process.execPath, args: [entry, ...args] } : { command, args };
+}
+
 export function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): RunResult {
-  const result = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd, env: options.env ?? process.env });
+  const target = resolveSpawn(command, args);
+  const result = spawnSync(target.command, target.args, {
+    encoding: 'utf8',
+    cwd: options.cwd,
+    env: options.env ?? process.env,
+  });
   return {
     ok: result.status === 0,
     stdout: result.stdout ?? '',
@@ -1147,7 +1213,10 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
       '--header',
       `Authorization=Bearer ${ctx.hubKey}`,
     ]);
-    ctx.lines.push(mcp.ok ? 'Hub MCP server added as `ci-hub`.' : `Hub MCP add failed: ${mcp.stderr.trim() || mcp.status}`);
+    // runFailureMessage, not `stderr || status`: when the CLI cannot be STARTED,
+    // spawnSync leaves stderr empty and status null, so that read "Hub MCP add
+    // failed: null" and named neither the cause nor the missing binary.
+    ctx.lines.push(mcp.ok ? 'Hub MCP server added as `ci-hub`.' : `Hub MCP add failed: ${runFailureMessage(mcp, '`openclaw mcp add`')}`);
   }
 
   printMessageBox(
@@ -1237,19 +1306,40 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
     process.exit(2);
   }
 
-  // pipefail: without it the pipeline reports tar's status, so a curl that dies partway
-  // through would be judged by whether tar could still read what arrived.
-  const fetched = run('bash', [
-    '-c',
-    `set -o pipefail; curl -fL ${JSON.stringify(url)} | tar -xz -C ${JSON.stringify(staging)} --strip-components=1`,
-  ]);
-  if (!fetched.ok) {
-    rmDirRecursive(staging);
+  // Fetch with this process, extract with tar — no shell, and no `bash` on PATH.
+  //
+  // This was `bash -c 'set -o pipefail; curl -fL … | tar -xz …'`, which on Windows
+  // fails two different ways. A box with no bash gets a plain ENOENT. A box WITH one
+  // is worse: `bash.exe` in System32 is the WSL launcher, so the pipeline runs inside
+  // the distro and the interpolated staging path — a native `C:\Users\…` — does not
+  // resolve there, so tar fails "Cannot chdir" every time. Only Git Bash happened to
+  // work. Windows has shipped a real curl.exe and bsdtar as tar.exe since 10 1803, but
+  // going through fetch() drops the external dependency altogether and keeps the
+  // download and the extraction as two separately diagnosable steps — which is what
+  // `set -o pipefail` was there to approximate.
+  const archive = join(dirname(staging), `.${PLUGIN_ID}.incoming.tgz`);
+  const downloadError = await downloadFile(url, archive);
+  if (downloadError) {
+    rmDirQuietly(staging);
+    rmFileQuietly(archive);
     printMessageBox(
       'Download failed — nothing was changed',
+      [`Could not fetch ${url}`, downloadError, ...(existsSync(dir) ? ['', `Any existing install at ${dir} was left alone.`] : [])],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  const extracted = run('tar', ['-xzf', archive, '-C', staging, '--strip-components=1']);
+  rmFileQuietly(archive);
+  if (!extracted.ok) {
+    rmDirQuietly(staging);
+    printMessageBox(
+      'Could not unpack the plugin — nothing was changed',
       [
-        `Could not fetch ${url}`,
-        runFailureMessage(fetched, 'the download'),
+        `Downloaded ${url} but could not extract it.`,
+        runFailureMessage(extracted, 'tar'),
+        ...(extracted.error ? ['', 'No `tar` was found. Windows 10 1803+ and macOS ship one; on Linux install your distro package.'] : []),
         ...(existsSync(dir) ? ['', `Any existing install at ${dir} was left alone.`] : []),
       ],
       'red',
@@ -1262,7 +1352,7 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   // with a manifest and no `__init__.py` is exactly the shape that installs cleanly and
   // then never appears in `hermes memory setup`.
   if (!existsSync(join(staging, '__init__.py'))) {
-    rmDirRecursive(staging);
+    rmDirQuietly(staging);
     printMessageBox(
       'Install failed — nothing was changed',
       [
@@ -1283,10 +1373,10 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   try {
     if (previous) {
       rmDirRecursive(previous);
-      renameSync(dir, previous);
+      renameDirWithRetry(dir, previous);
       movedAside = true;
     }
-    renameSync(staging, dir);
+    renameDirWithRetry(staging, dir);
   } catch (error) {
     // Rollback is best-effort, and the message has to reflect whether it worked. Saying
     // "the existing install was put back" when the rename that would put it back also
@@ -1318,7 +1408,13 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
           ? ['The previous install could not be put back automatically. It is at:', `  ${previous}`, `Move that directory to ${dir} to restore it.`]
           : movedAside
             ? ['The existing install was put back.']
-            : ['No install existed to disturb.']),
+            : // `previous` is set when a install was there but the move-aside itself
+              // threw — in which case it was never disturbed, which is not the same
+              // thing as there being nothing there. Saying the latter sent people
+              // looking for an install they still had.
+              previous
+              ? [`The existing install at ${dir} was left untouched.`]
+              : ['No install existed to disturb.']),
       ],
       'red',
     );
@@ -1409,11 +1505,109 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
   );
 }
 
-function restoreBackup(path: string, backup: string) {
-  copyFileSync(backup, path);
-  chmodSync(path, 0o600);
+/**
+ * Put a backup back. Reports whether it worked rather than throwing.
+ *
+ * Every caller is already on a failure path, about to print a message box and exit 2.
+ * A throw from here escapes that handler and surfaces as a stack trace from the CLI's
+ * top-level catch — so instead of "your config was restored" the user gets neither the
+ * restore nor a statement about it, which is precisely the ambiguity the exit-code
+ * contract exists to prevent. Windows makes it reachable: `copyFileSync` onto a
+ * destination another process holds open without share-delete throws EPERM/EBUSY.
+ */
+function restoreBackup(path: string, backup: string): boolean {
+  try {
+    copyFileSync(backup, path);
+    // POSIX only; see writeFileAtomic. A failure to tighten the mode must not turn a
+    // successful restore into a reported failure.
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      // Best effort.
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function rmDirRecursive(dir: string) {
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Rename a directory, retrying briefly on the Windows-only transient failures.
+ *
+ * Unix renames a directory regardless of what is open inside it. Windows refuses with
+ * EPERM/EACCES while any handle is held without delete-sharing — an antivirus scanner
+ * walking the files we just extracted, a Hermes process with the plugin dir as its
+ * CWD, or the search indexer. All are brief, so the swap fails on a perfectly healthy
+ * machine where the same code succeeds on Linux, and the user is told the install
+ * failed. Both conditions clear in well under a second; a few short retries turn a
+ * spurious failure into a slightly slower success.
+ */
+function renameDirWithRetry(from: string, to: string, attempts = 5) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const transient = code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+      if (!transient || attempt >= attempts) throw error;
+      // Deliberately synchronous: this sits between two renames that must not be
+      // interleaved with anything else, and the whole budget is ~150ms.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * attempt);
+    }
+  }
+}
+
+/**
+ * Best-effort cleanup of the staging directory on a path that is already failing.
+ *
+ * `rmSync`'s `force` ignores a missing path, not a locked one — so on Windows, where an
+ * antivirus scanner can still be holding the files we just extracted, this throws
+ * EBUSY/EPERM. Un-guarded, that exception replaced the curated "nothing was changed"
+ * message and the exit-2 contract with a raw stack trace from the CLI's top-level
+ * catch: the user is told nothing about what happened to their install.
+ */
+function rmDirQuietly(dir: string) {
+  try {
+    rmDirRecursive(dir);
+  } catch {
+    // Leftover staging is dot-prefixed and therefore invisible to Hermes' loader.
+  }
+}
+
+/** Best-effort cleanup of a scratch file; never the reason a run fails. */
+function rmFileQuietly(path: string) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // A locked file (an antivirus scanner still holding it, on Windows) leaves a
+    // stray .tgz beside the plugin dir. Harmless — and much better than replacing
+    // the caller's real error with an EBUSY from the cleanup.
+  }
+}
+
+/**
+ * Download `url` to `path`. Returns undefined on success, or a human-readable reason.
+ *
+ * Errors come back rather than throwing, because every caller's next move is to print
+ * the reason inside a message box and exit 2 — the same contract `run()` has.
+ */
+async function downloadFile(url: string, path: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(url);
+    // The `-f` in the old `curl -fL`: without it a 404 is written out as a body and
+    // tar then fails with "not in gzip format" instead of "that version is not there".
+    if (!response.ok) return `HTTP ${response.status} ${response.statusText}`;
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.length === 0) return 'the server returned an empty body';
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, body);
+    return undefined;
+  } catch (error) {
+    return String((error as Error)?.message ?? error);
+  }
 }
