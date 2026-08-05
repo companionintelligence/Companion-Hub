@@ -339,8 +339,8 @@ importers:
         specifier: ^6.4.0
         version: 6.5.0
       '@companionintelligence/tokens':
-        specifier: file:../../../ci-common/packages/tokens
-        version: file:../ci-common/packages/tokens
+        specifier: ^0.3.0
+        version: 0.3.0
       '@hookform/resolvers':
         specifier: ^5.0.1
         version: 5.2.2(react-hook-form@7.72.1(react@19.2.5))
@@ -980,8 +980,8 @@ packages:
     resolution: {integrity: sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA==}
     engines: {node: '>=0.1.90'}
 
-  '@companionintelligence/tokens@file:../ci-common/packages/tokens':
-    resolution: {directory: ../ci-common/packages/tokens, type: directory}
+  '@companionintelligence/tokens@0.3.0':
+    resolution: {integrity: sha512-oM2nd1Zb3hmi4tpEijLNbpyu/Ovb6LLWTXfMkPNbV0BAK9WmVY77/MaFUXadwVgWfDyNtyYTVMg034Bx88+JMA==, tarball: https://npm.pkg.github.com/download/@companionintelligence/tokens/0.3.0/d541c1a9a0655a010e562954b7c66c09e82baa87}
 
   '@csstools/color-helpers@6.0.2':
     resolution: {integrity: sha512-LMGQLS9EuADloEFkcTBR3BwV/CGHV7zyDxVRtVDTwdI2Ca4it0CCVTT9wCkxSgokjE5Ho41hEPgb8OEUwoXr6Q==}
@@ -8227,7 +8227,7 @@ snapshots:
 
   '@colors/colors@1.6.0': {}
 
-  '@companionintelligence/tokens@file:../ci-common/packages/tokens': {}
+  '@companionintelligence/tokens@0.3.0': {}
 
   '@csstools/color-helpers@6.0.2': {}
 
