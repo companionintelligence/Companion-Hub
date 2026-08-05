@@ -267,6 +267,12 @@ export class ServiceBuilder {
     // at all: it would start, write to the container's writable layer, and lose everything on the
     // next `--force-recreate`. Aborting the build surfaces the bad manifest while the data is still
     // safe — the same reason the sandbox check throws rather than dropping the offending volume.
+    if (volume.hostPath !== undefined && volume.volumeName !== undefined) {
+      throw new Error(
+        `Volume for "${volume.containerPath}" declares both hostPath and volumeName. ` + 'Refusing to guess which one the manifest meant to mount.',
+      );
+    }
+
     const source = volume.volumeName ?? volume.hostPath;
     if (!source) {
       throw new Error(

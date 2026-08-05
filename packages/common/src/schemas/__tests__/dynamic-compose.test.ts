@@ -198,6 +198,15 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           expect(result.success).toBe(false);
         });
 
+        // The message is asserted, not just the failure: naming only the bind mount would point an
+        // author who meant to declare a named volume at a field that is no longer the only option.
+        it('should reject a volume that declares no source, naming both sources in the error', () => {
+          // Parsed directly rather than through `safeParse`, which drops the issue list.
+          const result = serviceSchema.safeParse(withVolume({ containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED');
+        });
+
         it('should reject a volume name docker itself would not accept', () => {
           const result = safeParse(serviceSchema, withVolume({ volumeName: '/pg data', containerPath: '/var/lib/postgresql' }));
           expect(result.success).toBe(false);

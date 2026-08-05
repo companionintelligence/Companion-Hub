@@ -287,6 +287,21 @@ describe('ServiceBuilder', () => {
       it('refuses a volume that names neither a host path nor a volume', () => {
         expect(() => service.setVolume({ containerPath: '/container' })).toThrow(/neither hostPath nor volumeName/);
       });
+
+      // Picking one silently (the `??` would take volumeName) mounts something the manifest never
+      // unambiguously asked for, and hides the mistake behind a working-looking app.
+      it('refuses a volume that names both a host path and a volume', () => {
+        expect(() => service.setVolume({ containerPath: '/container', hostPath: '/host', volumeName: 'pgdata' })).toThrow(
+          /both hostPath and volumeName/,
+        );
+      });
+
+      // The redirect path clears hostPath rather than deleting the key; the guard must read that
+      // as "no host path" or every redirected database volume would fail to build.
+      it('accepts a redirected volume whose hostPath key is present but undefined', () => {
+        service.setVolume({ containerPath: '/data', hostPath: undefined, volumeName: 'pgdata' });
+        expect(service.build().volumes).toEqual(['pgdata:/data']);
+      });
     });
   });
 });

@@ -225,6 +225,7 @@
   "CUSTOM_APP_ERROR_COMMAND_INVALID": "Command must be a valid string",
   "CUSTOM_APP_ERROR_HOST_PATH_REQUIRED": "Host path is required",
   "CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED": "Container path is required",
+  "CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED": "A volume must declare either a host path or a named volume",
   "CUSTOM_APP_ERROR_VOLUME_SOURCE_AMBIGUOUS": "A volume can use a host path or a named volume, not both",
   "CUSTOM_APP_ERROR_VOLUME_NAME_INVALID": "Volume name must start with a letter or number and use only letters, numbers, dots, dashes and underscores",
   "CUSTOM_APP_ERROR_POSIX_PERMISSIONS_REQUIRES_HOST_PATH": "Only a host path volume can require POSIX permissions",

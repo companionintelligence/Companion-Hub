@@ -31,7 +31,9 @@ function assertVolumeSource(volume: { hostPath?: string; volumeName?: string; re
   if (hasHostPath && hasVolumeName) {
     ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_VOLUME_SOURCE_AMBIGUOUS', path: ['volumeName'] });
   } else if (!hasHostPath && !hasVolumeName) {
-    ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_HOST_PATH_REQUIRED', path: ['hostPath'] });
+    // Not HOST_PATH_REQUIRED: either source satisfies the volume, so naming only the bind mount
+    // would send an author who meant to declare a named volume looking for the wrong field.
+    ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED', path: ['hostPath'] });
   }
 
   if (volume.requiresPosixPermissions && !hasHostPath) {
