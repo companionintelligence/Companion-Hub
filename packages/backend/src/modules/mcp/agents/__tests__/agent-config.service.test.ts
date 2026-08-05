@@ -215,6 +215,45 @@ describe('AgentConfigService', () => {
       expect(result?.mcp.config?.auth).toEqual({ type: 'bearer', token_env: 'ADMIN_CREDENTIAL' });
     });
 
+    it('infers host_docker launch for docker run stdio listings', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      envUtils.envStringToMap.mockReturnValue(new Map([['GITHUB_PERSONAL_ACCESS_TOKEN', 'ghp_test']]));
+
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({
+          transport: 'stdio',
+          command: 'docker',
+          args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', 'ghcr.io/github/github-mcp-server:v0.6.0'],
+        }),
+      );
+
+      expect(result?.mcp.config?.launch).toBe('host_docker');
+      expect(result?.mcp.config?.container).toBeUndefined();
+      expect(result?.mcp.config?.command?.[0]).toBe('docker');
+    });
+
+    it('honours explicit mcp.launch over inference', async () => {
+      filesystem.pathExists.mockResolvedValue(false);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/x/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'fetch-mcp', isMain: true, image: 'x' }] },
+      });
+
+      const result = await service.getAgentConfig(
+        MCP_URN,
+        makeMcpAppInfo({
+          transport: 'stdio',
+          launch: 'container_exec',
+          command: 'docker',
+          args: ['run', '-i', 'image:tag'],
+        }),
+      );
+
+      expect(result?.mcp.config?.launch).toBe('container_exec');
+      expect(result?.mcp.config?.container).toBe('fetch-mcp_ci-marketplace-fetch-mcp-1');
+    });
+
     it('falls back to the app name when the compose file is unreadable', async () => {
       filesystem.pathExists.mockResolvedValue(false);
       appFilesManager.getDockerComposeJson.mockRejectedValue(new Error('missing'));

@@ -106,12 +106,22 @@ describe('agent-config schemas', () => {
       expect(result.success).toBe(true);
     });
 
-    it('should default transport to sse', () => {
+    it('should default transport to streamable-http', () => {
       const result = agentMcpConfigSchema.safeParse({});
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.transport).toBe('sse');
+        expect(result.data.transport).toBe('streamable-http');
       }
+    });
+
+    it('should accept host_docker launch mode', () => {
+      const result = agentMcpConfigSchema.safeParse({
+        enabled: true,
+        transport: 'stdio',
+        launch: 'host_docker',
+        command: ['docker', 'run', '-i', 'image:tag'],
+      });
+      expect(result.success).toBe(true);
     });
   });
 

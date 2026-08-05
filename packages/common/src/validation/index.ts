@@ -19,3 +19,4 @@ export {
 } from './mcp-install-schema.js';
 
 export { resolveMcpCommandParts, resolveMcpTemplateString } from './mcp-command-resolver.js';
+export { inferMcpLaunchMode, MCP_LAUNCH_MODES, type McpLaunchMode } from './mcp-launch.js';

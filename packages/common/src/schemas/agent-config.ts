@@ -20,6 +20,8 @@ export const agentMcpConfigSchema = z.object({
   enabled: z.boolean().default(true),
   /** `streamable-http` is the canonical name; `sse` is a legacy alias for the same transport. */
   transport: z.enum(['stdio', 'streamable-http', 'sse']).default('streamable-http'),
+  /** Stdio only: spawn via container exec (default) or directly on the Hub host. */
+  launch: z.enum(['container_exec', 'host_docker']).optional(),
   url: z.string().optional(),
   command: z.array(z.string()).optional(),
   container: z.string().optional(),
