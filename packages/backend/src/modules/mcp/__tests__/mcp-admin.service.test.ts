@@ -52,6 +52,7 @@ describe('McpAdminService', () => {
       expect(status).not.toHaveProperty('destructiveAllowed');
       expect(apiKeys.count).toHaveBeenCalledWith('mcp'); // MCP-surface count, not all scopes
       expect(status.endpoint).toBe('/api/mcp');
+      expect(status.protocolVersions).toEqual(['2026-07-28', '2025-11-25']);
     });
 
     it('treats MCP_ENABLED=false as disabled', async () => {

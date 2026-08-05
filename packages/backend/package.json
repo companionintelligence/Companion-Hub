@@ -21,7 +21,10 @@
   },
   "dependencies": {
     "@ci-hub/common": "workspace:*",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.1.0",
     "@nestjs/core": "^11.1.0",

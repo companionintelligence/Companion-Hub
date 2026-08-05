@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { HUB_MCP_PROTOCOL_VERSIONS } from './mcp-protocol';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { McpService } from './mcp.service';
@@ -45,6 +46,7 @@ export class McpAdminService {
       enabled: process.env.MCP_ENABLED !== 'false',
       server: this.mcpService.getServerInfo(),
       protocolVersion: LATEST_PROTOCOL_VERSION,
+      protocolVersions: [...HUB_MCP_PROTOCOL_VERSIONS],
       toolCount: this.registry.listTools().length,
       activeSessions: this.sessions.activeSessions,
       // SEC-MCP-8: number of keys accepted by the MCP surface ('mcp' scope, operator + managed).
