@@ -11,6 +11,13 @@ import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreFilesManager } from '../app-stores/app-store-files-manager';
 import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-store.service';
+import {
+  extractScreenshotFilename,
+  isSafeMediaFilename,
+  marketplaceDemoVideoPath,
+  marketplaceScreenshotPath,
+  portalScreenshotPath,
+} from './app-media.helpers';
 
 type AppList = Awaited<ReturnType<InstanceType<typeof MarketplaceService>['getAllAppFromStores']>>;
 
@@ -328,5 +335,140 @@ export class MarketplaceService {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getConfigJson(appUrn);
+  }
+
+  public async getAppMedia(appUrn: AppUrn): Promise<{ screenshots: string[]; demoVideoUrl: string | null }> {
+    const info = await this.getAppInfoFromAppStore(appUrn).catch(() => null);
+    const { store } = this.getStoreFromUrn(appUrn);
+    const { appName } = extractAppUrn(appUrn);
+    const publicPortalUrl = this.portalCatalog.isCiMarketplaceUrn(appUrn) ? (this.configuration.getConfig().ciCloudUrl?.trim() ?? '') : '';
+    const screenshots: string[] = [];
+    const seen = new Set<string>();
+
+    const pushScreenshot = (url: string) => {
+      if (!seen.has(url)) {
+        seen.add(url);
+        screenshots.push(url);
+      }
+    };
+
+    const resolveScreenshotRef = (ref: string) => {
+      const trimmed = ref.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (/^https?:\/\//i.test(trimmed)) {
+        pushScreenshot(trimmed);
+        return;
+      }
+
+      const filename = extractScreenshotFilename(trimmed);
+      if (filename) {
+        pushScreenshot(marketplaceScreenshotPath(appUrn, filename));
+        return;
+      }
+
+      if (publicPortalUrl && this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+        const portalFilename = trimmed.split('/').pop();
+        if (portalFilename && isSafeMediaFilename(portalFilename)) {
+          pushScreenshot(portalScreenshotPath(publicPortalUrl, appName, portalFilename));
+        }
+      }
+    };
+
+    for (const ref of info?.screenshots ?? []) {
+      resolveScreenshotRef(ref);
+    }
+
+    if (store) {
+      for (const filename of await store.listLocalScreenshotFilenames(appUrn)) {
+        if (isSafeMediaFilename(filename)) {
+          pushScreenshot(marketplaceScreenshotPath(appUrn, filename));
+        }
+      }
+    }
+
+    let demoVideoUrl: string | null = null;
+    let portalDetails: { screenshots?: string[]; demo_video?: string } | null = null;
+    if (this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+      portalDetails = await this.portalCatalog.fetchStoreAppDetails(appName);
+    }
+
+    if (screenshots.length === 0 && portalDetails) {
+      for (const ref of portalDetails.screenshots ?? []) {
+        if (typeof ref === 'string') {
+          if (/^https?:\/\//i.test(ref)) {
+            pushScreenshot(ref);
+          } else {
+            const filename = extractScreenshotFilename(ref) ?? ref.split('/').pop();
+            if (filename && isSafeMediaFilename(filename) && publicPortalUrl) {
+              pushScreenshot(portalScreenshotPath(publicPortalUrl, appName, filename));
+            }
+          }
+        }
+      }
+    }
+
+    const demoVideoRef = info?.demo_video ?? portalDetails?.demo_video;
+    if (typeof demoVideoRef === 'string' && demoVideoRef.trim()) {
+      if (/^https?:\/\//i.test(demoVideoRef.trim())) {
+        demoVideoUrl = demoVideoRef.trim();
+      } else if (store && (await store.findDemoVideoPath(appUrn, demoVideoRef))) {
+        demoVideoUrl = marketplaceDemoVideoPath(appUrn);
+      }
+    }
+
+    return { screenshots, demoVideoUrl };
+  }
+
+  public async getAppScreenshot(appUrn: AppUrn, filename: string) {
+    if (!isSafeMediaFilename(filename)) {
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    }
+
+    try {
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (store) {
+        const local = await store.getScreenshot(appUrn, filename);
+        if (local.image) {
+          return local;
+        }
+      }
+
+      if (this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+        const portalImage = await this.portalCatalog.fetchScreenshotImage(appUrn, filename);
+        if (portalImage?.image) {
+          return portalImage;
+        }
+      }
+
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get screenshot for ${appUrn}/${filename}: ${message}`);
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    }
+  }
+
+  public async getAppDemoVideo(appUrn: AppUrn) {
+    try {
+      const info = await this.getAppInfoFromAppStore(appUrn).catch(() => null);
+      const demoVideoRef = info?.demo_video;
+      if (!demoVideoRef || /^https?:\/\//i.test(demoVideoRef.trim())) {
+        return { video: null, etag: '', contentType: 'video/mp4' };
+      }
+
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (!store) {
+        return { video: null, etag: '', contentType: 'video/mp4' };
+      }
+
+      return store.getDemoVideo(appUrn, demoVideoRef);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get demo video for ${appUrn}: ${message}`);
+      return { video: null, etag: '', contentType: 'video/mp4' };
+    }
   }
 }

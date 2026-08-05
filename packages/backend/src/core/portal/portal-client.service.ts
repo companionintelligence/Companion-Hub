@@ -106,6 +106,18 @@ export class PortalClientService {
     return this.fetchJson('/store');
   }
 
+  async fetchStoreAppDetails(slug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {
+    if (!this.publicPortalUrl) {
+      return null;
+    }
+
+    try {
+      return await this.fetchJson<{ screenshots?: string[]; demo_video?: string }>(`/store/${encodeURIComponent(slug)}`);
+    } catch {
+      return null;
+    }
+  }
+
   async fetchAppInstall(slug: string): Promise<unknown> {
     return this.fetchJson(`/store/${encodeURIComponent(slug)}/install`, { authenticated: true });
   }

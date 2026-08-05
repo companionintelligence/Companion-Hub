@@ -21,6 +21,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { RegistrationGuard } from '../registration/registration.guard';
 import {
   AllAppStoresDto,
+  AppMediaDto,
   AppStoreDto,
   CreateAppStoreBodyDto,
   PullDto,
@@ -85,6 +86,66 @@ export class MarketplaceController {
   @UseGuards(AuthGuard)
   async getAppImageSize(@Param('urn') urn: string) {
     return this.imageSizeService.getAppImageSize(castAppUrn(urn));
+  }
+
+  @Get('apps/:urn/media')
+  @UseGuards(AuthGuard, RegistrationGuard)
+  @ApiResponse({ type: AppMediaDto })
+  async getAppMedia(@Param('urn') urn: string) {
+    const media = await this.marketplaceService.getAppMedia(castAppUrn(urn));
+    return AppMediaDto.parse(media, { reportOnly: true });
+  }
+
+  @Get('apps/:urn/screenshots/:filename')
+  async getAppScreenshot(@Param('urn') urn: string, @Param('filename') filename: string, @Res() res: Response, @Req() req: Request) {
+    const { image, etag, contentType } = await this.marketplaceService.getAppScreenshot(castAppUrn(urn), filename);
+
+    if (!image) {
+      throw new NotFoundException('Screenshot not found');
+    }
+
+    if (req.headers['if-none-match'] === etag) {
+      res.set({
+        'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
+        'Content-Type': contentType || 'image/jpeg',
+        ETag: etag,
+      });
+      return res.status(304).end();
+    }
+
+    res.set({
+      'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
+      'Content-Type': contentType || 'image/jpeg',
+      ETag: etag,
+    });
+
+    return res.send(image);
+  }
+
+  @Get('apps/:urn/demo-video')
+  async getAppDemoVideo(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
+    const { video, etag, contentType } = await this.marketplaceService.getAppDemoVideo(castAppUrn(urn));
+
+    if (!video) {
+      throw new NotFoundException('Demo video not found');
+    }
+
+    if (req.headers['if-none-match'] === etag) {
+      res.set({
+        'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
+        'Content-Type': contentType || 'video/mp4',
+        ETag: etag,
+      });
+      return res.status(304).end();
+    }
+
+    res.set({
+      'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
+      'Content-Type': contentType || 'video/mp4',
+      ETag: etag,
+    });
+
+    return res.send(video);
   }
 
   @Post('pull')

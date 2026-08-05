@@ -1833,6 +1833,90 @@
         ]
       }
     },
+    "/api/marketplace/apps/{urn}/media": {
+      "get": {
+        "operationId": "getAppMedia",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppMediaDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/screenshots/{filename}": {
+      "get": {
+        "operationId": "getAppScreenshot",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/demo-video": {
+      "get": {
+        "operationId": "getAppDemoVideo",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
     "/api/marketplace/pull": {
       "post": {
         "operationId": "pullAppStores",
@@ -4733,6 +4817,10 @@
         "properties": {}
       },
       "SearchAppsDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AppMediaDto": {
         "type": "object",
         "properties": {}
       },

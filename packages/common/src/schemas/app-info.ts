@@ -397,6 +397,10 @@ export const appInfoObjectSchema = z.object({
   force_pull: z.boolean().optional().default(false),
   /** When set, Hub pins all compose services to this Docker platform (e.g. linux/amd64 on Apple Silicon). */
   runtime_platform: z.string().optional(),
+  /** Absolute URLs or relative paths to screenshot assets (e.g. metadata/screenshots/…). */
+  screenshots: z.array(z.string().min(1)).optional(),
+  /** Absolute URL or relative path to a demo/preview video (e.g. metadata/media/…). */
+  demo_video: z.string().min(1).optional(),
   /** Discriminator for user workloads that proxy an existing host port (no Docker app). */
   kind: z.enum(['port-expose']).optional(),
   /** Host port the workload listens on when `kind` is `port-expose`. */
