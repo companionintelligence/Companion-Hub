@@ -875,12 +875,6 @@ function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs', parent = 
 }
 
 /**
- * Windows npm installs a CLI as a `.cmd`/`.ps1` shim, which Node cannot spawn without a
- * shell — and a shell is not an option here, because `mcp add` carries the user's API
- * key as an argv element. Resolving the shim to the JS entrypoint keeps the spawn
- * shell-free.
- */
-/**
  * The download replaced a `curl -fL | tar` pipeline, so it inherits that pipeline's
  * obligations: refuse a non-2xx rather than writing the error page to disk, and keep
  * memory flat regardless of what the remote sends.
@@ -945,6 +939,12 @@ describe('downloadFile', () => {
   });
 });
 
+/**
+ * Windows npm installs a CLI as a `.cmd`/`.ps1` shim, which Node cannot spawn without a
+ * shell — and a shell is not an option here, because `mcp add` carries the user's API
+ * key as an argv element. Resolving the shim to the JS entrypoint keeps the spawn
+ * shell-free.
+ */
 describe('npm shim resolution', () => {
   it('follows a shim to the entrypoint named in the package bin map', () => {
     const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
