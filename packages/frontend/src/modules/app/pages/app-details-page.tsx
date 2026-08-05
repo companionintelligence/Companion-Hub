@@ -199,7 +199,7 @@ export default () => {
 
       <AppAccessPoints app={app} info={info} />
 
-      <McpAccessCard app={app} info={info} />
+      <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs

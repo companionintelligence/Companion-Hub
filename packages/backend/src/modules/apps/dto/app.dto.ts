@@ -42,9 +42,42 @@ const getAppSchema = z.object({
   app: appSchema.nullable().optional(),
   info: appInfoSchemaRef,
   metadata: metadataSchema,
-  // Absolute host path of the app's data folder (…/app-data/{store}/{app}).
-  // Used by the desktop "Open data folder" button; null when it can't be resolved.
   appDataHostPath: z.string().nullable().optional(),
+  mcpInstallSchema: z
+    .object({
+      transport: z.enum(['stdio', 'http']).optional(),
+      requires: z.record(z.string(), z.unknown()).optional(),
+      tags: z.array(z.string()),
+      fields: z.array(
+        z.object({
+          key: z.string(),
+          label: z.string(),
+          hint: z.string().optional(),
+          required: z.boolean(),
+          secret: z.boolean(),
+          default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+          source: z.enum(['form_field', 'mcp_env']),
+        }),
+      ),
+      toolCount: z.number(),
+      bridgeable: z.boolean(),
+      bridgeWarning: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+  mcpRuntime: z
+    .object({
+      bridgeable: z.boolean(),
+      transport: z.string().optional(),
+      containerStatus: z.enum(['running', 'stopped', 'missing', 'unknown']),
+      toolCount: z.number(),
+      lastError: z.string().optional(),
+      lastProbeAt: z.string().optional(),
+      bridgeWarning: z.string().optional(),
+      connected: z.boolean(),
+    })
+    .nullable()
+    .optional(),
 });
 
 const getRandomPortSchema = z.object({

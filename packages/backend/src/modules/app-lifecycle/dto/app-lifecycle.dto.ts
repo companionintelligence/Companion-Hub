@@ -83,3 +83,16 @@ export class LifecycleRequestDto extends createZodDto(lifecycleRequestSchema) {}
 export class CancelOperationBody extends createZodDto(cancelOperationBodySchema) {}
 
 export class CancelOperationResponseDto extends createZodDto(cancelOperationResponseSchema) {}
+
+const validateConfigResultSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(
+    z.object({
+      env_variable: z.string(),
+      label: z.string(),
+      messageKey: z.string(),
+    }),
+  ),
+});
+
+export class ValidateConfigResultDto extends createZodDto(validateConfigResultSchema) {}

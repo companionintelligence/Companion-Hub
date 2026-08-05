@@ -1,15 +1,51 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
+import { apiFetch } from '@/lib/api-fetch';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { Copy, Plug, Terminal, Wrench } from 'lucide-react';
-import { useMemo } from 'react';
+import { Copy, Plug, RefreshCw, Terminal, Wrench } from 'lucide-react';
+import clsx from 'clsx';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router';
 
+type McpRuntime = {
+  bridgeable: boolean;
+  transport?: string;
+  containerStatus: 'running' | 'stopped' | 'missing' | 'unknown';
+  toolCount: number;
+  lastError?: string;
+  lastProbeAt?: string;
+  bridgeWarning?: string;
+  connected: boolean;
+};
+
 interface Props {
   app?: AppDetails | null;
   info: AppInfo;
+  mcpRuntime?: McpRuntime | null;
+}
+
+function bridgeStatusBadge(runtime: McpRuntime | null | undefined, installed: boolean, t: (key: string, opts?: Record<string, unknown>) => string) {
+  if (!installed) {
+    return { label: t('APP_MCP_STATUS_NOT_INSTALLED', { defaultValue: 'Not installed' }), tone: 'muted' as const };
+  }
+  if (!runtime?.bridgeable) {
+    return { label: t('APP_MCP_STATUS_NOT_BRIDGEABLE', { defaultValue: 'Not bridgeable' }), tone: 'warn' as const };
+  }
+  if (runtime.containerStatus !== 'running') {
+    return { label: t('APP_MCP_STATUS_CONTAINER_DOWN', { defaultValue: 'Container down' }), tone: 'warn' as const };
+  }
+  if (runtime.connected) {
+    return {
+      label: t('APP_MCP_STATUS_CONNECTED', { count: runtime.toolCount, defaultValue: `Connected · ${runtime.toolCount} tools` }),
+      tone: 'ok' as const,
+    };
+  }
+  if (runtime.lastError) {
+    return { label: t('APP_MCP_STATUS_NEEDS_ATTENTION', { defaultValue: 'Needs attention' }), tone: 'warn' as const };
+  }
+  return { label: t('APP_MCP_STATUS_UNKNOWN', { defaultValue: 'Unknown' }), tone: 'muted' as const };
 }
 
 /**
@@ -20,9 +56,15 @@ interface Props {
  * endpoint bridges installed app servers; clients authenticate with an mcp-scoped
  * API key).
  */
-export function McpAccessCard({ app, info }: Props) {
+export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) {
   const { t } = useTranslation();
   const mcp = info.mcp;
+  const [runtime, setRuntime] = useState<McpRuntime | null | undefined>(initialRuntime);
+  const [probing, setProbing] = useState(false);
+
+  useEffect(() => {
+    setRuntime(initialRuntime);
+  }, [initialRuntime]);
 
   const hubMcpUrl = useMemo(() => `${window.location.origin}/api/mcp`, []);
 
@@ -43,12 +85,27 @@ export function McpAccessCard({ app, info }: Props) {
     [hubMcpUrl],
   );
 
+  const probeMcp = useCallback(async () => {
+    if (!app || app.status === 'missing') return;
+    setProbing(true);
+    try {
+      const res = await apiFetch(`/api/apps/${encodeURIComponent(info.urn)}/mcp/probe`, { method: 'POST' });
+      if (!res.ok) throw new Error('probe failed');
+      setRuntime((await res.json()) as McpRuntime);
+    } catch {
+      toast.error(t('APP_MCP_PROBE_ERROR', { defaultValue: 'MCP bridge probe failed' }));
+    } finally {
+      setProbing(false);
+    }
+  }, [app, info.urn, t]);
+
   if (!mcp) {
     return null;
   }
 
   const tools = mcp.manifest?.tools ?? [];
   const installed = Boolean(app && app.status !== 'missing');
+  const badge = bridgeStatusBadge(runtime, installed, t);
 
   const copyToClipboard = async (value: string) => {
     try {
@@ -66,19 +123,48 @@ export function McpAccessCard({ app, info }: Props) {
           <Plug className="h-4 w-4 text-violet-500" />
           {t('APP_MCP_CARD_TITLE')}
         </CardTitle>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          <Terminal className="h-3 w-3" />
-          {mcp.transport}
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            className={clsx(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
+              badge.tone === 'ok' && 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+              badge.tone === 'warn' && 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+              badge.tone === 'muted' && 'border-border/70 bg-muted/30 text-muted-foreground',
+            )}
+          >
+            {badge.label}
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Terminal className="h-3 w-3" />
+            {mcp.transport}
+          </span>
+          {installed ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={probeMcp}
+              disabled={probing}
+              aria-label={t('APP_MCP_PROBE', { defaultValue: 'Probe bridge' })}
+            >
+              <RefreshCw className={clsx('h-3.5 w-3.5', probing && 'animate-spin')} />
+            </Button>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">{t('APP_MCP_CARD_SUBTITLE')}</p>
+
+        {runtime?.lastError && installed ? (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
+            {runtime.lastError}
+          </p>
+        ) : null}
 
         {tools.length > 0 && (
           <div className="space-y-2">
             <h3 className="flex items-center gap-1.5 text-sm font-medium">
               <Wrench className="h-3.5 w-3.5 text-muted-foreground" />
-              {t('APP_MCP_TOOLS_TITLE', { count: tools.length })}
+              {t('APP_MCP_TOOLS_TITLE', { count: runtime?.connected ? runtime.toolCount : tools.length })}
             </h3>
             <ul className="max-h-56 space-y-1.5 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-3">
               {tools.map((tool) => (
