@@ -3,8 +3,10 @@ import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
+import { resolveMcpCommandParts } from '@ci-hub/common/validation';
 import type { AppUrn } from '@ci-hub/common/types';
-import type { AgentConfig, AgentMcpConfig, AppInfo } from '@ci-hub/common/schemas';
+import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AppInfo, MarketplaceMcp } from '@ci-hub/common/schemas';
 
 export interface ResolvedAgentConfig {
   skill: { enabled: boolean; content: string | null; inline: boolean };
@@ -17,6 +19,7 @@ export class AgentConfigService {
   constructor(
     private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
+    private readonly envUtils: EnvUtils,
     readonly _logger: LoggerService,
   ) {}
 
@@ -83,24 +86,50 @@ export class AgentConfigService {
     const mcp = appInfo.mcp;
     if (!mcp) return null;
 
+    const appEnv = await this.loadAppEnvRecord(appUrn);
+    const auth = this.inferMarketplaceMcpAuth(mcp);
+
     if (mcp.transport === 'http') {
       if (!mcp.url) {
         this._logger.warn(`MCP app ${appUrn}: transport=http but mcp.url is missing — not bridgeable through Hub`);
         return null;
       }
-      return { enabled: true, transport: 'sse', url: mcp.url, command: undefined, container: undefined, auth: undefined };
+      return { enabled: true, transport: 'sse', url: mcp.url, command: undefined, container: undefined, auth };
     }
 
     if (!mcp.command) return null;
 
+    const resolved = resolveMcpCommandParts(mcp.command, mcp.args ?? [], appEnv);
+
     return {
       enabled: true,
       transport: 'stdio',
-      command: [mcp.command, ...mcp.args],
+      command: resolved,
       container: await this.resolveMainContainerName(appUrn),
       url: undefined,
-      auth: undefined,
+      auth,
     };
+  }
+
+  /** Load installed app.env as a plain record for MCP command/URL template expansion. */
+  private async loadAppEnvRecord(appUrn: AppUrn): Promise<Record<string, string>> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      const map = this.envUtils.envStringToMap(appEnv.content ?? '');
+      return Object.fromEntries(map);
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * When a listing declares a required secret in mcp.env (e.g. ad4m ADMIN_CREDENTIAL),
+   * wire bearer auth so the bridge reads the token from app.env at call time.
+   */
+  private inferMarketplaceMcpAuth(mcp: MarketplaceMcp): AgentOpenApiAuth | undefined {
+    const secretEnv = mcp.env?.find((entry) => entry.secret && entry.required);
+    if (!secretEnv?.key) return undefined;
+    return { type: 'bearer', token_env: secretEnv.key };
   }
 
   /**

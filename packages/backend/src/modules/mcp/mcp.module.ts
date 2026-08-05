@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
+import { EnvModule } from '@/modules/env/env.module';
 import { AgentNotifyModule } from '@/modules/agent-notify/agent-notify.module';
 import { AppsModule } from '@/modules/apps/apps.module';
 import { DockerModule } from '@/modules/docker/docker.module';
@@ -56,6 +57,7 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
   imports: [
     ThrottlerModule.forRoot([{ ttl: MCP_RATE_TTL_MS, limit: MCP_RATE_LIMIT }]),
     LoggerModule,
+    EnvModule,
     AgentNotifyModule,
     forwardRef(() => AppsModule),
     DockerModule,

@@ -9,7 +9,7 @@ export type McpHandshakeResult = {
 };
 
 const INITIALIZE_PARAMS = {
-  protocolVersion: '2025-06-18',
+  protocolVersion: '2025-11-25',
   capabilities: {},
   clientInfo: { name: 'ci-hub-mcp-probe', version: '1.0.0' },
 } as const;

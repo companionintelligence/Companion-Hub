@@ -17,3 +17,5 @@ export {
   type McpInstallSchema,
   type McpInstallSchemaField,
 } from './mcp-install-schema.js';
+
+export { resolveMcpCommandParts, resolveMcpTemplateString } from './mcp-command-resolver.js';

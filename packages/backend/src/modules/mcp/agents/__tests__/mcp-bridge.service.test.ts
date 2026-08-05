@@ -5,6 +5,8 @@ import { McpBridgeService } from '../../agents/mcp-bridge.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from '../../agents/agent-config.service';
 
@@ -27,6 +29,8 @@ describe('McpBridgeService', () => {
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
         { provide: AppsService, useValue: mock<AppsService>() },
+        { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
+        { provide: EnvUtils, useValue: mock<EnvUtils>() },
       ],
     }).compile();
 

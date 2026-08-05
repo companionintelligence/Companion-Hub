@@ -2,6 +2,8 @@ import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
@@ -24,7 +26,7 @@ interface McpConnection {
  * servers do. Sent on every connection, both transports.
  */
 const INITIALIZE_PARAMS = {
-  protocolVersion: '2025-06-18',
+  protocolVersion: '2025-11-25',
   capabilities: {},
   clientInfo: { name: 'ci-hub-mcp-bridge', version: '1.0.0' },
 } as const;
@@ -69,6 +71,8 @@ export class McpBridgeService implements OnModuleDestroy {
     private readonly logger: LoggerService,
     readonly _dockerService: DockerService,
     private readonly appsService: AppsService,
+    private readonly appFilesManager: AppFilesManager,
+    private readonly envUtils: EnvUtils,
   ) {}
 
   onModuleDestroy() {
@@ -92,7 +96,19 @@ export class McpBridgeService implements OnModuleDestroy {
     const conn = this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
     const prefix = appUrn.replace(':', '_');
 
-    // If already connected, use cached tools
+    // Eager discovery when the app is already running — avoids exposing only __discover.
+    if (!conn.connected || conn.tools.length === 0) {
+      try {
+        const { app } = await this.appsService.getApp(appUrn);
+        if (app?.status === 'running') {
+          await this.connectAndDiscover(appUrn, conn);
+        }
+      } catch {
+        // Fall back to lazy discover tool below.
+      }
+    }
+
+    // If connected, expose bridged tools directly.
     if (conn.connected && conn.tools.length > 0) {
       return conn.tools.map((tool) => this.bridgeTool(appUrn, prefix, tool));
     }
@@ -202,9 +218,9 @@ export class McpBridgeService implements OnModuleDestroy {
       accept: 'application/json, text/event-stream',
     };
 
-    // Auth
+    // Auth — prefer installed app.env; fall back to Hub process env for legacy configs.
     if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
-      const token = process.env[conn.config.auth.token_env];
+      const token = await this.resolveAuthToken(appUrn, conn.config.auth.token_env);
       if (token) {
         headers.Authorization = `Bearer ${token}`;
       }
@@ -474,7 +490,7 @@ export class McpBridgeService implements OnModuleDestroy {
     }
 
     if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
-      const token = process.env[conn.config.auth.token_env];
+      const token = await this.resolveAuthToken(appUrn, conn.config.auth.token_env);
       if (token) headers.Authorization = `Bearer ${token}`;
     }
 
@@ -510,12 +526,36 @@ export class McpBridgeService implements OnModuleDestroy {
   }
 
   private getOrCreateConnection(appUrn: AppUrn, config: NonNullable<ResolvedAgentConfig['mcp']['config']>): McpConnection {
+    const existing = this.connections.get(appUrn);
+    if (existing && !this.configMatches(existing.config, config)) {
+      this.disconnect(existing);
+      this.connections.delete(appUrn);
+    }
+
     let conn = this.connections.get(appUrn);
-    if (!conn) {
+    if (conn) {
+      conn.config = config;
+    } else {
       conn = { appUrn, connected: false, tools: [], config, retryCount: 0 };
       this.connections.set(appUrn, conn);
     }
     return conn;
+  }
+
+  private configMatches(a: McpConnection['config'], b: McpConnection['config']): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  /** Read an auth token from app.env first, then Hub process env. */
+  private async resolveAuthToken(appUrn: AppUrn, tokenEnv: string): Promise<string | undefined> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      const fromApp = this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv);
+      if (fromApp) return fromApp;
+    } catch {
+      // fall through
+    }
+    return process.env[tokenEnv];
   }
 
   /**
