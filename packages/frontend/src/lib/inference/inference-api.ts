@@ -6,6 +6,7 @@ import {
   getRuntimeModels,
   getTrackedModels,
   getOllamaStatus,
+  getVllmStatus,
   pinModel,
   rescanHardware,
   setCloudProvider,
@@ -27,8 +28,12 @@ async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promi
   return unwrapSdk(promise);
 }
 
-export async function fetchInferenceOnboardingProfile(): Promise<HardwareProfileResponse> {
-  return unwrap(getOnboardingProfile()) as Promise<HardwareProfileResponse>;
+export async function fetchInferenceOnboardingProfile(backend?: InferenceBackendType): Promise<HardwareProfileResponse> {
+  return unwrap(
+    getOnboardingProfile({
+      query: backend ? { backend } : undefined,
+    } as Parameters<typeof getOnboardingProfile>[0]),
+  ) as Promise<HardwareProfileResponse>;
 }
 
 export async function fetchInferencePreferences(): Promise<InferencePreferencesResponse | null> {
@@ -88,8 +93,13 @@ export async function saveInferencePreferences(body: {
   model: string | null;
   embeddingModel: string | null;
   visionModel: string | null;
+  vllmApiKey?: string | null;
 }): Promise<void> {
   await unwrap(updatePreferences({ body }));
+}
+
+export async function fetchVllmInstallStatus() {
+  return unwrap(getVllmStatus());
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

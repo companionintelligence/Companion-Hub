@@ -185,6 +185,7 @@ jobs:
             VITE_SENTRY_RELEASE=ci-hub-frontend@${{ github.sha }}
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
+            npm_auth_token=${{ secrets.GITHUB_TOKEN }}
 
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4

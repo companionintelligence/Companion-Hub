@@ -78,6 +78,7 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/desktop/package.json ./packages/desktop/package.json
 COPY ./packages/openclaw-plugin/package.json ./packages/openclaw-plugin/package.json
 COPY ./packages/frontend/public ./packages/frontend/public
+COPY ./.npmrc ./.npmrc
 
 RUN corepack enable && \
     package_manager="$(node -p "require('./package.json').packageManager")" && \
@@ -93,8 +94,12 @@ RUN corepack enable && \
       attempt=$((attempt + 1)); \
     done
 
-# Install dependencies (including devDependencies needed for build)
+# Install dependencies (including devDependencies needed for build).
+# NODE_AUTH_TOKEN is a BuildKit secret so the GitHub Packages read token is never
+# baked into image history (.npmrc references ${NODE_AUTH_TOKEN}).
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    --mount=type=secret,id=npm_auth_token \
+    NODE_AUTH_TOKEN="$(cat /run/secrets/npm_auth_token)" \
     pnpm install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json

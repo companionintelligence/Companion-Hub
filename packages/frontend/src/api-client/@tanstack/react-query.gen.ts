@@ -3,8 +3,8 @@
 import { type DefaultError, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, backupAllApps, backupApp, cancelOperation, cancelResetPassword, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, completeOnboarding, completePasswordReset, connectWithAuthKey, createAppStore, createCustomApp, createLink, deleteAppBackup, deleteAppStore, deleteLink, detectServices, disableTotp, disableUserConfig, disconnect, downloadBackup, downloadHubLogs, downloadLocalCertificate, editLink, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppImageSize, getAppPorts, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerToken, getImage, getInstalledApps, getInstallQueue, getLinks, getMemory, getOllamaStatus, getOnboardingProfile, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStoreAlternatives, getStoreListings, getTotpUri, getTrackedModels, getTranslation, getUserConfig, handleCallback, handleCallbackPost, health, hubLogsEvents, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, live, loadModel, login, logout, markRestoreIntent, messages, type Options, pairDevice, performUpdate, pinModel, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, pullAppStores, pullModel, refreshSession, register, registerDevice, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, sse, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, uploadAppImage, uploadBackup, userContext, validateOrganizationName, verifyPairingCode, verifyPasswordResetToken, verifyTotp } from '../sdk.gen';
-import type { AcknowledgeWelcomeData, AppContextData, AppEventsData, AppLogsEventsData, BackupAllAppsData, BackupAppData, BackupAppResponse, CancelOperationData, CancelOperationResponse, CancelResetPasswordData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckForUpdatesData, CheckResetPasswordRequestData, CheckUrlAvailabilityData, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateLinkData, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DetectServicesData, DisableTotpData, DisableUserConfigData, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EditLinkData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAppBackupsData, GetAppComposeDiffData, GetAppConfigDiffData, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppImageSizeData, GetAppPortsData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetDeviceIdData, GetDiagnostics2Data, GetDiagnosticsData, GetDomainsData, GetEnabledAppStoresData, GetFullInspectionData, GetGuestAppsData, GetGuestLinksData, GetHardwareData, GetHealthData, GetHostListenerTokenData, GetImageData, GetInstalledAppsData, GetInstallQueueData, GetLinksData, GetMemoryData, GetOllamaStatusData, GetOnboardingProfileData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResourceMonitorData, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeModelsData, GetServeStatusData, GetStateDriftData, GetStatus2Data, GetStatus3Data, GetStatus4Data, GetStatusData, GetStoreAlternativesData, GetStoreListingsData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUserConfigData, HandleCallbackData, HandleCallbackPostData, HealthData, HubLogsEventsData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, LiveData, LoadModelData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MessagesData, PairDeviceData, PerformUpdateData, PinModelData, PortalCallbackData, PortalSessionHintData, PrepareFreshSetupData, ProbeDomainData, PullAppStoresData, PullAppStoresResponse, PullModelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, SearchAppsData, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SseData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartPortalLoginData, StartPullModelData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemResourcesData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UploadAppImageData, UploadBackupData, UserContextData, ValidateOrganizationNameData, VerifyPairingCodeData, VerifyPasswordResetTokenData, VerifyTotpData, VerifyTotpResponse } from '../types.gen';
+import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, backupAllApps, backupApp, callback, callTool, cancelOperation, cancelResetPassword, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, completeOnboarding, completePasswordReset, connectWithAuthKey, consumeBrowserHandoff, consumers, createAppStore, createCustomApp, createKey, createLink, createPortExposeApp, deleteAppBackup, deleteAppStore, deleteLink, detectServices, disableTotp, disableUserConfig, disconnect, disconnect2, downloadBackup, downloadHubLogs, downloadLocalCertificate, edgeSso, editLink, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppImageSize, getAppPorts, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerToken, getHubAccess, getImage, getInstalledApps, getInstallQueue, getLinks, getMemory, getOllamaStatus, getOnboardingProfile, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStatus5, getStoreAlternatives, getStoreListings, getTotpUri, getTrackedModels, getTranslation, getUserConfig, getVllmStatus, handleCallback, handleCallbackPost, handleDelete, handleGet, handlePost, health, hubLogsEvents, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, listKeys, listTools, live, loadModel, login, logout, markRestoreIntent, mintBrowserHandoff, type Options, pairDevice, performUpdate, pinModel, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, pullAppStores, pullModel, reconnectTunnel, refreshSession, register, registerDevice, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, revokeKey, rotateHubAccess, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, skip, start, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, state, status, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updateKey, updatePortExposeApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, uploadAppImage, uploadBackup, userContext, validateOrganizationName, verifyPairingCode, verifyPasswordResetToken, verifyTotp } from '../sdk.gen';
+import type { AcknowledgeWelcomeData, AppContextData, AppEventsData, AppLogsEventsData, BackupAllAppsData, BackupAppData, BackupAppResponse, CallbackData, CallToolData, CancelOperationData, CancelOperationResponse, CancelResetPasswordData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckForUpdatesData, CheckResetPasswordRequestData, CheckUrlAvailabilityData, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, ConsumeBrowserHandoffData, ConsumersData, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateKeyData, CreateLinkData, CreatePortExposeAppData, CreatePortExposeAppResponse, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DetectServicesData, DisableTotpData, DisableUserConfigData, Disconnect2Data, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EdgeSsoData, EditLinkData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAppBackupsData, GetAppComposeDiffData, GetAppConfigDiffData, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppImageSizeData, GetAppPortsData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetDeviceIdData, GetDiagnostics2Data, GetDiagnosticsData, GetDomainsData, GetEnabledAppStoresData, GetFullInspectionData, GetGuestAppsData, GetGuestLinksData, GetHardwareData, GetHealthData, GetHostListenerTokenData, GetHubAccessData, GetImageData, GetInstalledAppsData, GetInstallQueueData, GetLinksData, GetMemoryData, GetOllamaStatusData, GetOnboardingProfileData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResourceMonitorData, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeModelsData, GetServeStatusData, GetStateDriftData, GetStatus2Data, GetStatus3Data, GetStatus4Data, GetStatus5Data, GetStatusData, GetStoreAlternativesData, GetStoreListingsData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUserConfigData, GetVllmStatusData, HandleCallbackData, HandleCallbackPostData, HandleDeleteData, HandleDeleteResponse, HandleGetData, HandlePostData, HealthData, HubLogsEventsData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, ListKeysData, ListToolsData, LiveData, LoadModelData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MintBrowserHandoffData, MintBrowserHandoffResponse, PairDeviceData, PerformUpdateData, PinModelData, PortalCallbackData, PortalSessionHintData, PrepareFreshSetupData, ProbeDomainData, PullAppStoresData, PullAppStoresResponse, PullModelData, ReconnectTunnelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, RevokeKeyData, RotateHubAccessData, SearchAppsData, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SkipData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartData, StartPortalLoginData, StartPullModelData, StateData, StatusData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemResourcesData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdateKeyData, UpdatePortExposeAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UploadAppImageData, UploadBackupData, UserContextData, ValidateOrganizationNameData, VerifyPairingCodeData, VerifyPasswordResetTokenData, VerifyTotpData, VerifyTotpResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -220,6 +220,23 @@ export const getStatusOptions = (options?: Options<GetStatusData>) => {
         },
         queryKey: getStatusQueryKey(options)
     });
+};
+
+/**
+ * Recover public/remote access for a registered but tunnel-degraded Hub
+ */
+export const reconnectTunnelMutation = (options?: Partial<Options<ReconnectTunnelData>>): UseMutationOptions<unknown, DefaultError, Options<ReconnectTunnelData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<ReconnectTunnelData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await reconnectTunnel({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
 };
 
 export const getStateDriftQueryKey = (options?: Options<GetStateDriftData>) => createQueryKey('getStateDrift', options);
@@ -1127,6 +1144,23 @@ export const getOllamaStatusOptions = (options?: Options<GetOllamaStatusData>) =
     });
 };
 
+export const getVllmStatusQueryKey = (options?: Options<GetVllmStatusData>) => createQueryKey('getVllmStatus', options);
+
+export const getVllmStatusOptions = (options?: Options<GetVllmStatusData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await getVllmStatus({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: getVllmStatusQueryKey(options)
+    });
+};
+
 export const installOllamaMutation = (options?: Partial<Options<InstallOllamaData>>): UseMutationOptions<unknown, DefaultError, Options<InstallOllamaData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<InstallOllamaData>> = {
         mutationFn: async (fnOptions) => {
@@ -1606,6 +1640,65 @@ export const updateAppStoreMutation = (options?: Partial<Options<UpdateAppStoreD
     return mutationOptions;
 };
 
+export const listKeysQueryKey = (options?: Options<ListKeysData>) => createQueryKey('listKeys', options);
+
+export const listKeysOptions = (options?: Options<ListKeysData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await listKeys({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: listKeysQueryKey(options)
+    });
+};
+
+export const createKeyMutation = (options?: Partial<Options<CreateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await createKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const revokeKeyMutation = (options?: Partial<Options<RevokeKeyData>>): UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await revokeKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const updateKeyMutation = (options?: Partial<Options<UpdateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await updateKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
 export const getTranslationQueryKey = (options: Options<GetTranslationData>) => createQueryKey('getTranslation', options);
 
 export const getTranslationOptions = (options: Options<GetTranslationData>) => {
@@ -1691,6 +1784,37 @@ export const refreshSessionMutation = (options?: Partial<Options<RefreshSessionD
         }
     };
     return mutationOptions;
+};
+
+export const mintBrowserHandoffMutation = (options?: Partial<Options<MintBrowserHandoffData>>): UseMutationOptions<MintBrowserHandoffResponse, DefaultError, Options<MintBrowserHandoffData>> => {
+    const mutationOptions: UseMutationOptions<MintBrowserHandoffResponse, DefaultError, Options<MintBrowserHandoffData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await mintBrowserHandoff({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const consumeBrowserHandoffQueryKey = (options?: Options<ConsumeBrowserHandoffData>) => createQueryKey('consumeBrowserHandoff', options);
+
+export const consumeBrowserHandoffOptions = (options?: Options<ConsumeBrowserHandoffData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await consumeBrowserHandoff({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: consumeBrowserHandoffQueryKey(options)
+    });
 };
 
 export const startPortalLoginQueryKey = (options: Options<StartPortalLoginData>) => createQueryKey('startPortalLogin', options);
@@ -1938,6 +2062,23 @@ export const traefikOptions = (options?: Options<TraefikData>) => {
     });
 };
 
+export const edgeSsoQueryKey = (options?: Options<EdgeSsoData>) => createQueryKey('edgeSso', options);
+
+export const edgeSsoOptions = (options?: Options<EdgeSsoData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await edgeSso({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: edgeSsoQueryKey(options)
+    });
+};
+
 export const getRehydratePlanQueryKey = (options?: Options<GetRehydratePlanData>) => createQueryKey('getRehydratePlan', options);
 
 export const getRehydratePlanOptions = (options?: Options<GetRehydratePlanData>) => {
@@ -1976,6 +2117,37 @@ export const executeRehydrateMutation = (options?: Partial<Options<ExecuteRehydr
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<ExecuteRehydrateData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await executeRehydrate({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const getHubAccessQueryKey = (options: Options<GetHubAccessData>) => createQueryKey('getHubAccess', options);
+
+export const getHubAccessOptions = (options: Options<GetHubAccessData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await getHubAccess({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: getHubAccessQueryKey(options)
+    });
+};
+
+export const rotateHubAccessMutation = (options?: Partial<Options<RotateHubAccessData>>): UseMutationOptions<unknown, DefaultError, Options<RotateHubAccessData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RotateHubAccessData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await rotateHubAccess({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -2662,10 +2834,38 @@ export const disableUserConfigMutation = (options?: Partial<Options<DisableUserC
     return mutationOptions;
 };
 
+export const createPortExposeAppMutation = (options?: Partial<Options<CreatePortExposeAppData>>): UseMutationOptions<CreatePortExposeAppResponse, DefaultError, Options<CreatePortExposeAppData>> => {
+    const mutationOptions: UseMutationOptions<CreatePortExposeAppResponse, DefaultError, Options<CreatePortExposeAppData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await createPortExposeApp({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
 export const createCustomAppMutation = (options?: Partial<Options<CreateCustomAppData>>): UseMutationOptions<CreateCustomAppResponse, DefaultError, Options<CreateCustomAppData>> => {
     const mutationOptions: UseMutationOptions<CreateCustomAppResponse, DefaultError, Options<CreateCustomAppData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await createCustomApp({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const updatePortExposeAppMutation = (options?: Partial<Options<UpdatePortExposeAppData>>): UseMutationOptions<unknown, DefaultError, Options<UpdatePortExposeAppData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdatePortExposeAppData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await updatePortExposeApp({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -2797,6 +2997,119 @@ export const getHostListenerTokenOptions = (options?: Options<GetHostListenerTok
     });
 };
 
+export const startQueryKey = (options?: Options<StartData>) => createQueryKey('start', options);
+
+export const startOptions = (options?: Options<StartData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await start({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: startQueryKey(options)
+    });
+};
+
+export const callbackQueryKey = (options?: Options<CallbackData>) => createQueryKey('callback', options);
+
+export const callbackOptions = (options?: Options<CallbackData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await callback({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: callbackQueryKey(options)
+    });
+};
+
+export const stateQueryKey = (options: Options<StateData>) => createQueryKey('state', options);
+
+export const stateOptions = (options: Options<StateData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await state({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: stateQueryKey(options)
+    });
+};
+
+export const statusQueryKey = (options: Options<StatusData>) => createQueryKey('status', options);
+
+export const statusOptions = (options: Options<StatusData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await status({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: statusQueryKey(options)
+    });
+};
+
+export const consumersQueryKey = (options?: Options<ConsumersData>) => createQueryKey('consumers', options);
+
+export const consumersOptions = (options?: Options<ConsumersData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await consumers({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: consumersQueryKey(options)
+    });
+};
+
+export const skipMutation = (options?: Partial<Options<SkipData>>): UseMutationOptions<unknown, DefaultError, Options<SkipData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<SkipData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await skip({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const disconnect2Mutation = (options?: Partial<Options<Disconnect2Data>>): UseMutationOptions<unknown, DefaultError, Options<Disconnect2Data>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<Disconnect2Data>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await disconnect2({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
 export const seedDatabaseMutation = (options?: Partial<Options<SeedDatabaseData>>): UseMutationOptions<unknown, DefaultError, Options<SeedDatabaseData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<SeedDatabaseData>> = {
         mutationFn: async (fnOptions) => {
@@ -2895,12 +3208,26 @@ export const uninstallAllAppsMutation = (options?: Partial<Options<UninstallAllA
     return mutationOptions;
 };
 
-export const sseQueryKey = (options?: Options<SseData>) => createQueryKey('sse', options);
+export const handleDeleteMutation = (options?: Partial<Options<HandleDeleteData>>): UseMutationOptions<HandleDeleteResponse, DefaultError, Options<HandleDeleteData>> => {
+    const mutationOptions: UseMutationOptions<HandleDeleteResponse, DefaultError, Options<HandleDeleteData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await handleDelete({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
 
-export const sseOptions = (options?: Options<SseData>) => {
+export const handleGetQueryKey = (options?: Options<HandleGetData>) => createQueryKey('handleGet', options);
+
+export const handleGetOptions = (options?: Options<HandleGetData>) => {
     return queryOptions({
         queryFn: async ({ queryKey, signal }) => {
-            const { data } = await sse({
+            const { data } = await handleGet({
                 ...options,
                 ...queryKey[0],
                 signal,
@@ -2908,14 +3235,62 @@ export const sseOptions = (options?: Options<SseData>) => {
             });
             return data;
         },
-        queryKey: sseQueryKey(options)
+        queryKey: handleGetQueryKey(options)
     });
 };
 
-export const messagesMutation = (options?: Partial<Options<MessagesData>>): UseMutationOptions<unknown, DefaultError, Options<MessagesData>> => {
-    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<MessagesData>> = {
+export const handlePostMutation = (options?: Partial<Options<HandlePostData>>): UseMutationOptions<unknown, DefaultError, Options<HandlePostData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<HandlePostData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await messages({
+            const { data } = await handlePost({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const getStatus5QueryKey = (options?: Options<GetStatus5Data>) => createQueryKey('getStatus5', options);
+
+export const getStatus5Options = (options?: Options<GetStatus5Data>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await getStatus5({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: getStatus5QueryKey(options)
+    });
+};
+
+export const listToolsQueryKey = (options?: Options<ListToolsData>) => createQueryKey('listTools', options);
+
+export const listToolsOptions = (options?: Options<ListToolsData>) => {
+    return queryOptions({
+        queryFn: async ({ queryKey, signal }) => {
+            const { data } = await listTools({
+                ...options,
+                ...queryKey[0],
+                signal,
+                throwOnError: true
+            });
+            return data;
+        },
+        queryKey: listToolsQueryKey(options)
+    });
+};
+
+export const callToolMutation = (options?: Partial<Options<CallToolData>>): UseMutationOptions<unknown, DefaultError, Options<CallToolData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CallToolData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await callTool({
                 ...options,
                 ...fnOptions,
                 throwOnError: true

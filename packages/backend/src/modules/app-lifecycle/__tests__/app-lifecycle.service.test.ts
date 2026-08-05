@@ -28,6 +28,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import * as registrationRecoveryState from '../registration-recovery-state';
 
 describe('AppLifecycleService', () => {
@@ -1982,6 +1983,35 @@ describe('AppLifecycleService', () => {
       expect(agentNotifyService.notify).not.toHaveBeenCalledWith('restart_error', expect.anything(), expect.anything());
       expect(errorReportingService.reportAppFailure).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restart' }));
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'stop_success', appUrn, appStatus: 'stopped' }));
+    });
+  });
+
+  describe('restartAiApps', () => {
+    it('restarts running apps that opt into hub_integration.inference even without ai category', async () => {
+      const financeAppUrn = createAppUrn('securo', 'ci-marketplace');
+      appsRepository.getApps.mockResolvedValue([{ id: 1, appName: 'securo', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+      marketplaceService.getAppInfoFromAppStore.mockResolvedValue({
+        categories: ['finance'],
+        hub_integration: { inference: { llm_base_url: 'AGENTS_OPENAI_COMPAT_BASE_URL' } },
+      } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.restartAiApps();
+
+      expect(restartSpy).toHaveBeenCalledWith({ appUrn: financeAppUrn });
+    });
+
+    it('skips running apps without ai category or inference integration', async () => {
+      appsRepository.getApps.mockResolvedValue([{ id: 1, appName: 'mealie', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+      marketplaceService.getAppInfoFromAppStore.mockResolvedValue({
+        categories: ['utilities'],
+        hub_integration: {},
+      } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.restartAiApps();
+
+      expect(restartSpy).not.toHaveBeenCalled();
     });
   });
 });

@@ -5,1308 +5,299 @@ export type ClientOptions = {
 };
 
 export type UserContextDto = {
-    allowAutoThemes: boolean;
-    allowErrorMonitoring: boolean;
-    isConfigured: boolean;
-    isGuestDashboardEnabled: boolean;
-    isLoggedIn: boolean;
-    isPasswordResetDisabled: boolean;
-    localDomain: string;
-    domain: string;
-    sslPort: number;
-    themeBase: string;
-    themeColor: string;
-    sessionExpiresAt?: number;
-    sessionRefreshRecommendedAt?: number;
-    version: {
-        body: string;
-        current: string;
-        latest: string;
-        releases: Array<{
-            body: string;
-            version: string;
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type AppContextDto = {
-    appDataRootHostPath?: string | null;
-    architecture: 'amd64' | 'arm64';
-    apps: Array<{
-        available: boolean;
-        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        id: string;
-        name: string;
-        short_desc: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        urn: string;
-    }>;
-    updatesAvailable: number;
-    isProduction: boolean;
-    cloudflareAvailable: boolean;
-    tailscaleAvailable: boolean;
-    tailscaleNodeFqdn?: string | null;
-    tailscaleSupportsServices?: boolean;
-    tailscaleHttpsEnabled?: boolean;
-    user: {
-        hasCompletedOnboarding: boolean;
-        id: number;
-        locale: string;
-        operator: boolean;
-        totpEnabled: boolean;
-        username: string;
-        advancedMode: boolean;
-    };
-    userSettings: {
-        advancedSettings: boolean;
-        allowAutoThemes: boolean;
-        allowErrorMonitoring: boolean;
-        appDataPath: string;
-        appsRepoUrl: string;
-        defaultAppCpuLimit?: string;
-        demoMode: boolean;
-        disablePasswordReset: boolean;
-        dnsIp: string;
-        domain: string;
-        eventsTimeout: number;
-        forwardAuthUrl: string;
-        guestDashboard: boolean;
-        internalIp: string;
-        listenIp: string;
-        localDomain: string;
-        logLevel: 'debug' | 'error' | 'info' | 'warn';
-        maxBackups: number;
-        persistTraefikConfig: boolean;
-        port: number;
-        postgresPort: number;
-        sslPort: number;
-        timeZone: string;
-        experimental_insecureCookie?: boolean;
-        themeBase?: string;
-        themeColor?: string;
-        ciHubOrganizationSlug?: string;
-        ciHubDeviceSlug?: string;
-        ciHubHubSubdomain?: string;
-    };
-    version: {
-        body: string;
-        current: string;
-        latest: string;
-        releases: Array<{
-            body: string;
-            version: string;
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type UserSettingsBody = {
-    advancedSettings?: boolean;
-    allowAutoThemes?: boolean;
-    allowErrorMonitoring?: boolean;
-    appDataPath?: string;
-    appsRepoUrl?: string;
-    defaultAppCpuLimit?: string;
-    demoMode?: boolean;
-    disablePasswordReset?: boolean;
-    dnsIp?: string;
-    domain?: string;
-    eventsTimeout?: number | string;
-    experimental_insecureCookie?: boolean;
-    forwardAuthUrl?: string;
-    guestDashboard?: boolean;
-    internalIp?: string;
-    listenIp?: string;
-    localDomain?: string;
-    logLevel?: 'debug' | 'error' | 'info' | 'warn';
-    maxBackups?: number | string;
-    persistTraefikConfig?: boolean;
-    port?: number | string;
-    postgresPort?: number | string;
-    sslPort?: number | string;
-    themeBase?: string;
-    themeColor?: string;
-    timeZone?: string;
+    [key: string]: unknown;
 };
 
 export type AcknowledgeWelcomeBody = {
-    allowErrorMonitoring: boolean;
+    [key: string]: unknown;
 };
 
 export type MyAppsDto = {
-    installed: Array<{
-        app: {
-            domain: string | null;
-            exposed: boolean;
-            exposedLocal: boolean;
-            id: number;
-            ignoredVersion: number | null;
-            isVisibleOnGuestDashboard: boolean;
-            openPort: boolean;
-            pendingRestart: boolean;
-            port: number | null;
-            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-            version: number;
-            config?: {
-                [key: string]: unknown;
-            };
-            createdAt?: string;
-            enableAuth?: boolean;
-            localSubdomain?: string | null;
-            updatedAt?: string;
-        };
-        info: {
-            author: string;
-            available: boolean;
-            categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-            created_at: number;
-            deprecated: boolean;
-            description: string;
-            dynamic_config: boolean;
-            exposable: boolean;
-            force_expose: boolean;
-            force_pull: boolean;
-            form_fields: Array<{
-                env_variable: string;
-                label: string;
-                required: boolean;
-                type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-                default?: number | string | boolean;
-                encoding?: 'base64' | 'hex';
-                hint?: string;
-                max?: number;
-                min?: number;
-                options?: Array<{
-                    label: string;
-                    value: string;
-                }>;
-                pattern_error?: string;
-                placeholder?: string;
-                regex?: string;
-            }>;
-            generate_vapid_keys: boolean;
-            https: boolean;
-            id: string;
-            name: string;
-            no_gui: boolean;
-            mcp?: {
-                transport: 'stdio' | 'http';
-                command?: string;
-                args?: Array<string>;
-                url?: string;
-                env?: Array<{
-                    key: string;
-                    label?: string;
-                    hint?: string;
-                    required?: boolean;
-                    secret?: boolean;
-                }>;
-                requires?: {
-                    host_software?: Array<string>;
-                    notes?: string;
-                };
-                tags?: Array<string>;
-                manifest?: {
-                    tools?: Array<{
-                        name: string;
-                        description?: string;
-                    }>;
-                    resources?: Array<unknown>;
-                    prompts?: Array<unknown>;
-                };
-            };
-            short_desc: string;
-            source: string;
-            supported_architectures: Array<'amd64' | 'arm64'>;
-            cihub_app_version: number;
-            updated_at: number;
-            urn: string;
-            version: string;
-            gid?: number;
-            min_hub_version?: string;
-            port?: number;
-            uid?: number;
-            url_suffix?: string;
-            website?: string;
-        };
-        metadata: {
-            latestVersion: number;
-            localSubdomain: string;
-            composeSchemaVersion?: number;
-            hasCustomConfig?: boolean;
-            latestDockerVersion?: string;
-            minHubVersion?: string | null;
-        };
-    }>;
+    [key: string]: unknown;
 };
 
 export type InstallQueueDto = {
-    active: {
-        urn: string;
-        name: string;
-    } | null;
-    queued: Array<{
-        urn: string;
-        name: string;
-    }>;
+    [key: string]: unknown;
 };
 
 export type GuestAppsDto = {
-    installed: Array<{
-        app: {
-            domain: string | null;
-            exposed: boolean;
-            exposedLocal: boolean;
-            id: number;
-            ignoredVersion: number | null;
-            isVisibleOnGuestDashboard: boolean;
-            openPort: boolean;
-            pendingRestart: boolean;
-            port: number | null;
-            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-            version: number;
-            config?: {
-                [key: string]: unknown;
-            };
-            createdAt?: string;
-            enableAuth?: boolean;
-            localSubdomain?: string | null;
-            updatedAt?: string;
-        };
-        info: {
-            author: string;
-            available: boolean;
-            categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-            created_at: number;
-            deprecated: boolean;
-            description: string;
-            dynamic_config: boolean;
-            exposable: boolean;
-            force_expose: boolean;
-            force_pull: boolean;
-            form_fields: Array<{
-                env_variable: string;
-                label: string;
-                required: boolean;
-                type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-                default?: number | string | boolean;
-                encoding?: 'base64' | 'hex';
-                hint?: string;
-                max?: number;
-                min?: number;
-                options?: Array<{
-                    label: string;
-                    value: string;
-                }>;
-                pattern_error?: string;
-                placeholder?: string;
-                regex?: string;
-            }>;
-            generate_vapid_keys: boolean;
-            https: boolean;
-            id: string;
-            name: string;
-            no_gui: boolean;
-            mcp?: {
-                transport: 'stdio' | 'http';
-                command?: string;
-                args?: Array<string>;
-                url?: string;
-                env?: Array<{
-                    key: string;
-                    label?: string;
-                    hint?: string;
-                    required?: boolean;
-                    secret?: boolean;
-                }>;
-                requires?: {
-                    host_software?: Array<string>;
-                    notes?: string;
-                };
-                tags?: Array<string>;
-                manifest?: {
-                    tools?: Array<{
-                        name: string;
-                        description?: string;
-                    }>;
-                    resources?: Array<unknown>;
-                    prompts?: Array<unknown>;
-                };
-            };
-            short_desc: string;
-            source: string;
-            supported_architectures: Array<'amd64' | 'arm64'>;
-            cihub_app_version: number;
-            updated_at: number;
-            urn: string;
-            version: string;
-            gid?: number;
-            min_hub_version?: string;
-            port?: number;
-            uid?: number;
-            url_suffix?: string;
-            website?: string;
-        };
-        metadata: {
-            latestVersion: number;
-            composeSchemaVersion?: number;
-            hasCustomConfig?: boolean;
-            latestDockerVersion?: string;
-            minHubVersion?: string | null;
-        };
-    }>;
+    [key: string]: unknown;
 };
 
 export type GetRandomPortDto = {
-    port: number;
+    [key: string]: unknown;
 };
 
 export type AppRuntimeMonitorDto = {
-    sampledAt: string;
-    apps: Array<AppRuntimeHealthDto>;
-    history: Array<{
-        sampledAt: string;
-        apps: Array<{
-            appUrn: string;
-            appName: string;
-            status: string;
-            cpuPercent: number;
-            memoryUsageBytes: number;
-            containerCount: number;
-        }>;
-    }>;
+    [key: string]: unknown;
 };
 
 export type GetAppDto = {
-    info: {
-        author: string;
-        available: boolean;
-        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        description: string;
-        dynamic_config: boolean;
-        exposable: boolean;
-        force_expose: boolean;
-        force_pull: boolean;
-        form_fields: Array<{
-            env_variable: string;
-            label: string;
-            required: boolean;
-            type: 'boolean' | 'email' | 'fqdn' | 'fqdnip' | 'ip' | 'number' | 'password' | 'random' | 'text' | 'url';
-            default?: number | string | boolean;
-            encoding?: 'base64' | 'hex';
-            hint?: string;
-            max?: number;
-            min?: number;
-            options?: Array<{
-                label: string;
-                value: string;
-            }>;
-            pattern_error?: string;
-            placeholder?: string;
-            regex?: string;
-        }>;
-        generate_vapid_keys: boolean;
-        https: boolean;
-        id: string;
-        name: string;
-        no_gui: boolean;
-        mcp?: {
-            transport: 'stdio' | 'http';
-            command?: string;
-            args?: Array<string>;
-            url?: string;
-            env?: Array<{
-                key: string;
-                label?: string;
-                hint?: string;
-                required?: boolean;
-                secret?: boolean;
-            }>;
-            requires?: {
-                host_software?: Array<string>;
-                notes?: string;
-            };
-            tags?: Array<string>;
-            manifest?: {
-                tools?: Array<{
-                    name: string;
-                    description?: string;
-                }>;
-                resources?: Array<unknown>;
-                prompts?: Array<unknown>;
-            };
-        };
-        short_desc: string;
-        source: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        cihub_app_version: number;
-        updated_at: number;
-        urn: string;
-        version: string;
-        gid?: number;
-        min_hub_version?: string;
-        port?: number;
-        uid?: number;
-        url_suffix?: string;
-        website?: string;
-    };
-    metadata: {
-        latestVersion: number;
-        localSubdomain: string;
-        composeSchemaVersion?: number;
-        hasCustomConfig?: boolean;
-        latestDockerVersion?: string;
-        minHubVersion?: string | null;
-        iconUrl?: string;
-    };
-    app?: {
-        domain: string | null;
-        exposed: boolean;
-        exposedLocal: boolean;
-        id: number;
-        ignoredVersion: number | null;
-        isVisibleOnGuestDashboard: boolean;
-        openPort: boolean;
-        pendingRestart: boolean;
-        port: number | null;
-        status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
-        version: number;
-        config?: {
-            [key: string]: unknown;
-        };
-        createdAt?: string;
-        enableAuth?: boolean;
-        localSubdomain?: string | null;
-        exposureMode?: 'local' | 'cloudflare' | 'tailscale';
-        publicDomain?: string | null;
-        updatedAt?: string;
-    } | null;
-    appDataHostPath?: string | null;
+    [key: string]: unknown;
 };
 
 export type GetComposeDiffDto = {
-    current: string | null;
-    new: string | null;
+    [key: string]: unknown;
 };
 
 export type GetConfigDiffDto = {
-    current: string | null;
-    new: string | null;
+    [key: string]: unknown;
 };
 
 export type AppRuntimeHealthDto = {
-    appUrn: string;
-    appName: string;
-    status: string;
-    cpuPercent: number;
-    memoryUsageBytes: number;
-    memoryLimitBytes: number;
-    highCpu: boolean;
-    sustainedHighCpu: boolean;
-    responsive: boolean;
-    degraded: boolean;
-    forceStopEligible: boolean;
-    reason: string | null;
-    cpuLimit: string | null;
-    usesDefaultCpuLimit: boolean;
-    sampledAt: string;
-    containers: Array<{
-        containerId: string;
-        name: string;
-        state: string;
-        status: string;
-        health: string | null;
-        cpuPercent: number;
-        memoryUsageBytes: number;
-        memoryLimitBytes: number;
-    }>;
+    [key: string]: unknown;
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend?: 'ollama' | 'vllm' | 'lemonade';
-    model?: string | null;
-    embeddingModel?: string | null;
-    visionModel?: string | null;
+    [key: string]: unknown;
 };
 
 export type UpdateRocmInstallStateBody = {
-    state: string;
+    [key: string]: unknown;
 };
 
 export type LoadDto = {
-    cpuLoad: number;
-    cpuCores: number;
-    diskSize: number;
-    diskUsed: number;
-    memoryTotal: number;
-    memoryUsed: number;
-    percentUsed: number;
-    percentUsedMemory: number;
-    hasVmWedge: boolean;
-    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
-    containerMemoryTotal?: number;
-    containerMemoryUsed?: number;
-    containerDiskTotal?: number;
-    containerDiskUsed?: number;
-    recommendedDockerRamMb?: number;
-    platformGuidance?: string;
+    [key: string]: unknown;
 };
 
 export type SystemResourcesDto = {
-    cpu: number;
-    memory: number;
-    disk: number;
+    [key: string]: unknown;
 };
 
 export type FactoryResetDto = {
-    confirmation: 'factory-reset';
+    [key: string]: unknown;
 };
 
 export type SearchAppsDto = {
-    data: Array<{
-        available: boolean;
-        categories: Array<'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities'>;
-        created_at: number;
-        deprecated: boolean;
-        id: string;
-        name: string;
-        short_desc: string;
-        supported_architectures: Array<'amd64' | 'arm64'>;
-        urn: string;
-        icon?: string | null;
-    }>;
-    total: number;
-    nextCursor?: string | null;
+    [key: string]: unknown;
 };
 
 export type PullDto = {
-    success: boolean;
+    [key: string]: unknown;
 };
 
 export type CreateAppStoreBodyDto = {
-    name: string;
-    url: string;
+    [key: string]: unknown;
 };
 
 export type AppStoreDto = {
-    enabled: boolean;
-    name: string;
-    slug: string;
-    url: string;
+    [key: string]: unknown;
 };
 
 export type AllAppStoresDto = {
-    appStores: Array<{
-        enabled: boolean;
-        name: string;
-        slug: string;
-        url: string;
-    }>;
+    [key: string]: unknown;
 };
 
 export type UpdateAppStoreBodyDto = {
-    enabled: boolean;
-    name: string;
+    [key: string]: unknown;
 };
 
 export type UpdateAppStoreDto = {
-    success: boolean;
+    [key: string]: unknown;
+};
+
+export type CreateApiKeyBody = {
+    [key: string]: unknown;
+};
+
+export type UpdateApiKeyBody = {
+    [key: string]: unknown;
 };
 
 export type LoginBody = {
-    password: string;
-    username: string;
+    [key: string]: unknown;
 };
 
 export type LoginDto = {
-    success: boolean;
-    totpSessionId?: string;
+    [key: string]: unknown;
 };
 
 export type VerifyTotpBody = {
-    totpCode: string;
-    totpSessionId: string;
+    [key: string]: unknown;
 };
 
 export type RegisterBody = {
-    password: string;
-    username: string;
+    [key: string]: unknown;
 };
 
 export type RegisterDto = {
-    success: boolean;
-    requiresEmailVerification?: boolean;
+    [key: string]: unknown;
 };
 
 export type SessionRefreshDto = {
-    sessionId: string;
-    issuedAt: number;
+    [key: string]: unknown;
+};
+
+export type BrowserHandoffMintBody = {
+    [key: string]: unknown;
+};
+
+export type BrowserHandoffMintDto = {
+    [key: string]: unknown;
 };
 
 export type PortalSessionHintDto = {
-    email: string | null;
-    portalBaseUrl: string | null;
-    source: 'hub_operator' | 'portal_session' | null;
+    [key: string]: unknown;
 };
 
 export type PortalDesktopExchangeDto = {
-    sessionId: string;
-    redirectPath: string;
+    [key: string]: unknown;
 };
 
 export type ChangeUsernameBody = {
-    newUsername: string;
-    password: string;
+    [key: string]: unknown;
 };
 
 export type ChangePasswordBody = {
-    currentPassword: string;
-    newPassword: string;
+    [key: string]: unknown;
 };
 
 export type GetTotpUriBody = {
-    password: string;
+    [key: string]: unknown;
 };
 
 export type GetTotpUriDto = {
-    key: string;
-    uri: string;
+    [key: string]: unknown;
 };
 
 export type SetupTotpBody = {
-    code: string;
+    [key: string]: unknown;
 };
 
 export type DisableTotpBody = {
-    password: string;
+    [key: string]: unknown;
 };
 
 export type ResetPasswordBody = {
-    newPassword: string;
+    [key: string]: unknown;
 };
 
 export type ResetPasswordDto = {
-    email: string;
-    success: boolean;
+    [key: string]: unknown;
 };
 
 export type CheckResetPasswordRequestDto = {
-    isRequestPending: boolean;
+    [key: string]: unknown;
 };
 
 export type PasswordResetRequestBody = {
-    email: string;
-    deviceId?: string;
+    [key: string]: unknown;
 };
 
 export type PasswordResetRequestDto = {
-    success: boolean;
-    message: string;
+    [key: string]: unknown;
 };
 
 export type PasswordResetVerifyResponseDto = {
-    valid: boolean;
-    email?: string;
+    [key: string]: unknown;
 };
 
 export type PasswordResetCompleteBody = {
-    token: string;
-    newPassword: string;
+    [key: string]: unknown;
 };
 
 export type PasswordResetCompleteDto = {
-    success: boolean;
-    message: string;
+    [key: string]: unknown;
 };
 
 export type AppFormBody = {
-    domain?: string;
-    enableAuth?: boolean;
-    exposed?: boolean;
-    exposedLocal?: boolean;
-    isVisibleOnGuestDashboard?: boolean;
-    localSubdomain?: string;
-    maxBackups?: number;
-    openPort?: boolean;
-    port?: number;
-    skipEnv?: boolean;
-    skipPull?: boolean;
-    skipRun?: boolean;
+    [key: string]: unknown;
 };
 
 export type LifecycleRequestDto = {
-    /**
-     * a UUID
-     */
-    requestId: string | '00000000-0000-0000-0000-000000000000' | 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    [key: string]: unknown;
 };
 
 export type UninstallAppBody = {
-    deleteAllData?: boolean;
-    force?: boolean;
+    [key: string]: unknown;
 };
 
 export type ResetAppBody = {
-    force?: boolean;
+    [key: string]: unknown;
 };
 
 export type UpdateAppBody = {
-    performBackup: boolean;
+    [key: string]: unknown;
 };
 
 export type CancelOperationBody = {
-    requestId?: string;
+    [key: string]: unknown;
 };
 
 export type CancelOperationResponseDto = {
-    outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found';
-    status?: string;
-    message?: string;
+    [key: string]: unknown;
 };
 
 export type BackupRequestDto = {
-    /**
-     * a UUID
-     */
-    requestId: string | '00000000-0000-0000-0000-000000000000' | 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+    [key: string]: unknown;
 };
 
 export type RestoreAppBackupDto = {
-    filename: string;
+    [key: string]: unknown;
 };
 
 export type GetAppBackupsDto = {
-    currentPage: number;
-    data: Array<{
-        date: number;
-        id: string;
-        size: number;
-    }>;
-    lastPage: number;
-    total: number;
+    [key: string]: unknown;
 };
 
 export type DeleteAppBackupBodyDto = {
-    filename: string;
+    [key: string]: unknown;
 };
 
 export type LinksDto = {
-    links: Array<{
-        description: string | null;
-        iconUrl: string | '' | null;
-        id: number;
-        isVisibleOnGuestDashboard: boolean;
-        title: string;
-        url: string;
-        userId: number;
-    }>;
+    [key: string]: unknown;
 };
 
 export type LinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard?: boolean;
+    [key: string]: unknown;
 };
 
 export type EditLinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard?: boolean;
+    [key: string]: unknown;
 };
 
 export type GetUserConfigDto = {
-    appEnv: string | null;
-    dockerCompose: string | null;
-    isEnabled: boolean;
+    [key: string]: unknown;
 };
 
 export type UpdateUserConfigDto = {
-    appEnv: string;
-    dockerCompose: string;
+    [key: string]: unknown;
 };
 
-export type CreateCustomAppDto = {
-    config: {
-        schemaVersion: 2;
-        services: Array<{
-            image: string;
-            name: string;
-            addPorts?: Array<{
-                containerPort: string | number;
-                hostPort: string | number;
-                interface?: string;
-                tcp?: boolean;
-                udp?: boolean;
-            }>;
-            addToMainNetwork?: boolean;
-            capAdd?: Array<string>;
-            capDrop?: Array<string>;
-            command?: string | Array<string>;
-            dependsOn?: {
-                [key: string]: {
-                    condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                };
-            } | Array<string>;
-            deploy?: {
-                resources: {
-                    limits?: {
-                        cpus?: string;
-                        memory?: string;
-                        pids?: number;
-                    };
-                    reservations?: {
-                        devices: Array<{
-                            capabilities: Array<string>;
-                            count?: number | 'all';
-                            deviceIds?: Array<string>;
-                            driver?: string;
-                        }>;
-                        cpus?: string;
-                        memory?: string;
-                    };
-                };
-            };
-            devices?: Array<string>;
-            dns?: string | Array<string>;
-            entrypoint?: string | Array<string>;
-            environment?: Array<{
-                key: string;
-                value: number | string | boolean;
-            }>;
-            extraHosts?: Array<string>;
-            extraLabels?: {
-                [key: string]: string | boolean;
-            };
-            healthCheck?: {
-                test: string;
-                interval?: string;
-                retries?: number;
-                startInterval?: string;
-                startPeriod?: string;
-                timeout?: string;
-            };
-            hostname?: string;
-            internalPort?: string | number;
-            isMain?: boolean;
-            logging?: {
-                driver: string;
-                options?: {
-                    [key: string]: string;
-                };
-            };
-            networkMode?: string;
-            pid?: string;
-            privileged?: boolean;
-            readOnly?: boolean;
-            securityOpt?: Array<string>;
-            shmSize?: string;
-            stdinOpen?: boolean;
-            stopGracePeriod?: string;
-            stopSignal?: string;
-            sysctls?: {
-                [key: string]: number;
-            };
-            tty?: boolean;
-            ulimits?: {
-                core?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                memlock?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nofile?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nproc?: number | {
-                    hard: number;
-                    soft: number;
-                };
-            };
-            user?: string;
-            volumes?: Array<{
-                containerPath: string;
-                hostPath?: string;
-                volumeName?: string;
-                requiresPosixPermissions?: boolean;
-                bind?: {
-                    propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                };
-                private?: boolean;
-                readOnly?: boolean;
-                shared?: boolean;
-            }>;
-            workingDir?: string;
-        }>;
-        overrides?: Array<{
-            services: Array<{
-                addPorts?: Array<{
-                    containerPort: string | number;
-                    hostPort: string | number;
-                    interface?: string;
-                    tcp?: boolean;
-                    udp?: boolean;
-                }>;
-                addToMainNetwork?: boolean;
-                capAdd?: Array<string>;
-                capDrop?: Array<string>;
-                command?: string | Array<string>;
-                dependsOn?: {
-                    [key: string]: {
-                        condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                    };
-                } | Array<string>;
-                deploy?: {
-                    resources: {
-                        limits?: {
-                            cpus?: string;
-                            memory?: string;
-                            pids?: number;
-                        };
-                        reservations?: {
-                            devices: Array<{
-                                capabilities: Array<string>;
-                                count?: number | 'all';
-                                deviceIds?: Array<string>;
-                                driver?: string;
-                            }>;
-                            cpus?: string;
-                            memory?: string;
-                        };
-                    };
-                };
-                devices?: Array<string>;
-                dns?: string | Array<string>;
-                entrypoint?: string | Array<string>;
-                environment?: Array<{
-                    key: string;
-                    value: number | string | boolean;
-                }>;
-                extraHosts?: Array<string>;
-                extraLabels?: {
-                    [key: string]: string | boolean;
-                };
-                healthCheck?: {
-                    test: string;
-                    interval?: string;
-                    retries?: number;
-                    startInterval?: string;
-                    startPeriod?: string;
-                    timeout?: string;
-                };
-                hostname?: string;
-                image?: string;
-                internalPort?: string | number;
-                isMain?: boolean;
-                logging?: {
-                    driver: string;
-                    options?: {
-                        [key: string]: string;
-                    };
-                };
-                name?: string;
-                networkMode?: string;
-                pid?: string;
-                privileged?: boolean;
-                readOnly?: boolean;
-                securityOpt?: Array<string>;
-                shmSize?: string;
-                stdinOpen?: boolean;
-                stopGracePeriod?: string;
-                stopSignal?: string;
-                sysctls?: {
-                    [key: string]: number;
-                };
-                tty?: boolean;
-                ulimits?: {
-                    core?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    memlock?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nofile?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nproc?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                };
-                user?: string;
-                volumes?: Array<{
-                    containerPath: string;
-                    hostPath?: string;
-                    volumeName?: string;
-                    requiresPosixPermissions?: boolean;
-                    bind?: {
-                        propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                    };
-                    private?: boolean;
-                    readOnly?: boolean;
-                    shared?: boolean;
-                }>;
-                workingDir?: string;
-            }>;
-            architecture?: 'amd64' | 'arm64';
-        }>;
-    };
-    name: string;
+export type CreatePortExposeAppDto = {
+    [key: string]: unknown;
 };
 
 export type CreateCustomAppResponseDto = {
-    appName: string;
-    appUrn: string;
-    storeId: string;
+    [key: string]: unknown;
+};
+
+export type CreateCustomAppDto = {
+    [key: string]: unknown;
+};
+
+export type UpdatePortExposeAppDto = {
+    [key: string]: unknown;
 };
 
 export type UpdateCustomAppDto = {
-    config: {
-        schemaVersion: 2;
-        services: Array<{
-            image: string;
-            name: string;
-            addPorts?: Array<{
-                containerPort: string | number;
-                hostPort: string | number;
-                interface?: string;
-                tcp?: boolean;
-                udp?: boolean;
-            }>;
-            addToMainNetwork?: boolean;
-            capAdd?: Array<string>;
-            capDrop?: Array<string>;
-            command?: string | Array<string>;
-            dependsOn?: {
-                [key: string]: {
-                    condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                };
-            } | Array<string>;
-            deploy?: {
-                resources: {
-                    limits?: {
-                        cpus?: string;
-                        memory?: string;
-                        pids?: number;
-                    };
-                    reservations?: {
-                        devices: Array<{
-                            capabilities: Array<string>;
-                            count?: number | 'all';
-                            deviceIds?: Array<string>;
-                            driver?: string;
-                        }>;
-                        cpus?: string;
-                        memory?: string;
-                    };
-                };
-            };
-            devices?: Array<string>;
-            dns?: string | Array<string>;
-            entrypoint?: string | Array<string>;
-            environment?: Array<{
-                key: string;
-                value: number | string | boolean;
-            }>;
-            extraHosts?: Array<string>;
-            extraLabels?: {
-                [key: string]: string | boolean;
-            };
-            healthCheck?: {
-                test: string;
-                interval?: string;
-                retries?: number;
-                startInterval?: string;
-                startPeriod?: string;
-                timeout?: string;
-            };
-            hostname?: string;
-            internalPort?: string | number;
-            isMain?: boolean;
-            logging?: {
-                driver: string;
-                options?: {
-                    [key: string]: string;
-                };
-            };
-            networkMode?: string;
-            pid?: string;
-            privileged?: boolean;
-            readOnly?: boolean;
-            securityOpt?: Array<string>;
-            shmSize?: string;
-            stdinOpen?: boolean;
-            stopGracePeriod?: string;
-            stopSignal?: string;
-            sysctls?: {
-                [key: string]: number;
-            };
-            tty?: boolean;
-            ulimits?: {
-                core?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                memlock?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nofile?: number | {
-                    hard: number;
-                    soft: number;
-                };
-                nproc?: number | {
-                    hard: number;
-                    soft: number;
-                };
-            };
-            user?: string;
-            volumes?: Array<{
-                containerPath: string;
-                hostPath?: string;
-                volumeName?: string;
-                requiresPosixPermissions?: boolean;
-                bind?: {
-                    propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                };
-                private?: boolean;
-                readOnly?: boolean;
-                shared?: boolean;
-            }>;
-            workingDir?: string;
-        }>;
-        overrides?: Array<{
-            services: Array<{
-                addPorts?: Array<{
-                    containerPort: string | number;
-                    hostPort: string | number;
-                    interface?: string;
-                    tcp?: boolean;
-                    udp?: boolean;
-                }>;
-                addToMainNetwork?: boolean;
-                capAdd?: Array<string>;
-                capDrop?: Array<string>;
-                command?: string | Array<string>;
-                dependsOn?: {
-                    [key: string]: {
-                        condition: 'service_completed_successfully' | 'service_healthy' | 'service_started';
-                    };
-                } | Array<string>;
-                deploy?: {
-                    resources: {
-                        limits?: {
-                            cpus?: string;
-                            memory?: string;
-                            pids?: number;
-                        };
-                        reservations?: {
-                            devices: Array<{
-                                capabilities: Array<string>;
-                                count?: number | 'all';
-                                deviceIds?: Array<string>;
-                                driver?: string;
-                            }>;
-                            cpus?: string;
-                            memory?: string;
-                        };
-                    };
-                };
-                devices?: Array<string>;
-                dns?: string | Array<string>;
-                entrypoint?: string | Array<string>;
-                environment?: Array<{
-                    key: string;
-                    value: number | string | boolean;
-                }>;
-                extraHosts?: Array<string>;
-                extraLabels?: {
-                    [key: string]: string | boolean;
-                };
-                healthCheck?: {
-                    test: string;
-                    interval?: string;
-                    retries?: number;
-                    startInterval?: string;
-                    startPeriod?: string;
-                    timeout?: string;
-                };
-                hostname?: string;
-                image?: string;
-                internalPort?: string | number;
-                isMain?: boolean;
-                logging?: {
-                    driver: string;
-                    options?: {
-                        [key: string]: string;
-                    };
-                };
-                name?: string;
-                networkMode?: string;
-                pid?: string;
-                privileged?: boolean;
-                readOnly?: boolean;
-                securityOpt?: Array<string>;
-                shmSize?: string;
-                stdinOpen?: boolean;
-                stopGracePeriod?: string;
-                stopSignal?: string;
-                sysctls?: {
-                    [key: string]: number;
-                };
-                tty?: boolean;
-                ulimits?: {
-                    core?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    memlock?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nofile?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                    nproc?: number | {
-                        hard: number;
-                        soft: number;
-                    };
-                };
-                user?: string;
-                volumes?: Array<{
-                    containerPath: string;
-                    hostPath?: string;
-                    volumeName?: string;
-                    requiresPosixPermissions?: boolean;
-                    bind?: {
-                        propagation: 'private' | 'rprivate' | 'rshared' | 'rslave' | 'shared' | 'slave';
-                    };
-                    private?: boolean;
-                    readOnly?: boolean;
-                    shared?: boolean;
-                }>;
-                workingDir?: string;
-            }>;
-            architecture?: 'amd64' | 'arm64';
-        }>;
-    };
+    [key: string]: unknown;
 };
 
 export type UpdateAppMetadataDto = {
-    data: string;
+    [key: string]: unknown;
+};
+
+export type McpToolCallBody = {
+    [key: string]: unknown;
 };
 
 export type UserContextData = {
@@ -1394,9 +385,7 @@ export type UpdateUserSettingsResponses = {
 };
 
 export type UpdateAdvancedModeData = {
-    body: {
-        advancedMode: boolean;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/user-advanced-mode';
@@ -1463,6 +452,20 @@ export type GetStatusData = {
 export type GetStatusResponses = {
     /**
      * Returns the explicit provisioning status
+     */
+    200: unknown;
+};
+
+export type ReconnectTunnelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/reconnect-tunnel';
+};
+
+export type ReconnectTunnelResponses = {
+    /**
+     * Returns the reconnect outcome (recovered, or an action the client should take)
      */
     200: unknown;
 };
@@ -1643,9 +646,7 @@ export type ProbeDomainResponses = {
 };
 
 export type PairDeviceData = {
-    body: {
-        pairing_code: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/registration/pair';
@@ -1728,12 +729,7 @@ export type GetDomainsData = {
 
 export type GetDomainsResponses = {
     default: {
-        domains: Array<{
-            id: string;
-            domain: string;
-            isDefault: boolean;
-            available?: boolean;
-        }>;
+        [key: string]: unknown;
     };
 };
 
@@ -2031,9 +1027,7 @@ export type UpdatePreferencesResponses = {
 export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
-    query: {
-        backend: 'ollama' | 'vllm' | 'lemonade';
-    };
+    query?: never;
     url: '/api/inference/models/runtime';
 };
 
@@ -2130,10 +1124,7 @@ export type GetTrackedModelsResponses = {
 };
 
 export type StartPullModelData = {
-    body: {
-        modelId: string;
-        bestEffort?: boolean;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/models/pull/start';
@@ -2177,9 +1168,7 @@ export type UnloadModelResponses = {
 };
 
 export type PinModelData = {
-    body: {
-        modelId: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/models/pin';
@@ -2190,9 +1179,7 @@ export type PinModelResponses = {
 };
 
 export type UnpinModelData = {
-    body: {
-        modelId: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/models/unpin';
@@ -2214,13 +1201,7 @@ export type GetCloudProvidersResponses = {
 };
 
 export type SetCloudProviderData = {
-    body: {
-        provider: string;
-        apiKey?: string;
-        enabled: boolean;
-        baseUrl?: string;
-        defaultModel?: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/cloud-providers';
@@ -2233,7 +1214,9 @@ export type SetCloudProviderResponses = {
 export type GetOnboardingProfileData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        backend?: 'ollama' | 'vllm' | 'lemonade';
+    };
     url: '/api/inference/onboarding-profile';
 };
 
@@ -2249,6 +1232,17 @@ export type GetOllamaStatusData = {
 };
 
 export type GetOllamaStatusResponses = {
+    200: unknown;
+};
+
+export type GetVllmStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/vllm/status';
+};
+
+export type GetVllmStatusResponses = {
     200: unknown;
 };
 
@@ -2508,13 +1502,7 @@ export type RepairOrphansResponse = RepairOrphansResponses[keyof RepairOrphansRe
 export type SearchAppsData = {
     body?: never;
     path?: never;
-    query?: {
-        category?: 'agents' | 'ai' | 'automation' | 'books' | 'data' | 'development' | 'featured' | 'finance' | 'gaming' | 'mcp' | 'media' | 'music' | 'network' | 'photography' | 'security' | 'social' | 'utilities';
-        cursor?: string;
-        pageSize?: number | string;
-        search?: string;
-        storeId?: string;
-    };
+    query?: never;
     url: '/api/marketplace/apps/search';
 };
 
@@ -2630,6 +1618,54 @@ export type UpdateAppStoreResponses = {
 
 export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
+export type ListKeysData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type ListKeysResponses = {
+    200: unknown;
+};
+
+export type CreateKeyData = {
+    body: CreateApiKeyBody;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type CreateKeyResponses = {
+    201: unknown;
+};
+
+export type RevokeKeyData = {
+    body?: never;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type RevokeKeyResponses = {
+    200: unknown;
+};
+
+export type UpdateKeyData = {
+    body: UpdateApiKeyBody;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type UpdateKeyResponses = {
+    200: unknown;
+};
+
 export type GetTranslationData = {
     body?: never;
     path: {
@@ -2706,6 +1742,30 @@ export type RefreshSessionResponses = {
 };
 
 export type RefreshSessionResponse = RefreshSessionResponses[keyof RefreshSessionResponses];
+
+export type MintBrowserHandoffData = {
+    body: BrowserHandoffMintBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff/mint';
+};
+
+export type MintBrowserHandoffResponses = {
+    default: BrowserHandoffMintDto;
+};
+
+export type MintBrowserHandoffResponse = MintBrowserHandoffResponses[keyof MintBrowserHandoffResponses];
+
+export type ConsumeBrowserHandoffData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff';
+};
+
+export type ConsumeBrowserHandoffResponses = {
+    200: unknown;
+};
 
 export type StartPortalLoginData = {
     body?: never;
@@ -2872,9 +1932,7 @@ export type RequestPasswordResetResponse = RequestPasswordResetResponses[keyof R
 
 export type VerifyPasswordResetTokenData = {
     body?: never;
-    path: {
-        token: string;
-    };
+    path?: never;
     query?: never;
     url: '/api/auth/password-reset/verify/{token}';
 };
@@ -2909,6 +1967,17 @@ export type TraefikResponses = {
     200: unknown;
 };
 
+export type EdgeSsoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/edge-sso';
+};
+
+export type EdgeSsoResponses = {
+    200: unknown;
+};
+
 export type GetRehydratePlanData = {
     body?: never;
     path?: never;
@@ -2932,15 +2001,39 @@ export type GetRehydrateStatusResponses = {
 };
 
 export type ExecuteRehydrateData = {
-    body?: {
-        source?: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/app-lifecycle/rehydrate';
 };
 
 export type ExecuteRehydrateResponses = {
+    201: unknown;
+};
+
+export type GetHubAccessData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/hub-access';
+};
+
+export type GetHubAccessResponses = {
+    200: unknown;
+};
+
+export type RotateHubAccessData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/hub-access/rotate';
+};
+
+export type RotateHubAccessResponses = {
     201: unknown;
 };
 
@@ -3602,6 +2695,19 @@ export type DisableUserConfigResponses = {
     201: unknown;
 };
 
+export type CreatePortExposeAppData = {
+    body: CreatePortExposeAppDto;
+    path?: never;
+    query?: never;
+    url: '/api/custom-apps/port-expose';
+};
+
+export type CreatePortExposeAppResponses = {
+    default: CreateCustomAppResponseDto;
+};
+
+export type CreatePortExposeAppResponse = CreatePortExposeAppResponses[keyof CreatePortExposeAppResponses];
+
 export type CreateCustomAppData = {
     body: CreateCustomAppDto;
     path?: never;
@@ -3614,6 +2720,19 @@ export type CreateCustomAppResponses = {
 };
 
 export type CreateCustomAppResponse = CreateCustomAppResponses[keyof CreateCustomAppResponses];
+
+export type UpdatePortExposeAppData = {
+    body: UpdatePortExposeAppDto;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/custom-apps/port-expose/{urn}';
+};
+
+export type UpdatePortExposeAppResponses = {
+    default: unknown;
+};
 
 export type UpdateCustomAppData = {
     body: UpdateCustomAppDto;
@@ -3671,9 +2790,7 @@ export type CheckForUpdatesResponses = {
 };
 
 export type PerformUpdateData = {
-    body: {
-        targetVersion?: string;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/system/update';
@@ -3695,9 +2812,7 @@ export type GetAutoUpdatesResponses = {
 };
 
 export type SetAutoUpdatesData = {
-    body: {
-        enabled: boolean;
-    };
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/system/update/auto-updates';
@@ -3716,6 +2831,91 @@ export type GetHostListenerTokenData = {
 
 export type GetHostListenerTokenResponses = {
     200: unknown;
+};
+
+export type StartData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/start';
+};
+
+export type StartResponses = {
+    200: unknown;
+};
+
+export type CallbackData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/callback';
+};
+
+export type CallbackResponses = {
+    200: unknown;
+};
+
+export type StateData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/memory-connect/apps/{urn}/state';
+};
+
+export type StateResponses = {
+    200: unknown;
+};
+
+export type StatusData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/memory-connect/apps/{urn}/status';
+};
+
+export type StatusResponses = {
+    200: unknown;
+};
+
+export type ConsumersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/memory-connect/consumers';
+};
+
+export type ConsumersResponses = {
+    200: unknown;
+};
+
+export type SkipData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/memory-connect/apps/{urn}/skip';
+};
+
+export type SkipResponses = {
+    201: unknown;
+};
+
+export type Disconnect2Data = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/memory-connect/apps/{urn}/disconnect';
+};
+
+export type Disconnect2Responses = {
+    201: unknown;
 };
 
 export type SeedDatabaseData = {
@@ -3795,24 +2995,72 @@ export type UninstallAllAppsResponses = {
     201: unknown;
 };
 
-export type SseData = {
+export type HandleDeleteData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/mcp/sse';
+    url: '/api/mcp';
 };
 
-export type SseResponses = {
+export type HandleDeleteResponses = {
+    204: void;
+};
+
+export type HandleDeleteResponse = HandleDeleteResponses[keyof HandleDeleteResponses];
+
+export type HandleGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp';
+};
+
+export type HandleGetResponses = {
     200: unknown;
 };
 
-export type MessagesData = {
+export type HandlePostData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/mcp/messages';
+    url: '/api/mcp';
 };
 
-export type MessagesResponses = {
+export type HandlePostResponses = {
+    200: unknown;
+};
+
+export type GetStatus5Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp-admin/status';
+};
+
+export type GetStatus5Responses = {
+    200: unknown;
+};
+
+export type ListToolsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp-admin/tools';
+};
+
+export type ListToolsResponses = {
+    200: unknown;
+};
+
+export type CallToolData = {
+    body: McpToolCallBody;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/api/mcp-admin/tools/{name}/call';
+};
+
+export type CallToolResponses = {
     201: unknown;
 };

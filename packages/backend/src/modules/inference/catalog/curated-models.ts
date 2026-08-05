@@ -206,6 +206,9 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'qwen3-6-35b': 3, // Qwen 3.6 35B — 36B-A3B MoE (confirmed 2026-07-27 re-audit; was missing before)
   'gemma4-26b-think': 3.8, // Gemma 4 26B Think — 25.2B-A3.8B MoE, community thinking-mode variant
   'qwen3-coder-30b-lemonade': 3, // Qwen3-Coder-30B-A3B (Lemonade) — same 30B-A3B MoE arch as qwen3-30b above
+  'qwen3-coder-30b-vllm': 3, // Qwen3-Coder-30B-A3B (vLLM) — same 30B-A3B MoE arch
+  'gpt-oss-20b-vllm': 3.6, // GPT-OSS 20B (vLLM) — same MoE as the Ollama row
+  'gpt-oss-120b-vllm': 5.1, // GPT-OSS 120B (vLLM) — same MoE as the Ollama row
 };
 
 /**
@@ -215,6 +218,9 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
  * every derived-field computation (tiers, footprint, MoE active-params) unchanged.
  */
 function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedModel {
+  // Per-row `quant` column (vLLM table) wins; otherwise Ollama/Lemonade rows are
+  // the q4_K_M default build, and vLLM serves the raw bf16 safetensors.
+  const quantization = row.quant || (backend === 'vllm' ? 'bf16' : 'q4_K_M');
   const params = Number(row.params);
   const gb = Number(row.gb);
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
@@ -266,7 +272,7 @@ function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedMode
       maxTokens: 8192,
       reasoning,
       input,
-      quantization: 'q4_K_M',
+      quantization,
       pinnedByDefault: params <= 4,
       memoryFootprintMb: footprintMb,
     },
@@ -312,6 +318,33 @@ llms[4|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agenti
 `;
 
 const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'lemonade'));
+
+// ─── vLLM LLM catalog (TOON) ─────────────────────────────────────────────────
+// Chat models for the vLLM backend. `backendModelId` is the exact HuggingFace repo id that
+// `vllm serve <repo>` loads (vLLM has no pull registry of its own — VllmBackend.pullModel documents
+// that models are configured at container startup). Selection criteria, in the spirit of this file's
+// fabrication-guard history: every row is a widely-known, UNGATED HF repo whose exact id predates and
+// survives independent verification (Qwen3 April 2025, Qwen3-2507 refresh July 2025, GPT-OSS August
+// 2025, Phi-4 December 2024) — no gated repos (meta-llama/*, google/gemma-*) since those 401 without
+// an HF token the Hub doesn't manage, and no rows sourced from this session's own web research.
+// Sizes are the actual serving footprint: bf16 safetensors (≈2 bytes/param) for most rows; the two
+// GPT-OSS rows ship natively MXFP4-quantized so their on-disk/VRAM size is far below 2 bytes/param.
+// intel/agentic/perf columns are left blank rather than copied from the Ollama rows — AA benchmarks
+// specific serving setups, and none of these bf16/MXFP4 checkpoints were re-verified under vLLM.
+// The extra trailing `quant` column names the served precision (see buildLlmModel).
+const VLLM_LLM_TOON = `
+llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-4b-instruct-vllm|Qwen/Qwen3-4B-Instruct-2507|Qwen 3 4B Instruct (vLLM)|general|4|8.1|low|262|Alibaba|||0|0|1|0||||bf16
+  qwen3-8b-vllm|Qwen/Qwen3-8B|Qwen 3 8B (vLLM)|general|8|16.4|medium|32|Alibaba|||1|0|1|0||||bf16
+  qwen3-14b-vllm|Qwen/Qwen3-14B|Qwen 3 14B (vLLM)|general|15|29.6|high|32|Alibaba|||1|0|1|0||||bf16
+  qwen3-32b-vllm|Qwen/Qwen3-32B|Qwen 3 32B (vLLM)|general|33|65.6|high|32|Alibaba|||1|0|1|0||||bf16
+  qwen3-coder-30b-vllm|Qwen/Qwen3-Coder-30B-A3B-Instruct|Qwen 3 Coder 30B (vLLM)|coding|30|61|high|262|Alibaba|||0|0|1|0||||bf16
+  gpt-oss-20b-vllm|openai/gpt-oss-20b|GPT-OSS 20B (vLLM)|general|20|13.8|medium|131|OpenAI|||1|0|1|0||||mxfp4
+  gpt-oss-120b-vllm|openai/gpt-oss-120b|GPT-OSS 120B (vLLM)|general|120|65|high|131|OpenAI|||1|0|1|0||||mxfp4
+  phi-4-vllm|microsoft/phi-4|Phi-4 (vLLM)|general|15|29.4|high|16|Microsoft|||0|0|0|0||||bf16
+`;
+
+const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm'));
 
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
 // (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
@@ -366,4 +399,4 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
   };
 });
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...extraModels];
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...extraModels];

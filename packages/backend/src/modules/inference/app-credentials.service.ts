@@ -160,7 +160,9 @@ export class AppCredentialsService {
     const preferredModelId = preferences.preferredModel;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
     const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded);
-    const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, backendType);
+    const embeddings =
+      (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
+      this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama');
 
     const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
 
@@ -179,6 +181,12 @@ export class AppCredentialsService {
     let provider: InferenceBackendType | 'cloud' = backendType;
     let endpointUrl = backendOpenAiUrl;
     let apiKey = BACKEND_API_KEY[backendType];
+    if (backendType === 'vllm') {
+      const customKey = preferences.preferredVllmApiKey?.trim();
+      if (customKey) {
+        apiKey = customKey;
+      }
+    }
     let chatModelId = availableLlm?.backendModelId ?? null;
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 

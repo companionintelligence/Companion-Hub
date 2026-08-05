@@ -4,15 +4,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
+const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
   rescanInferenceHardware: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -154,6 +156,13 @@ const insufficientProfile: HardwareProfileResponse = {
 
 const ollamaReady = { ready: true, running: true, endpointUrl: 'http://ci-hub-ollama:11434' };
 const ollamaMissing = { ready: false, running: false, endpointUrl: 'http://ci-hub-ollama:11434' };
+const vllmReady = {
+  ready: true,
+  running: true,
+  endpointUrl: 'http://host.docker.internal:8000',
+  displayEndpoint: 'http://host.docker.internal:8000/v1',
+};
+const vllmMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
 
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
@@ -170,6 +179,12 @@ let api: {
     displayEndpoint?: string;
     hint?: string;
     error?: string;
+  };
+  vllm: {
+    ready: boolean;
+    running: boolean;
+    endpointUrl: string;
+    displayEndpoint?: string;
   };
   rescanOk: boolean;
 };
@@ -191,15 +206,17 @@ describe('AiSetupStep', () => {
       profileOk: true,
       profileReject: false,
       ollama: ollamaReady,
+      vllm: vllmMissing,
       rescanOk: true,
     };
 
-    fetchInferenceOnboardingProfile.mockImplementation(() => {
+    fetchInferenceOnboardingProfile.mockImplementation((_backend?: string) => {
       if (api.profileReject) return Promise.reject(new Error('Network error'));
       if (!api.profileOk) return Promise.reject(new Error('Failed'));
       return Promise.resolve(api.profile);
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
+    fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -400,6 +417,7 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith({
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
+      ollamaSelectedModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
@@ -412,11 +430,40 @@ describe('AiSetupStep', () => {
     });
   });
 
-  it('hides the inference backend selection (Ollama is the only option)', async () => {
+  it('shows the inference backend selection card', async () => {
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-card-title')).toBeInTheDocument());
+    expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument();
+    expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
+  });
+
+  it('does not block Continue on vLLM path when Ollama is down', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    };
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+    const user = userEvent.setup();
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    // The backend picker is hidden — Ollama is implied. The config still defaults to it (see Continue test).
-    expect(screen.queryByTestId('backend-option-ollama')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-continue-btn')).not.toBeDisabled();
+  });
+
+  it('disables Continue when vLLM is selected but not reachable', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    };
+    api.vllm = vllmMissing;
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM not detected')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
   });
 
   it('allows toggling model selection', async () => {
@@ -462,6 +509,7 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith({
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
+      ollamaSelectedModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',

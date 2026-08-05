@@ -33,6 +33,9 @@ import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { DATA_DIR } from '@/common/constants';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
@@ -135,7 +138,42 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }, 10000); // Wait 10s for all services to be ready
 
+    // After a Hub upgrade, inference-opted apps may still hold stale app.env from the
+    // previous image. Once per version bump, refresh their env + recreate containers.
+    setTimeout(() => {
+      void this.syncInferenceAppsAfterHubUpgrade();
+    }, 20_000);
+
     this.startTailscaleReadinessWatcher();
+  }
+
+  private async syncInferenceAppsAfterHubUpgrade(): Promise<void> {
+    const prefs = this.config.getInferencePreferences();
+    if (!prefs.preferredBackend) {
+      return;
+    }
+
+    const hubVersion = this.config.get('version');
+    const syncPath = path.join(DATA_DIR, 'state', 'inference-apps-synced-version');
+    let lastSynced = '';
+    try {
+      lastSynced = (await fs.readFile(syncPath, 'utf8')).trim();
+    } catch {
+      // first boot or missing marker — treat as unsynced
+    }
+
+    if (lastSynced === hubVersion) {
+      return;
+    }
+
+    this.logger.info(`[InferenceSync] Hub version ${hubVersion} (was ${lastSynced || 'none'}) — restarting inference-opted apps to refresh env`);
+    await this.restartAiApps();
+  }
+
+  private async markInferenceAppsEnvSynced(): Promise<void> {
+    const syncPath = path.join(DATA_DIR, 'state', 'inference-apps-synced-version');
+    await fs.mkdir(path.dirname(syncPath), { recursive: true });
+    await fs.writeFile(syncPath, this.config.get('version'), 'utf8');
   }
 
   onModuleDestroy() {
@@ -1779,7 +1817,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
         try {
           const info = await this.marketplaceService.getAppInfoFromAppStore(appUrn);
-          if (!info?.categories?.includes('ai')) {
+          const inferenceMapping = info?.hub_integration?.inference;
+          const hasInferenceIntegration = inferenceMapping && Object.keys(inferenceMapping).length > 0;
+          if (!info?.categories?.includes('ai') && !hasInferenceIntegration) {
             return;
           }
           this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
@@ -1789,6 +1829,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         }
       }),
     );
+
+    const prefs = this.config.getInferencePreferences();
+    if (prefs.preferredBackend) {
+      try {
+        await this.markInferenceAppsEnvSynced();
+      } catch (err) {
+        this.logger.warn(`[InferenceSync] Failed to persist inference env sync marker: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
