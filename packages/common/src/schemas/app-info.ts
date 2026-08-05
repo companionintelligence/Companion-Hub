@@ -255,6 +255,9 @@ export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>
 export const MCP_TRANSPORTS = ['stdio', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 
+export const MCP_LAUNCH_MODES = ['container_exec', 'host_docker'] as const;
+export type MarketplaceMcpLaunchMode = (typeof MCP_LAUNCH_MODES)[number];
+
 export const mcpEnvVarSchema = z.looseObject({
   key: z.string(),
   label: z.string().optional(),
@@ -283,6 +286,12 @@ export const mcpManifestSchema = z.looseObject({
 
 export const marketplaceMcpSchema = z.looseObject({
   transport: z.enum(MCP_TRANSPORTS),
+  /**
+   * How CI Hub spawns stdio servers:
+   * - `container_exec` (default): `docker exec -i <main-container> <command…>`
+   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`)
+   */
+  launch: z.enum(MCP_LAUNCH_MODES).optional(),
   /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */
   command: z.string().optional().default(''),
   args: z.array(z.string()).optional().default([]),

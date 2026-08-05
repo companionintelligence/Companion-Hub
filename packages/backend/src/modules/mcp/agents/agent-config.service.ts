@@ -4,7 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { EnvUtils } from '@/modules/env/env.utils';
-import { resolveMcpCommandParts } from '@ci-hub/common/validation';
+import { resolveMcpCommandParts, inferMcpLaunchMode } from '@ci-hub/common/validation';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AppInfo, MarketplaceMcp } from '@ci-hub/common/schemas';
 
@@ -99,12 +99,14 @@ export class AgentConfigService {
     if (!mcp.command) return null;
 
     const resolved = resolveMcpCommandParts(mcp.command, mcp.args ?? [], appEnv);
+    const launch = mcp.launch ?? inferMcpLaunchMode(resolved);
 
     return {
       enabled: true,
       transport: 'stdio',
+      launch,
       command: resolved,
-      container: await this.resolveMainContainerName(appUrn),
+      container: launch === 'host_docker' ? undefined : await this.resolveMainContainerName(appUrn),
       url: undefined,
       auth,
     };
