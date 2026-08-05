@@ -43,17 +43,18 @@ export function addOptimisticInstalledApp(queryClient: QueryClient, params: { ur
     app: {
       id: optimisticAppId(params.urn),
       status: 'installing',
-      domain: null,
+      domain: '',
       exposed: false,
       exposedLocal: false,
-      ignoredVersion: null,
+      ignoredVersion: 0,
       isVisibleOnGuestDashboard: false,
       openPort: false,
       pendingRestart: false,
-      port: null,
+      port: 0,
       version: 0,
+      localSubdomain: params.localSubdomain ?? '',
     },
-    metadata: { latestVersion: 0, localSubdomain: params.localSubdomain ?? '' } as InstalledEntry['metadata'],
+    metadata: { latestVersion: 0 },
   };
   queryClient.setQueryData(installedKey, { ...existing, installed: [optimistic, ...filtered] });
 }

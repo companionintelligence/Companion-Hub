@@ -85,7 +85,11 @@ export class McpStdioSession {
       if (command.length === 0) {
         throw new Error(`No MCP command configured for ${this.label}`);
       }
-      return spawn(command[0]!, command.slice(1), {
+      const [bin, ...args] = command;
+      if (!bin) {
+        throw new Error(`No MCP command configured for ${this.label}`);
+      }
+      return spawn(bin, args, {
         env: { ...process.env, ...env },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -165,7 +169,8 @@ export class McpStdioSession {
         const parsed = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } };
         this.sawAnyResponse = true;
         if (typeof parsed.id !== 'number' || !this.pending.has(parsed.id)) continue;
-        const waiter = this.pending.get(parsed.id)!;
+        const waiter = this.pending.get(parsed.id);
+        if (!waiter) continue;
         this.pending.delete(parsed.id);
         if (parsed.error) {
           waiter.reject(new Error(`MCP error from ${this.label}: ${parsed.error.message ?? 'unknown'}`));

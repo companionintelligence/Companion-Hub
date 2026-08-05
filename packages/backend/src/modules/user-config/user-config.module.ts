@@ -1,11 +1,11 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AppLifecycleModule } from '../app-lifecycle/app-lifecycle.module';
 import { AppsModule } from '../apps/apps.module';
 import { UserConfigController } from './user-config.controller';
 import { UserConfigService } from './user-config.service';
 
 @Module({
-  imports: [AppLifecycleModule, AppsModule],
+  imports: [forwardRef(() => AppLifecycleModule), forwardRef(() => AppsModule)],
   controllers: [UserConfigController],
   providers: [UserConfigService],
   exports: [UserConfigService],

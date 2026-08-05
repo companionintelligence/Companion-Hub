@@ -23,7 +23,7 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
   architecture: 'amd64',
   cloudflareAvailable: false,
   tailscaleAvailable: false,
-  tailscaleNodeFqdn: null,
+  tailscaleNodeFqdn: undefined,
   tailscaleSupportsServices: false,
   tailscaleHttpsEnabled: false,
 };

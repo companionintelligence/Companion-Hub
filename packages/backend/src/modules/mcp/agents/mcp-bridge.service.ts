@@ -392,7 +392,11 @@ export class McpBridgeService implements OnModuleDestroy {
     }
 
     try {
-      return await conn.httpClient!.callTool(toolName, params);
+      const httpClient = conn.httpClient;
+      if (!httpClient) {
+        throw new Error('MCP HTTP client unavailable');
+      }
+      return await httpClient.callTool(toolName, params);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'MCP Streamable HTTP call failed';
       if (!retried && /session|404|not connected/i.test(message)) {

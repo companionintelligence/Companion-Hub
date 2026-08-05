@@ -26,7 +26,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
 @Module({
   imports: [
     QueueModule,
-    AppsModule,
+    forwardRef(() => AppsModule),
     EnvModule,
     DockerModule,
     MarketplaceModule,
