@@ -9,6 +9,7 @@ import {
   backupPathFor,
   checkMemorySlot,
   HERMES_PACKAGE,
+  hermesConfigPath,
   hermesPluginDir,
   hubMcpUrl,
   lintFindingsForOurKeys,
@@ -25,6 +26,7 @@ import {
   probeHubMcp,
   probeMemory,
   readJsonIfPresent,
+  restoreBackupOutcome,
   run,
   runFailureMessage,
   tarballUrl,
@@ -693,15 +695,51 @@ describe('hub mcp url', () => {
 });
 
 describe('hermes plugin dir', () => {
-  const saved = process.env.HERMES_HOME;
+  const savedHome = process.env.HERMES_HOME;
+  const savedLocalAppData = process.env.LOCALAPPDATA;
+  const realPlatform = process.platform;
+
+  /** Both branches have to be asserted from whichever platform the suite runs on. */
+  function asPlatform(platform: NodeJS.Platform) {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+
   afterEach(() => {
-    if (saved === undefined) delete process.env.HERMES_HOME;
-    else process.env.HERMES_HOME = saved;
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    if (savedHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = savedHome;
+    if (savedLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = savedLocalAppData;
   });
 
-  it('defaults to ~/.hermes', () => {
+  it('defaults to ~/.hermes off Windows', () => {
     delete process.env.HERMES_HOME;
+    asPlatform('linux');
     expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
+  });
+
+  // Hermes' own hermes_constants.py returns %LOCALAPPDATA%\hermes on win32, NOT
+  // ~/.hermes. Installing to the latter is the worst kind of wrong: it extracts
+  // cleanly, connect reports success, and the provider never shows up in
+  // `hermes memory setup` because Hermes never scans there.
+  it('uses %LOCALAPPDATA%\\hermes on Windows, matching Hermes itself', () => {
+    delete process.env.HERMES_HOME;
+    asPlatform('win32');
+    process.env.LOCALAPPDATA = 'C:\\Users\\someone\\AppData\\Local';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(join('C:\\Users\\someone\\AppData\\Local', 'hermes', 'plugins', 'companionintelligence'));
+    expect(hermesConfigPath('C:\\Users\\someone')).toBe(join('C:\\Users\\someone\\AppData\\Local', 'hermes', 'config.yaml'));
+  });
+
+  // Hermes falls back to ~/AppData/Local rather than giving up, so this must too —
+  // otherwise the two disagree exactly when the environment is already unusual.
+  it('falls back to ~/AppData/Local when LOCALAPPDATA is unset or blank', () => {
+    delete process.env.HERMES_HOME;
+    asPlatform('win32');
+    delete process.env.LOCALAPPDATA;
+    const expected = join('C:\\Users\\someone', 'AppData', 'Local', 'hermes', 'plugins', 'companionintelligence');
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(expected);
+    process.env.LOCALAPPDATA = '   ';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(expected);
   });
 
   it('honors HERMES_HOME', () => {
@@ -709,9 +747,19 @@ describe('hermes plugin dir', () => {
     expect(hermesPluginDir('/home/someone')).toBe(join('/tmp/elsewhere', 'plugins', 'companionintelligence'));
   });
 
+  // The override wins on Windows too — it is what the appliance sets when it drives
+  // this from outside the user's own profile.
+  it('honors HERMES_HOME over the Windows default', () => {
+    asPlatform('win32');
+    process.env.LOCALAPPDATA = 'C:\\Users\\someone\\AppData\\Local';
+    process.env.HERMES_HOME = 'D:\\hermes-profile';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(join('D:\\hermes-profile', 'plugins', 'companionintelligence'));
+  });
+
   // Without the trim, join roots the install under a directory literally named "   ".
   it('treats a whitespace-only value as unset, not as a path', () => {
     process.env.HERMES_HOME = '   ';
+    asPlatform('linux');
     expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
   });
 });
@@ -755,6 +803,47 @@ describe('backups', () => {
 
   it('reports no backup when there was no file to copy', () => {
     expect(backupFile(join(tmpdir(), 'connect-agent-absent.json'), 'stamp')).toBeUndefined();
+  });
+});
+
+/**
+ * The restore swallows its own errors, so that a failure on an already-failing path
+ * cannot replace the curated message box with a stack trace. That only helps if the
+ * message then stops asserting a restore happened — otherwise the exchange is a stack
+ * trace for a confident lie, which is worse.
+ */
+describe('restore reporting', () => {
+  it('confirms a restore that worked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-restore-'));
+    const target = join(dir, 'openclaw.json');
+    const backup = join(dir, 'openclaw.json.bak');
+    writeFileSync(target, '{"broken":true}');
+    writeFileSync(backup, '{"good":true}');
+
+    const outcome = restoreBackupOutcome(target, backup);
+
+    expect(outcome.restored).toBe(true);
+    expect(readJsonIfPresent(target)).toEqual({ good: true });
+    expect(outcome.lines.join('\n')).toMatch(/Restored/);
+  });
+
+  it('says so, and where the backup still is, when the restore fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-restore-'));
+    const target = join(dir, 'openclaw.json');
+    const backup = join(dir, 'gone.bak');
+    writeFileSync(target, '{"broken":true}');
+
+    const outcome = restoreBackupOutcome(target, backup);
+
+    expect(outcome.restored).toBe(false);
+    // The bad file is still there — the message must not imply otherwise.
+    expect(readJsonIfPresent(target)).toEqual({ broken: true });
+    expect(outcome.lines.join('\n')).toMatch(/Could NOT restore/);
+    expect(outcome.lines.join('\n')).toContain(backup);
+  });
+
+  it('stays silent when there was no backup to put back', () => {
+    expect(restoreBackupOutcome('/tmp/whatever.json', undefined)).toEqual({ restored: false, lines: [] });
   });
 });
 

@@ -459,9 +459,27 @@ export function hermesPluginDir(home = homedir()): string {
   return join(hermesHome(home), 'plugins', PLUGIN_ID);
 }
 
-/** `$HERMES_HOME`, or `~/.hermes`. Shared by the plugin dir and the config file. */
+/**
+ * `$HERMES_HOME`, or the platform-native default. Shared by the plugin dir and the
+ * config file.
+ *
+ * Windows is **not** `~/.hermes`. Hermes resolves its own home in `hermes_constants.py`
+ * as `%LOCALAPPDATA%\hermes` on win32 — falling back to `~/AppData/Local/hermes` when
+ * LOCALAPPDATA is somehow unset — and `~/.hermes` everywhere else; this mirrors that,
+ * including the fallback, so the two cannot disagree.
+ *
+ * Assuming `~/.hermes` on Windows fails invisibly, which is what makes it worth
+ * spelling out: the tarball extracts happily into a directory that simply is not
+ * Hermes' home, `connect` reports success, and the provider then never appears in
+ * `hermes memory setup` because Hermes never scans there.
+ */
 export function hermesHome(home = homedir()): string {
-  return process.env.HERMES_HOME?.trim() || join(home, '.hermes');
+  const override = process.env.HERMES_HOME?.trim();
+  if (override) return override;
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA?.trim() || join(home, 'AppData', 'Local'), 'hermes');
+  }
+  return join(home, '.hermes');
 }
 
 /** Where Hermes reads `mcp_servers` from. */
@@ -1145,8 +1163,8 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   // together). The slot is taken by the merge below, so the guard above runs first.
   const install = run('openclaw', ['plugins', 'install', spec, '--force']);
   if (!install.ok) {
-    printMessageBox('Install failed', [runFailureMessage(install, 'openclaw plugins install')], 'red');
-    if (backup) restoreBackup(configPath, backup);
+    const restore = restoreBackupOutcome(configPath, backup);
+    printMessageBox('Install failed', [runFailureMessage(install, 'openclaw plugins install'), ...restore.lines], 'red');
     process.exit(2);
   }
 
@@ -1157,12 +1175,8 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   try {
     afterInstall = readJsonIfPresent(configPath);
   } catch (error) {
-    if (backup) restoreBackup(configPath, backup);
-    printMessageBox(
-      'Config unreadable after install',
-      [String((error as Error).message), '', ...(backup ? [`Restored ${configPath} from ${backup}`] : [])],
-      'red',
-    );
+    const restore = restoreBackupOutcome(configPath, backup);
+    printMessageBox('Config unreadable after install', [String((error as Error).message), '', ...restore.lines], 'red');
     process.exit(2);
   }
   const { config: finalConfig, changes: finalChanges } = mergeOpenClawConfig(afterInstall, { url: ctx.memoryUrl, token: ctx.memoryKey });
@@ -1172,10 +1186,10 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   try {
     writeJsonAtomic(configPath, finalConfig);
   } catch (error) {
-    if (backup) restoreBackup(configPath, backup);
+    const restore = restoreBackupOutcome(configPath, backup);
     printMessageBox(
-      backup ? 'Could not write config — restored from backup' : 'Could not write config',
-      [`${configPath}: ${String((error as Error).message)}`, '', ...(backup ? [`Restored from ${backup}`] : [])],
+      restore.restored ? 'Could not write config — restored from backup' : 'Could not write config',
+      [`${configPath}: ${String((error as Error).message)}`, '', ...restore.lines],
       'red',
     );
     process.exit(2);
@@ -1184,16 +1198,17 @@ async function connectOpenClaw(ctx: AgentContext): Promise<void> {
   const lint = run('openclaw', ['doctor', '--lint', '--json']);
   const ourFindings = lintFindingsForOurKeys(lint.stdout);
   if (ourFindings.length > 0) {
-    if (backup) restoreBackup(configPath, backup);
+    const restore = restoreBackupOutcome(configPath, backup);
     printMessageBox(
-      // Only claim a restore when one happened. With no prior config there is no
-      // known-good state to return to, and saying otherwise hides a file still on disk.
-      backup ? 'Config rejected — restored from backup' : 'Config rejected — left in place',
+      // Only claim a restore when one actually happened. With no prior config there is
+      // no known-good state to return to, and saying otherwise hides a file still on
+      // disk; a restore that was attempted and failed leaves the same file there.
+      restore.restored ? 'Config rejected — restored from backup' : 'Config rejected — left in place',
       [
         ...ourFindings,
         '',
         ...(backup
-          ? [`Restored ${configPath} from ${backup}`]
+          ? restore.lines
           : ['There was no config before this run, so nothing was restored.', `Review or delete ${configPath}, then re-run.`]),
       ],
       'red',
@@ -1456,8 +1471,8 @@ async function connectHermes(ctx: AgentContext): Promise<void> {
       } catch (error) {
         // The plugin is already in place and usable without Hub MCP, so this reports
         // and continues rather than exiting 2 and implying nothing was installed.
-        if (hubBackup) restoreBackup(configPath, hubBackup);
-        ctx.lines.push(`Hub MCP could not be written to ${configPath}: ${(error as Error).message}`);
+        const restore = restoreBackupOutcome(configPath, hubBackup);
+        ctx.lines.push(`Hub MCP could not be written to ${configPath}: ${(error as Error).message}`, ...restore.lines);
       }
     } else {
       ctx.lines.push('Hub MCP server already registered as `hub`.');
@@ -1529,6 +1544,28 @@ function restoreBackup(path: string, backup: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Restore a backup on a failure path, and describe truthfully what happened.
+ *
+ * Swallowing the error above is what keeps a failed restore from replacing the curated
+ * message box with a stack trace — and it moves the responsibility here, because the
+ * caller then becomes the only thing that can stop that box claiming a restore which
+ * never happened. Trading a stack trace for a confident lie would be the worse deal, so
+ * every site prints these lines instead of inferring the outcome from the mere
+ * existence of a backup.
+ *
+ * Returns no lines when there was no backup to put back, so a first-time run is not
+ * told about a restore that was never in question.
+ */
+export function restoreBackupOutcome(path: string, backup: string | undefined): { restored: boolean; lines: string[] } {
+  if (!backup) return { restored: false, lines: [] };
+  if (restoreBackup(path, backup)) return { restored: true, lines: [`Restored ${path} from ${backup}`] };
+  return {
+    restored: false,
+    lines: [`Could NOT restore ${path} from its backup.`, `The backup is intact at ${backup} — copy it back by hand before re-running.`],
+  };
 }
 
 function rmDirRecursive(dir: string) {
