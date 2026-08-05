@@ -102,16 +102,24 @@ jobs:
       # secrets.GITHUB_TOKEN is scoped to CI-Hub and cannot read it. Name the
       # missing secret here, because actions/checkout would otherwise fail with a
       # bare "Repository not found" that reads like the repo was deleted.
-      - name: Require the cross-repo read token
+      # Hard-failing here blocked the whole run, so NONE of the 18 scenes got
+      # filmed when the token was absent — strictly worse than filming the 14
+      # that need no catalog. Record availability instead, skip only the four
+      # catalog shots, and fail at the END of the job (after the captures are
+      # committed) so the gap stays loud without costing the other shots.
+      - name: Check for the cross-repo read token
+        id: org_token
         env:
           CI_ORG_READ_TOKEN: ${{ secrets.CI_ORG_READ_TOKEN }}
         run: |
           if [ -z "${CI_ORG_READ_TOKEN}" ]; then
-            echo "::error::CI_ORG_READ_TOKEN is not set. It is a PAT with read access to the private" \
-                 "companionintelligence/CI-Marketplace repo. Without it the Hub's app store has no" \
-                 "catalog and the app-details, install-dialog, running-app and hub-home shots cannot" \
-                 "be filmed. Add it as a repo or org Actions secret and re-run."
-            exit 1
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CI_ORG_READ_TOKEN is not set — a PAT with read access to the private" \
+                 "companionintelligence/CI-Marketplace repo. The app-details, install-dialog," \
+                 "running-app and hub-home shots need the store catalog and will be SKIPPED." \
+                 "Every other shot is still captured; this job fails at the end to keep it visible."
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
           fi
 
       # Four shots render app info that only exists in the CI-Marketplace
@@ -120,9 +128,11 @@ jobs:
       # $CI_MARKETPLACE_DIR/apps into $CI_HUB_DATA_DIR/repos/ci-marketplace/apps;
       # without it the script prints "app store will be empty".
       #
-      # No longer `continue-on-error`: swallowing this failure is exactly how
-      # four shots became "capture pending" slates without anyone noticing.
+      # Still not `continue-on-error`: if the token IS present and the checkout
+      # fails, that is a real error and must stop the run. Skipping is only
+      # allowed for the one known, reported condition — no token at all.
       - name: Check out CI-Marketplace (store catalog)
+        if: steps.org_token.outputs.has_token == 'true'
         uses: actions/checkout@v4
         with:
           repository: companionintelligence/CI-Marketplace
@@ -228,12 +238,24 @@ jobs:
       # list is derived from the storyboard so a new scene is picked up
       # automatically; only the two exclusions are named here.
       - name: Capture (main pass)
+        env:
+          HAS_ORG_TOKEN: ${{ steps.org_token.outputs.has_token }}
         run: |
           set -euo pipefail
           ONLY=$(node -e "
             const sb = require('./video/storyboard.json');
             const ftue = new Set(['device-registration', 'onboarding-wizard']);
-            const ids = sb.scenes.flatMap((s) => s.shots ?? []).map((s) => s.id).filter((id) => !ftue.has(id));
+            // These four render app info that only exists in the CI-Marketplace
+            // catalog. Without the checkout the store is empty, so filming them
+            // would produce a real PNG of an empty screen — worse than a slate,
+            // because it looks captured and would pass every gate.
+            const needsCatalog = new Set(['app-details', 'install-dialog', 'running-app', 'hub-home']);
+            const skipCatalog = process.env.HAS_ORG_TOKEN !== 'true';
+            const ids = sb.scenes
+              .flatMap((s) => s.shots ?? [])
+              .map((s) => s.id)
+              .filter((id) => !ftue.has(id))
+              .filter((id) => !(skipCatalog && needsCatalog.has(id)));
             if (!ids.length) { console.error('no shots to capture'); process.exit(1); }
             process.stdout.write(ids.join(','));
           ")
@@ -323,3 +345,17 @@ jobs:
             changed, then merge to re-render the product video from the current UI.
           add-paths: video/assets/shots
           commit-message: "chore(video): refresh product-video captures"
+
+      # Last, so the four skipped shots stay loud but cost nothing: every other
+      # capture is already committed and uploaded by this point. Without this the
+      # run would go green while `app-details`, `install-dialog`, `running-app`
+      # and `hub-home` sat as "capture pending" slates — the exact silent gap
+      # that let twelve product videos ship as placeholder decks.
+      - name: Fail if the store-catalog shots were skipped
+        if: always() && steps.org_token.outputs.has_token != 'true'
+        run: |
+          echo "::error::Captured every shot except the four that need the CI-Marketplace catalog" \
+               "(app-details, install-dialog, running-app, hub-home). They remain 'capture pending'" \
+               "slates. Add CI_ORG_READ_TOKEN — a PAT with read access to companionintelligence/" \
+               "CI-Marketplace — as a repo or org Actions secret, then re-run for a complete video."
+          exit 1
