@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { validateAppConfig, isInstallFormValid } from './form-validators';
 
 describe('n8n-mcp optional-only install validation', () => {

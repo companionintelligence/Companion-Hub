@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/performance/noBarrelFile: shared validation entrypoint for frontend + backend */
 export {
   HIDDEN_FIELD_TYPES,
   INSTALL_FORM_META_KEYS,

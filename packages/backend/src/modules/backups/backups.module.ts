@@ -9,7 +9,7 @@ import { BackupsController } from './backups.controller';
 import { BackupsService } from './backups.service';
 
 @Module({
-  imports: [forwardRef(() => AppLifecycleModule), AppsModule, QueueModule, ArchiveModule, SSEModule],
+  imports: [forwardRef(() => AppLifecycleModule), forwardRef(() => AppsModule), QueueModule, ArchiveModule, SSEModule],
   controllers: [BackupsController],
   providers: [BackupsService, BackupManager],
   exports: [BackupsService, BackupManager],

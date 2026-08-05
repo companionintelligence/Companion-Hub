@@ -20,11 +20,15 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
-import { hiddenTypes, isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
+import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
+import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { useDnsAvailability } from './use-dns-availability';
+
+const isHiddenFieldType = (type: FormField['type']) => HIDDEN_FIELD_TYPES.includes(type as (typeof HIDDEN_FIELD_TYPES)[number]);
+const typeFilter = (field: FormField) => !isHiddenFieldType(field.type);
 
 interface IProps {
   formFields?: FormField[];
@@ -56,7 +60,6 @@ export type FormValues = {
   [key: string]: unknown;
 };
 
-const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
@@ -170,7 +173,7 @@ export const InstallForm: React.FC<IProps> = ({
   const { data: availableDomainsData } = useQuery(getDomainsOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
-  const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
+  const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
   const _watchedRequiredValues = watch(requiredFieldNames);
 
   // Track the previously-rendered app URN so the init effect can detect when
@@ -257,7 +260,7 @@ export const InstallForm: React.FC<IProps> = ({
     // (uncontrolled defaultValue alone is easy to miss on validate/submit).
     if (shouldSeed) {
       for (const field of formFields) {
-        if (hiddenTypes.includes(field.type)) continue;
+        if (isHiddenFieldType(field.type)) continue;
         if (field.default === undefined || field.default === null || String(field.default) === '') continue;
         const current = getValues(field.env_variable);
         if (current !== undefined && current !== null && current !== '') continue;
@@ -605,7 +608,7 @@ export const InstallForm: React.FC<IProps> = ({
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
     const withFieldDefaults: FormValues = { ...values };
     for (const field of formFields) {
-      if (hiddenTypes.includes(field.type)) continue;
+      if (isHiddenFieldType(field.type)) continue;
       if (field.default === undefined || field.default === null || String(field.default) === '') continue;
       const current = withFieldDefaults[field.env_variable];
       if (current === undefined || current === null || current === '') {

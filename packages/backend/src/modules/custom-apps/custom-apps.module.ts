@@ -10,7 +10,14 @@ import { RegistrationModule } from '../registration/registration.module';
 import { PortalModule } from '@/core/portal/portal.module';
 
 @Module({
-  imports: [EnvModule, AppsModule, DockerModule, RegistrationModule, PortalModule, forwardRef(() => AppLifecycleModule)],
+  imports: [
+    EnvModule,
+    forwardRef(() => AppsModule),
+    forwardRef(() => DockerModule),
+    RegistrationModule,
+    PortalModule,
+    forwardRef(() => AppLifecycleModule),
+  ],
   controllers: [CustomAppController],
   providers: [CustomAppService, PortExposeService],
   exports: [CustomAppService, PortExposeService],

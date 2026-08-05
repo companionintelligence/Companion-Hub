@@ -32,10 +32,11 @@ describe('McpAccessCard', () => {
     renderCard(
       makeInfo({
         transport: 'stdio',
+        launch: 'container_exec',
         command: 'uvx',
         args: ['mcp-server-fetch'],
-        manifest: { tools: [{ name: 'fetch', description: 'Fetch a URL and return Markdown.' }] },
-      }),
+        manifest: { tools: [{ name: 'fetch', description: 'Fetch a URL and return Markdown.' }], resources: [], prompts: [] },
+      } as unknown as AppInfo['mcp']),
       runningApp,
     );
 
@@ -45,12 +46,12 @@ describe('McpAccessCard', () => {
   });
 
   it('shows the Hub endpoint and client config once installed', () => {
-    renderCard(makeInfo({ transport: 'stdio', command: 'uvx', args: [] }), runningApp);
+    renderCard(makeInfo({ transport: 'stdio', launch: 'container_exec', command: 'uvx', args: [] } as unknown as AppInfo['mcp']), runningApp);
     expect(screen.getByText(`${window.location.origin}/api/mcp`)).toBeInTheDocument();
   });
 
   it('hides connection details when the app is not installed', () => {
-    renderCard(makeInfo({ transport: 'stdio', command: 'uvx', args: [] }), null);
+    renderCard(makeInfo({ transport: 'stdio', launch: 'container_exec', command: 'uvx', args: [] } as unknown as AppInfo['mcp']), null);
     expect(screen.queryByText(`${window.location.origin}/api/mcp`)).not.toBeInTheDocument();
   });
 });

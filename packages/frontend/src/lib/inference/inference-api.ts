@@ -95,7 +95,17 @@ export async function saveInferencePreferences(body: {
   visionModel: string | null;
   vllmApiKey?: string | null;
 }): Promise<void> {
-  await unwrap(updatePreferences({ body }));
+  await unwrap(
+    updatePreferences({
+      body: {
+        backend: body.backend,
+        model: body.model ?? undefined,
+        embeddingModel: body.embeddingModel ?? undefined,
+        visionModel: body.visionModel ?? undefined,
+        vllmApiKey: body.vllmApiKey ?? undefined,
+      },
+    }),
+  );
 }
 
 export async function fetchVllmInstallStatus() {

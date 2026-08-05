@@ -66,6 +66,12 @@ describe('AppLifecycleService', () => {
     // their SSE emissions fire unless a test exercises the takeover race.
     appsRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     configService = mock<ConfigurationService>();
+    configService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
     marketplaceService = mock<MarketplaceService>();
     imageSizeService = mock<ImageSizeService>();
     appsService = mock<AppsService>();
