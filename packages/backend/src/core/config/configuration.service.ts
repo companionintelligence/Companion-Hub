@@ -6,6 +6,7 @@ import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
+import { setUserConsent } from '@/core/error-reporting/telemetry-consent';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
@@ -125,6 +126,7 @@ export class ConfigurationService {
     let settingsValues: {
       ciHubApiKey: string | null;
       ciHubOrganizationId: string | null;
+      allowErrorMonitoring?: boolean;
       defaultAppCpuLimit?: string;
       defaultAppMemoryLimit?: string;
       autoAllocateAppResources?: boolean;
@@ -132,9 +134,11 @@ export class ConfigurationService {
       inferenceModel: string | undefined;
       inferenceEmbeddingModel: string | undefined;
       inferenceVisionModel: string | undefined;
+      inferenceVllmApiKey: string | undefined;
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
+      allowErrorMonitoring: undefined,
       defaultAppCpuLimit: undefined,
       defaultAppMemoryLimit: undefined,
       autoAllocateAppResources: undefined,
@@ -142,6 +146,7 @@ export class ConfigurationService {
       inferenceModel: undefined,
       inferenceEmbeddingModel: undefined,
       inferenceVisionModel: undefined,
+      inferenceVllmApiKey: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -151,6 +156,7 @@ export class ConfigurationService {
         settingsValues = {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
+          allowErrorMonitoring: settings.allowErrorMonitoring,
           defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
           defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
           autoAllocateAppResources: settings.autoAllocateAppResources,
@@ -158,6 +164,7 @@ export class ConfigurationService {
           inferenceModel: settings.inferenceModel,
           inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
           inferenceVisionModel: settings.inferenceVisionModel,
+          inferenceVllmApiKey: settings.inferenceVllmApiKey,
         };
       }
     } catch (_e) {
@@ -188,8 +195,11 @@ export class ConfigurationService {
       isProduction: NODE_ENV === 'production',
       userSettings: {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
-        // Consent plumbing retained; error reporting is always-on when SENTRY_DSN is configured.
-        allowErrorMonitoring: true,
+        // The user's error-reporting consent. This used to be hardcoded `true`,
+        // which silently discarded the switch on every boot. settings.json wins
+        // over the generated .env because a settings write does not regenerate
+        // .env until the next startup.
+        allowErrorMonitoring: settingsValues.allowErrorMonitoring ?? env.data.ALLOW_ERROR_MONITORING,
         defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
         defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
         // Auto resource allocation is opt-out: undefined means enabled
@@ -219,6 +229,7 @@ export class ConfigurationService {
         inferenceModel: settingsValues.inferenceModel,
         inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
         inferenceVisionModel: settingsValues.inferenceVisionModel,
+        inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -267,6 +278,13 @@ export class ConfigurationService {
 
       this.config.userSettings = { ...this.config.userSettings, ...settings };
 
+      // Publish error-reporting consent to the `beforeSend` gate so flipping the
+      // switch takes effect on the very next capture rather than after the
+      // consent cache TTL — and, before this, rather than never.
+      if (typeof settings.allowErrorMonitoring === 'boolean') {
+        setUserConsent(settings.allowErrorMonitoring);
+      }
+
       // Update in-memory config for runtime changes.
       if (settings.ciHubApiKey) {
         (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
@@ -299,6 +317,7 @@ export class ConfigurationService {
       preferredModel: this.config.userSettings.inferenceModel ?? null,
       preferredEmbeddingModel: this.config.userSettings.inferenceEmbeddingModel ?? null,
       preferredVisionModel: this.config.userSettings.inferenceVisionModel ?? null,
+      preferredVllmApiKey: this.config.userSettings.inferenceVllmApiKey ?? null,
     };
   }
 
@@ -312,12 +331,14 @@ export class ConfigurationService {
     model?: string | null,
     embeddingModel?: string | null,
     visionModel?: string | null,
+    vllmApiKey?: string | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
       inferenceModel?: string;
       inferenceEmbeddingModel?: string;
       inferenceVisionModel?: string;
+      inferenceVllmApiKey?: string;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -327,6 +348,9 @@ export class ConfigurationService {
     }
     if (visionModel !== undefined) {
       settings.inferenceVisionModel = visionModel ?? undefined;
+    }
+    if (vllmApiKey !== undefined) {
+      settings.inferenceVllmApiKey = vllmApiKey?.trim() ? vllmApiKey.trim() : undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

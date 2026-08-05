@@ -14,6 +14,7 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
+import { CloudFallbackService } from '../../inference/cloud-fallback.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
@@ -31,6 +32,7 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
+  let cloudFallback = mock<CloudFallbackService>();
   let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
   let portalClient: MockProxy<PortalClientService>;
@@ -55,7 +57,16 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
+    cloudFallback = moduleRef.get(CloudFallbackService);
     apiKeys = moduleRef.get(ApiKeyService);
+    cloudFallback.getEnabledProviders.mockReturnValue([]);
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'ollama',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: null,
+    });
     memoryConnection = moduleRef.get(MemoryConnectionService);
     portalClient = moduleRef.get(PortalClientService);
     portalClient.fetchMapsConfig.mockResolvedValue(null);
@@ -660,6 +671,81 @@ describe('AppHelpers', () => {
 
       // Assert
       expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: undefined });
+    });
+
+    it('injects llm_base_url and sets dual-provider env to ollama when Hub backend is Ollama', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+      });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+      inferenceEnv.resolve.mockResolvedValue({
+        CI_LLM_BASE_URL: 'http://host.docker.internal:11434/v1',
+        CI_LLM_API_KEY: 'ollama',
+        OLLAMA_HOST: 'http://host.docker.internal:11434',
+      });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: {
+          inference: {
+            llm_base_url: 'APP_OPENAI_COMPATIBLE_URL',
+            llm_api_key: 'APP_OPENAI_API_KEY',
+            ollama_host: 'APP_OLLAMA_BASE_PATH',
+          },
+          inference_provider: {
+            env: 'APP_LLM_PROVIDER',
+            ollama: 'ollama',
+            openai_compatible: 'generic-openai',
+          },
+          llm_base_url_strip_v1: true,
+        },
+      } as unknown as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('APP_OPENAI_COMPATIBLE_URL')).toBe('http://host.docker.internal:11434');
+      expect(envMap.get('APP_OPENAI_API_KEY')).toBe('ollama');
+      expect(envMap.get('APP_OLLAMA_BASE_PATH')).toBe('http://host.docker.internal:11434');
+      expect(envMap.get('APP_LLM_PROVIDER')).toBe('ollama');
+    });
+
+    it('sets dual-provider env to generic-openai when Hub backend is vLLM', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+      });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+      inferenceEnv.resolve.mockResolvedValue({
+        CI_LLM_BASE_URL: 'http://host.docker.internal:8000/v1',
+        CI_LLM_API_KEY: 'vllm',
+      });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: {
+          inference: { llm_base_url: 'APP_OPENAI_COMPATIBLE_URL', llm_api_key: 'APP_OPENAI_API_KEY' },
+          inference_provider: {
+            env: 'APP_LLM_PROVIDER',
+            ollama: 'ollama',
+            openai_compatible: 'generic-openai',
+          },
+          llm_base_url_strip_v1: true,
+        },
+      } as unknown as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('APP_OPENAI_COMPATIBLE_URL')).toBe('http://host.docker.internal:8000');
+      expect(envMap.get('APP_LLM_PROVIDER')).toBe('generic-openai');
     });
 
     it('should use default value when form field is not provided', async () => {

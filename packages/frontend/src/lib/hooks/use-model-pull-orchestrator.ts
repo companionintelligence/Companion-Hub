@@ -1,4 +1,4 @@
-import { fetchOllamaInstallStatus } from '@/lib/inference/inference-api';
+import { fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -7,6 +7,7 @@ import {
   waitForModelPulls,
   type ParsedPullProgress,
 } from '@/lib/inference/tracked-models';
+import type { InferenceBackendType } from '@ci-hub/common/types';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export interface ModelPullOrchestratorResult {
@@ -25,6 +26,10 @@ interface UseModelPullOrchestratorOptions {
   /** When false, no pulls are started and polling is paused. */
   enabled: boolean;
   bestEffort?: boolean;
+  /** Chat inference backend — gates readiness on Ollama or vLLM health. */
+  inferenceBackend?: InferenceBackendType;
+  /** Only these selected ids are pulled (Ollama-backed models when chat uses vLLM). */
+  pullableModelIds?: string[];
 }
 
 function deriveStats(
@@ -52,35 +57,43 @@ export function useModelPullOrchestrator({
   installedCatalogIds,
   enabled,
   bestEffort = true,
+  inferenceBackend = 'ollama',
+  pullableModelIds,
 }: UseModelPullOrchestratorOptions): ModelPullOrchestratorResult {
   const [progressById, setProgressById] = useState<Record<string, number>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
-  const [ollamaReady, setOllamaReady] = useState(false);
+  const [backendReady, setBackendReady] = useState(false);
 
   const installedSet = useMemo(() => new Set(installedCatalogIds), [installedCatalogIds]);
-  const modelsNeedingDownload = useMemo(() => selectedModelIds.filter((id) => !installedSet.has(id)), [selectedModelIds, installedSet]);
-  const orchestratorEnabled = enabled && ollamaReady && modelsNeedingDownload.length > 0;
+  const pullTargets = pullableModelIds ?? selectedModelIds;
+  const modelsNeedingDownload = useMemo(() => pullTargets.filter((id) => !installedSet.has(id)), [pullTargets, installedSet]);
+  const orchestratorEnabled = enabled && backendReady && modelsNeedingDownload.length > 0;
 
   useEffect(() => {
     if (!enabled) {
-      setOllamaReady(false);
+      setBackendReady(false);
       return;
     }
 
     let cancelled = false;
     void (async () => {
       try {
+        if (inferenceBackend === 'vllm') {
+          const data = (await fetchVllmInstallStatus()) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
         const data = (await fetchOllamaInstallStatus()) as { ready?: boolean; running?: boolean };
-        if (!cancelled) setOllamaReady(!!(data.ready ?? data.running));
+        if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
       } catch {
-        if (!cancelled) setOllamaReady(false);
+        if (!cancelled) setBackendReady(false);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, inferenceBackend]);
 
   const applyParsed = useCallback((parsed: ParsedPullProgress) => {
     setProgressById(parsed.progressById);

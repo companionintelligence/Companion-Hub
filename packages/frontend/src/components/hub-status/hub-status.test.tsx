@@ -25,11 +25,14 @@ vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
   };
 });
 
+// HubStatus uses useRevalidator, and (via useAppIntentDeepLinks) useNavigate.
+// These tests render it without a Router, so stub both here.
 vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router')>();
   return {
     ...actual,
     useRevalidator: () => ({ revalidate: revalidateMock, state: 'idle' as const }),
+    useNavigate: () => vi.fn(),
   };
 });
 

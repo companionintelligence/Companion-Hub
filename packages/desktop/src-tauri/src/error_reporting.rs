@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -6,6 +7,12 @@ use std::time::{Duration, Instant};
 static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
 static CAPTURED_LOG_EVENTS: OnceLock<Mutex<std::collections::HashMap<String, CaptureRecord>>> =
     OnceLock::new();
+/// `<data_dir>/state/settings.json` — the same file the backend reads, so the
+/// desktop shell and the Hub always agree about consent.
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+static CONSENT_CACHE: OnceLock<Mutex<Option<ConsentCache>>> = OnceLock::new();
+/// How long a disk read of the consent switch is trusted before it is re-read.
+const CONSENT_CACHE_TTL: Duration = Duration::from_secs(1);
 const LOG_EVENT_DEBOUNCE_WINDOW: Duration = Duration::from_secs(300);
 /// After this many captures of the same message, back off to the repeat window
 /// so retry loops (e.g. the tray watchdog re-running a failing `start_hub`
@@ -117,8 +124,131 @@ fn portal_environment_for_url(url: &str) -> &'static str {
     }
 }
 
-pub fn init_from_env(env_path: &Path, release: &str) {
+/// The user's error-reporting choice, read from the Hub's `settings.json`.
+///
+/// `Unset` = no preference recorded yet (fresh install / key absent), which
+/// under the opt-out posture means enabled. `Unreadable` = we tried and failed,
+/// which means disabled — reporting against a decision we could not read is the
+/// worse failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UserConsent {
+    Granted,
+    Denied,
+    Unset,
+    Unreadable,
+}
+
+struct ConsentCache {
+    value: UserConsent,
+    read_at: Instant,
+}
+
+const FALSEY: [&str; 5] = ["off", "false", "0", "no", "disabled"];
+const TRUTHY: [&str; 5] = ["on", "true", "1", "yes", "enabled"];
+
+/// Settings file backing the consent switch, for a given Hub data directory.
+fn settings_path_for(data_dir: &Path) -> PathBuf {
+    data_dir.join("state").join("settings.json")
+}
+
+fn read_user_consent_from(settings_path: &Path) -> UserConsent {
+    let raw = match std::fs::read_to_string(settings_path) {
+        Ok(raw) => raw,
+        // No settings file yet = a fresh appliance, not a failed read.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return UserConsent::Unset,
+        Err(_) => return UserConsent::Unreadable,
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(_) => return UserConsent::Unreadable,
+    };
+
+    if !parsed.is_object() {
+        return UserConsent::Unreadable;
+    }
+
+    match parsed.get("allowErrorMonitoring") {
+        None | Some(serde_json::Value::Null) => UserConsent::Unset,
+        Some(serde_json::Value::Bool(true)) => UserConsent::Granted,
+        Some(serde_json::Value::Bool(false)) => UserConsent::Denied,
+        // Hand-edited or written by something that ignores the schema. Do not
+        // guess what the user meant.
+        Some(_) => UserConsent::Unreadable,
+    }
+}
+
+/// Current consent, memoised for [`CONSENT_CACHE_TTL`] so a retry loop cannot
+/// turn into a file read per event.
+fn current_user_consent(now: Instant) -> UserConsent {
+    let Some(settings_path) = SETTINGS_PATH.get() else {
+        // init_from_env always sets this before Sentry can produce an event.
+        return UserConsent::Unreadable;
+    };
+
+    let cache = CONSENT_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if let Some(entry) = guard.as_ref() {
+        if now.duration_since(entry.read_at) < CONSENT_CACHE_TTL {
+            return entry.value;
+        }
+    }
+
+    let value = read_user_consent_from(settings_path);
+    *guard = Some(ConsentCache {
+        value,
+        read_at: now,
+    });
+    value
+}
+
+/// The `before_send` gate. Re-evaluated per event, which is what lets a user
+/// who turns the switch off in Settings stop desktop reporting without
+/// restarting the app.
+fn reporting_allowed() -> bool {
+    matches!(
+        current_user_consent(Instant::now()),
+        UserConsent::Granted | UserConsent::Unset
+    )
+}
+
+/// Env-level kill switches, honoured identically across the fleet. Static for
+/// the lifetime of the process, so an opted-out run never initialises Sentry at
+/// all rather than gating each event.
+fn env_telemetry_block(env_path: &Path) -> Option<&'static str> {
+    if let Some(value) = read_first_env_value(env_path, &["CI_LOCAL_ONLY"]) {
+        if TRUTHY.contains(&value.trim().to_ascii_lowercase().as_str()) {
+            return Some("local-only");
+        }
+    }
+
+    if let Some(value) = read_first_env_value(env_path, &["CI_TELEMETRY"]) {
+        if FALSEY.contains(&value.trim().to_ascii_lowercase().as_str()) {
+            return Some("opt-out");
+        }
+    }
+
+    None
+}
+
+pub fn init_from_env(env_path: &Path, data_dir: &Path, release: &str) {
     if SENTRY_GUARD.get().is_some() {
+        return;
+    }
+
+    // Set before any capture can happen: `before_send` reads this to answer the
+    // consent question, and a missing path fails closed.
+    let _ = SETTINGS_PATH.set(settings_path_for(data_dir));
+
+    // `CI_LOCAL_ONLY` / `CI_TELEMETRY` cannot change without a restart, so an
+    // opted-out process should never construct a transport. The *user's* switch
+    // is deliberately gated in `before_send` instead, so a mid-session flip
+    // works in both directions.
+    if env_telemetry_block(env_path).is_some() {
         return;
     }
 
@@ -156,7 +286,32 @@ pub fn init_from_env(env_path: &Path, release: &str) {
         dsn: Some(parsed_dsn),
         release: Some(format!("ci-hub-desktop-rust@{release}").into()),
         environment: Some(environment.into()),
-        send_default_pii: true,
+        // No PII, matching the rest of the fleet. The Sentry org has
+        // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the
+        // one component storing users' real IP addresses. Device attribution
+        // comes from the explicit `device_id` tag/user set below.
+        send_default_pii: false,
+        // The `contexts` integration fills this from `hostname::get()` when it is
+        // left None, and sentry-core stamps it on every event in `prepare_event`
+        // — which runs immediately before `before_send`. Pre-setting it stops the
+        // hostname ever being read; `scrub_event` clears the field as well, so
+        // neither this literal nor a real hostname is transmitted.
+        server_name: Some("[redacted]".into()),
+        // Consent gate + payload scrubber. Evaluated per event so turning
+        // "Allow error monitoring" off in Settings stops the very next capture,
+        // with no app restart.
+        before_send: Some(Arc::new(|event| {
+            if reporting_allowed() {
+                Some(crate::sentry_scrubber::scrub_event(event))
+            } else {
+                None
+            }
+        })),
+        // Redact each breadcrumb as it is recorded, so raw operator log text
+        // never sits in the ring buffer waiting for a later event to carry it.
+        before_breadcrumb: Some(Arc::new(|breadcrumb| {
+            Some(crate::sentry_scrubber::scrub_breadcrumb(breadcrumb))
+        })),
         ..Default::default()
     });
 
@@ -251,6 +406,8 @@ fn is_benign_hub_start_message(message: &str) -> bool {
     lower.contains("recreate was requested, but no existing traefik container was present")
         || ((lower.contains("no such container") || lower.contains("no such object"))
             && lower.contains("traefik"))
+        || lower.contains("cannot connect to the docker daemon")
+        || lower.contains("failed to connect to the docker api")
         || is_benign_compose_optional_env_warning(&lower)
 }
 
@@ -363,6 +520,12 @@ pub fn record_log_event(operation: &str, message: &str) {
         return;
     }
 
+    // `before_send` is the backstop; short-circuiting here also keeps the
+    // capture-debounce state clean while the user has reporting turned off.
+    if !reporting_allowed() {
+        return;
+    }
+
     let level = classify_log_level(message);
 
     sentry::add_breadcrumb(sentry::Breadcrumb {
@@ -388,6 +551,10 @@ pub fn record_log_event(operation: &str, message: &str) {
 
 pub fn capture_setup_failure(message: &str) {
     if SENTRY_GUARD.get().is_none() {
+        return;
+    }
+
+    if !reporting_allowed() {
         return;
     }
 
@@ -423,14 +590,92 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_log_level, grouping_fingerprint, is_benign_compose_optional_env_warning,
-        is_benign_hub_start_message, normalize_portal_url, parse_dsn, portal_environment_for_url,
+        classify_log_level, env_telemetry_block, grouping_fingerprint,
+        is_benign_compose_optional_env_warning, is_benign_hub_start_message, normalize_portal_url,
+        parse_dsn, portal_environment_for_url, read_user_consent_from, settings_path_for,
         hub_image_tag, read_deployment_version, read_device_id, read_first_env_value, read_hub_image,
         read_portal_url,
-        should_capture_with, CaptureRecord, LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
+        should_capture_with, CaptureRecord, UserConsent, LOG_EVENT_DEBOUNCE_WINDOW,
+        REPEAT_CAPTURE_LIMIT,
     };
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
+
+    /// Write a settings.json under a fresh temp data dir and return both paths.
+    fn settings_fixture(contents: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = settings_path_for(tempdir.path());
+        if let Some(contents) = contents {
+            std::fs::create_dir_all(path.parent().expect("state dir")).expect("mkdir state");
+            std::fs::write(&path, contents).expect("write settings");
+        }
+        (tempdir, path)
+    }
+
+    #[test]
+    fn consent_switch_is_read_from_hub_settings() {
+        let (_dir, path) = settings_fixture(Some(r#"{"allowErrorMonitoring": true}"#));
+        assert_eq!(read_user_consent_from(&path), UserConsent::Granted);
+
+        let (_dir, path) = settings_fixture(Some(r#"{"allowErrorMonitoring": false}"#));
+        assert_eq!(read_user_consent_from(&path), UserConsent::Denied);
+    }
+
+    #[test]
+    fn absent_settings_or_key_takes_the_opt_out_default() {
+        // Fresh appliance: no file at all.
+        let (_dir, path) = settings_fixture(None);
+        assert_eq!(read_user_consent_from(&path), UserConsent::Unset);
+
+        // File exists but the user has never touched the switch.
+        let (_dir, path) = settings_fixture(Some(r#"{"themeColor": "blue"}"#));
+        assert_eq!(read_user_consent_from(&path), UserConsent::Unset);
+    }
+
+    #[test]
+    fn malformed_settings_fail_closed() {
+        for contents in [
+            "{ not json",
+            "[]",
+            "\"a string\"",
+            r#"{"allowErrorMonitoring": "yes"}"#,
+            r#"{"allowErrorMonitoring": 1}"#,
+        ] {
+            let (_dir, path) = settings_fixture(Some(contents));
+            assert_eq!(
+                read_user_consent_from(&path),
+                UserConsent::Unreadable,
+                "expected {contents:?} to fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn env_kill_switches_block_initialisation() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let local_only = tempdir.path().join("local-only.env");
+        std::fs::write(&local_only, "CI_LOCAL_ONLY=true\n").expect("write env");
+        assert_eq!(env_telemetry_block(&local_only), Some("local-only"));
+
+        let opted_out = tempdir.path().join("opt-out.env");
+        std::fs::write(&opted_out, "CI_TELEMETRY=off\n").expect("write env");
+        assert_eq!(env_telemetry_block(&opted_out), Some("opt-out"));
+
+        // Local-only wins over an otherwise-enabling CI_TELEMETRY.
+        let both = tempdir.path().join("both.env");
+        std::fs::write(&both, "CI_LOCAL_ONLY=1\nCI_TELEMETRY=on\n").expect("write env");
+        assert_eq!(env_telemetry_block(&both), Some("local-only"));
+
+        let neither = tempdir.path().join("neither.env");
+        std::fs::write(&neither, "CI_TELEMETRY=on\n").expect("write env");
+        assert_eq!(env_telemetry_block(&neither), None);
+
+        // Absent switches leave the DSN in charge.
+        let empty = tempdir.path().join("empty.env");
+        std::fs::write(&empty, "SENTRY_DSN=https://public@example.invalid/1\n").expect("write env");
+        assert_eq!(env_telemetry_block(&empty), None);
+    }
 
     #[test]
     fn rejects_malformed_dsn_without_panicking() {

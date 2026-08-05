@@ -87,6 +87,10 @@ env:
   BETA_1_IP: ${{ secrets.FLEET_BETA_1_IP }}
   BETA_RED_IP: ${{ secrets.FLEET_BETA_RED_IP }}
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   e2e-fleet:
     name: E2E Tests on ${{ github.event.inputs.server || 'core-6' }}
@@ -129,6 +133,8 @@ jobs:
 
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get installed playwright version
         id: playwright-version

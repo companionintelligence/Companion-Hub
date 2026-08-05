@@ -189,6 +189,7 @@ jobs:
             VITE_SENTRY_RELEASE=ci-hub-frontend@${{ github.sha }}
           secrets: |
             sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
+            npm_auth_token=${{ secrets.GITHUB_TOKEN }}
 
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4
@@ -271,9 +272,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Fresh runner: nothing is inherited from the deploy job, including crane.
+      # Fresh runner: nothing is inherited from the deploy job, including crane or binfmt.
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4
+
+      # linux/arm64 `docker run` on ubuntu-latest needs binfmt; without it the gate reports
+      # exec format error even when the pushed arm64 manifest slot is correct.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false
 
       - name: Verify anonymous pull and multi-arch manifest
         env:

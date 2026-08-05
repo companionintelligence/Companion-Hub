@@ -90,7 +90,8 @@ export class DatabaseService {
 
     if (process.env.NODE_ENV === 'development') {
       const devPath = path.resolve(process.cwd(), 'src/core/database/drizzle');
-      if (fs.existsSync(devPath)) {
+      const devJournal = path.join(devPath, 'meta', '_journal.json');
+      if (fs.existsSync(devJournal)) {
         return devPath;
       }
     }

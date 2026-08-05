@@ -199,6 +199,35 @@ describe('hubIntegrationSchema', () => {
         expect(result.data?.inference).toBeUndefined();
       }
     });
+
+    it('should accept inference_provider for dual-provider apps', () => {
+      const result = hubIntegrationSchema.safeParse({
+        inference: {
+          llm_base_url: 'APP_OPENAI_COMPATIBLE_URL',
+          llm_api_key: 'APP_OPENAI_API_KEY',
+          ollama_host: 'APP_OLLAMA_BASE_PATH',
+        },
+        inference_provider: {
+          env: 'APP_LLM_PROVIDER',
+          ollama: 'ollama',
+          openai_compatible: 'generic-openai',
+        },
+        llm_base_url_strip_v1: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.inference_provider?.env).toBe('APP_LLM_PROVIDER');
+        expect(result.data?.llm_base_url_strip_v1).toBe(true);
+      }
+    });
+
+    it('should reject inference_provider with an invalid env name', () => {
+      expect(
+        hubIntegrationSchema.safeParse({
+          inference_provider: { env: '1_BAD', ollama: 'ollama', openai_compatible: 'generic-openai' },
+        }).success,
+      ).toBe(false);
+    });
   });
 
   describe('R-SCH-2: appInfoSchema integration', () => {

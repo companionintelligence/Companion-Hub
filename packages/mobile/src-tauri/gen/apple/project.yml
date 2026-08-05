@@ -1,0 +1,119 @@
+name: ci-os-hub-mobile
+options:
+  bundleIdPrefix: computer.ci.app.hub
+  # iOS 16 is the minimum for App Intents (Siri/Shortcuts/Spotlight/Action
+  # Button). `import AppIntents` autolinks the framework; with a 16.0 target it
+  # links cleanly (no weak-linking needed). See Sources/AppIntents/.
+  deploymentTarget:
+    iOS: 16.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: Companion Hub
+      PRODUCT_BUNDLE_IDENTIFIER: computer.ci.app.hub
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  ci-os-hub-mobile_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      - path: Externals
+      - path: ci-os-hub-mobile_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+      # App Store privacy manifest — must land in the bundle root as a resource.
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
+    info:
+      path: ci-os-hub-mobile_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0"
+        CFBundleURLTypes:
+          - CFBundleURLName: computer.ci.app.hub
+            CFBundleURLSchemes: [cihub]
+        # iOS 26/27 hard-require UIScene lifecycle adoption; without this the app
+        # traps (EXC_BREAKPOINT) on launch. Minimal adoption (UIKit provides the
+        # default window scene) — Tauri's app delegate still drives the webview.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+        # NSAllowsLocalNetworking is needed in BOTH dev and release:
+        # - dev: `tauri ios dev` serves the frontend over http://127.0.0.1:PORT,
+        #   which ATS blocks (only `localhost` is auto-excepted);
+        # - release: connecting to a LAN Hub appliance (http://192.168.x/10.x per
+        #   capabilities/default.json) depends on this narrow exception too.
+        # It is the local-only carve-out — NOT NSAllowsArbitraryLoads — and needs
+        # no App Review justification. Do not remove during cleanup.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # Connecting to a LAN Hub triggers iOS's Local Network privacy prompt;
+        # Apple requires an app-provided purpose string.
+        NSLocalNetworkUsageDescription: Companion Hub connects to your Hub appliance on your local network.
+        # Standard TLS only — pre-answers App Store Connect export compliance.
+        ITSAppUsesNonExemptEncryption: false
+    entitlements:
+      path: ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64]
+        VALID_ARCHS: arm64 
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - framework: libapp.a
+        embed: false
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a

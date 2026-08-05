@@ -33,7 +33,7 @@ export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
   const { userSettings } = useAppContext();
   const { setTheme } = useTheme();
-  const { setCategory: setStoreCategory } = useAppStoreState();
+  const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
 
@@ -53,8 +53,9 @@ export const Header = (props: HeaderProps) => {
   };
 
   const openStoreWithFeaturedDefaults = useCallback(() => {
-    setStoreCategory('featured');
-  }, [setStoreCategory]);
+    resetBrowseToFeatured();
+    navigate('/store?category=featured');
+  }, [resetBrowseToFeatured, navigate]);
 
   const deviceName = useMemo(() => {
     const source = userSettings?.ciHubDeviceSlug?.trim();
@@ -79,7 +80,7 @@ export const Header = (props: HeaderProps) => {
       <div className="flex items-center justify-start">
         <Link to="/home" className="flex items-center gap-2" aria-label={t('COMMON_HOME')}>
           <img src="/logo.svg" alt="CI Logo Icon" className="h-8 w-8 object-contain" />
-          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-[#066C80] dark:text-[#72DDD4]">{deviceName}</span>
+          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-chart-3 dark:text-aqua-light">{deviceName}</span>
         </Link>
       </div>
 

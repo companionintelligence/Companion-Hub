@@ -33,6 +33,21 @@ vi.mock('./registration-api', () => ({
   fetchDeviceRegistrationInfoResult,
 }));
 
+// The consent gate has its own suite (telemetry-consent.test.ts); stub it here
+// so these tests exercise enrichment/noise-dropping deterministically instead of
+// racing the real `/api/config/telemetry` fetch that init kicks off.
+const { telemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } = vi.hoisted(() => ({
+  telemetryAllowed: { value: true },
+  refreshTelemetryConsent: vi.fn(async () => true),
+  refreshTelemetryConsentIfStale: vi.fn(),
+}));
+
+vi.mock('./telemetry-consent', () => ({
+  isTelemetryAllowed: () => telemetryAllowed.value,
+  refreshTelemetryConsent,
+  refreshTelemetryConsentIfStale,
+}));
+
 describe('frontend sentry', () => {
   const originalEnv = {
     DEV: import.meta.env.DEV,
@@ -61,6 +76,7 @@ describe('frontend sentry', () => {
     testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
     fetchDeviceRegistrationInfoResult.mockImplementation(() => Promise.resolve({ ok: true, status: 200, data: { device_id: 'device-123' } }));
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    telemetryAllowed.value = true;
   });
 
   afterEach(() => {
@@ -114,6 +130,23 @@ describe('frontend sentry', () => {
     expect(setTag).toHaveBeenCalledWith('component', 'desktop-web');
     expect(setExtra).toHaveBeenCalledWith('surface', 'test');
     expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it.each([
+    ['iPhone', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15', 'ios-web'],
+    ['Android', 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36', 'android-web'],
+  ])('tags mobile Tauri errors from an %s webview by platform, not desktop-web', async (_name, ua, expectedTag) => {
+    (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    const originalUa = navigator.userAgent;
+    Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true });
+    try {
+      const { captureHubException } = await import('./sentry');
+      captureHubException(new Error('boom'), { surface: 'test' });
+      expect(setTag).toHaveBeenCalledWith('component', expectedTag);
+      expect(setTag).not.toHaveBeenCalledWith('component', 'desktop-web');
+    } finally {
+      Object.defineProperty(window.navigator, 'userAgent', { value: originalUa, configurable: true });
+    }
   });
 
   it('stores and applies an explicit device id', async () => {
@@ -220,6 +253,93 @@ describe('frontend sentry', () => {
     expect(enriched?.exception?.values?.[0]?.value).toBe('COMMON_AN_ERROR_OCCURRED (500 /api/marketplace/apps/search)');
     expect(enriched?.tags?.http_status).toBe('500');
     expect(enriched?.extra?.response_body).toBe('Internal Server Error');
+    // The raw `res.url` kept its query string; the enricher now strips it.
+    expect(enriched?.extra?.http_url).toBe('http://localhost:5005/api/marketplace/apps/search');
     expect(enriched?.fingerprint).toEqual(['translatable-api-error', '500', '/api/marketplace/apps/search']);
+  });
+
+  it('scrubs the payload in beforeSend before it leaves the browser', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = {
+      message?: string;
+      request?: { url?: string; cookies?: Record<string, string>; data?: unknown; headers?: Record<string, string> };
+      extra?: Record<string, unknown>;
+    };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
+
+    // httpContextIntegration sets request.url from location.href, and the
+    // reset-password route carries a live one-time token in its query string.
+    const scrubbed = beforeSend?.({
+      message: 'boom at /Users/bennett/devel',
+      request: {
+        url: 'https://hub.ci.localhost/auth/reset-password?token=one-time-secret',
+        cookies: { 'ci-hub-session': 'session-value' },
+        data: { password: 'hunter2' },
+        headers: { cookie: 'ci-hub-session=session-value', 'User-Agent': 'Mozilla/5.0' },
+      },
+      extra: { apiKey: 'ci_live_abcdef' },
+    });
+
+    expect(scrubbed?.request?.url).toBe('https://hub.ci.localhost/auth/reset-password');
+    expect(scrubbed?.request?.cookies).toBeUndefined();
+    expect(scrubbed?.request?.data).toBeUndefined();
+    expect(scrubbed?.request?.headers?.cookie).toBe('[Filtered]');
+    expect(scrubbed?.request?.headers?.['User-Agent']).toBe('Mozilla/5.0');
+    expect(scrubbed?.message).toBe('boom at ~/devel');
+    expect(scrubbed?.extra?.apiKey).toBe('[Filtered]');
+  });
+
+  it('asks the Hub for consent as soon as it initialises', async () => {
+    await import('./sentry');
+
+    expect(refreshTelemetryConsent).toHaveBeenCalled();
+  });
+
+  it('never sends PII', async () => {
+    await import('./sentry');
+
+    expect(init).toHaveBeenCalledWith(expect.objectContaining({ sendDefaultPii: false }));
+  });
+
+  it('drops every event in beforeSend once the user withdraws consent', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = { message?: string; exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as
+      | ((event: SentryEventInput, hint?: { originalException?: unknown }) => SentryEventInput | null)
+      | undefined;
+    expect(beforeSend).toBeTypeOf('function');
+
+    // An ordinary event goes out while consent stands…
+    const event = { exception: { values: [{ value: 'a real bug' }] } };
+    expect(beforeSend?.(event)).not.toBeNull();
+
+    // …and stops the moment the switch flips, with no re-init and no reload.
+    telemetryAllowed.value = false;
+    expect(beforeSend?.(event)).toBeNull();
+
+    // …and resumes when it flips back, from the same initialised client.
+    telemetryAllowed.value = true;
+    expect(beforeSend?.(event)).not.toBeNull();
+  });
+
+  it('keeps the consent answer fresh from the beforeSend path', async () => {
+    await import('./sentry');
+
+    type SentryEventInput = { exception?: { values?: Array<{ value?: string }> } };
+    const beforeSend = init.mock.calls[0]?.[0]?.beforeSend as ((event: SentryEventInput) => SentryEventInput | null) | undefined;
+
+    refreshTelemetryConsentIfStale.mockClear();
+    beforeSend?.({ exception: { values: [{ value: 'a real bug' }] } });
+    expect(refreshTelemetryConsentIfStale).toHaveBeenCalled();
+
+    telemetryAllowed.value = false;
+    refreshTelemetryConsentIfStale.mockClear();
+    beforeSend?.({ exception: { values: [{ value: 'a real bug' }] } });
+    // Also refreshed on the dropped path, so an opt-in is noticed.
+    expect(refreshTelemetryConsentIfStale).toHaveBeenCalled();
   });
 });

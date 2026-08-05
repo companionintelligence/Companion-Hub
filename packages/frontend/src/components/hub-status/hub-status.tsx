@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useRevalidator } from 'react-router';
+import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
@@ -477,7 +479,7 @@ function DockerInstallGuide() {
     return (
       <DockerDesktopGuide
         {...guide}
-        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
         alternative={<EngineAlternativePanel platform="windows" />}
       />
     );
@@ -488,7 +490,7 @@ function DockerInstallGuide() {
     return (
       <DockerDesktopGuide
         {...guide}
-        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
         alternative={<EngineAlternativePanel platform="macos" />}
       />
     );
@@ -508,11 +510,11 @@ const SERVICE_ICON: Record<ServiceState, string> = {
 };
 
 const SERVICE_COLOR: Record<ServiceState, string> = {
-  pending: 'text-muted-foreground/40',
-  starting: 'text-yellow-500',
-  ready: 'text-green-500',
+  pending: 'text-muted-foreground',
+  starting: 'text-warning',
+  ready: 'text-success',
   failed: 'text-destructive',
-  unavailable: 'text-muted-foreground/50',
+  unavailable: 'text-muted-foreground',
 };
 
 function ServiceRow({ service }: { service: ServiceStatus }) {
@@ -605,14 +607,14 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 ? t('HUB_STATUS_STARTING_ALMOST_THERE')
                 : t('HUB_STATUS_STARTING_SERVICES_ONLINE')}
           </p>
-          <p className="text-xs text-muted-foreground/80">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
+          <p className="text-xs text-muted-foreground">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
         </div>
 
         <div className="w-full space-y-1.5">
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
             <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
           </div>
-          <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
+          <div className="flex justify-between text-xs text-muted-foreground tabular-nums">
             <span className="inline-flex items-center">
               <HintText id="startup-progress" hint={t(STARTUP_PROGRESS_HINT)}>
                 {pct}%
@@ -624,12 +626,12 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           </div>
           {progress && (
             <div className="space-y-0.5">
-              <div className="text-xs text-muted-foreground/70">
+              <div className="text-xs text-muted-foreground">
                 {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
                 {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
               </div>
-              <div className="text-xs text-muted-foreground/70">
+              <div className="text-xs text-muted-foreground">
                 <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
                   {t('HUB_STATUS_IMAGE_PULLS')}: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
                 </HintText>
@@ -671,6 +673,7 @@ export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
   const { revalidate } = useRevalidator();
   useDeepLinkPairCapture();
+  useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
@@ -900,8 +903,12 @@ export function HubStatus({ children }: HubStatusProps) {
     await openLogsFolder();
   }, []);
 
-  // If not in Tauri, don't block the UI — web users have the backend proxied
-  if (!isTauri) return <>{children}</>;
+  // If not in Tauri, don't block the UI — web users have the backend proxied.
+  // On mobile there is no *local* Hub to manage (no Docker on a phone): the app
+  // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
+  // desktop-only commands / localhost probes) doesn't apply. The remote Hub's
+  // reachability is handled by the connect flow and the normal app loaders.
+  if (!isTauri || isTauriMobileSync()) return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {

@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { scrubString } from './sentry-scrubber';
+import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
 
 export type AppFailurePhase =
   | 'install'
@@ -89,21 +90,38 @@ export class ErrorReportingService {
   constructor(private readonly configuration: ConfigurationService) {}
 
   /**
-   * Consent plumbing is retained via `allowErrorMonitoring` in settings/UI.
-   * Product policy: treat consent as always granted; only require a configured DSN.
+   * Whether this service may report right now.
+   *
+   * Belt to `beforeSend`'s braces: capture sites short-circuit here so we do not
+   * build scopes and scrub payloads for events that would be dropped anyway,
+   * while `beforeSend` stays the backstop for anything the SDK's own
+   * integrations capture without going through this service.
    */
   isEnabled(): boolean {
-    if (!process.env.SENTRY_DSN?.trim()) {
-      return false;
-    }
+    return resolveTelemetryDecision({
+      env: process.env,
+      dsn: process.env.SENTRY_DSN,
+      consent: this.userConsent(),
+    }).enabled;
+  }
 
+  /**
+   * Prefer the live in-memory setting — `setUserSettings` updates it in the same
+   * tick as the write — and fall back to the disk-backed value when the
+   * configuration is not ready yet (early bootstrap) or holds no boolean.
+   */
+  private userConsent(): UserConsent {
     try {
-      void this.configuration.get('userSettings')?.allowErrorMonitoring;
+      const value = this.configuration.get('userSettings')?.allowErrorMonitoring;
+
+      if (typeof value === 'boolean') {
+        return value;
+      }
     } catch {
       // Configuration may not be ready during early bootstrap.
     }
 
-    return true;
+    return currentUserConsent();
   }
 
   addBreadcrumb(category: string, message: string, level: Sentry.SeverityLevel = 'info'): void {

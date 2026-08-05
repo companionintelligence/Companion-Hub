@@ -202,6 +202,21 @@
         ]
       }
     },
+    "/api/config/telemetry": {
+      "get": {
+        "operationId": "telemetry",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Consent decision. Never includes a DSN."
+          }
+        },
+        "summary": "Whether error reporting is permitted on this Hub",
+        "tags": [
+          "TelemetryConfig"
+        ]
+      }
+    },
     "/api/registration/reset": {
       "post": {
         "operationId": "resetRegistration",
@@ -1366,6 +1381,20 @@
     "/api/inference/ollama/status": {
       "get": {
         "operationId": "getOllamaStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/vllm/status": {
+      "get": {
+        "operationId": "getVllmStatus",
         "parameters": [],
         "responses": {
           "200": {

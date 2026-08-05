@@ -102,7 +102,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined);
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -126,7 +126,7 @@ describe('InferenceController — preferences', () => {
       visionModel: 'gemma4-27b',
     });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b', 'nomic-embed-text', 'gemma4-27b');
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b', 'nomic-embed-text', 'gemma4-27b', undefined);
     expect(result).toEqual({
       preferredBackend: 'ollama',
       preferredModel: 'hermes4-8b',
