@@ -29,6 +29,17 @@ vi.mock('@tanstack/react-query', () => ({
 // (useMemoryConnection → useQuery/useMutation/useQueryClient); this page test
 // focuses on page layout, so stub it out rather than widening the narrow
 // react-query mock above.
+vi.mock('../hooks/use-app-media', () => ({
+  useAppMedia: () => ({
+    data: { screenshots: [], demoVideoUrl: null },
+    isLoading: false,
+  }),
+}));
+
+vi.mock('../components/app-media-gallery/app-media-gallery', () => ({
+  AppMediaGallery: () => <div data-testid="app-media-gallery" />,
+}));
+
 vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
   MemoryStatusBadge: () => null,
 }));
@@ -166,6 +177,7 @@ describe('AppDetailsPage', () => {
     expect(screen.getByText('A clean desktop summary for installs.')).toBeInTheDocument();
     expect(screen.getByTestId('app-actions')).toBeInTheDocument();
     expect(screen.getByTestId('app-status')).toBeInTheDocument();
+    expect(screen.getByTestId('app-media-gallery')).toBeInTheDocument();
     expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
   });
 

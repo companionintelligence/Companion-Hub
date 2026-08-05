@@ -80,6 +80,10 @@ export type SearchAppsDto = {
     [key: string]: unknown;
 };
 
+export type AppMediaDto = {
+    [key: string]: unknown;
+};
+
 export type PullDto = {
     [key: string]: unknown;
 };
@@ -425,6 +429,20 @@ export type RestartOnboardingData = {
 };
 
 export type RestartOnboardingResponses = {
+    200: unknown;
+};
+
+export type TelemetryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/config/telemetry';
+};
+
+export type TelemetryResponses = {
+    /**
+     * Consent decision. Never includes a DSN.
+     */
     200: unknown;
 };
 
@@ -1214,9 +1232,7 @@ export type SetCloudProviderResponses = {
 export type GetOnboardingProfileData = {
     body?: never;
     path?: never;
-    query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade';
-    };
+    query?: never;
     url: '/api/inference/onboarding-profile';
 };
 
@@ -1535,6 +1551,48 @@ export type GetAppImageSizeData = {
 };
 
 export type GetAppImageSizeResponses = {
+    200: unknown;
+};
+
+export type GetAppMediaData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/media';
+};
+
+export type GetAppMediaResponses = {
+    default: AppMediaDto;
+};
+
+export type GetAppMediaResponse = GetAppMediaResponses[keyof GetAppMediaResponses];
+
+export type GetAppScreenshotData = {
+    body?: never;
+    path: {
+        urn: string;
+        filename: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/screenshots/{filename}';
+};
+
+export type GetAppScreenshotResponses = {
+    200: unknown;
+};
+
+export type GetAppDemoVideoData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/demo-video';
+};
+
+export type GetAppDemoVideoResponses = {
     200: unknown;
 };
 

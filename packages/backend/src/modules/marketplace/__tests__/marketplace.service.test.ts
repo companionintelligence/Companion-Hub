@@ -44,6 +44,10 @@ describe('MarketplaceService', () => {
       getDockerComposeJson: vi.fn(),
       getConfigJson: vi.fn(),
       readDescriptionMarkdown: vi.fn().mockResolvedValue(null),
+      listLocalScreenshotFilenames: vi.fn().mockResolvedValue([]),
+      findDemoVideoPath: vi.fn().mockResolvedValue(null),
+      getScreenshot: vi.fn(),
+      getDemoVideo: vi.fn(),
     };
 
     spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
@@ -63,6 +67,10 @@ describe('MarketplaceService', () => {
         getDockerComposeJson: spies.getDockerComposeJson,
         getConfigJson: spies.getConfigJson,
         readDescriptionMarkdown: spies.readDescriptionMarkdown,
+        listLocalScreenshotFilenames: spies.listLocalScreenshotFilenames,
+        findDemoVideoPath: spies.findDemoVideoPath,
+        getScreenshot: spies.getScreenshot,
+        getDemoVideo: spies.getDemoVideo,
       };
     });
 
@@ -347,6 +355,47 @@ describe('MarketplaceService', () => {
       await expect(service.getAppUpdateInfo('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
         latestVersion: 42,
         latestDockerVersion: '2026.7.17.1',
+      });
+    });
+  });
+
+  describe('getAppMedia', () => {
+    beforeEach(async () => {
+      await service.initialize();
+    });
+
+    it('resolves absolute screenshot URLs and hub demo video path', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        screenshots: ['https://example.com/shot.png', 'screenshots/local.png'],
+        demo_video: './metadata/media/demo.mp4',
+      });
+      spies.findDemoVideoPath.mockResolvedValue('/data/apps/store-1/app-1/metadata/media/demo.mp4');
+
+      await expect(service.getAppMedia('app-1:store-1' as any)).resolves.toEqual({
+        screenshots: ['https://example.com/shot.png', '/api/marketplace/apps/app-1%3Astore-1/screenshots/local.png'],
+        demoVideoUrl: '/api/marketplace/apps/app-1%3Astore-1/demo-video',
+      });
+    });
+
+    it('falls back to portal app details when local screenshots are empty', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      configService.getConfig.mockReturnValue({
+        architecture: 'amd64',
+        ciCloudUrl: 'https://portal.example.com',
+      } as any);
+      spies.getAppInfoFromAppStore.mockResolvedValue({ screenshots: [] });
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({
+        screenshots: ['https://github.com/user-attachments/assets/abc123'],
+      });
+
+      await expect(service.getAppMedia('ci-memory:ci-marketplace' as any)).resolves.toEqual({
+        screenshots: ['https://github.com/user-attachments/assets/abc123'],
+        demoVideoUrl: null,
       });
     });
   });

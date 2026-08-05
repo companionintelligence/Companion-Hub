@@ -65,4 +65,21 @@ describe('appInfoSchema hub_integration.inference', () => {
       });
     }
   });
+
+  it('preserves screenshots and demo_video from manifest', () => {
+    const parsed = appInfoSchema.safeParse({
+      ...baseApp,
+      screenshots: ['https://github.com/user-attachments/assets/ba285919-36cd-435f-946c-912dfbbad034', 'screenshots/preview.png'],
+      demo_video: './metadata/media/companion-memory-demo.mp4',
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.screenshots).toEqual([
+        'https://github.com/user-attachments/assets/ba285919-36cd-435f-946c-912dfbbad034',
+        'screenshots/preview.png',
+      ]);
+      expect(parsed.data.demo_video).toBe('./metadata/media/companion-memory-demo.mp4');
+    }
+  });
 });

@@ -405,6 +405,110 @@ export class AppStoreFilesManager {
     return { image: file, etag, contentType };
   }
 
+  public async listLocalScreenshotFilenames(appUrn: AppUrn): Promise<string[]> {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+    const seen = new Set<string>();
+    const filenames: string[] = [];
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const screenshotsDir = path.join(dir, 'metadata', 'screenshots');
+      try {
+        if (!(await this.filesystem.pathExists(screenshotsDir))) {
+          continue;
+        }
+
+        const entries = await this.filesystem.listFiles(screenshotsDir);
+        for (const entry of entries) {
+          if (seen.has(entry)) {
+            continue;
+          }
+
+          seen.add(entry);
+          filenames.push(entry);
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return filenames;
+  }
+
+  public async getScreenshot(appUrn: AppUrn, filename: string) {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const filePath = path.join(dir, 'metadata', 'screenshots', filename);
+      try {
+        if (await this.filesystem.pathExists(filePath)) {
+          const image = await this.filesystem.readBinaryFile(filePath);
+          const etag = await this.filesystem.getFileEtag(filePath);
+          const ext = path.extname(filePath).toLowerCase().substring(1);
+
+          let contentType = 'image/jpeg';
+          if (ext === 'png') contentType = 'image/png';
+          else if (ext === 'svg') contentType = 'image/svg+xml';
+          else if (ext === 'webp') contentType = 'image/webp';
+          else if (ext === 'gif') contentType = 'image/gif';
+
+          return { image, etag, contentType };
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return { image: null, etag: '', contentType: 'image/jpeg' };
+  }
+
+  public async findDemoVideoPath(appUrn: AppUrn, demoVideoRef: string): Promise<string | null> {
+    const normalized = demoVideoRef.trim().replace(/^\.\//, '');
+    if (!normalized || /^https?:\/\//i.test(normalized) || normalized.includes('..')) {
+      return null;
+    }
+
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const candidate = path.join(dir, normalized);
+      try {
+        if (await this.filesystem.pathExists(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+
+      const metadataCandidate = path.join(dir, 'metadata', path.basename(normalized));
+      try {
+        if (await this.filesystem.pathExists(metadataCandidate)) {
+          return metadataCandidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return null;
+  }
+
+  public async getDemoVideo(appUrn: AppUrn, demoVideoRef: string) {
+    const filePath = await this.findDemoVideoPath(appUrn, demoVideoRef);
+    if (!filePath) {
+      return { video: null, etag: '', contentType: 'video/mp4' };
+    }
+
+    const video = await this.filesystem.readBinaryFile(filePath);
+    const etag = await this.filesystem.getFileEtag(filePath);
+    const ext = path.extname(filePath).toLowerCase().substring(1);
+
+    let contentType = 'video/mp4';
+    if (ext === 'webm') contentType = 'video/webm';
+    else if (ext === 'mov') contentType = 'video/quicktime';
+
+    return { video, etag, contentType };
+  }
+
   public async getConfigJson(appUrn: AppUrn) {
     const { appRepoDir } = this.getAppPaths(appUrn);
 
