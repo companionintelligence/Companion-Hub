@@ -2860,7 +2860,12 @@ pub fn decide_hub_watchdog_action(
     user_stopped: bool,
     start_failed: bool,
     api_container_up: bool,
+    docker_available: bool,
 ) -> HubWatchdogAction {
+    // If Docker is not running there is nothing we can do — skip silently.
+    if !docker_available {
+        return HubWatchdogAction::None;
+    }
     // Respect intentional stop and sticky start failures — both require explicit user action.
     if user_stopped || start_failed {
         return HubWatchdogAction::None;
@@ -2896,6 +2901,7 @@ pub fn should_trigger_hub_watchdog(
             user_stopped,
             start_failed,
             false,
+            is_docker_available(),
         ),
         HubWatchdogAction::StartHub
     )
