@@ -5737,6 +5737,21 @@ pub fn pull_stack_images(
 /// Stop Hub containers without marking user-stopped (for updates).
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+
+    // If Docker is not available there are no containers to tear down.
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped for update.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.update", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.update",
@@ -5781,6 +5796,23 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
     }
+
+    // If Docker is not available there are no containers to tear down.
+    // Return success immediately rather than letting `docker compose down`
+    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
