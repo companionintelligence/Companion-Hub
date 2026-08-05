@@ -19,7 +19,8 @@ import { Tooltip } from 'react-tooltip';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
-import { hiddenTypes, validateAppConfig } from './form-validators';
+import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
+import { hiddenTypes, isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
@@ -170,14 +171,17 @@ export const InstallForm: React.FC<IProps> = ({
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
   const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
-  const watchedRequiredValues = watch(requiredFieldNames);
+  const _watchedRequiredValues = watch(requiredFieldNames);
 
   // Track the previously-rendered app URN so the init effect can detect when
   // the form is reused for a different app and force-reset stale field values.
   const prevUrnRef = useRef<string | undefined>(undefined);
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
+
+  const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
+  const watchedFormValues = watch();
 
   const checkDnsAvailability = useCallback(
     async (subdomain: string, selectedDomain?: string) => {
@@ -200,27 +204,30 @@ export const InstallForm: React.FC<IProps> = ({
     }
   };
 
-  // Track form validity for parent components
+  // Track form validity for parent components — mirrors submit validation (defaults + field rules).
   useEffect(() => {
     if (!onValidityChange) return;
 
-    // For exposable apps, require an exposure mode to be selected
     if (info.exposable && info.dynamic_config && !watchExposureMode) {
       onValidityChange(false);
       return;
     }
 
-    // Check required form fields have values
-    const requiredFields = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type));
-    const allRequiredFilled = requiredFields.every((f, i) => {
-      const val = watchedRequiredValues[i];
-      // Fields with defaults count as filled
-      if (f.default !== undefined && f.default !== '') return true;
-      return val !== undefined && val !== '' && val !== null;
-    });
+    const withDefaults = mergeFormFieldDefaults(watchedFormValues as Record<string, unknown>, formFields);
+    const formValues = {
+      ...withDefaults,
+      exposureMode: watchExposureMode,
+      exposedLocal: watchExposureMode === 'cloudflare',
+      port: watchPort || (info.port ? info.port.toString() : undefined),
+    };
 
-    onValidityChange(allRequiredFilled);
-  }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watchedRequiredValues]);
+    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+      onValidityChange(false);
+      return;
+    }
+
+    onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
+  }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -618,9 +625,9 @@ export const InstallForm: React.FC<IProps> = ({
       formValues.localSubdomain = info.urn.split(':')[0];
     }
 
-    const validationErrors = validateAppConfig(formValues, formFields);
+    const validationErrors = validateAppConfig(formValues, formFields, { requirePortWhenExposedLocal: isProduction });
 
-    // In production, require port when publishing to internet
+    // In production, require port when publishing to internet (legacy path when exposedLocal set without port)
     if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
     }
@@ -673,7 +680,15 @@ export const InstallForm: React.FC<IProps> = ({
     if (Object.keys(validationErrors).length === 0) {
       onSubmit(formValues);
     } else {
-      toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
+      const failingLabels = formFields
+        .filter((f) => validationErrors[f.env_variable])
+        .map((f) => f.label)
+        .join(', ');
+      toast.error(
+        failingLabels
+          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
+          : t('APP_INSTALL_FORM_ERROR_INVALID'),
+      );
     }
   };
 
@@ -683,9 +698,11 @@ export const InstallForm: React.FC<IProps> = ({
 
   const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
   const hasAdvancedSimpleModeOptions = hasOptionalFields || (info.exposable && info.dynamic_config);
-  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions;
+  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions && !mcpOptionalOnly;
   const visibleFields =
-    isAdvancedMode || showAdvancedSettings ? formFields.filter(typeFilter) : formFields.filter((field) => field.required && typeFilter(field));
+    isAdvancedMode || showAdvancedSettings || mcpOptionalOnly
+      ? formFields.filter(typeFilter)
+      : formFields.filter((field) => field.required && typeFilter(field));
   const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (

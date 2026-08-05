@@ -27,12 +27,14 @@ describe('AppLifecycleTools', () => {
 
   describe('hub_install_app', () => {
     it('should enqueue an install command and return a requestId', async () => {
+      lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
       lifecycleService.installApp.mockResolvedValue({ requestId: 'uuid-1' });
       const result = await tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } });
       expect(lifecycleService.installApp).toHaveBeenCalled();
       expect(result).toEqual({ requestId: 'uuid-1' });
     });
     it('should return error when app is already installed', async () => {
+      lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
       lifecycleService.installApp.mockRejectedValue(new Error('Already installed'));
       await expect(tools.installApp({ appUrn: 'ci-store:nextcloud' })).rejects.toThrow();
     });

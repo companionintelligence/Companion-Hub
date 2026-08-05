@@ -42,6 +42,22 @@ interface McpToolInfo {
   category?: string;
 }
 
+interface McpInstalledApp {
+  urn: string;
+  name: string;
+  status: string;
+  bridge?: {
+    connected: boolean;
+    toolCount: number;
+    containerStatus: string;
+    lastError?: string;
+  };
+}
+
+interface InstalledAppsResponse {
+  installed: Array<{ app: { status: string }; info: { urn: string; name: string; mcp?: unknown } }>;
+}
+
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
 
 export const McpSettingsContainer = () => {
@@ -59,6 +75,49 @@ export const McpSettingsContainer = () => {
   const [runResult, setRunResult] = useState<string | null>(null);
   // Explicit operator confirmation for running a destructive tool (never auto-confirmed).
   const [runConfirmed, setRunConfirmed] = useState(false);
+  const [installedMcpApps, setInstalledMcpApps] = useState<McpInstalledApp[]>([]);
+
+  const loadInstalledMcpApps = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/apps/installed');
+      if (!res.ok) return;
+      const body = (await res.json()) as InstalledAppsResponse;
+      const mcpApps = body.installed.filter((entry) => entry.info.mcp);
+      const withStatus = await Promise.all(
+        mcpApps.map(async (entry) => {
+          let bridge: McpInstalledApp['bridge'];
+          try {
+            const statusRes = await apiFetch(`/api/apps/${encodeURIComponent(entry.info.urn)}/mcp/status`);
+            if (statusRes.ok) {
+              const status = (await statusRes.json()) as McpInstalledApp['bridge'] & {
+                connected: boolean;
+                toolCount: number;
+                containerStatus: string;
+                lastError?: string;
+              };
+              bridge = {
+                connected: status.connected,
+                toolCount: status.toolCount,
+                containerStatus: status.containerStatus,
+                lastError: status.lastError,
+              };
+            }
+          } catch {
+            /* best effort */
+          }
+          return {
+            urn: entry.info.urn,
+            name: entry.info.name,
+            status: entry.app.status,
+            bridge,
+          };
+        }),
+      );
+      setInstalledMcpApps(withStatus);
+    } catch {
+      /* optional section */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,12 +129,13 @@ export const McpSettingsContainer = () => {
       }
       setStatus((await statusRes.json()) as McpStatus);
       setTools(((await toolsRes.json()) as { tools: McpToolInfo[] }).tools);
+      await loadInstalledMcpApps();
     } catch {
       setError(t('MCP_SETTINGS_LOAD_ERROR'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [t, loadInstalledMcpApps]);
 
   useEffect(() => {
     void load();
@@ -202,6 +262,47 @@ export const McpSettingsContainer = () => {
             value={endpointUrl}
             onClick={() => copyToClipboard(endpointUrl, t('MCP_SETTINGS_ENDPOINT_COPIED'))}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('MCP_SETTINGS_INSTALLED_TITLE')}</CardTitle>
+          <CardDescription>{t('MCP_SETTINGS_INSTALLED_DESC')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {installedMcpApps.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_INSTALLED_EMPTY')}</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">App</th>
+                    <th className="pb-2 pr-4 font-medium">Status</th>
+                    <th className="pb-2 pr-4 font-medium">Bridge</th>
+                    <th className="pb-2 font-medium">Tools</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {installedMcpApps.map((entry) => (
+                    <tr key={entry.urn} className="border-b border-border/40 last:border-0">
+                      <td className="py-2 pr-4">
+                        <Link to={`/app-store/${entry.urn.replace(':', '/')}`} className="text-primary underline-offset-2 hover:underline">
+                          {entry.name}
+                        </Link>
+                      </td>
+                      <td className="py-2 pr-4 capitalize">{entry.status}</td>
+                      <td className="py-2 pr-4">
+                        {entry.bridge?.connected ? 'Connected' : entry.bridge?.lastError ? 'Needs attention' : (entry.bridge?.containerStatus ?? '—')}
+                      </td>
+                      <td className="py-2">{entry.bridge?.toolCount ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
 

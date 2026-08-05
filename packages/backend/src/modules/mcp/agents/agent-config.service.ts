@@ -84,7 +84,10 @@ export class AgentConfigService {
     if (!mcp) return null;
 
     if (mcp.transport === 'http') {
-      if (!mcp.url) return null;
+      if (!mcp.url) {
+        this._logger.warn(`MCP app ${appUrn}: transport=http but mcp.url is missing — not bridgeable through Hub`);
+        return null;
+      }
       return { enabled: true, transport: 'sse', url: mcp.url, command: undefined, container: undefined, auth: undefined };
     }
 
