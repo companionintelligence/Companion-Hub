@@ -631,6 +631,68 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
+    // ── production port fallback ──────────────────────────────────────────
+    // `requirePortWhenExposedLocal` only bites when isProduction, which every other test in this
+    // describe turns off — that is how a production-only install break went unnoticed.
+    describe('production install with no port in the form', () => {
+      const productionConfig = {
+        isProduction: true,
+        architecture: 'amd64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any;
+
+      beforeEach(() => {
+        configService.getConfig.mockReturnValue(productionConfig);
+      });
+
+      it('falls back to the manifest port instead of rejecting the install (the onboarding wizard sends no port)', async () => {
+        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ port: 8080 }));
+      });
+
+      it('keeps an explicit form port over the manifest port', async () => {
+        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp', port: 9090 } });
+
+        expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ port: 9090 }));
+      });
+
+      it('still reports the port as missing when the manifest declares none', async () => {
+        marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, port: undefined } as any);
+
+        await expect(
+          service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } }),
+        ).rejects.toThrow('APP_INSTALL_FORM_ERROR_INVALID');
+
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('reports valid from the shared validator used by the UI pre-check and the MCP install tool', async () => {
+        const result = await service.validateAppConfig(appUrn, { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' });
+
+        expect(result).toEqual({ valid: true, errors: [] });
+      });
+
+      it('does not leak the fallback into the queued form, so port allocation is unchanged', async () => {
+        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
+
+        // The fallback lands on validateAppConfig's own parse of the form, never on the object handed to
+        // the worker. install-app-command still resolves `preferredHostPort: form.port ?? appInfo.port`,
+        // so an install that already worked allocates exactly the port it allocated before.
+        const published = appEventsQueue.publish.mock.calls[0]?.[0] as any;
+        expect(published.form.port).toBeUndefined();
+      });
+
+      it('does not mutate the caller-supplied form', async () => {
+        const form = { exposureMode: 'cloudflare' as const, exposedLocal: true, localSubdomain: 'testapp' };
+
+        await service.validateAppConfig(appUrn, form);
+
+        expect(form).not.toHaveProperty('port');
+      });
+    });
+
     it('MUST persist exposureMode=cloudflare when provided in form', async () => {
       await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
 
