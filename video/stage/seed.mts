@@ -41,6 +41,19 @@
  *    `sync_app_statuses` on a five-minute cron, and AppStatusSyncService flips
  *    any app with no matching Docker container to `missing`. Seed, then capture
  *    inside that window. Re-run this script before each pass.
+ *
+ * 4. TWO MCP API KEYS. Settings → MCP led with "Active keys: 0" in the committed
+ *    `mcp-tools` shot — a labelled zero above a catalogue of twenty working
+ *    tools, which reads as a product nobody has ever connected anything to. The
+ *    keys seeded here are REAL rows in the same `api_key` table
+ *    `ApiKeyService.create` writes, minted the same way: 32 random bytes, hex,
+ *    SHA-256'd, and only the hash stored. The raw value is generated inside this
+ *    process and never printed, written or returned, so no usable credential
+ *    exists anywhere — the Hub simply has two keys it cannot show you, which is
+ *    exactly the state of a Hub whose operator connected two agents last month.
+ *    Nothing credential-shaped is invented: no key string appears in this repo,
+ *    in the DB dump, or in any frame. Rows are keyed by name so a re-run does
+ *    not stack up a growing count.
  */
 
 // Dynamic imports on purpose: these modules are TS sources compiled on the fly by
@@ -49,8 +62,10 @@
 const schema = await import('../../packages/backend/src/core/database/drizzle/schema');
 const { db } = await import('../../e2e/helpers/db');
 const { testUser } = await import('../../e2e/helpers/constants');
+const { createHash, randomBytes } = await import('node:crypto');
+const { inArray } = await import('drizzle-orm');
 
-const { app, deviceRegistration, user } = schema;
+const { apiKey, app, deviceRegistration, user } = schema;
 
 /** The org/device identity storyboard.json is written against. */
 const ORG = { id: 'capture-org', slug: 'acme', name: 'Acme', hubSubdomain: 'hub-living-room-server-acme' };
@@ -59,6 +74,16 @@ const OPERATOR_EMAIL = process.env.CAPTURE_OPERATOR_EMAIL ?? 'owner@acme.com';
 
 /** Marketplace apps shown as installed on /home. Immich is excluded — see the header. */
 const INSTALLED = ['jellyfin', 'home-assistant', 'nextcloud'];
+
+/**
+ * Operator MCP keys, as an operator would have created them: named for the machine holding them,
+ * scoped to the agent surface, and capability-differentiated so the card's "read-only, read &
+ * write, or full access" line describes something that is actually true of this Hub.
+ */
+const MCP_KEYS: { name: string; capability: 'read' | 'write' | 'full' }[] = [
+  { name: 'Studio laptop', capability: 'write' },
+  { name: 'Living room tablet', capability: 'read' },
+];
 
 async function main() {
   await db
@@ -80,8 +105,36 @@ async function main() {
   // status sync, so push every row back to `running` whether or not it is new.
   await db.update(app).set({ status: 'running' });
 
+  // Replace-by-name rather than insert-or-ignore: the hash of a fresh random key never collides, so
+  // onConflictDoNothing would add two more rows on every re-run and the shot's key count would
+  // climb. Deleting first keeps it at exactly MCP_KEYS.length without ever reusing a secret.
+  await db.delete(apiKey).where(
+    inArray(
+      apiKey.name,
+      MCP_KEYS.map(({ name }) => name),
+    ),
+  );
+  await db.insert(apiKey).values(
+    MCP_KEYS.map(({ name, capability }) => {
+      // Mirrors ApiKeyService.create: 32 random bytes as hex, first 8 chars kept as the display
+      // prefix, SHA-256 of the whole thing stored. `raw` dies with this function.
+      const raw = randomBytes(32).toString('hex');
+
+      return {
+        name,
+        capability,
+        scopes: ['mcp'],
+        prefix: raw.slice(0, 8),
+        hashedKey: createHash('sha256').update(raw).digest('hex'),
+        managed: false,
+        ownerAppUrn: null,
+        expiresAt: null,
+      };
+    }),
+  );
+
   // biome-ignore lint/suspicious/noConsole: capture-stage script progress output
-  console.log(`seeded org=${ORG.slug} operator=${OPERATOR_EMAIL} apps=${INSTALLED.join(',')}`);
+  console.log(`seeded org=${ORG.slug} operator=${OPERATOR_EMAIL} apps=${INSTALLED.join(',')} mcp-keys=${MCP_KEYS.length} (raw values discarded)`);
   process.exit(0);
 }
 

@@ -15,11 +15,16 @@ What is *meant* to be committed is the input — the screenshots under `assets/s
 exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
 reviewable image diff.
 
-> ⚠️ **25 of 30 shots are captured and committed; 5 render as slates, on purpose.**
+> ⚠️ **25 of 30 shots are captured and committed; 5 render as slates.**
 > `install-and-run` and `bring-your-own-app` have no shot in either viewport, and
 > `configure-install` has none in portrait. Each has a named cause — see
 > [Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet). Two of the three are
 > product bugs, not stage problems. Do not "fix" them by seeding a greener status.
+>
+> **Two of those three blockers are now fixed in the product** (#1065: the Zod 4 `.omit()` crash on
+> `/apps/create`, and the Install dialog's mobile width). Their shots are unblocked and simply have
+> not been re-shot yet — the table below says which is which. `install-and-run` is still genuinely
+> unfilmable.
 
 The runner lives in the **CI-Engineering checkout** beside this one:
 
@@ -91,7 +96,7 @@ MOCK_PORTAL_SCENARIO=registered pnpm exec tsx e2e/mock-portal/server.ts &
 bash e2e/start-backend.sh &
 pnpm run --filter frontend build && pnpm run --filter frontend preview &
 
-pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows
+pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows, MCP keys
 
 cd video && APP_URL=http://localhost:9191 npm run capture -- \
   --only login-screen,hub-home,hub-store,store-alternatives,app-details,install-dialog,\
@@ -109,6 +114,13 @@ accepts the e2e `test@test.com` user plus whatever pair those two env vars name.
 `sync_app_statuses` on a five-minute cron and AppStatusSyncService flips every app with no
 matching Docker container to `missing`, which empties `hub-home`'s tile row. The seed script
 is idempotent and re-arms the rows.
+
+**The seed also mints two MCP API keys**, because `mcp-tools` used to lead with "Active keys: 0"
+above a catalogue of twenty working tools — an appliance nobody has ever connected anything to.
+They are real rows written the way `ApiKeyService.create` writes them (32 random bytes, hex,
+SHA-256, only the hash stored); the raw values are generated inside the seed process and never
+printed or returned, so no usable credential exists anywhere. Nothing credential-shaped is
+invented and no key string appears in this repo or in any frame.
 
 **The store shots are shot against a recording, not the mock portal.** `/store` opens on the
 *featured* view, proxied from the Portal (`GET /api/store/listings` →
@@ -133,8 +145,8 @@ film its *store* page, and the header swaps Install for Open the moment it is in
 | Shot | Scene | Why it is a slate |
 |---|---|---|
 | `running-app` | `install-and-run` | The caption promises a green badge. A DB-seeded `running` app cannot produce one: `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install is not available either — `installApp` → `ReposHelpers.downloadAppFiles` pulls the bundle from the **Portal** (`/api/store/:id/install`, device-authenticated), and the mock portal answers 404 (`Failed to fetch app files`). Needs a pass with a real Portal install bundle and a real container. |
-| `install-dialog` (portrait only) | `configure-install` | **The Install dialog does not fit a phone.** At the 375 px mobile viewport the dialog renders wider than the screen: the third exposure mode reads `Pub`, the subdomain suffix and the generated hostname are both cut mid-word. The landscape frame is captured and good; the portrait one was thrown away rather than shipped as a screenshot of an overflowing dialog. Give the dialog a responsive width, then `capture --only install-dialog`. |
-| `custom-app-create` | `bring-your-own-app` | **`/apps/create` is broken on `dev`, in the product.** `multi-service-form.tsx:26` calls `dynamicComposeSchema.omit({ schemaVersion: true })`, but that schema ends in `.superRefine(...)`, so Zod throws `.omit() cannot be used on object schemas containing refinements` at module evaluation. React Router treats the failed route module as a load error and reloads forever: blank body, infinite navigation loop. Fix the schema, then re-shoot — nothing about the stage is wrong. |
+| `install-dialog` (portrait only) | `configure-install` | **FIXED IN #1065 — re-shoot pending.** The Install dialog did not fit a phone — at 375 px it rendered wider than the screen, the third exposure mode reading `Pub` and the subdomain suffix and generated hostname both cut mid-word. The landscape frame is captured and good; the portrait one was thrown away rather than shipped as a screenshot of an overflowing dialog. `DialogContent` now carries `max-w-[calc(100vw-2rem)]` + `[&>*]:min-w-0` and the domain suffix truncates on one line, so `capture --only install-dialog` at both viewports is the only remaining step. |
+| `custom-app-create` | `bring-your-own-app` | **FIXED IN #1065 — re-shoot pending.** `/apps/create` was broken on `dev`, in the product: `multi-service-form.tsx:26` called `dynamicComposeSchema.omit({ schemaVersion: true })`, but that schema ends in `.superRefine(...)`, so Zod threw `.omit() cannot be used on object schemas containing refinements` at module evaluation. React Router treated the failed route module as a load error and reloaded forever: blank body, infinite navigation loop. The form now compiles from an unrefined `dynamicComposeFormSchema`, so all five `/apps/create` shots are capturable — nothing about the stage was ever wrong. |
 
 ## Three capture passes
 
