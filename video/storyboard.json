@@ -9,7 +9,8 @@
   },
   "meta": {
     "fps": 30,
-    "transitionSeconds": 0.5
+    "transitionSeconds": 0.5,
+    "pacing": "fit"
   },
   "chapters": {
     "claim": "Claim the machine",
@@ -93,11 +94,27 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
-              { "fill": ["input[placeholder='Enter your password']", "password"] },
-              { "click": "button[type='submit']" },
-              { "waitFor": "[data-testid='finish-setup-btn']" },
-              { "wait": 1500 }
+              {
+                "fill": [
+                  "input[placeholder='you@example.com']",
+                  "owner@acme.com"
+                ]
+              },
+              {
+                "fill": [
+                  "input[placeholder='Enter your password']",
+                  "password"
+                ]
+              },
+              {
+                "click": "button[type='submit']"
+              },
+              {
+                "waitFor": "[data-testid='finish-setup-btn']"
+              },
+              {
+                "wait": 1500
+              }
             ],
             "settle": 1200
           }
@@ -122,11 +139,27 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
-              { "fill": ["input[placeholder='Enter your password']", "password"] },
-              { "click": "button[type='submit']" },
-              { "waitFor": "text=Disk space" },
-              { "wait": 1500 }
+              {
+                "fill": [
+                  "input[placeholder='you@example.com']",
+                  "owner@acme.com"
+                ]
+              },
+              {
+                "fill": [
+                  "input[placeholder='Enter your password']",
+                  "password"
+                ]
+              },
+              {
+                "click": "button[type='submit']"
+              },
+              {
+                "waitFor": "text=Disk space"
+              },
+              {
+                "wait": 1500
+              }
             ],
             "settle": 1200
           }
@@ -172,7 +205,14 @@
             "path": "/store?category=alternatives",
             "waitUntil": "domcontentloaded",
             "waitFor": "text=Open source replacements for proprietary software",
-            "before": [{ "waitFor": "table tbody tr" }, { "wait": 800 }],
+            "before": [
+              {
+                "waitFor": "table tbody tr"
+              },
+              {
+                "wait": 800
+              }
+            ],
             "settle": 1200
           }
         }
@@ -195,7 +235,17 @@
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='app-header-actions-row']",
-            "before": [{ "wait": 1500 }, { "hover": "text=App Privacy" }, { "wait": 600 }],
+            "before": [
+              {
+                "wait": 1500
+              },
+              {
+                "hover": "text=App Privacy"
+              },
+              {
+                "wait": 600
+              }
+            ],
             "settle": 1200
           }
         }
@@ -218,7 +268,17 @@
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='action-install']",
-            "before": [{ "click": "[data-testid='action-install']" }, { "waitFor": "[role='dialog']" }, { "wait": 1200 }],
+            "before": [
+              {
+                "click": "[data-testid='action-install']"
+              },
+              {
+                "waitFor": "[role='dialog']"
+              },
+              {
+                "wait": 1200
+              }
+            ],
             "settle": 1200
           }
         }
@@ -307,7 +367,14 @@
             "path": "/settings?tab=ai",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='hw-card-title']",
-            "before": [{ "waitFor": "[data-testid='tier-badge']" }, { "wait": 800 }],
+            "before": [
+              {
+                "waitFor": "[data-testid='tier-badge']"
+              },
+              {
+                "wait": 800
+              }
+            ],
             "settle": 1500
           }
         }
@@ -331,11 +398,15 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='mcp-settings']",
             "before": [
-              { "waitFor": "[data-testid='mcp-tool-search']" },
+              {
+                "waitFor": "[data-testid='mcp-tool-search']"
+              },
               {
                 "eval": "() => document.querySelector('[data-testid=\"mcp-tool-search\"]')?.scrollIntoView({ block: 'center' })"
               },
-              { "wait": 600 }
+              {
+                "wait": 600
+              }
             ],
             "settle": 1200
           }
@@ -383,11 +454,26 @@
       "caption": "Your hardware. Your domain. Your data.",
       "narration": "Your hardware, your domain, your data. Nothing to cancel.",
       "items": [
-        { "label": "Hardware", "value": "Yours" },
-        { "label": "Domain", "value": "Yours" },
-        { "label": "Data", "value": "Stays home" },
-        { "label": "Monthly fee", "value": "$0" },
-        { "label": "Apps", "value": "200+" }
+        {
+          "label": "Hardware",
+          "value": "Yours"
+        },
+        {
+          "label": "Domain",
+          "value": "Yours"
+        },
+        {
+          "label": "Data",
+          "value": "Stays home"
+        },
+        {
+          "label": "Monthly fee",
+          "value": "$0"
+        },
+        {
+          "label": "Apps",
+          "value": "200+"
+        }
       ]
     },
     {
