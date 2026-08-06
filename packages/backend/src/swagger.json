@@ -10705,12 +10705,21 @@
                         "type": "object",
                         "properties": {
                           "hostPath": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "volumeName": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
                           },
                           "containerPath": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "readOnly": {
+                            "type": "boolean"
+                          },
+                          "requiresPosixPermissions": {
                             "type": "boolean"
                           },
                           "shared": {
@@ -10741,7 +10750,6 @@
                           }
                         },
                         "required": [
-                          "hostPath",
                           "containerPath"
                         ],
                         "additionalProperties": false
@@ -11280,12 +11288,21 @@
                               "type": "object",
                               "properties": {
                                 "hostPath": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "volumeName": {
+                                  "type": "string",
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
                                 },
                                 "containerPath": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "readOnly": {
+                                  "type": "boolean"
+                                },
+                                "requiresPosixPermissions": {
                                   "type": "boolean"
                                 },
                                 "shared": {
@@ -11316,7 +11333,6 @@
                                 }
                               },
                               "required": [
-                                "hostPath",
                                 "containerPath"
                               ],
                               "additionalProperties": false
@@ -11904,12 +11920,21 @@
                         "type": "object",
                         "properties": {
                           "hostPath": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "volumeName": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
                           },
                           "containerPath": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "readOnly": {
+                            "type": "boolean"
+                          },
+                          "requiresPosixPermissions": {
                             "type": "boolean"
                           },
                           "shared": {
@@ -11940,7 +11965,6 @@
                           }
                         },
                         "required": [
-                          "hostPath",
                           "containerPath"
                         ],
                         "additionalProperties": false
@@ -12479,12 +12503,21 @@
                               "type": "object",
                               "properties": {
                                 "hostPath": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "volumeName": {
+                                  "type": "string",
+                                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
                                 },
                                 "containerPath": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 },
                                 "readOnly": {
+                                  "type": "boolean"
+                                },
+                                "requiresPosixPermissions": {
                                   "type": "boolean"
                                 },
                                 "shared": {
@@ -12515,7 +12548,6 @@
                                 }
                               },
                               "required": [
-                                "hostPath",
                                 "containerPath"
                               ],
                               "additionalProperties": false

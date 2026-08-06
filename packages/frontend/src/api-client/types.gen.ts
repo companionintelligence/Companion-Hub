@@ -1343,9 +1343,11 @@ export type CreateCustomAppDto = {
             }>;
             command?: string | Array<string>;
             volumes?: Array<{
-                hostPath: string;
+                hostPath?: string;
+                volumeName?: string;
                 containerPath: string;
                 readOnly?: boolean;
+                requiresPosixPermissions?: boolean;
                 shared?: boolean;
                 private?: boolean;
                 bind?: {
@@ -1458,9 +1460,11 @@ export type CreateCustomAppDto = {
                 }>;
                 command?: string | Array<string>;
                 volumes?: Array<{
-                    hostPath: string;
+                    hostPath?: string;
+                    volumeName?: string;
                     containerPath: string;
                     readOnly?: boolean;
+                    requiresPosixPermissions?: boolean;
                     shared?: boolean;
                     private?: boolean;
                     bind?: {
@@ -1585,9 +1589,11 @@ export type UpdateCustomAppDto = {
             }>;
             command?: string | Array<string>;
             volumes?: Array<{
-                hostPath: string;
+                hostPath?: string;
+                volumeName?: string;
                 containerPath: string;
                 readOnly?: boolean;
+                requiresPosixPermissions?: boolean;
                 shared?: boolean;
                 private?: boolean;
                 bind?: {
@@ -1700,9 +1706,11 @@ export type UpdateCustomAppDto = {
                 }>;
                 command?: string | Array<string>;
                 volumes?: Array<{
-                    hostPath: string;
+                    hostPath?: string;
+                    volumeName?: string;
                     containerPath: string;
                     readOnly?: boolean;
+                    requiresPosixPermissions?: boolean;
                     shared?: boolean;
                     private?: boolean;
                     bind?: {
