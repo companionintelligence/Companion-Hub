@@ -569,6 +569,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.localSubdomain = appUrn.split(':')[0];
     }
 
+    // Fall back to the manifest port exactly as the persisted row does (`parsedForm.port ?? appInfo.port`
+    // in installApp). Without it, a production install that exposes locally but sends no port is rejected
+    // for a port the app already declares — `port` is a top-level manifest field, not a form field, so
+    // mergeFormFieldDefaults never supplies it. That killed every onboarding install on a production Hub:
+    // the wizard sends exposureMode 'cloudflare' (hence exposedLocal) and never sends a port, so all four
+    // companion apps failed `requirePortWhenExposedLocal` before their app row was created.
+    if (parsedForm.port === undefined) {
+      parsedForm.port = info.port;
+    }
+
     const { isProduction } = this.config.getConfig();
     const errors = validateAppFormFields(parsedForm as Record<string, unknown>, info.form_fields ?? [], {
       requirePortWhenExposedLocal: isProduction,
