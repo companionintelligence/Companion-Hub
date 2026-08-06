@@ -751,7 +751,7 @@ export const UserSettingsForm = (props: IProps) => {
               </div>
             )}
             <div className="flex justify-center pt-2">
-              <Button loading={loading} type="submit" intent="success" className="px-12">
+              <Button loading={loading} type="submit" className="px-12">
                 {t('SETTINGS_GENERAL_SUBMIT')}
               </Button>
             </div>

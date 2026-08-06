@@ -604,7 +604,7 @@
   "CORE_SERVER_BANNER_DISMISS": "Dismiss",
   "CORE_SERVER_BANNER_LEARN_MORE": "Learn more",
   "CORE_SERVER_BANNER_LOW_DISK_TITLE": "Your disk is more than 90% full.",
-  "CORE_SERVER_BANNER_LOW_DISK_MESSAGE": "Free up space, or upgrade to a CI Core with storage built for AI workloads and local apps.",
+  "CORE_SERVER_BANNER_LOW_DISK_MESSAGE": "Free up space, or upgrade to a CI Core Server with storage built for AI workloads and local apps.",
   "DELETE_BACKUP_MODAL_TITLE": "Delete backup",
   "DELETE_BACKUP_MODAL_WARNING": "Are you sure you want to delete backup {{id}} made on {{date}}?",
   "DELETE_BACKUP_MODAL_SUBTITLE": "This action cannot be undone",

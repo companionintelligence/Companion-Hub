@@ -85,7 +85,7 @@ export const ChangeUsernameForm = ({ username }: Props) => {
             </form>
           </DialogDescription>
           <DialogFooter>
-            <Button loading={changeUsername.isPending} type="submit" intent="success" form={formId}>
+            <Button loading={changeUsername.isPending} type="submit" form={formId}>
               {t('COMMON_CHANGE_USERNAME')}
             </Button>
           </DialogFooter>
