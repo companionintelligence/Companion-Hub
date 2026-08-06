@@ -31,6 +31,18 @@
   --radius: 0.375rem;
 }
 
+@layer base {
+  /*
+   * The app header is `fixed` and 3.5rem tall, so anything scrolled to via an
+   * anchor, `scrollIntoView`, or route restoration lands underneath it and gets
+   * clipped (e.g. the "Features" heading on an app detail page, "Active keys" on
+   * the MCP settings page). Reserve the header height plus the titlebar offset.
+   */
+  html {
+    scroll-padding-top: calc(3.5rem + var(--titlebar-height, 0px) + 0.5rem);
+  }
+}
+
 @layer utilities {
   /* Keep content clear of the notch / status bar / home indicator on mobile. */
   .safe-area-inset {

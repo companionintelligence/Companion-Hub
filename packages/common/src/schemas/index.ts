@@ -1,5 +1,6 @@
 import {
   dynamicComposeSchema,
+  dynamicComposeFormSchema,
   serviceSchema,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
@@ -67,6 +68,7 @@ import { toJsonSchema } from './utils/to-json-schema.js';
 
 export {
   dynamicComposeSchema,
+  dynamicComposeFormSchema,
   parseComposeJson,
   serviceSchema,
   toJsonSchema,

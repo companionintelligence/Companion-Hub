@@ -39,10 +39,19 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
       <span className="mt-0.5 text-primary [&_svg]:h-6 [&_svg]:w-6">{icon}</span>
       <div className="min-w-0">
         <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className="truncate text-sm font-medium" title={value}>
+        {/*
+          Wrap to a second line rather than hard-truncating: at six columns these
+          tiles clipped their own values ("No GPU detect…", "12 cores · ar…"),
+          which reads as the app failing to fit its own data.
+        */}
+        <div className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere]" title={value}>
           {value}
         </div>
-        {sub && <div className="truncate text-xs text-muted-foreground">{sub}</div>}
+        {sub && (
+          <div className="line-clamp-2 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={sub}>
+            {sub}
+          </div>
+        )}
       </div>
     </div>
   );

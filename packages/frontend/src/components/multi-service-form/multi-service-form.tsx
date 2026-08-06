@@ -1,7 +1,7 @@
 import './services-form.css';
 import { Button } from '@/components/ui/Button';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
 import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucide-react';
 import { useForm } from 'react-hook-form';
@@ -23,7 +23,7 @@ type Props = {
   onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => void;
 };
 
-const cleanSchema = dynamicComposeSchema.omit({ schemaVersion: true }).transform((d) => deepClean(d));
+const cleanSchema = dynamicComposeFormSchema.transform((d) => deepClean(d));
 
 export const MultiServiceForm = ({ onSubmit }: Props) => {
   const { t } = useTranslation();

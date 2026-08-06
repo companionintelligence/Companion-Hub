@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 import {
   serviceSchema as serviceSchemaZod,
   dynamicComposeSchema as dynamicComposeSchemaZod,
+  dynamicComposeObject,
+  dynamicComposeFormSchema,
   collectServiceSecurityViolations,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
@@ -1070,5 +1072,36 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(
       collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
     ).toHaveLength(2);
+  });
+});
+
+describe('dynamicComposeFormSchema', () => {
+  // Regression: the custom-app builder form derived its resolver with
+  // `dynamicComposeSchema.omit({ schemaVersion: true })`. Zod 4 throws
+  // "`.omit()` cannot be used on object schemas containing refinements" at
+  // module-evaluation time, which took the whole /apps/create route down.
+  it('is derivable without throwing, and omits schemaVersion', () => {
+    expect(() => dynamicComposeObject.omit({ schemaVersion: true })).not.toThrow();
+    expect(Object.keys(dynamicComposeFormSchema.shape)).not.toContain('schemaVersion');
+    expect(Object.keys(dynamicComposeFormSchema.shape)).toContain('services');
+  });
+
+  it('rejects .omit() on the refined schema, so callers must use the form schema', () => {
+    expect(() => (dynamicComposeSchemaZod as unknown as { omit: (m: object) => unknown }).omit({ schemaVersion: true })).toThrow(/refinements/);
+  });
+
+  it('accepts a service list with no schemaVersion supplied', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still enforces the override security refinement', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+      overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
+    });
+    expect(result.success).toBe(false);
   });
 });
