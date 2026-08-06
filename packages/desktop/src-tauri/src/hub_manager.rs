@@ -5746,8 +5746,29 @@ pub fn pull_stack_images(
 }
 
 /// Stop Hub containers without marking user-stopped (for updates).
+/// Returns `true` if the Docker daemon is reachable, `false` otherwise.
+/// Uses `docker info` as a lightweight probe — it exits non-zero immediately
+/// when the daemon is down, regardless of the CLI version installed.
+fn is_docker_available() -> bool {
+    docker_command()
+        .args(["info"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+
+    if !is_docker_available() {
+        let _ = append_desktop_log_for(
+            &data_dir,
+            "hub.update",
+            "Docker daemon is not running; skipping compose down for update.",
+        );
+        return Ok("Hub already stopped (Docker daemon not running)".to_string());
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.update",
@@ -5791,6 +5812,19 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     // does not auto-restart it.
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
+    }
+
+    // If the Docker daemon is not reachable there are no containers running,
+    // so there is nothing to stop.  Return early to avoid invoking
+    // `docker compose --env-file` with a CLI binary that may not support that
+    // flag (e.g. an older docker binary resolved when Docker Desktop is down).
+    if !is_docker_available() {
+        let _ = append_desktop_log_for(
+            &data_dir,
+            "hub.stop",
+            "Docker daemon is not running; nothing to stop.",
+        );
+        return Ok("Hub already stopped (Docker daemon not running)".to_string());
     }
     let _ = append_desktop_log_for(
         &data_dir,
