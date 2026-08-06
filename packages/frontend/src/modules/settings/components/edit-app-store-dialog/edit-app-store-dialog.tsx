@@ -90,7 +90,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
             </form>
           </DialogDescription>
           <DialogFooter>
-            <Button loading={editAppStore.isPending} type="submit" intent="success" form={formId}>
+            <Button loading={editAppStore.isPending} type="submit" form={formId}>
               {t('COMMON_SAVE')}
             </Button>
           </DialogFooter>

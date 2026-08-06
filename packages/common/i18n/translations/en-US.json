@@ -1230,7 +1230,7 @@
   "CORE_SERVER_BANNER_DISMISS": "Dismiss",
   "CORE_SERVER_BANNER_LEARN_MORE": "Learn more",
   "CORE_SERVER_BANNER_LOW_DISK_TITLE": "Your disk is more than 90% full.",
-  "CORE_SERVER_BANNER_LOW_DISK_MESSAGE": "Free up space, or upgrade to a CI Core with storage built for AI workloads and local apps.",
+  "CORE_SERVER_BANNER_LOW_DISK_MESSAGE": "Free up space, or upgrade to a CI Core Server with storage built for AI workloads and local apps.",
   "ERROR_PAGE_TITLE": "Something went wrong",
   "ERROR_PAGE_SUBTITLE": "Use retry below. If it keeps happening, refresh the page or open an issue on GitHub.",
   "ERROR_PAGE_CHUNK_LOAD": "This page failed to load after an update. Refresh the page to continue.",
