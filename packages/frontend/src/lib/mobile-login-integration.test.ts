@@ -26,7 +26,7 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 }));
 
 // Persist the session like an on-device release build.
-vi.mock('@/lib/tauri-hub-probe', () => ({ isTauriReleaseBuild: () => true }));
+vi.mock('@/lib/hub-runtime-mode', () => ({ usesCrossOriginDesktopApi: () => true }));
 
 function setMobileTauri() {
   (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
