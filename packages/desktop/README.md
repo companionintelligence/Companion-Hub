@@ -197,13 +197,14 @@ On Windows, both packaged installers run the same cleanup before removing the ap
 
 Either way, uninstalling the packaged build tears down Hub + marketplace-app Docker containers/volumes/images and deletes Hub state under `%APPDATA%`/`%LOCALAPPDATA%`. WinGet is covered transitively (its manifest installs one of these two).
 
-**Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
+**Release builds** embed only the bootstrap splash from `packages/desktop/bootstrap/` — the full product UI is served by the Hub stack container at `http://127.0.0.1:<API_PORT>/` after startup. No frontend build is required to bundle the desktop app:
 
 ```bash
-# From repo root
-pnpm run --filter=@ci-hub/common build
-pnpm run --filter=frontend build
+# From repo root — builds bootstrap + Rust shell only
+pnpm run --filter=desktop build
 ```
+
+For local stack-dev (hot reload against Vite), use `pnpm run --filter=desktop dev` instead.
 
 ### Build output
 
@@ -259,8 +260,9 @@ packages/desktop/
 
 ### How it works
 
-- **Dev mode:** The Tauri WebView loads from `http://localhost:5005` (Vite dev server). The frontend proxies `/api/*` to the backend on port 5004.
-- **Release mode:** The pre-built frontend static files are embedded in the binary from `packages/frontend/dist/client`. The backend must be running separately.
+- **Dev mode (`local:desktop`):** The Tauri WebView loads from `http://localhost:5005` (Vite dev server). The frontend proxies `/api/*` to the backend on port 5004.
+- **Stack dev (`dev:desktop`):** WebView loads the running Hub stack at `http://127.0.0.1:${API_PORT}` — same UI as the browser.
+- **Release mode:** A minimal bootstrap splash is embedded in the binary; once the stack is healthy it navigates to `http://127.0.0.1:${API_PORT}`. Product UI ships in the container only. See `docs/DESKTOP-UI-ARCHITECTURE.md`.
 - **System tray:** Polls the Hub health endpoint every 10 seconds (tries both port 5002 for appliance mode and port 5004 for local source dev). Start/Stop Hub uses `docker start/stop` on the known container names.
 - **Single instance:** Uses `tauri-plugin-single-instance` — a second launch sends focus to the existing window via IPC.
 - **Close-to-tray:** The window close button hides to tray instead of quitting. Use "Quit" from the tray menu to actually exit.
