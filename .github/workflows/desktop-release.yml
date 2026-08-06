@@ -157,10 +157,8 @@ jobs:
         if: env.BUILD_ENABLED
         shell: bash
         run: |
-          # Bake the Portal/cloud pair into the desktop binary + frontend.
-          # production → https://hub.ci.computer (prod Portal)
-          # dev         → https://hub.companionintelligence.com (dev Portal)
-          # Public app domain stays companionintelligence.com for both (see hub_env.rs).
+          # Bake Portal/cloud URLs into the desktop binary (hub_env.rs). Product UI is
+          # served from the Hub stack container — see packages/desktop/bootstrap/.
           if [ "${{ inputs.environment }}" = "production" ]; then
             {
               echo "CI_CLOUD_URL=https://hub.ci.computer"
@@ -179,18 +177,6 @@ jobs:
             echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
           } >> "$GITHUB_ENV"
           echo "Cloud target: ${{ inputs.environment }} (CI_CLOUD_URL will be baked from GITHUB_ENV)"
-      - name: Build frontend
-        if: env.BUILD_ENABLED
-        env:
-          NODE_ENV: production
-          CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ inputs.tag }}
-          # Emit production source maps only when we will upload them to Sentry.
-          VITE_BUILD_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
       - name: Build standalone Companion Hub CLI
         if: env.BUILD_ENABLED
         shell: bash
@@ -201,24 +187,6 @@ jobs:
           fi
           node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
           ls -lh "$CLI_OUT"
-      - name: Upload frontend source maps to Sentry
-        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
-        continue-on-error: true
-        shell: bash
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_FRONTEND_PROJECT }}
-        run: |
-          # Best-effort per command: under `bash -eo pipefail` a sentry-cli
-          # failure would otherwise abort the step before the deletion below,
-          # leaving raw .map files to be embedded in the shipped desktop bundle.
-          # Always strip the maps regardless of the upload result.
-          DIST="packages/frontend/dist/client"
-          npx --yes @sentry/cli@2 sourcemaps inject "$DIST" || echo "::warning::sentry sourcemaps inject failed"
-          npx --yes @sentry/cli@2 sourcemaps upload \
-            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST" || echo "::warning::sentry sourcemaps upload failed"
-          find "$DIST" -name '*.map' -delete
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
