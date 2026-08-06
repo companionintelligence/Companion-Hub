@@ -1,4 +1,4 @@
-import { getStatus4Options, getStatus4QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { getStatus5Options, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
@@ -55,7 +55,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
     isLoading,
     isError,
   } = useQuery({
-    ...getStatus4Options(),
+    ...getStatus5Options(),
     select: (payload) => payload as unknown as TailscaleApiStatus,
     refetchInterval: 5_000,
     // Re-check the moment the user returns to the Hub after authenticating in the
@@ -81,14 +81,14 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       if (payload.alreadyAuthenticated) {
         toast.success(t('SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED'));
         setHasAttemptedConnection(true);
-        void queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() });
+        void queryClient.invalidateQueries({ queryKey: getStatus5QueryKey() });
         return;
       }
       if (payload.authUrl) {
         openExternal(payload.authUrl);
         toast.success(t('ONBOARDING_TAILSCALE_AUTH_OPENING'));
         setHasAttemptedConnection(true);
-        void queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() });
+        void queryClient.invalidateQueries({ queryKey: getStatus5QueryKey() });
       }
     },
     onError: () => toast.error(t('ONBOARDING_TAILSCALE_AUTH_FAILED')),
