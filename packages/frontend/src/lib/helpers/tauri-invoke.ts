@@ -6,8 +6,9 @@ export type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promi
  * desktop-only actions like native installers.
  */
 export function getTauriInvoke(): TauriInvoke | null {
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: TauriInvoke } }).__TAURI_INTERNALS__.invoke;
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return null;
   }
-  return null;
+  const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke?: TauriInvoke } }).__TAURI_INTERNALS__.invoke;
+  return typeof invoke === 'function' ? invoke : null;
 }

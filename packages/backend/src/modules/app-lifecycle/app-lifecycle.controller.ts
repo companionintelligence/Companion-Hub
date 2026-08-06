@@ -13,6 +13,7 @@ import {
   ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
+  ValidateConfigResultDto,
 } from './dto/app-lifecycle.dto';
 import { ApiBody, ApiResponse } from '@nestjs/swagger';
 
@@ -70,6 +71,13 @@ export class AppLifecycleController {
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody) {
     const res = await this.appLifecycleService.installApp({ appUrn: castAppUrn(urn), form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
+  }
+
+  @Post(':urn/validate-config')
+  @ApiResponse({ type: ValidateConfigResultDto })
+  async validateConfig(@Param('urn') urn: string, @Body() body: AppFormBody) {
+    const res = await this.appLifecycleService.validateAppConfig(castAppUrn(urn), body);
+    return ValidateConfigResultDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/start')

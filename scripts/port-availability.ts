@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
 /** Bun-compiled `cihub` cannot run `execPath -e` probes — spawning itself deadlocks on macOS. */
-function isCompiledCihubBinary(): boolean {
+export function isCompiledCihubBinary(): boolean {
   if (process.execPath.includes('bunfs')) {
     return true;
   }

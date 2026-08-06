@@ -118,6 +118,24 @@ describe('PortalCatalogService', () => {
     });
   });
 
+  it('preserves screenshots and demo_video from portal catalog metadata', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'ci-memory',
+        name: 'Companion Memory',
+        short_desc: 'Memory appliance',
+        categories: ['ai'],
+        screenshots: ['https://github.com/user-attachments/assets/abc123'],
+        demo_video: './metadata/media/demo.mp4',
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
+      screenshots: ['https://github.com/user-attachments/assets/abc123'],
+      demo_video: './metadata/media/demo.mp4',
+    });
+  });
+
   it('preserves MCP listing metadata and keeps MCP apps non-exposable without a fake port', async () => {
     portalClient.fetchStoreCatalog.mockResolvedValue([
       {

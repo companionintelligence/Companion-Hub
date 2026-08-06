@@ -63,9 +63,8 @@ export const Header = (props: HeaderProps) => {
     return source.replace(/[-_]+/g, ' ').toUpperCase();
   }, [userSettings?.ciHubDeviceSlug]);
 
-  const navButtonBase =
-    'cursor-pointer text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
-  const navButtonActive = 'bg-primary/12 text-primary shadow-sm dark:bg-accent dark:text-accent-foreground dark:shadow-none';
+  const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
+  const navButtonActive = 'bg-accent text-accent-foreground shadow-sm';
 
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
@@ -132,7 +131,7 @@ export const Header = (props: HeaderProps) => {
               size="icon"
               title={t('HEADER_LOGOUT', 'Logout')}
               onClick={handleLogout}
-              className="text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground"
+              className="text-foreground/80 hover:bg-accent hover:text-accent-foreground"
             >
               <LogOut className="size-4" />
               <span className="sr-only">{t('HEADER_LOGOUT', 'Logout')}</span>

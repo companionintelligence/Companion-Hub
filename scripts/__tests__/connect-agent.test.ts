@@ -1,20 +1,23 @@
-import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   backupFile,
   backupPathFor,
   checkMemorySlot,
+  downloadFile,
   HERMES_PACKAGE,
+  hermesConfigPath,
   hermesPluginDir,
   hubMcpUrl,
   lintFindingsForOurKeys,
   memoryProbeUserAgent,
   mergeOpenClawConfig,
   normalizeMemoryUrl,
+  npmShimEntry,
   openClawConfigPath,
   OPENCLAW_PACKAGE,
   PINNED_VERSIONS,
@@ -24,9 +27,12 @@ import {
   probeHubMcp,
   probeMemory,
   readJsonIfPresent,
+  resolveSpawn,
+  restoreBackupOutcome,
   run,
   runFailureMessage,
   tarballUrl,
+  tarExtractCommand,
   timestampForBackup,
   patchHermesMcpServers,
   triageMcpProbe,
@@ -35,6 +41,21 @@ import {
   urlProblem,
   writeFileAtomic,
 } from '../lib/connect-agent';
+
+/**
+ * POSIX mode bits are not representable on Windows: NTFS has no group or other
+ * permission, and Node's chmod maps 0o600 onto the read-only attribute alone, so the
+ * mode reads back as 0o666. The hardening these tests cover is real on the platforms
+ * that have it and a documented no-op elsewhere, so assert it only where it can hold —
+ * a suite that is permanently red on a platform stops reporting anything.
+ */
+function expectPrivateMode(path: string) {
+  if (process.platform === 'win32') {
+    expect(statSync(path).isFile()).toBe(true);
+    return;
+  }
+  expect(statSync(path).mode & 0o777).toBe(0o600);
+}
 
 describe('probe triage', () => {
   it('names the x-api-key mistake rather than just reporting 401', () => {
@@ -561,7 +582,7 @@ describe('openclaw config path resolution', () => {
   it('defaults to ~/.openclaw/openclaw.json', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     delete process.env.OPENCLAW_STATE_DIR;
-    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/home/someone', '.openclaw', 'openclaw.json'));
   });
 
   it('honors OPENCLAW_CONFIG_PATH as a full file path', () => {
@@ -573,7 +594,7 @@ describe('openclaw config path resolution', () => {
   it('reads OPENCLAW_STATE_DIR as a directory containing openclaw.json', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     process.env.OPENCLAW_STATE_DIR = '/tmp/state';
-    expect(openClawConfigPath('/home/someone')).toBe('/tmp/state/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/tmp/state', 'openclaw.json'));
   });
 
   it('lets OPENCLAW_CONFIG_PATH win over OPENCLAW_STATE_DIR, as the CLI does', () => {
@@ -585,7 +606,7 @@ describe('openclaw config path resolution', () => {
   it('ignores an empty value rather than resolving to a bare filename', () => {
     delete process.env.OPENCLAW_CONFIG_PATH;
     process.env.OPENCLAW_STATE_DIR = '   ';
-    expect(openClawConfigPath('/home/someone')).toBe('/home/someone/.openclaw/openclaw.json');
+    expect(openClawConfigPath('/home/someone')).toBe(join('/home/someone', '.openclaw', 'openclaw.json'));
   });
 });
 
@@ -677,26 +698,72 @@ describe('hub mcp url', () => {
 });
 
 describe('hermes plugin dir', () => {
-  const saved = process.env.HERMES_HOME;
+  const savedHome = process.env.HERMES_HOME;
+  const savedLocalAppData = process.env.LOCALAPPDATA;
+  const realPlatform = process.platform;
+
+  /** Both branches have to be asserted from whichever platform the suite runs on. */
+  function asPlatform(platform: NodeJS.Platform) {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+
   afterEach(() => {
-    if (saved === undefined) delete process.env.HERMES_HOME;
-    else process.env.HERMES_HOME = saved;
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    if (savedHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = savedHome;
+    if (savedLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = savedLocalAppData;
   });
 
-  it('defaults to ~/.hermes', () => {
+  it('defaults to ~/.hermes off Windows', () => {
     delete process.env.HERMES_HOME;
-    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
+    asPlatform('linux');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
+  });
+
+  // Hermes' own hermes_constants.py returns %LOCALAPPDATA%\hermes on win32, NOT
+  // ~/.hermes. Installing to the latter is the worst kind of wrong: it extracts
+  // cleanly, connect reports success, and the provider never shows up in
+  // `hermes memory setup` because Hermes never scans there.
+  it('uses %LOCALAPPDATA%\\hermes on Windows, matching Hermes itself', () => {
+    delete process.env.HERMES_HOME;
+    asPlatform('win32');
+    process.env.LOCALAPPDATA = 'C:\\Users\\someone\\AppData\\Local';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(join('C:\\Users\\someone\\AppData\\Local', 'hermes', 'plugins', 'companionintelligence'));
+    expect(hermesConfigPath('C:\\Users\\someone')).toBe(join('C:\\Users\\someone\\AppData\\Local', 'hermes', 'config.yaml'));
+  });
+
+  // Hermes falls back to ~/AppData/Local rather than giving up, so this must too —
+  // otherwise the two disagree exactly when the environment is already unusual.
+  it('falls back to ~/AppData/Local when LOCALAPPDATA is unset or blank', () => {
+    delete process.env.HERMES_HOME;
+    asPlatform('win32');
+    delete process.env.LOCALAPPDATA;
+    const expected = join('C:\\Users\\someone', 'AppData', 'Local', 'hermes', 'plugins', 'companionintelligence');
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(expected);
+    process.env.LOCALAPPDATA = '   ';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(expected);
   });
 
   it('honors HERMES_HOME', () => {
     process.env.HERMES_HOME = '/tmp/elsewhere';
-    expect(hermesPluginDir('/home/someone')).toBe('/tmp/elsewhere/plugins/companionintelligence');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/tmp/elsewhere', 'plugins', 'companionintelligence'));
+  });
+
+  // The override wins on Windows too — it is what the appliance sets when it drives
+  // this from outside the user's own profile.
+  it('honors HERMES_HOME over the Windows default', () => {
+    asPlatform('win32');
+    process.env.LOCALAPPDATA = 'C:\\Users\\someone\\AppData\\Local';
+    process.env.HERMES_HOME = 'D:\\hermes-profile';
+    expect(hermesPluginDir('C:\\Users\\someone')).toBe(join('D:\\hermes-profile', 'plugins', 'companionintelligence'));
   });
 
   // Without the trim, join roots the install under a directory literally named "   ".
   it('treats a whitespace-only value as unset, not as a path', () => {
     process.env.HERMES_HOME = '   ';
-    expect(hermesPluginDir('/home/someone')).toBe('/home/someone/.hermes/plugins/companionintelligence');
+    asPlatform('linux');
+    expect(hermesPluginDir('/home/someone')).toBe(join('/home/someone', '.hermes', 'plugins', 'companionintelligence'));
   });
 });
 
@@ -734,11 +801,52 @@ describe('backups', () => {
     expect(target).toBeDefined();
     // copyFileSync carries the source mode over, so without the explicit chmod this
     // would be a 0644 copy of a secret-bearing file that we chose to create.
-    expect(statSync(target as string).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target as string);
   });
 
   it('reports no backup when there was no file to copy', () => {
     expect(backupFile(join(tmpdir(), 'connect-agent-absent.json'), 'stamp')).toBeUndefined();
+  });
+});
+
+/**
+ * The restore swallows its own errors, so that a failure on an already-failing path
+ * cannot replace the curated message box with a stack trace. That only helps if the
+ * message then stops asserting a restore happened — otherwise the exchange is a stack
+ * trace for a confident lie, which is worse.
+ */
+describe('restore reporting', () => {
+  it('confirms a restore that worked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-restore-'));
+    const target = join(dir, 'openclaw.json');
+    const backup = join(dir, 'openclaw.json.bak');
+    writeFileSync(target, '{"broken":true}');
+    writeFileSync(backup, '{"good":true}');
+
+    const outcome = restoreBackupOutcome(target, backup);
+
+    expect(outcome.restored).toBe(true);
+    expect(readJsonIfPresent(target)).toEqual({ good: true });
+    expect(outcome.lines.join('\n')).toMatch(/Restored/);
+  });
+
+  it('says so, and where the backup still is, when the restore fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-restore-'));
+    const target = join(dir, 'openclaw.json');
+    const backup = join(dir, 'gone.bak');
+    writeFileSync(target, '{"broken":true}');
+
+    const outcome = restoreBackupOutcome(target, backup);
+
+    expect(outcome.restored).toBe(false);
+    // The bad file is still there — the message must not imply otherwise.
+    expect(readJsonIfPresent(target)).toEqual({ broken: true });
+    expect(outcome.lines.join('\n')).toMatch(/Could NOT restore/);
+    expect(outcome.lines.join('\n')).toContain(backup);
+  });
+
+  it('stays silent when there was no backup to put back', () => {
+    expect(restoreBackupOutcome('/tmp/whatever.json', undefined)).toEqual({ restored: false, lines: [] });
   });
 });
 
@@ -751,6 +859,300 @@ describe('backup naming', () => {
     expect(a.endsWith('.bak')).toBe(true);
     // Colons in an ISO timestamp are not portable in filenames.
     expect(a).not.toMatch(/:/);
+  });
+});
+
+/** A minimal npm global prefix: the shim, and the package it points at. */
+function fakePrefix(name: string, bin: unknown, entryFile = 'cli.mjs', parent = tmpdir()) {
+  const prefix = mkdtempSync(join(parent, 'connect-agent-shim-'));
+  const pkgDir = join(prefix, 'node_modules', name);
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(join(prefix, `${name}.cmd`), '@ECHO off\n');
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name, bin }));
+  // Prints its own argv, so a real spawn can be asserted rather than just its shape.
+  if (entryFile) writeFileSync(join(pkgDir, entryFile), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  return prefix;
+}
+
+/**
+ * The download replaced a `curl -fL | tar` pipeline, so it inherits that pipeline's
+ * obligations: refuse a non-2xx rather than writing the error page to disk, and keep
+ * memory flat regardless of what the remote sends.
+ */
+describe('downloadFile', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = undefined;
+  });
+
+  function serve(handler: (req: unknown, res: { writeHead: (c: number) => void; end: (b?: Buffer | string) => void }) => void): Promise<string> {
+    server = createServer(handler as never);
+    return new Promise((resolve) => server?.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server?.address() as AddressInfo).port}`)));
+  }
+
+  it('writes the body to disk byte for byte', async () => {
+    // 4 MiB of non-zero bytes: large enough that a buffered read would be visible in
+    // memory, and verified by content rather than by length alone.
+    const payload = Buffer.alloc(4 * 1024 * 1024, 0xab);
+    const url = await serve((_req, res) => {
+      res.writeHead(200);
+      res.end(payload);
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'nested', 'archive.tgz');
+
+    expect(await downloadFile(url, target)).toBeUndefined();
+    expect(readFileSync(target).equals(payload)).toBe(true);
+  });
+
+  it('refuses a non-2xx instead of writing the error page to disk', async () => {
+    const url = await serve((_req, res) => {
+      res.writeHead(404);
+      res.end('{"error":"Not found"}');
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+
+    // The `-f` in `curl -fL`: without it tar gets the JSON and fails with "not in gzip
+    // format" instead of the version simply not existing.
+    expect(await downloadFile(url, target)).toMatch(/404/);
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it('names an empty body rather than leaving tar to report a truncated archive', async () => {
+    const url = await serve((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+
+    expect(await downloadFile(url, target)).toMatch(/empty body/);
+  });
+
+  it('returns the reason rather than throwing when the host is unreachable', async () => {
+    const target = join(mkdtempSync(join(tmpdir(), 'connect-agent-dl-')), 'archive.tgz');
+    // Every caller's next move is to print this inside a message box and exit 2, so a
+    // throw here would escape that handler entirely.
+    const problem = await downloadFile('http://127.0.0.1:1/nothing', target);
+    expect(problem).toBeTruthy();
+    expect(typeof problem).toBe('string');
+  });
+});
+
+/**
+ * Windows npm installs a CLI as a `.cmd`/`.ps1` shim, which Node cannot spawn without a
+ * shell — and a shell is not an option here, because `mcp add` carries the user's API
+ * key as an argv element. Resolving the shim to the JS entrypoint keeps the spawn
+ * shell-free.
+ */
+describe('npm shim resolution', () => {
+  it('follows a shim to the entrypoint named in the package bin map', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    expect(npmShimEntry('openclaw', [prefix])).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+  });
+
+  it('accepts the string form of bin', () => {
+    const prefix = fakePrefix('openclaw', 'cli.mjs');
+    expect(npmShimEntry('openclaw', [prefix])).toBeDefined();
+  });
+
+  // A directory on PATH is a guess, not the user's own config, so an unreadable
+  // package.json there must cost us that candidate and nothing more. Throwing would
+  // abort the whole `connect` run over a broken file in some unrelated npm prefix.
+  it('skips a candidate whose package.json is unparseable, and finds the real one', () => {
+    const broken = mkdtempSync(join(tmpdir(), 'connect-agent-broken-'));
+    mkdirSync(join(broken, 'node_modules', 'openclaw'), { recursive: true });
+    writeFileSync(join(broken, 'openclaw.cmd'), '@ECHO off\n');
+    writeFileSync(join(broken, 'node_modules', 'openclaw', 'package.json'), '{ this is not json');
+
+    const good = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+
+    expect(() => npmShimEntry('openclaw', [broken, good])).not.toThrow();
+    expect(npmShimEntry('openclaw', [broken, good])).toBe(join(good, 'node_modules', 'openclaw', 'cli.mjs'));
+    // And with no good candidate behind it, it gives up rather than propagating.
+    expect(npmShimEntry('openclaw', [broken])).toBeUndefined();
+  });
+
+  // Valid JSON that is not an object — `"openclaw"`, `[]`, `null` — reaches the `.bin`
+  // read and must not be dereferenced blindly either.
+  it('skips a package.json that is valid JSON but not an object', () => {
+    for (const contents of ['"just-a-string"', '[]', 'null', '42']) {
+      const dir = mkdtempSync(join(tmpdir(), 'connect-agent-nonobj-'));
+      mkdirSync(join(dir, 'node_modules', 'openclaw'), { recursive: true });
+      writeFileSync(join(dir, 'openclaw.cmd'), '@ECHO off\n');
+      writeFileSync(join(dir, 'node_modules', 'openclaw', 'package.json'), contents);
+      expect(() => npmShimEntry('openclaw', [dir])).not.toThrow();
+      expect(npmShimEntry('openclaw', [dir])).toBeUndefined();
+    }
+  });
+
+  // A same-named script sitting in some earlier PATH directory must not stop the
+  // search, or a stray `openclaw.cmd` anywhere ahead of the npm prefix hides the real
+  // install.
+  it('skips a directory that has no package beside the shim and keeps looking', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    const decoy = mkdtempSync(join(tmpdir(), 'connect-agent-decoy-'));
+    writeFileSync(join(decoy, 'openclaw.cmd'), '@ECHO off\n');
+    expect(npmShimEntry('openclaw', [decoy, prefix])).toBe(join(prefix, 'node_modules', 'openclaw', 'cli.mjs'));
+  });
+
+  // A prefix is a prefix because it holds the shim. Without that test any directory on
+  // PATH that happens to contain a `node_modules/<name>` — a project checkout — would
+  // answer for the global install.
+  it('ignores a node_modules that no shim points at', () => {
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' });
+    rmSync(join(prefix, 'openclaw.cmd'));
+    expect(npmShimEntry('openclaw', [prefix])).toBeUndefined();
+  });
+
+  it('gives up rather than guessing when the entrypoint is missing', () => {
+    // A bin map naming a file that is not there: returning it would produce a spawn
+    // failure further away from the cause than simply falling back to the plain name.
+    const prefix = fakePrefix('openclaw', { openclaw: 'cli.mjs' }, '');
+    expect(npmShimEntry('openclaw', [prefix])).toBeUndefined();
+    expect(npmShimEntry('openclaw', [])).toBeUndefined();
+    expect(npmShimEntry('openclaw', ['C:\\nowhere'])).toBeUndefined();
+  });
+});
+
+/**
+ * The substitution, not just the lookup. Nothing else covers the wiring in
+ * `resolveSpawn`, so without this the whole Windows fix can be deleted with the suite
+ * still green — and the no-shell guarantee the API key rests on has nothing pinning it.
+ */
+describe('spawning a Windows npm shim', () => {
+  const realPlatform = process.platform;
+  const realExecPath = process.execPath;
+  const realPath = process.env.PATH;
+  const realCwd = process.cwd();
+
+  function asPlatform(platform: NodeJS.Platform) {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+
+  function asExecPath(path: string) {
+    Object.defineProperty(process, 'execPath', { value: path, configurable: true });
+  }
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    Object.defineProperty(process, 'execPath', { value: realExecPath, configurable: true });
+    if (realPath === undefined) delete process.env.PATH;
+    else process.env.PATH = realPath;
+    process.chdir(realCwd);
+  });
+
+  it('runs the entrypoint under this runtime, with the argv byte-identical', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+
+    const entry = join(prefix, 'node_modules', 'faux-agent', 'cli.mjs');
+    expect(resolveSpawn('faux-agent', ['--version'])).toEqual({ command: process.execPath, args: [entry, '--version'] });
+
+    // `&`, `|` and `%VAR%` are all live under cmd.exe, so a key shaped like this only
+    // arrives intact while the spawn stays shell-free.
+    const args = ['mcp', 'add', 'ci-hub', '--header', 'Authorization=Bearer a&b|c %PATH%'];
+    const result = run('faux-agent', args);
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  });
+
+  /**
+   * `where` lists the CURRENT DIRECTORY before PATH, so trusting its first hit turns a
+   * planted `openclaw.cmd` plus `node_modules\openclaw\` in whatever folder the user ran
+   * from — a clone, a Downloads directory — into arbitrary code holding the Hub key.
+   * Before the shim resolution existed those files were inert, because spawnSync cannot
+   * start a `.cmd` at all.
+   */
+  it('never resolves a shim planted in the current directory', () => {
+    const genuine = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    const planted = fakePrefix('faux-agent', { 'faux-agent': 'evil.mjs' }, 'evil.mjs');
+    process.env.PATH = `${genuine}${delimiter}${realPath ?? ''}`;
+    process.chdir(planted);
+    asPlatform('win32');
+
+    expect(resolveSpawn('faux-agent', ['mcp', 'add']).args[0]).toBe(join(genuine, 'node_modules', 'faux-agent', 'cli.mjs'));
+  });
+
+  /**
+   * `where` writes its output in the console's OEM codepage, so `C:\Users\José\…` comes
+   * back with a U+FFFD in it and every path derived from it misses. PATH comes from the
+   * environment block, which does not have that problem.
+   */
+  it('resolves a prefix whose path is not ASCII', () => {
+    const parent = join(mkdtempSync(join(tmpdir(), 'connect-agent-enc-')), 'José');
+    mkdirSync(parent, { recursive: true });
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' }, 'cli.mjs', parent);
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+
+    expect(resolveSpawn('faux-agent', []).args[0]).toBe(join(prefix, 'node_modules', 'faux-agent', 'cli.mjs'));
+  });
+
+  /**
+   * The shipped Windows `cihub` is a Bun-compiled single-file binary: execPath is
+   * `cihub.exe`, which does not run a script path handed to it, it forwards it as an
+   * argument — so this substitution would re-enter our own dispatcher and the agent CLI
+   * would never run.
+   */
+  it('does not hand the entrypoint to a compiled cihub binary', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    // A stand-in node.exe ahead of any real one, so the choice is the same everywhere.
+    const runtime = join(prefix, 'node.exe');
+    writeFileSync(runtime, '');
+    process.env.PATH = `${prefix}${delimiter}${realPath ?? ''}`;
+    asPlatform('win32');
+    asExecPath(join('C:\\Program Files\\CI Hub', 'cihub.exe'));
+
+    const target = resolveSpawn('faux-agent', ['plugins', 'install']);
+    expect(target.command).toBe(runtime);
+    expect(target.args).toEqual([join(prefix, 'node_modules', 'faux-agent', 'cli.mjs'), 'plugins', 'install']);
+  });
+
+  // With no runtime to hand it to, the entrypoint is worse than useless: spawning the
+  // compiled binary with it reports "Unknown command" from our own dispatcher instead
+  // of the ENOENT that says the agent CLI is what could not be started.
+  it('falls back to the bare name when no JS runtime is on PATH', () => {
+    const prefix = fakePrefix('faux-agent', { 'faux-agent': 'cli.mjs' });
+    process.env.PATH = prefix;
+    asPlatform('win32');
+    asExecPath(join('C:\\Program Files\\CI Hub', 'cihub.exe'));
+
+    expect(resolveSpawn('faux-agent', ['--version'])).toEqual({ command: 'faux-agent', args: ['--version'] });
+  });
+});
+
+/**
+ * `tar -xzf C:\…\x.tgz` is a remote `host:file` spec to GNU tar, which Git for Windows
+ * ships and puts ahead of System32's bsdtar in any Git Bash shell — the one setup the
+ * pipeline this replaced actually worked on.
+ */
+describe('tar invocation', () => {
+  it('keeps drive letters out of the argv', () => {
+    const { args, cwd } = tarExtractCommand('C:\\Users\\a\\.plugin.incoming.tgz', 'C:\\Users\\a\\.plugin.incoming');
+    expect(cwd).toBe('C:\\Users\\a');
+    expect(args).toEqual(['-xzf', '.plugin.incoming.tgz', '-C', '.plugin.incoming', '--strip-components=1']);
+    for (const arg of args) expect(arg).not.toMatch(/:/);
+  });
+
+  it('extracts a real archive with whichever tar is first on PATH', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'connect-agent-tar-'));
+    const source = join(dir, 'pkg');
+    mkdirSync(source);
+    writeFileSync(join(source, '__init__.py'), '# plugin\n');
+    const archive = join(dir, '.plugin.incoming.tgz');
+    // Built relative for the same reason it is read relative.
+    const built = run('tar', ['-czf', '.plugin.incoming.tgz', 'pkg'], { cwd: dir });
+    expect(built.ok).toBe(true);
+
+    const staging = join(dir, '.plugin.incoming');
+    mkdirSync(staging);
+    const { args, cwd } = tarExtractCommand(archive, staging);
+    const extracted = run('tar', args, { cwd });
+
+    expect(extracted.ok, runFailureMessage(extracted, 'tar')).toBe(true);
+    expect(existsSync(join(staging, '__init__.py'))).toBe(true);
   });
 });
 
@@ -795,6 +1197,29 @@ describe('hermes mcp_servers patch', () => {
     const { text, changed } = patchHermesMcpServers(once, URL, 'k');
     expect(changed).toBe(false);
     expect(text).toBe(once);
+  });
+
+  // A config.yaml touched by a Windows editor is CRLF. Splitting on '\n' alone left a
+  // trailing '\r' on every line: the block was still found (the regexes end in `\s*$`,
+  // and \r is whitespace), but the convergence check compared '\r'-suffixed existing
+  // lines against LF-built replacements and could never match — so a config that was
+  // already correct was rewritten and backed up, and came out with mixed endings.
+  it('is idempotent on a CRLF config, and leaves its endings alone', () => {
+    const before = 'model: gpt\r\nmcp_servers:\r\n  ci_server:\r\n    url: "http://m/api/mcp"\r\n';
+    const once = patchHermesMcpServers(before, URL, 'k');
+    expect(once.changed).toBe(true);
+    expect(once.text).toMatch(/hub:/);
+    // Written back the way it arrived: no LF-only lines spliced into a CRLF file.
+    expect(once.text.split('\n').filter((line) => line !== '' && !line.endsWith('\r'))).toEqual([]);
+
+    const twice = patchHermesMcpServers(once.text, URL, 'k');
+    expect(twice.changed).toBe(false);
+    expect(twice.text).toBe(once.text);
+  });
+
+  it('keeps an LF config LF', () => {
+    const once = patchHermesMcpServers('model: gpt\n', URL, 'k');
+    expect(once.text).not.toMatch(/\r/);
   });
 
   // Caught on a real config, not in this suite: with a blank line between the block and
@@ -901,7 +1326,7 @@ describe('writeFileAtomic', () => {
 
     writeFileAtomic(target, 'with-a-token\n');
 
-    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target);
   });
 
   it('creates a new file at 0600 and leaves no temp file behind', () => {
@@ -910,7 +1335,7 @@ describe('writeFileAtomic', () => {
 
     writeFileAtomic(target, 'contents\n');
 
-    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expectPrivateMode(target);
     expect(readdirSync(join(dir, 'nested'))).toEqual(['config.yaml']);
   });
 });

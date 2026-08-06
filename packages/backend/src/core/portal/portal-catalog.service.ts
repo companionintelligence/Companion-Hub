@@ -39,6 +39,8 @@ type PortalCatalogApp = {
   url_suffix?: string;
   hub_integration?: unknown;
   mcp?: unknown;
+  screenshots?: string[];
+  demo_video?: string;
 };
 
 export type PortalCatalogEntry = {
@@ -273,6 +275,10 @@ export class PortalCatalogService {
       force_pull: app.force_pull === true ? true : undefined,
       url_suffix: typeof app.url_suffix === 'string' ? app.url_suffix : undefined,
       hub_integration: app.hub_integration,
+      screenshots: Array.isArray(app.screenshots)
+        ? app.screenshots.filter((item): item is string => typeof item === 'string' && item.length > 0)
+        : undefined,
+      demo_video: typeof app.demo_video === 'string' && app.demo_video.length > 0 ? app.demo_video : undefined,
     });
 
     if (!parsed.success) {
@@ -336,6 +342,42 @@ export class PortalCatalogService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Portal icon fetch failed for ${appUrn}: ${message}`);
+      return null;
+    }
+  }
+
+  async fetchStoreAppDetails(appSlug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {
+    if (!this.isCiMarketplaceUrn(`${appSlug}:ci-marketplace` as AppUrn)) {
+      return null;
+    }
+
+    return this.portalClient.fetchStoreAppDetails(appSlug);
+  }
+
+  async fetchScreenshotImage(appUrn: AppUrn, filename: string): Promise<{ image: Buffer; etag: string; contentType: string } | null> {
+    if (!this.isCiMarketplaceUrn(appUrn)) return null;
+
+    const { appName } = extractAppUrn(appUrn);
+    const publicPortalUrl = this.portalClient.getPublicPortalUrl();
+    if (!publicPortalUrl) return null;
+
+    const screenshotUrl = `${publicPortalUrl.replace(/\/+$/, '')}/api/store/${encodeURIComponent(appName)}/screenshots/${encodeURIComponent(filename)}`;
+
+    try {
+      const response = await axios.get<ArrayBuffer>(screenshotUrl, {
+        responseType: 'arraybuffer',
+        timeout: 15_000,
+        validateStatus: (status) => status >= 200 && status < 300,
+      });
+      const image = Buffer.from(response.data);
+      if (image.length === 0) return null;
+
+      const contentType = typeof response.headers['content-type'] === 'string' ? response.headers['content-type'] : 'image/png';
+      const etag = `"portal-screenshot-${createHash('sha1').update(screenshotUrl).digest('hex')}"`;
+      return { image, etag, contentType };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Portal screenshot fetch failed for ${appUrn}/${filename}: ${message}`);
       return null;
     }
   }

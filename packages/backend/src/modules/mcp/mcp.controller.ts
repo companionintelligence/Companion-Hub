@@ -1,11 +1,14 @@
 import { Controller, Delete, Get, Headers, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isLegacyRequest } from '@modelcontextprotocol/server';
+import { toWebRequest } from '@modelcontextprotocol/node';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { McpAuthGuard } from './mcp-auth.guard';
 import { McpSessionRegistry } from './mcp-session.registry';
+import { McpModernHandlerService } from './mcp-modern-handler.service';
 import { mcpCallContext } from './mcp-call-context';
 
 /**
@@ -17,27 +20,45 @@ import { mcpCallContext } from './mcp-call-context';
  * {@link McpSessionRegistry}; this controller is the thin HTTP layer. Auth is a Bearer key from the
  * hashed key store carrying the `mcp` scope ({@link McpAuthGuard} — no env credential); the endpoint
  * is rate-limited ({@link ThrottlerGuard}).
- * Mirrors the CI-Server MCP controller for cross-repo consistency.
+ *
+ * Phase 3 dual-stack: legacy sessionful 2025 clients (`initialize` + `Mcp-Session-Id`) are routed to
+ * the v1 session registry; 2026-07-28 stateless clients (per-request `_meta` envelope) are served by
+ * {@link McpModernHandlerService}.
  */
 @Controller('mcp')
 @UseGuards(ThrottlerGuard, McpAuthGuard)
 export class McpController {
   constructor(
     private readonly sessions: McpSessionRegistry,
+    private readonly modernHandler: McpModernHandlerService,
     private readonly logger: LoggerService,
   ) {}
 
   /**
-   * POST /api/mcp — every JSON-RPC message (initialize, tools/list, tools/call, …). An `initialize`
-   * with no session header creates a new transport + SDK server; subsequent calls must carry the
-   * `Mcp-Session-Id` header issued at initialize.
+   * POST /api/mcp — every JSON-RPC message (initialize, tools/list, tools/call, …). Legacy clients
+   * send `initialize` without a modern envelope and receive a session id; 2026 clients omit sessions
+   * and are handled statelessly per request.
    */
-  // The SDK transport writes 200 for a successful JSON-RPC response (error paths set their own status
-  // via sendJsonRpcError). Declare 200 explicitly so generated OpenAPI docs don't default this POST
-  // to 201 and mislead clients — @Res() means Nest applies no status itself, so this is doc-only.
   @Post()
   @HttpCode(200)
   async handlePost(@Req() req: Request, @Res() res: Response): Promise<void> {
+    const webRequest = await toWebRequest(req, req.body);
+    if (await isLegacyRequest(webRequest, req.body)) {
+      return this.handleLegacyPost(req, res);
+    }
+
+    try {
+      await this.withCallerContext(req, () => this.modernHandler.handleRequest(req, res, req.body));
+    } catch (error) {
+      this.logger.error('MCP modern request handling failed', error);
+      if (!res.headersSent) {
+        this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
+      }
+    }
+  }
+
+  /** Sessionful Streamable HTTP path for 2025-era MCP clients. */
+  private async handleLegacyPost(@Req() req: Request, @Res() res: Response): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     let transport = sessionId ? this.sessions.get(sessionId) : undefined;
@@ -45,8 +66,6 @@ export class McpController {
       this.sendJsonRpcError(res, 404, -32001, 'Session not found; send an initialize request first.');
       return;
     }
-    // A brand-new transport connects a fresh SDK server that must be released if the request fails or
-    // never establishes a session — otherwise each failed initialize leaks a server + transport.
     const isNewTransport = !transport;
     if (!transport) {
       if (!isInitializeRequest(req.body)) {
@@ -56,8 +75,6 @@ export class McpController {
       try {
         transport = await this.sessions.createConnectedTransport();
       } catch (error) {
-        // Transport/server construction failed before anything was written — envelope it instead of
-        // leaking Nest's generic 500 (the registry releases its half-constructed pair on failure).
         this.logger.error('MCP session creation failed', error);
         this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
         return;
@@ -65,24 +82,18 @@ export class McpController {
     }
 
     try {
-      // Run inside the calling key's context so the SDK's tools/list and tools/call handlers — which
-      // the session's server registered once, with no seam to pass a request through — can see who is
-      // calling and enforce that key's capability.
       await this.withCallerContext(req, () => transport.handleRequest(req, res, req.body));
     } catch (error) {
       this.logger.error('MCP request handling failed', error);
       if (isNewTransport) {
         transport.close().catch(() => undefined);
       }
-      // handleRequest may have already streamed a partial response; only send an envelope if not.
       if (!res.headersSent) {
         this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
       }
       return;
     }
 
-    // The SDK assigns the session id while handling `initialize`; record it once available. If a new
-    // transport finished without a session id (initialize rejected), close it so its server isn't leaked.
     if (isNewTransport) {
       if (transport.sessionId) {
         this.sessions.store(transport);
@@ -107,9 +118,6 @@ export class McpController {
     try {
       await this.withCallerContext(req, () => transport.handleRequest(req, res));
     } catch (error) {
-      // Mirror handlePost: log + envelope instead of leaking Nest's generic 500. The transport
-      // belongs to the registry (an existing session); one failed stream open doesn't invalidate the
-      // session, so it is NOT closed here.
       this.logger.error('MCP stream handling failed', error);
       if (!res.headersSent) {
         this.sendJsonRpcError(res, 500, -32603, 'Internal error handling MCP request.');
@@ -127,26 +135,15 @@ export class McpController {
     try {
       await this.sessions.remove(sessionId);
     } catch (error) {
-      // remove() deregisters the session even when the transport's close fails, so from the client's
-      // perspective the teardown succeeded — log the close failure and keep the 204.
       this.logger.warn('MCP session close failed during DELETE', error);
     }
   }
 
-  /**
-   * Run `fn` inside the async context of the key {@link McpAuthGuard} authenticated for this request.
-   *
-   * The guard runs before every method on this controller, so the key is always present; the fallback
-   * exists because Express's request type cannot prove that, and the fail-closed default lives in the
-   * registry rather than here (a fabricated 'read' context would look like a real one). Not run inside
-   * a context at all is therefore the honest representation of "unknown caller".
-   */
   private withCallerContext<T>(req: Request & { mcpApiKey?: ApiKeyContext }, fn: () => Promise<T>): Promise<T> {
     const caller = req.mcpApiKey;
     return caller ? mcpCallContext.run(caller, fn) : fn();
   }
 
-  /** Write a JSON-RPC error envelope with an HTTP status (used for transport-level rejections). */
   private sendJsonRpcError(res: Response, httpStatus: number, code: number, message: string): void {
     res.status(httpStatus).json({ jsonrpc: '2.0', error: { code, message }, id: null });
   }

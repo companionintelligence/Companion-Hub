@@ -14,8 +14,10 @@ import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { HardDrive, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
-import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
+import { AppMediaGallery } from '../components/app-media-gallery/app-media-gallery';
+import { useAppMedia } from '../hooks/use-app-media';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
@@ -68,6 +70,8 @@ export default () => {
     noGui: getApp.data?.info?.no_gui,
     exposureMode: getApp.data?.app?.exposureMode,
   });
+
+  const appMedia = useAppMedia(appUrn, getApp.isSuccess);
 
   const { userSettings } = useAppContext();
 
@@ -197,9 +201,16 @@ export default () => {
         </CardContent>
       </Card>
 
+      <AppMediaGallery
+        appName={info?.name ?? appUrn}
+        screenshots={appMedia.data?.screenshots ?? []}
+        demoVideoUrl={appMedia.data?.demoVideoUrl ?? null}
+        isLoading={appMedia.isLoading}
+      />
+
       <AppAccessPoints app={app} info={info} />
 
-      <McpAccessCard app={app} info={info} />
+      <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
 
       {/* Main Content - two-column portal layout */}
       <AppDetailsTabs

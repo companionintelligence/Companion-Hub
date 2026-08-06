@@ -66,6 +66,11 @@ const createAppStoreBodySchema = z.object({
   url: z.string().url(),
 });
 
+const appMediaSchema = z.object({
+  screenshots: z.array(z.string()),
+  demoVideoUrl: z.string().nullable(),
+});
+
 // App info
 export class MetadataDto extends createZodDto(metadataSchema) {}
 
@@ -82,3 +87,4 @@ export class AllAppStoresDto extends createZodDto(allAppStoresSchema) {}
 export class UpdateAppStoreBodyDto extends createZodDto(updateAppStoreBodySchema) {}
 export class CreateAppStoreBodyDto extends createZodDto(createAppStoreBodySchema) {}
 export class UpdateAppStoreDto extends createZodDto(successResponseSchema) {}
+export class AppMediaDto extends createZodDto(appMediaSchema) {}

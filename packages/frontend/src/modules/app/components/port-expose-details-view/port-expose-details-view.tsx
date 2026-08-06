@@ -121,7 +121,6 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
                     size="icon"
                     variant="ghost"
                     aria-label={t('COMMON_SETTINGS')}
-                    title={t('COMMON_SETTINGS')}
                     data-testid="icon-action-settings"
                     data-tooltip-id="port-expose-actions-tooltip"
                     data-tooltip-content={t('COMMON_SETTINGS')}
@@ -135,7 +134,6 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
                     size="icon"
                     variant="ghost"
                     aria-label={t('COMMON_REMOVE')}
-                    title={t('COMMON_REMOVE')}
                     data-testid="icon-action-remove"
                     data-tooltip-id="port-expose-actions-tooltip"
                     data-tooltip-content={t('COMMON_REMOVE')}
@@ -162,7 +160,7 @@ export const PortExposeDetailsView = ({ app, info }: Props) => {
         </CardContent>
       </Card>
 
-      <Tooltip id="port-expose-actions-tooltip" className="tooltip" />
+      <Tooltip id="port-expose-actions-tooltip" className="tooltip" positionStrategy="fixed" />
 
       <PortExposeSettingsDialog app={app} info={info} isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <UninstallDialog info={info} isOpen={removeOpen} onClose={() => setRemoveOpen(false)} />

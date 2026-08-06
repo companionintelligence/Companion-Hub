@@ -20,6 +20,7 @@ import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -584,6 +585,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await emitProgress(99);
       await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+
+      try {
+        const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
+        mcpProbe?.scheduleProbe(appUrn);
+      } catch (probeErr) {
+        logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
+      }
+
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation

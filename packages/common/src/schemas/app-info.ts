@@ -255,12 +255,24 @@ export type MemoryUrlStyle = NonNullable<NonNullable<NonNullable<HubIntegration>
 export const MCP_TRANSPORTS = ['stdio', 'http'] as const;
 export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 
+export const MCP_LAUNCH_MODES = ['container_exec', 'host_docker'] as const;
+export type MarketplaceMcpLaunchMode = (typeof MCP_LAUNCH_MODES)[number];
+
 export const mcpEnvVarSchema = z.looseObject({
   key: z.string(),
   label: z.string().optional(),
   hint: z.string().optional(),
   required: z.boolean().optional().default(false),
   secret: z.boolean().optional().default(false),
+});
+
+/** Auth the Hub bridge sends when connecting to an HTTP MCP server. */
+export const marketplaceMcpAuthSchema = z.looseObject({
+  type: z.enum(['bearer', 'basic', 'api_key', 'none']).default('bearer'),
+  token_env: z.string(),
+  header: z.string().optional(),
+  api_key_name: z.string().optional(),
+  api_key_in: z.enum(['header', 'query']).optional(),
 });
 
 export const mcpManifestSchema = z.looseObject({
@@ -274,11 +286,19 @@ export const mcpManifestSchema = z.looseObject({
 
 export const marketplaceMcpSchema = z.looseObject({
   transport: z.enum(MCP_TRANSPORTS),
+  /**
+   * How CI Hub spawns stdio servers:
+   * - `container_exec` (default): `docker exec -i <main-container> <command…>`
+   * - `host_docker`: run `<command…>` on the Hub host (for catalog entries whose MCP is `docker run …`)
+   */
+  launch: z.enum(MCP_LAUNCH_MODES).optional(),
   /** Executable for stdio servers (e.g. "uvx"); empty/absent for hosted http listings. */
   command: z.string().optional().default(''),
   args: z.array(z.string()).optional().default([]),
   /** Endpoint for http-transport servers, when the listing pins one. */
   url: z.string().optional(),
+  /** Bearer/basic auth for HTTP MCP endpoints (token read from app.env at bridge time). */
+  auth: marketplaceMcpAuthSchema.optional(),
   env: z.array(mcpEnvVarSchema).optional().default([]),
   requires: z
     .looseObject({
@@ -397,6 +417,10 @@ export const appInfoObjectSchema = z.object({
   force_pull: z.boolean().optional().default(false),
   /** When set, Hub pins all compose services to this Docker platform (e.g. linux/amd64 on Apple Silicon). */
   runtime_platform: z.string().optional(),
+  /** Absolute URLs or relative paths to screenshot assets (e.g. metadata/screenshots/…). */
+  screenshots: z.array(z.string().min(1)).optional(),
+  /** Absolute URL or relative path to a demo/preview video (e.g. metadata/media/…). */
+  demo_video: z.string().min(1).optional(),
   /** Discriminator for user workloads that proxy an existing host port (no Docker app). */
   kind: z.enum(['port-expose']).optional(),
   /** Host port the workload listens on when `kind` is `port-expose`. */

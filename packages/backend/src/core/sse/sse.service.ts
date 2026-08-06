@@ -1,5 +1,4 @@
 import { DockerService } from '@/modules/docker/docker.service';
-import { colorizeLogs } from '@/modules/docker/helpers/colorize-logs';
 import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
 import type { SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -98,20 +97,16 @@ export class SSEService implements OnApplicationShutdown {
       });
 
       on('data', async (data) => {
-        let lines: string[] = [];
-
         try {
-          lines = await colorizeLogs(
-            data
-              .toString()
-              .split(/(?:\r\n|\r|\n)/g)
-              .filter(Boolean),
-          );
+          const lines = data
+            .toString()
+            .split(/(?:\r\n|\r|\n)/g)
+            .filter(Boolean);
 
           const payload = appUrn ? { appUrn, lines, event: 'newLogs' as const } : { lines, event: 'newLogs' as const };
           this.emit(topic, payload, appUrn);
         } catch (error) {
-          this.logger.error('Error colorizing logs:', error);
+          this.logger.error('Error processing logs:', error);
         }
       });
 

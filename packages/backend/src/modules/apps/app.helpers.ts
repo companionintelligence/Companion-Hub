@@ -26,6 +26,7 @@ import { isOfficialStoreApp } from './official-store.predicate';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
  * Hub master secrets that must never reach an app container.
@@ -231,6 +232,8 @@ export class AppHelpers {
       throw new Error(`App ${appUrn} not found`);
     }
 
+    const mergedForm = mergeFormFieldDefaults(form as Record<string, unknown>, config.form_fields ?? []) as AppEventFormInput;
+
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
@@ -349,7 +352,7 @@ export class AppHelpers {
         continue;
       }
 
-      const formValue = form[field.env_variable];
+      const formValue = mergedForm[field.env_variable];
       const envVar = field.env_variable;
 
       if (field.type === 'random') {

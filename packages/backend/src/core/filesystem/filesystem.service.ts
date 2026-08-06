@@ -230,6 +230,15 @@ export class FilesystemService {
     return await fs.promises.stat(this.getSafeFilePath(filePath));
   }
 
+  /**
+   * Open a read stream over an allowed path, optionally for a byte range.
+   * Prefer this over `readBinaryFile` for anything large enough to matter (media, archives) so the
+   * whole payload never has to sit in the appliance's heap.
+   */
+  public createReadStream(filePath: string, options?: { start?: number; end?: number }): fs.ReadStream {
+    return fs.createReadStream(this.getSafeFilePath(filePath), options);
+  }
+
   async getFileEtag(filePath: string): Promise<string | null> {
     try {
       const stats = await this.getStats(filePath);

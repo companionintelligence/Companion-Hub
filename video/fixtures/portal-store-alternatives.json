@@ -1,0 +1,1620 @@
+{
+  "utilities": [
+    {
+      "proprietary": [
+        {
+          "name": "Microsoft Office",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.microsoft.com",
+          "url": null
+        },
+        {
+          "name": "Google Workspace",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://workspace.google.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "OnlyOffice",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.onlyoffice.com",
+          "url": "https://www.onlyoffice.com/",
+          "appSlug": "onlyoffice"
+        },
+        {
+          "name": "LibreOffice",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.libreoffice.org",
+          "url": "https://www.libreoffice.org/",
+          "appSlug": "libreoffice"
+        },
+        {
+          "name": "Collabora Online",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.collaboraoffice.com",
+          "url": "https://www.collaboraoffice.com/",
+          "appSlug": "collabora-online"
+        },
+        {
+          "name": "CryptPad",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cryptpad.org",
+          "url": "https://cryptpad.org/",
+          "appSlug": "cryptpad"
+        },
+        {
+          "name": "EtherCalc",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ethercalc.net",
+          "url": "https://ethercalc.net/",
+          "appSlug": "ethercalc"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Notion",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.notion.so",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "AppFlowy",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://appflowy.io",
+          "url": "https://appflowy.io/",
+          "appSlug": "appflowy"
+        },
+        {
+          "name": "Affine",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://affine.pro",
+          "url": "https://affine.pro/",
+          "appSlug": "affine"
+        },
+        {
+          "name": "Logseq",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://logseq.com",
+          "url": "https://logseq.com/",
+          "appSlug": "logseq"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Evernote",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://evernote.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Joplin",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://joplinapp.org",
+          "url": "https://joplinapp.org/",
+          "appSlug": "joplin"
+        },
+        {
+          "name": "Standard Notes",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://standardnotes.com",
+          "url": "https://standardnotes.com/",
+          "appSlug": "standard-notes"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "DocuSign",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.docusign.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "DocuSeal",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://docuseal.co",
+          "url": "https://docuseal.co/",
+          "appSlug": "docuseal"
+        },
+        {
+          "name": "Documenso",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://documenso.com",
+          "url": "https://documenso.com/",
+          "appSlug": "documenso"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "TeamViewer",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.teamviewer.com",
+          "url": null
+        },
+        {
+          "name": "AnyDesk",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://anydesk.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Remmina",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://remmina.org",
+          "url": "https://remmina.org/",
+          "appSlug": "remmina"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "AirDrop",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://support.apple.com/en-us/HT204144",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "PairDrop",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://pairdrop.net",
+          "url": "https://pairdrop.net/",
+          "appSlug": "pairdrop"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Confluence",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.atlassian.com/software/confluence",
+          "url": null
+        },
+        {
+          "name": "Notion",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.notion.so",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Docmost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://docmost.com",
+          "url": "https://docmost.com/",
+          "appSlug": "docmost"
+        },
+        {
+          "name": "Novel",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://novel.sh",
+          "url": "https://github.com/steven-tey/novel",
+          "appSlug": "novel"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Adobe Acrobat",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.adobe.com/acrobat",
+          "url": null
+        },
+        {
+          "name": "Smallpdf",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://smallpdf.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Stirling PDF",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://stirlingpdf.io",
+          "url": "https://github.com/Stirling-Tools/Stirling-PDF",
+          "appSlug": "stirling-pdf"
+        },
+        {
+          "name": "BentoPDF",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://bentopdf.com",
+          "url": "https://bentopdf.com/",
+          "appSlug": "bentopdf"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Google Search",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.google.com",
+          "url": null
+        },
+        {
+          "name": "Bing",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.bing.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "SearXNG",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://docs.searxng.org",
+          "url": "https://github.com/searxng/searxng",
+          "appSlug": "searxng"
+        },
+        {
+          "name": "Kiwix",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://kiwix.org",
+          "url": "https://www.kiwix.org/",
+          "appSlug": "kiwix"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Parallels Desktop",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.parallels.com/products/desktop/",
+          "url": null
+        },
+        {
+          "name": "VMware Workstation Pro",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.vmware.com/products/workstation-pro.html",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Windows (Docker)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/dockur/windows",
+          "url": "https://github.com/dockur/windows",
+          "appSlug": "windows"
+        },
+        {
+          "name": "Windows ARM (Docker)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/dockur/windows-arm",
+          "url": "https://github.com/dockur/windows-arm",
+          "appSlug": "windows-arm"
+        },
+        {
+          "name": "macOS (Docker)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/dockur/macos",
+          "url": "https://github.com/dockur/macos",
+          "appSlug": "macos"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "CloudConvert",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cloudconvert.com",
+          "url": null
+        },
+        {
+          "name": "Zamzar",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.zamzar.com",
+          "url": null
+        },
+        {
+          "name": "Convertio",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://convertio.co",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Convert to it!",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://convert.to.it",
+          "url": "https://convert.to.it/",
+          "appSlug": "convert"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "DevUtils",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://devutils.app",
+          "url": null
+        },
+        {
+          "name": "Browserling Tools",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.browserling.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "IT-Tools",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://it-tools.tech",
+          "url": "https://it-tools.tech/",
+          "appSlug": "it-tools"
+        },
+        {
+          "name": "CyberChef",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://gchq.github.io",
+          "url": "https://gchq.github.io/CyberChef/",
+          "appSlug": "cyberchef"
+        }
+      ]
+    }
+  ],
+  "social": [
+    {
+      "proprietary": [
+        {
+          "name": "Squarespace",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.squarespace.com",
+          "url": null
+        },
+        {
+          "name": "Wix",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.wix.com",
+          "url": null
+        },
+        {
+          "name": "Medium",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://medium.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "WordPress",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://wordpress.org",
+          "url": "https://wordpress.org/",
+          "appSlug": "wordpress"
+        },
+        {
+          "name": "Ghost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ghost.org",
+          "url": "https://ghost.org/",
+          "appSlug": "ghost"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Slack",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://slack.com",
+          "url": null
+        },
+        {
+          "name": "Discord",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://discord.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Mattermost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://mattermost.com",
+          "url": "https://mattermost.com/",
+          "appSlug": "mattermost"
+        },
+        {
+          "name": "Rocket.Chat",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://rocket.chat",
+          "url": "https://rocket.chat/",
+          "appSlug": "rocketchat"
+        },
+        {
+          "name": "Element",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://element.io",
+          "url": "https://element.io/",
+          "appSlug": "element"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Zoom",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://zoom.us",
+          "url": null
+        },
+        {
+          "name": "Microsoft Teams",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.microsoft.com/teams",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Jitsi Meet",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://jitsi.org",
+          "url": "https://jitsi.org/",
+          "appSlug": "jitsi"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Intercom",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.intercom.com",
+          "url": null
+        },
+        {
+          "name": "Zendesk",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.zendesk.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Chatwoot",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.chatwoot.com",
+          "url": "https://www.chatwoot.com/",
+          "appSlug": "chatwoot"
+        },
+        {
+          "name": "Papercups",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://papercups.io",
+          "url": "https://papercups.io/",
+          "appSlug": "papercups"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Buffer",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://buffer.com",
+          "url": null
+        },
+        {
+          "name": "Hootsuite",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.hootsuite.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Postiz",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://postiz.com",
+          "url": "https://postiz.com/",
+          "appSlug": "postiz"
+        },
+        {
+          "name": "Mixpost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://mixpost.app",
+          "url": "https://mixpost.app/",
+          "appSlug": "mixpost"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Mailchimp",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://mailchimp.com",
+          "url": null
+        },
+        {
+          "name": "ConvertKit",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://convertkit.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Keila",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.keila.io",
+          "url": "https://www.keila.io/",
+          "appSlug": "keila"
+        },
+        {
+          "name": "Ghost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ghost.org",
+          "url": "https://ghost.org/",
+          "appSlug": "ghost"
+        },
+        {
+          "name": "Listmonk",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://listmonk.app",
+          "url": "https://listmonk.app/",
+          "appSlug": "listmonk"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Google Workspace",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://workspace.google.com",
+          "url": null
+        },
+        {
+          "name": "Microsoft Exchange Online",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.microsoft.com/microsoft-365/exchange/email",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Stalwart",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://stalw.art",
+          "url": "https://github.com/stalwartlabs/mail-server",
+          "appSlug": "stalwart-mail"
+        }
+      ]
+    }
+  ],
+  "development": [
+    {
+      "proprietary": [
+        {
+          "name": "Jira",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.atlassian.com/software/jira",
+          "url": null
+        },
+        {
+          "name": "Asana",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://asana.com",
+          "url": null
+        },
+        {
+          "name": "Trello",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://trello.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Plane",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://plane.so",
+          "url": "https://plane.so/",
+          "appSlug": "plane"
+        },
+        {
+          "name": "OpenProject",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.openproject.org",
+          "url": "https://www.openproject.org/",
+          "appSlug": "openproject"
+        },
+        {
+          "name": "Taiga",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://taiga.io",
+          "url": "https://taiga.io/",
+          "appSlug": "taiga"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "GitHub",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com",
+          "url": null
+        },
+        {
+          "name": "GitLab (SaaS)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://gitlab.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Gitea",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://about.gitea.com",
+          "url": "https://about.gitea.com/",
+          "appSlug": "gitea"
+        },
+        {
+          "name": "GitLab (Self-hosted)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://about.gitlab.com",
+          "url": "https://about.gitlab.com/install/",
+          "appSlug": "gitlab"
+        },
+        {
+          "name": "Forgejo",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://forgejo.org",
+          "url": "https://forgejo.org/",
+          "appSlug": "forgejo"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "VS Code (Proprietary)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://code.visualstudio.com",
+          "url": null
+        },
+        {
+          "name": "Cursor",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cursor.sh",
+          "url": "https://cursor.sh/"
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "code-server",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://coder.com",
+          "url": "https://github.com/coder/code-server",
+          "appSlug": "code-server"
+        },
+        {
+          "name": "Arkanum",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://gitea.ocram85.com/arkanum/arkanum",
+          "url": "https://gitea.ocram85.com/arkanum/arkanum",
+          "appSlug": "arkanum"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Postman",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.postman.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Hoppscotch",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://hoppscotch.io",
+          "url": "https://hoppscotch.io/",
+          "appSlug": "hoppscotch"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Datadog",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.datadoghq.com",
+          "url": null
+        },
+        {
+          "name": "New Relic",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://newrelic.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Uptime Kuma",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://uptime.kuma.pet",
+          "url": "https://github.com/louislam/uptime-kuma",
+          "appSlug": "uptime-kuma"
+        },
+        {
+          "name": "Netdata",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.netdata.cloud",
+          "url": "https://www.netdata.cloud/",
+          "appSlug": "netdata"
+        },
+        {
+          "name": "Prometheus",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://prometheus.io",
+          "url": "https://prometheus.io/",
+          "appSlug": "prometheus"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Splunk",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.splunk.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Graylog",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://graylog.org",
+          "url": "https://graylog.org/",
+          "appSlug": "graylog"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "CircleCI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://circleci.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Woodpecker CI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://woodpecker-ci.org",
+          "url": "https://woodpecker-ci.org/",
+          "appSlug": "woodpecker-ci"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Jira",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.atlassian.com/software/jira",
+          "url": null
+        },
+        {
+          "name": "Asana",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://asana.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Leantime",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://leantime.io",
+          "url": "https://leantime.io/",
+          "appSlug": "leantime"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Harvest",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.getharvest.com",
+          "url": null
+        },
+        {
+          "name": "Toggl Track",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://toggl.com/track/",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Solidtime",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/solidtime-io/solidtime",
+          "url": "https://github.com/solidtime-io/solidtime",
+          "appSlug": "solidtime"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Lucidchart",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.lucidchart.com",
+          "url": null
+        },
+        {
+          "name": "Microsoft Visio",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.microsoft.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "draw.io",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.drawio.com",
+          "url": "https://www.drawio.com/",
+          "appSlug": "drawio"
+        },
+        {
+          "name": "Mermaid Live",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://mermaid.live",
+          "url": "https://mermaid.live/",
+          "appSlug": "mermaid-live"
+        },
+        {
+          "name": "ASCIIFlow",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://asciiflow.com",
+          "url": "https://asciiflow.com/",
+          "appSlug": "asciiflow"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "dbdiagram.io",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://dbdiagram.io",
+          "url": null
+        },
+        {
+          "name": "Vertabelo",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://vertabelo.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "drawDB",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://drawdb.app",
+          "url": "https://drawdb.app/",
+          "appSlug": "drawdb"
+        }
+      ]
+    }
+  ],
+  "data": [
+    {
+      "proprietary": [
+        {
+          "name": "Airtable",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.airtable.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "NocoDB",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://nocodb.com",
+          "url": "https://nocodb.com/",
+          "appSlug": "nocodb"
+        },
+        {
+          "name": "Teable",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://teable.io",
+          "url": "https://teable.io/",
+          "appSlug": "teable"
+        },
+        {
+          "name": "Baserow",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://baserow.io",
+          "url": "https://baserow.io/",
+          "appSlug": "baserow"
+        },
+        {
+          "name": "Grist",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.getgrist.com",
+          "url": "https://www.getgrist.com/",
+          "appSlug": "grist"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Google Drive",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://drive.google.com",
+          "url": null
+        },
+        {
+          "name": "Dropbox",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.dropbox.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Nextcloud",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://nextcloud.com",
+          "url": "https://nextcloud.com/",
+          "appSlug": "nextcloud"
+        },
+        {
+          "name": "Seafile",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.seafile.com",
+          "url": "https://www.seafile.com/",
+          "appSlug": "seafile"
+        },
+        {
+          "name": "Filebrowser",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://filebrowser.org",
+          "url": "https://filebrowser.org/",
+          "appSlug": "file-browser"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Firebase",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://firebase.google.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "PocketBase",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://pocketbase.io",
+          "url": "https://pocketbase.io/",
+          "appSlug": "pocketbase"
+        },
+        {
+          "name": "Appwrite",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://appwrite.io",
+          "url": "https://appwrite.io/",
+          "appSlug": "appwrite"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Salesforce",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.salesforce.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Odoo",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.odoo.com",
+          "url": "https://www.odoo.com/",
+          "appSlug": "odoo"
+        },
+        {
+          "name": "Twenty",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://twenty.com",
+          "url": "https://twenty.com/",
+          "appSlug": "twenty"
+        },
+        {
+          "name": "EspoCRM",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.espocrm.com",
+          "url": "https://www.espocrm.com/",
+          "appSlug": "espocrm"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Google Analytics",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://analytics.google.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Plausible",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://plausible.io",
+          "url": "https://plausible.io/",
+          "appSlug": "plausible"
+        },
+        {
+          "name": "Umami",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://umami.is",
+          "url": "https://umami.is/",
+          "appSlug": "umami"
+        }
+      ]
+    }
+  ],
+  "media": [
+    {
+      "proprietary": [
+        {
+          "name": "GeForce Now",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.nvidia.com/en-us/geforce-now",
+          "url": null
+        },
+        {
+          "name": "Xbox Cloud Gaming",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.xbox.com/en-US/play",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Steam Headless",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/Steam-Headless/docker-steam-headless",
+          "url": "https://github.com/Steam-Headless/docker-steam-headless",
+          "appSlug": "steam-headless"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Figma",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.figma.com",
+          "url": null
+        },
+        {
+          "name": "Sketch",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.sketch.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Penpot",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://penpot.app",
+          "url": "https://penpot.app/",
+          "appSlug": "penpot"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Adobe Illustrator",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.adobe.com/products/illustrator.html",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Inkscape",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://inkscape.org",
+          "url": "https://inkscape.org/",
+          "appSlug": "inkscape"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Miro",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://miro.com",
+          "url": null
+        },
+        {
+          "name": "Mural",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.mural.co",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Excalidraw",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://excalidraw.com",
+          "url": "https://excalidraw.com/",
+          "appSlug": "excalidraw"
+        },
+        {
+          "name": "Tldraw",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://tldraw.com",
+          "url": "https://tldraw.com/",
+          "appSlug": "tldraw"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Nintendo Switch Online",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.nintendo.com/switch/online/",
+          "url": null
+        },
+        {
+          "name": "Antstream Arcade",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.antstream.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "EmulatorJS",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/EmulatorJS/EmulatorJS",
+          "url": "https://github.com/EmulatorJS/EmulatorJS",
+          "appSlug": "emulatorjs"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Adobe Audition",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.adobe.com",
+          "url": null
+        },
+        {
+          "name": "TwistedWave",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://twistedwave.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "AudioMass",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://audiomass.co",
+          "url": "https://audiomass.co/",
+          "appSlug": "audiomass"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "MagicaVoxel",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ephtracy.github.io",
+          "url": null
+        },
+        {
+          "name": "Autodesk Maya",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.autodesk.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Blockbench",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.blockbench.net",
+          "url": "https://www.blockbench.net/",
+          "appSlug": "blockbench"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Amazon Kindle",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.amazon.com",
+          "url": null
+        },
+        {
+          "name": "Apple Books",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://books.apple.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Koodo Reader",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://koodoreader.com",
+          "url": "https://koodoreader.com/",
+          "appSlug": "koodo-reader"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "CapCut",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.capcut.com",
+          "url": null
+        },
+        {
+          "name": "Clipchamp",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://clipchamp.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "OpenCut",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://opencut.app",
+          "url": "https://opencut.app/",
+          "appSlug": "opencut"
+        }
+      ]
+    }
+  ],
+  "automation": [
+    {
+      "proprietary": [
+        {
+          "name": "Google Home",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://home.google.com",
+          "url": null
+        },
+        {
+          "name": "Amazon Alexa",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://alexa.amazon.com",
+          "url": null
+        },
+        {
+          "name": "Apple HomeKit",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.apple.com/home-app",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Home Assistant",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.home-assistant.io",
+          "url": "https://www.home-assistant.io/",
+          "appSlug": "home-assistant"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Zapier",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://zapier.com",
+          "url": null
+        },
+        {
+          "name": "Make",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.make.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "n8n",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://n8n.io",
+          "url": "https://n8n.io/",
+          "appSlug": "n8n"
+        },
+        {
+          "name": "Activepieces",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.activepieces.com",
+          "url": "https://www.activepieces.com/",
+          "appSlug": "activepieces"
+        },
+        {
+          "name": "Flowise",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://flowiseai.com",
+          "url": "https://flowiseai.com/",
+          "appSlug": "flowise"
+        }
+      ]
+    }
+  ],
+  "security": [
+    {
+      "proprietary": [
+        {
+          "name": "Ring",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ring.com",
+          "url": null
+        },
+        {
+          "name": "Nest Cam",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://store.google.com/category/cameras",
+          "url": null
+        },
+        {
+          "name": "Arlo",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.arlo.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Frigate",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://frigate.video",
+          "url": "https://frigate.video/",
+          "appSlug": "frigate"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "LastPass",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.lastpass.com",
+          "url": null
+        },
+        {
+          "name": "1Password",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://1password.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Vaultwarden",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/dani-garcia/vaultwarden",
+          "url": "https://github.com/dani-garcia/vaultwarden",
+          "appSlug": "vaultwarden"
+        },
+        {
+          "name": "Passbolt",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.passbolt.com",
+          "url": "https://www.passbolt.com/",
+          "appSlug": "passbolt"
+        },
+        {
+          "name": "TeamPass",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://teampass.net",
+          "url": "https://teampass.net/",
+          "appSlug": "teampass"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "AdGuard",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://adguard.com",
+          "url": null
+        },
+        {
+          "name": "NextDNS",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://nextdns.io",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Pi-hole",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://pi-hole.net",
+          "url": "https://pi-hole.net/",
+          "appSlug": "pi-hole"
+        },
+        {
+          "name": "AdGuard Home Sync",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/bakito/adguardhome-sync",
+          "url": "https://github.com/bakito/adguardhome-sync",
+          "appSlug": "adguardhome-sync"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Privnote",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://privnote.com",
+          "url": null
+        },
+        {
+          "name": "WeTransfer",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://wetransfer.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Cryptgeon",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cryptgeon.org",
+          "url": "https://cryptgeon.org/",
+          "appSlug": "cryptgeon"
+        }
+      ]
+    }
+  ],
+  "photography": [
+    {
+      "proprietary": [
+        {
+          "name": "Google Photos",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://photos.google.com",
+          "url": null
+        },
+        {
+          "name": "iCloud Photos",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.icloud.com/photos",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Immich",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://immich.app",
+          "url": "https://immich.app/",
+          "appSlug": "immich"
+        },
+        {
+          "name": "PhotoPrism",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://photoprism.app",
+          "url": "https://photoprism.app/",
+          "appSlug": "photoprism"
+        }
+      ]
+    }
+  ],
+  "finance": [
+    {
+      "proprietary": [
+        {
+          "name": "Shopify",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.shopify.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Medusa",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://medusajs.com",
+          "url": "https://medusajs.com/",
+          "appSlug": "medusa"
+        },
+        {
+          "name": "PrestaShop",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://prestashop.com",
+          "url": "https://prestashop.com/",
+          "appSlug": "prestashop"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Rocket Money",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.rocketmoney.com",
+          "url": null
+        },
+        {
+          "name": "YNAB",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.ynab.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Wallos",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/ellite/Wallos",
+          "url": "https://github.com/ellite/Wallos",
+          "appSlug": "wallos"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Coinbase",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.coinbase.com",
+          "url": null
+        },
+        {
+          "name": "Binance",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.binance.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Bitcoin Core (BitcoinD)",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://bitcoincore.org",
+          "url": "https://bitcoincore.org/",
+          "appSlug": "bitcoind"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Splitwise",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.splitwise.com",
+          "url": null
+        },
+        {
+          "name": "Tricount",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.tricount.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Spliit",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://spliit.app",
+          "url": "https://spliit.app/",
+          "appSlug": "spliit"
+        }
+      ]
+    }
+  ],
+  "ai": [
+    {
+      "proprietary": [
+        {
+          "name": "ChatGPT",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://chat.openai.com",
+          "url": null
+        },
+        {
+          "name": "Claude",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://claude.ai",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Open WebUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openwebui.com",
+          "url": "https://openwebui.com/",
+          "appSlug": "open-webui"
+        },
+        {
+          "name": "AnythingLLM",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://anythingllm.com",
+          "url": "https://anythingllm.com/",
+          "appSlug": "anything-llm"
+        },
+        {
+          "name": "SillyTavern",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://sillytavern.app",
+          "url": "https://github.com/SillyTavern/SillyTavern",
+          "appSlug": "sillytavern"
+        },
+        {
+          "name": "Lobe Chat",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://lobechat.com",
+          "url": "https://lobechat.com/",
+          "appSlug": "lobe-chat"
+        },
+        {
+          "name": "OpenClaw",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openclaw.ai",
+          "url": "https://openclaw.ai/",
+          "appSlug": "openclaw"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Midjourney",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.midjourney.com",
+          "url": null
+        },
+        {
+          "name": "DALL-E",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openai.com/dall-e",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "ComfyUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/comfyanonymous/ComfyUI",
+          "url": "https://github.com/comfyanonymous/ComfyUI",
+          "appSlug": "comfyui"
+        },
+        {
+          "name": "Stable Diffusion WebUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/AUTOMATIC1111/stable-diffusion-webui",
+          "url": "https://github.com/AUTOMATIC1111/stable-diffusion-webui",
+          "appSlug": "sdwebui"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Google Cloud Vision API",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cloud.google.com/vision",
+          "url": null
+        },
+        {
+          "name": "ABBYY FineReader",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.abbyy.com/finereader/",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Deepseek OCR WebUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/neosun100/DeepSeek-OCR-WebUI",
+          "url": "https://github.com/neosun100/DeepSeek-OCR-WebUI",
+          "appSlug": "deepseek-ocr-webui"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Luma AI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://lumalabs.ai",
+          "url": null
+        },
+        {
+          "name": "Meshy",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.meshy.ai",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Hunyuan3D",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/Tencent/Hunyuan3D-1",
+          "url": "https://github.com/Tencent/Hunyuan3D-1",
+          "appSlug": "hunyuan3d"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "OpenAI API",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://platform.openai.com",
+          "url": null
+        },
+        {
+          "name": "Together AI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.together.ai",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Mesh LLM",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://meshllm.cloud",
+          "url": "https://meshllm.cloud/",
+          "appSlug": "mesh-llm"
+        },
+        {
+          "name": "KwaaiNet",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://kwaai.ai",
+          "url": "https://kwaai.ai/",
+          "appSlug": "kwaainet"
+        }
+      ]
+    }
+  ]
+}

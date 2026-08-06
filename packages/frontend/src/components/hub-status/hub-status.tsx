@@ -1,4 +1,8 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { colorizeLogLine } from '@/lib/log-ansi';
+import { useResolvedTheme } from '@/lib/use-resolved-theme';
+import DOMPurify from 'dompurify';
+import '@/components/logs-terminal/logs-terminal.css';
+import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
@@ -7,7 +11,15 @@ import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
-import { configureHubApiPort, getTauriInvoke, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import {
+  clearHubSteadySession,
+  clearStackUpdatePending,
+  isStackUpdatePending,
+  markHubSteadySession,
+  readHubSteadySession,
+} from '@/lib/desktop-stack-session';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
 import {
   DOCKER_MAC_ARCH_HINT,
@@ -51,32 +63,6 @@ function getErrorMessage(err: unknown): string {
 
 export function reloadCurrentWindow() {
   window.location.reload();
-}
-
-const HUB_STEADY_SESSION_KEY = 'ci-hub-steady-running';
-
-function readHubSteadySession(): boolean {
-  try {
-    return sessionStorage.getItem(HUB_STEADY_SESSION_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function markHubSteadySession(): void {
-  try {
-    sessionStorage.setItem(HUB_STEADY_SESSION_KEY, '1');
-  } catch {
-    // sessionStorage unavailable — steady-state hints are best-effort only.
-  }
-}
-
-function clearHubSteadySession(): void {
-  try {
-    sessionStorage.removeItem(HUB_STEADY_SESSION_KEY);
-  } catch {
-    // ignore
-  }
 }
 
 /** True when the user explicitly reloaded the WebView (context menu → Reload). */
@@ -678,6 +664,17 @@ export function HubStatus({ children }: HubStatusProps) {
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const resolvedTheme = useResolvedTheme();
+  const renderedLogs = useMemo(() => {
+    if (!logs) {
+      return DOMPurify.sanitize(t('HUB_STATUS_NO_LOGS_AVAILABLE'));
+    }
+
+    return logs
+      .split('\n')
+      .map((line) => DOMPurify.sanitize(colorizeLogLine(line, resolvedTheme)))
+      .join('<br />');
+  }, [logs, resolvedTheme, t]);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -931,9 +928,24 @@ export function HubStatus({ children }: HubStatusProps) {
     );
   }
 
-  // Hub is running — stay on the app if we've already reached Running (don't regress to the
-  // loading gate when Private VPN / health checks flap during steady operation).
-  if (status === 'Running' || (hubSteadyRunningRef.current && status === 'Starting')) {
+  // Hub is running — render the app. After a stack update, reload once so the WebView
+  // picks up the new container UI bundle (same origin, new hashed assets).
+  if (status === 'Running') {
+    if (isStackUpdatePending()) {
+      clearStackUpdatePending();
+      if (!hasReloadedRef.current) {
+        hasReloadedRef.current = true;
+        reloadCurrentWindow();
+        return null;
+      }
+    }
+    return <>{children}</>;
+  }
+
+  // During stack recreate, show the startup gate — not stale app UI with a dead API.
+  if (isStackUpdatePending()) {
+    // fall through to Starting / Stopped gate screens below
+  } else if (hubSteadyRunningRef.current && status === 'Starting') {
     return <>{children}</>;
   }
 
@@ -1035,9 +1047,11 @@ export function HubStatus({ children }: HubStatusProps) {
                 {t('HUB_STATUS_HIDE')}
               </button>
             </div>
-            <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
-              {logs || t('HUB_STATUS_NO_LOGS_AVAILABLE')}
-            </pre>
+            <pre
+              className="log-terminal log-terminal--panel wrap-lines"
+              // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized ANSI output from local log files
+              dangerouslySetInnerHTML={{ __html: renderedLogs }}
+            />
           </div>
         )}
       </div>

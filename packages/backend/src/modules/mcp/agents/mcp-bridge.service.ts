@@ -2,9 +2,13 @@ import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
+import { McpStreamableHttpClient } from './mcp-streamable-http-client';
+import { McpStdioSession, StdioSilentExitError, type StdioSpawnSpec } from './mcp-stdio-session';
 
 interface McpConnection {
   appUrn: AppUrn;
@@ -14,42 +18,18 @@ interface McpConnection {
   retryCount: number;
   retryTimer?: ReturnType<typeof setTimeout>;
   abortController?: AbortController;
-  /** Streamable-HTTP session id returned by the server's initialize response, if any. */
+  /** Streamable-HTTP session id returned by the upstream server, if any. */
   sessionId?: string;
+  /** SDK client for upstream Streamable HTTP MCP servers. */
+  httpClient?: McpStreamableHttpClient;
+  /** Reused stdio process for container_exec and host_docker listings. */
+  stdioSession?: McpStdioSession;
 }
 
-/**
- * Spec-required initialize params (#936): servers are entitled to reject an
- * `initialize` without protocolVersion/capabilities/clientInfo, and most reference
- * servers do. Sent on every connection, both transports.
- */
-const INITIALIZE_PARAMS = {
-  protocolVersion: '2025-06-18',
-  capabilities: {},
-  clientInfo: { name: 'ci-hub-mcp-bridge', version: '1.0.0' },
-} as const;
+/** Legacy `sse` alias and canonical `streamable-http` both mean Streamable HTTP transport. */
+const isStreamableHttpTransport = (transport: string): boolean => transport === 'streamable-http' || transport === 'sse';
 
-/** A stdio server exited without emitting a single JSON-RPC line — it never got our input. */
-class StdioSilentExitError extends Error {
-  constructor(appUrn: string, code: number | null) {
-    super(`MCP stdio server for ${appUrn} exited (code ${code}) without emitting any response`);
-    this.name = 'StdioSilentExitError';
-  }
-}
-
-/** Parse a JSON-RPC response that may arrive as plain JSON or as an SSE `data:` frame. */
-async function parseJsonRpcHttpResponse(response: Response): Promise<Record<string, unknown>> {
-  const text = await response.text();
-  if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
-    for (const line of text.split('\n')) {
-      if (line.startsWith('data:')) {
-        return JSON.parse(line.slice(5).trim()) as Record<string, unknown>;
-      }
-    }
-    throw new Error('SSE response contained no data frame');
-  }
-  return text ? (JSON.parse(text) as Record<string, unknown>) : {};
-}
+const isHostDockerLaunch = (launch: string | undefined): boolean => launch === 'host_docker';
 
 export interface BridgedToolInfo {
   name: string;
@@ -59,7 +39,7 @@ export interface BridgedToolInfo {
 
 /**
  * Connects to app MCP servers and bridges their tools.
- * Implements AMB-1 (SSE), AMB-2 (stdio), AMB-3 (lifecycle).
+ * Implements AMB-1 (Streamable HTTP), AMB-2 (stdio), AMB-3 (lifecycle).
  */
 @Injectable()
 export class McpBridgeService implements OnModuleDestroy {
@@ -69,6 +49,8 @@ export class McpBridgeService implements OnModuleDestroy {
     private readonly logger: LoggerService,
     readonly _dockerService: DockerService,
     private readonly appsService: AppsService,
+    private readonly appFilesManager: AppFilesManager,
+    private readonly envUtils: EnvUtils,
   ) {}
 
   onModuleDestroy() {
@@ -92,7 +74,20 @@ export class McpBridgeService implements OnModuleDestroy {
     const conn = this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
     const prefix = appUrn.replace(':', '_');
 
-    // If already connected, use cached tools
+    // Eager discovery when the app is already running — avoids exposing only __discover.
+    if (!conn.connected || conn.tools.length === 0) {
+      try {
+        const { app } = await this.appsService.getApp(appUrn);
+        const canDiscover = isHostDockerLaunch(agentConfig.mcp.config?.launch) ? Boolean(app) : app?.status === 'running';
+        if (canDiscover) {
+          await this.connectAndDiscover(appUrn, conn);
+        }
+      } catch {
+        // Fall back to lazy discover tool below.
+      }
+    }
+
+    // If connected, expose bridged tools directly.
     if (conn.connected && conn.tools.length > 0) {
       return conn.tools.map((tool) => this.bridgeTool(appUrn, prefix, tool));
     }
@@ -166,100 +161,77 @@ export class McpBridgeService implements OnModuleDestroy {
    * Connect to an app's MCP server and discover tools.
    */
   private async connectAndDiscover(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
-    // S-AMB-3.2: Check if app is running
-    try {
-      const { app } = await this.appsService.getApp(appUrn);
-      if (!app || app.status !== 'running') {
-        throw new Error(`App ${appUrn} is not running`);
-      }
-    } catch (_err) {
-      throw new Error(`App ${appUrn} is not running`);
-    }
+    await this.assertBridgeable(appUrn, conn);
 
     try {
-      if (conn.config.transport === 'sse') {
-        return await this.connectSse(appUrn, conn);
+      if (isStreamableHttpTransport(conn.config.transport)) {
+        return await this.connectStreamableHttp(appUrn, conn);
       }
       return await this.connectStdio(appUrn, conn);
     } catch (err) {
-      // S-AMB-3.4: Retry with exponential backoff
       this.scheduleRetry(appUrn, conn);
       throw err;
     }
   }
 
+  /** host_docker listings only need install + credentials; container_exec needs a running app. */
+  private async assertBridgeable(appUrn: AppUrn, conn: McpConnection): Promise<void> {
+    try {
+      const { app } = await this.appsService.getApp(appUrn);
+      if (!app) {
+        throw new Error(`App ${appUrn} is not installed`);
+      }
+      if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
+        throw new Error(`App ${appUrn} is not running`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('not running')) {
+        throw err;
+      }
+      if (err instanceof Error && err.message.includes('not installed')) {
+        throw err;
+      }
+      throw new Error(`App ${appUrn} is not running`);
+    }
+  }
+
   /**
-   * S-AMB-1.1: Connect to app SSE MCP server
+   * S-AMB-1.1: Connect to an upstream Streamable HTTP MCP server via the official SDK client.
    */
-  private async connectSse(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
+  private async connectStreamableHttp(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
     if (!conn.config.url) {
       throw new Error(`No MCP URL configured for ${appUrn}`);
     }
 
     const url = this.resolveTemplateUrl(conn.config.url, appUrn);
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-    };
+    const headers = await this.buildStreamableHttpHeaders(appUrn, conn);
 
-    // Auth
-    if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
-      const token = process.env[conn.config.auth.token_env];
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
+    if (!conn.httpClient) {
+      conn.httpClient = new McpStreamableHttpClient();
     }
 
-    // Full handshake (#936): initialize with spec-required params, capture the
-    // streamable-HTTP session id, acknowledge with notifications/initialized.
-    const initResponse = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: INITIALIZE_PARAMS }),
-    });
+    await conn.httpClient.connect({ url, headers, sessionId: conn.sessionId });
+    conn.sessionId = conn.httpClient.sessionId;
 
-    if (!initResponse.ok) {
-      throw new Error(`MCP initialize failed for ${appUrn}: HTTP ${initResponse.status}`);
-    }
-    await parseJsonRpcHttpResponse(initResponse).catch(() => ({}));
-
-    const sessionId = initResponse.headers.get('mcp-session-id');
-    if (sessionId) {
-      conn.sessionId = sessionId;
-      headers['mcp-session-id'] = sessionId;
-    }
-
-    await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-    }).catch(() => undefined);
-
-    // Discover tools
-    const listResponse = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/list',
-        params: {},
-      }),
-    });
-
-    if (!listResponse.ok) {
-      throw new Error(`MCP tools/list failed for ${appUrn}: HTTP ${listResponse.status}`);
-    }
-
-    const listResult = (await parseJsonRpcHttpResponse(listResponse)) as { result?: { tools?: McpConnection['tools'] } };
-    const tools = listResult.result?.tools ?? [];
+    const tools = await conn.httpClient.listTools();
 
     conn.connected = true;
     conn.tools = tools;
     conn.retryCount = 0;
 
-    this.logger.info(`Connected to ${appUrn} MCP server via SSE, discovered ${tools.length} tools`);
+    this.logger.info(`Connected to ${appUrn} MCP server via Streamable HTTP, discovered ${tools.length} tools`);
     return tools;
+  }
+
+  private async buildStreamableHttpHeaders(appUrn: AppUrn, conn: McpConnection): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+    if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
+      const token = await this.resolveAuthToken(appUrn, conn.config.auth.token_env);
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+    return headers;
   }
 
   /**
@@ -267,10 +239,6 @@ export class McpBridgeService implements OnModuleDestroy {
    * S-AMB-2.2: Container identified by container field or main service
    */
   private async connectStdio(appUrn: AppUrn, conn: McpConnection): Promise<McpConnection['tools']> {
-    if (!conn.config.command || conn.config.command.length === 0) {
-      throw new Error(`No MCP command configured for ${appUrn}`);
-    }
-
     const result = (await this.stdioRequest(appUrn, conn, { method: 'tools/list', params: {} }, 15000)) as
       | { tools?: McpConnection['tools'] }
       | undefined;
@@ -284,14 +252,6 @@ export class McpBridgeService implements OnModuleDestroy {
     return tools;
   }
 
-  /**
-   * Run one MCP request against a stdio server via `docker exec -i` (#936).
-   *
-   * Each exec spawns a fresh server process, so every invocation performs the full
-   * spec handshake — `initialize` (with required params) → `notifications/initialized`
-   * → the actual request — and resolves the response line whose `id` matches the
-   * request, rather than whatever happened to be printed last.
-   */
   private async stdioRequest(
     appUrn: AppUrn,
     conn: McpConnection,
@@ -301,12 +261,10 @@ export class McpBridgeService implements OnModuleDestroy {
     try {
       return await this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
     } catch (err) {
-      // `docker exec -i` can drop stdin that is written-and-closed before the exec
-      // stream is fully attached; the server then sees immediate EOF and exits 0
-      // having said nothing. That silence is the tell — the request was never
-      // received, so one retry is safe even for side-effecting calls.
       if (err instanceof StdioSilentExitError) {
         this.logger.warn(`MCP stdio server for ${appUrn} exited silently (early stdin close?) — retrying once`);
+        conn.stdioSession?.close();
+        conn.stdioSession = undefined;
         return this.stdioRequestOnce(appUrn, conn, request, timeoutMs);
       }
       throw err;
@@ -319,88 +277,41 @@ export class McpBridgeService implements OnModuleDestroy {
     request: { method: string; params: Record<string, unknown> },
     timeoutMs: number,
   ): Promise<unknown> {
-    const containerName = conn.config.container ?? this.defaultMainContainerName(appUrn);
-    const command = conn.config.command ?? [];
-    const requestId = 2;
+    const session = await this.getOrCreateStdioSession(appUrn, conn);
+    return session.request(request.method, request.params, timeoutMs);
+  }
 
-    const input = [
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: INITIALIZE_PARAMS }),
-      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-      JSON.stringify({ jsonrpc: '2.0', id: requestId, method: request.method, params: request.params }),
-    ]
-      .map((line) => `${line}\n`)
-      .join('');
-
-    const { spawn } = await import('node:child_process');
-    return new Promise((resolve, reject) => {
-      const proc = spawn('docker', ['exec', '-i', containerName, ...command]);
-      let stdout = '';
-      let settled = false;
-
-      const settle = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        fn();
-      };
-
-      const timer = setTimeout(() => {
-        proc.kill();
-        settle(() => reject(new Error(`MCP stdio timeout for ${appUrn} (${request.method})`)));
-      }, timeoutMs);
-
-      let sawAnyResponse = false;
-
-      const tryResolveResponse = () => {
-        for (const line of stdout.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const parsed = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } };
-            sawAnyResponse = true;
-            if (parsed.id === requestId) {
-              proc.kill();
-              if (parsed.error) {
-                settle(() => reject(new Error(`MCP error from ${appUrn}: ${parsed.error?.message ?? 'unknown'}`)));
-              } else {
-                settle(() => resolve(parsed.result));
-              }
-              return;
-            }
-          } catch {
-            // partial or non-JSON line — keep buffering
-          }
-        }
-      };
-
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
-        tryResolveResponse();
-      });
-
-      proc.stderr.on('data', (data: Buffer) => {
-        this.logger.warn(`MCP stdio stderr (${appUrn}): ${data.toString()}`);
-      });
-
-      proc.on('close', (code) => {
-        tryResolveResponse();
-        settle(() =>
-          reject(
-            sawAnyResponse
-              ? new Error(`MCP stdio server for ${appUrn} exited (code ${code}) without answering ${request.method}`)
-              : new StdioSilentExitError(appUrn, code),
-          ),
-        );
-      });
-
-      proc.on('error', (err) => settle(() => reject(err)));
-      proc.stdin.write(input);
-      // Deliberately NOT closing stdin: docker's exec stream tears down on stdin EOF and
-      // (racily, ~1 in 3 from inside the Hub container) cancels the copy of input that was
-      // written just before — the server then answers initialize but never sees tools/list,
-      // or sees nothing at all ("context canceled"). Leaving stdin open makes the server
-      // idle-wait after answering; we already kill the exec the moment the matching
-      // response id arrives (tryResolveResponse), and the timeout reaps everything else.
+  private async getOrCreateStdioSession(appUrn: AppUrn, conn: McpConnection): Promise<McpStdioSession> {
+    if (conn.stdioSession?.alive) {
+      return conn.stdioSession;
+    }
+    conn.stdioSession?.close();
+    const spec = await this.buildStdioSpawnSpec(appUrn, conn);
+    const session = new McpStdioSession(appUrn, spec, (chunk) => {
+      this.logger.warn(`MCP stdio stderr (${appUrn}): ${chunk}`);
     });
+    conn.stdioSession = session;
+    return session;
+  }
+
+  private async buildStdioSpawnSpec(appUrn: AppUrn, conn: McpConnection): Promise<StdioSpawnSpec> {
+    const launch = conn.config.launch ?? 'container_exec';
+    const appEnv = await this.loadAppEnvRecord(appUrn);
+    return {
+      launch,
+      command: conn.config.command ?? [],
+      container: conn.config.container ?? this.defaultMainContainerName(appUrn),
+      env: appEnv,
+    };
+  }
+
+  private async loadAppEnvRecord(appUrn: AppUrn): Promise<Record<string, string>> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      return Object.fromEntries(this.envUtils.envStringToMap(appEnv.content ?? ''));
+    } catch {
+      return {};
+    }
   }
 
   /** Compose names containers `<project>-<service>-1`; the Hub's project is `<app>_<store>`. */
@@ -436,11 +347,17 @@ export class McpBridgeService implements OnModuleDestroy {
       return { error: `App ${appUrn} is not running`, isError: true };
     }
 
-    // Check if app is still running
+    // Check if app is still reachable
     try {
       const { app } = await this.appsService.getApp(appUrn);
-      if (!app || app.status !== 'running') {
+      if (!app) {
         conn.connected = false;
+        return { error: `App ${appUrn} is not installed`, isError: true };
+      }
+      if (!isHostDockerLaunch(conn.config.launch) && app.status !== 'running') {
+        conn.connected = false;
+        conn.stdioSession?.close();
+        conn.stdioSession = undefined;
         return { error: `App ${appUrn} is not running`, isError: true };
       }
     } catch {
@@ -456,66 +373,86 @@ export class McpBridgeService implements OnModuleDestroy {
       }
     }
 
-    if (conn.config.transport === 'sse') {
-      return this.callViaSse(appUrn, conn, toolName, params);
+    if (isStreamableHttpTransport(conn.config.transport)) {
+      return this.callViaStreamableHttp(appUrn, conn, toolName, params);
     }
 
     return this.callViaStdio(appUrn, conn, toolName, params);
   }
 
-  private async callViaSse(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
-    const url = this.resolveTemplateUrl(conn.config.url ?? '', appUrn);
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-    };
-    if (conn.sessionId) {
-      headers['mcp-session-id'] = conn.sessionId;
+  private async callViaStreamableHttp(
+    appUrn: AppUrn,
+    conn: McpConnection,
+    toolName: string,
+    params: Record<string, unknown>,
+    retried = false,
+  ): Promise<unknown> {
+    if (!conn.httpClient?.connected) {
+      await this.connectStreamableHttp(appUrn, conn);
     }
 
-    if (conn.config.auth?.type === 'bearer' && conn.config.auth.token_env) {
-      const token = process.env[conn.config.auth.token_env];
-      if (token) headers.Authorization = `Bearer ${token}`;
+    try {
+      const httpClient = conn.httpClient;
+      if (!httpClient) {
+        throw new Error('MCP HTTP client unavailable');
+      }
+      return await httpClient.callTool(toolName, params);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'MCP Streamable HTTP call failed';
+      if (!retried && /session|404|not connected/i.test(message)) {
+        conn.connected = false;
+        conn.sessionId = undefined;
+        await conn.httpClient?.close();
+        conn.httpClient = undefined;
+        await this.connectStreamableHttp(appUrn, conn);
+        return this.callViaStreamableHttp(appUrn, conn, toolName, params, true);
+      }
+      return { error: message, isError: true };
     }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'tools/call',
-        params: { name: toolName, arguments: params },
-      }),
-    });
-
-    // A 404 with a session header means the server dropped our session — reconnect once.
-    if (response.status === 404 && conn.sessionId) {
-      conn.connected = false;
-      conn.sessionId = undefined;
-      await this.connectAndDiscover(appUrn, conn);
-      return this.callViaSse(appUrn, conn, toolName, params);
-    }
-
-    const result = await parseJsonRpcHttpResponse(response);
-    return (result as { result?: unknown }).result ?? result;
   }
 
   private async callViaStdio(appUrn: AppUrn, conn: McpConnection, toolName: string, params: Record<string, unknown>): Promise<unknown> {
     try {
       return await this.stdioRequest(appUrn, conn, { method: 'tools/call', params: { name: toolName, arguments: params } }, 30000);
     } catch (err) {
+      conn.connected = false;
+      conn.stdioSession?.close();
+      conn.stdioSession = undefined;
       return { error: err instanceof Error ? err.message : 'MCP stdio call failed', isError: true };
     }
   }
 
   private getOrCreateConnection(appUrn: AppUrn, config: NonNullable<ResolvedAgentConfig['mcp']['config']>): McpConnection {
+    const existing = this.connections.get(appUrn);
+    if (existing && !this.configMatches(existing.config, config)) {
+      this.disconnect(existing);
+      this.connections.delete(appUrn);
+    }
+
     let conn = this.connections.get(appUrn);
-    if (!conn) {
+    if (conn) {
+      conn.config = config;
+    } else {
       conn = { appUrn, connected: false, tools: [], config, retryCount: 0 };
       this.connections.set(appUrn, conn);
     }
     return conn;
+  }
+
+  private configMatches(a: McpConnection['config'], b: McpConnection['config']): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  /** Read an auth token from app.env first, then Hub process env. */
+  private async resolveAuthToken(appUrn: AppUrn, tokenEnv: string): Promise<string | undefined> {
+    try {
+      const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+      const fromApp = this.envUtils.envStringToMap(appEnv.content ?? '').get(tokenEnv);
+      if (fromApp) return fromApp;
+    } catch {
+      // fall through
+    }
+    return process.env[tokenEnv];
   }
 
   /**
@@ -542,6 +479,11 @@ export class McpBridgeService implements OnModuleDestroy {
     if (conn.abortController) {
       conn.abortController.abort();
     }
+    conn.stdioSession?.close();
+    conn.stdioSession = undefined;
+    void conn.httpClient?.close();
+    conn.httpClient = undefined;
+    conn.sessionId = undefined;
     conn.connected = false;
   }
 

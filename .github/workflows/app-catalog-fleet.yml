@@ -33,6 +33,10 @@ on:
           - beta-1
           - beta-red
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Fleet server Tailscale IPs — stored as GitHub Actions secrets (not hardcoded).
   # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.

@@ -212,10 +212,10 @@ function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
 function makeApp(overrides: Partial<AppDetails> = {}): AppDetails {
   return {
     id: 1,
-    domain: null,
+    domain: '',
     exposed: false,
     exposedLocal: false,
-    ignoredVersion: null,
+    ignoredVersion: 0,
     isVisibleOnGuestDashboard: false,
     openPort: false,
     pendingRestart: false,
@@ -241,7 +241,6 @@ const guiInfo = makeInfo({ no_gui: false });
 
 const metadata: AppMetadata = {
   latestVersion: 1,
-  localSubdomain: 'test-app',
 };
 
 const runningApp = makeApp();

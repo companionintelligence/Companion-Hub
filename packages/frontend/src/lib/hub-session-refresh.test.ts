@@ -8,9 +8,9 @@ import {
 } from './hub-session-refresh';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 
-const { refreshSession, isTauriReleaseBuild, handleSessionExpired } = vi.hoisted(() => ({
+const { refreshSession, usesCrossOriginDesktopApi, handleSessionExpired } = vi.hoisted(() => ({
   refreshSession: vi.fn(),
-  isTauriReleaseBuild: vi.fn(() => true),
+  usesCrossOriginDesktopApi: vi.fn(() => true),
   handleSessionExpired: vi.fn(),
 }));
 
@@ -18,8 +18,8 @@ vi.mock('@/api-client/sdk.gen', () => ({
   refreshSession,
 }));
 
-vi.mock('@/lib/tauri-hub-probe', () => ({
-  isTauriReleaseBuild,
+vi.mock('@/lib/hub-runtime-mode', () => ({
+  usesCrossOriginDesktopApi,
 }));
 
 vi.mock('@/lib/session-expired', () => ({
@@ -30,7 +30,7 @@ describe('hub-session-refresh', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    isTauriReleaseBuild.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
     setTauriSessionId(null);
     setServerSessionRefreshRecommendedAt(null);
     handleSessionExpired.mockReset();
@@ -81,7 +81,7 @@ describe('hub-session-refresh', () => {
   });
 
   it('updates issue time for browser sessions without replacing a tauri token', async () => {
-    isTauriReleaseBuild.mockReturnValue(false);
+    usesCrossOriginDesktopApi.mockReturnValue(false);
     markHubSessionIssuedAt(Date.now() - HUB_SESSION_REFRESH_AFTER_MS - 1_000);
 
     refreshSession.mockResolvedValue(sdkOk({ sessionId: 'ignored-for-browser', issuedAt: 1_700_000_111_000 }));

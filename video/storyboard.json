@@ -35,13 +35,13 @@
       "id": "sign-in",
       "kind": "screen",
       "chapter": "claim",
-      "seconds": 5,
-      "caption": "A local admin account. Companion Portal is optional.",
-      "narration": "It opens on a local login. Companion Portal sign-in is optional.",
+      "seconds": 5.5,
+      "caption": "A local admin account. Nothing off this machine required.",
+      "narration": "It opens on a local login. Signing in anywhere else is optional.",
       "shots": [
         {
           "id": "login-screen",
-          "url": "hub.ci.lan/login",
+          "url": "hub-living-room-server-acme.ci.computer/login",
           "alt": "The Hub login form: a CI Account button above the local email and password fields.",
           "motion": "push-in",
           "capture": {
@@ -63,15 +63,14 @@
       "shots": [
         {
           "id": "device-registration",
-          "url": "hub.ci.lan/device-registration",
+          "url": "hub-living-room-server-acme.ci.computer/device-registration",
           "alt": "Step 2: Connect this device, with the pairing-code field waiting for six characters.",
           "motion": "push-in",
           "capture": {
             "path": "/device-registration",
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='ABC123']",
-            "settle": 900,
-            "mask": ["text=Device ID"]
+            "settle": 900
           }
         }
       ]
@@ -86,7 +85,7 @@
       "shots": [
         {
           "id": "onboarding-wizard",
-          "url": "hub.ci.lan/onboarding",
+          "url": "hub-living-room-server-acme.ci.computer/onboarding",
           "alt": "The Set Up Your Hub wizard with its sticky Install and Finish footer.",
           "motion": "drift-down",
           "capture": {
@@ -94,7 +93,7 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
               { "fill": ["input[placeholder='Enter your password']", "password"] },
               { "click": "button[type='submit']" },
               { "waitFor": "[data-testid='finish-setup-btn']" },
@@ -115,7 +114,7 @@
       "shots": [
         {
           "id": "hub-home",
-          "url": "hub.ci.lan/home",
+          "url": "hub-living-room-server-acme.ci.computer/home",
           "alt": "The Hub dashboard: three system stat cards above the installed-apps row.",
           "motion": "push-in",
           "capture": {
@@ -123,7 +122,7 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
               { "fill": ["input[placeholder='Enter your password']", "password"] },
               { "click": "button[type='submit']" },
               { "waitFor": "text=Disk space" },
@@ -144,8 +143,8 @@
       "shots": [
         {
           "id": "hub-store",
-          "url": "hub.ci.lan/store",
-          "alt": "The Hub App Store grid, with the category sidebar and the search field.",
+          "url": "hub-living-room-server-acme.ci.computer/store",
+          "alt": "The Hub App Store on its featured view, with the category sidebar and the search field.",
           "motion": "drift-down",
           "capture": {
             "path": "/store",
@@ -166,7 +165,7 @@
       "shots": [
         {
           "id": "store-alternatives",
-          "url": "hub.ci.lan/store",
+          "url": "hub-living-room-server-acme.ci.computer/store?category=alternatives",
           "alt": "The store's Alternatives view: a table pairing proprietary products with the open source apps that replace them.",
           "motion": "drift-down",
           "capture": {
@@ -189,20 +188,14 @@
       "shots": [
         {
           "id": "app-details",
-          "url": "hub.ci.lan/store",
-          "alt": "An app detail page scrolled to the App Privacy card, beside the Information panel.",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
+          "alt": "Immich's app page in the Hub store, scrolled to the App Privacy card beside the Information panel.",
           "motion": "push-in",
           "capture": {
-            "path": "/store",
+            "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
-            "waitFor": "a[href^='/store/']",
-            "before": [
-              { "click": "a[href^='/store/']" },
-              { "waitFor": "[data-testid='app-header-actions-row']" },
-              { "wait": 1500 },
-              { "hover": "text=App Privacy" },
-              { "wait": 600 }
-            ],
+            "waitFor": "[data-testid='app-header-actions-row']",
+            "before": [{ "wait": 1500 }, { "hover": "text=App Privacy" }, { "wait": 600 }],
             "settle": 1200
           }
         }
@@ -213,25 +206,19 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 6.5,
-      "caption": "Ports, paths and secrets, shown before anything runs.",
-      "narration": "You see every port, path and secret an app wants before it ever runs.",
+      "caption": "Ports, domains and settings, shown before anything runs.",
+      "narration": "Secrets generate themselves. Everything else an app asks for, you see before it runs.",
       "shots": [
         {
           "id": "install-dialog",
-          "url": "hub.ci.lan/store",
-          "alt": "The install dialog open over an app page, listing the ports, paths and settings the app is asking for.",
-          "motion": "push-in",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
+          "alt": "The Install Immich dialog open over the app page, listing the ports, domain and settings the app is asking for.",
+          "motion": "drift-down",
           "capture": {
-            "path": "/store",
+            "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
-            "waitFor": "a[href^='/store/']",
-            "before": [
-              { "click": "a[href^='/store/']" },
-              { "waitFor": "[data-testid='action-install']" },
-              { "click": "[data-testid='action-install']" },
-              { "waitFor": "[role='dialog']" },
-              { "wait": 1200 }
-            ],
+            "waitFor": "[data-testid='action-install']",
+            "before": [{ "click": "[data-testid='action-install']" }, { "waitFor": "[role='dialog']" }, { "wait": 1200 }],
             "settle": 1200
           }
         }
@@ -242,13 +229,13 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5,
-      "caption": "Installing, then running. That is the whole ceremony.",
-      "narration": "Install it, and the Hub works until that badge turns green.",
+      "caption": "A green badge, and it is live on hardware you own.",
+      "narration": "When the badge turns green, the app is live on your own machine.",
       "shots": [
         {
           "id": "running-app",
-          "url": "hub.ci.lan/apps/immich",
-          "alt": "An installed app on the Hub: a running status pill beside Open, Stop and Restart.",
+          "url": "hub-living-room-server-acme.ci.computer/apps/ci-marketplace/immich",
+          "alt": "An installed app on the Hub: a running status pill, the Open button, and the stop and restart icon actions.",
           "motion": "push-in",
           "capture": {
             "path": "/apps/ci-marketplace/immich",
@@ -269,7 +256,7 @@
       "shots": [
         {
           "id": "custom-app-create",
-          "url": "hub.ci.lan/apps/create",
+          "url": "hub-living-room-server-acme.ci.computer/apps/create",
           "alt": "The custom app form: an App Name field above the multi-service Docker Compose editor.",
           "motion": "drift-down",
           "capture": {
@@ -291,7 +278,7 @@
       "shots": [
         {
           "id": "port-expose",
-          "url": "hub.ci.lan/apps/expose",
+          "url": "hub-living-room-server-acme.ci.computer/apps/expose",
           "alt": "The Expose a port form, with the three exposure modes: this device, private VPN, or public web.",
           "motion": "push-in",
           "capture": {
@@ -313,7 +300,7 @@
       "shots": [
         {
           "id": "ai-hardware",
-          "url": "hub.ci.lan/settings",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
           "alt": "The AI tab's hardware card: CPU, RAM, GPU, VRAM and storage, with a capability tier badge.",
           "motion": "push-in",
           "capture": {
@@ -336,13 +323,20 @@
       "shots": [
         {
           "id": "mcp-tools",
-          "url": "hub.ci.lan/settings",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=mcp",
           "alt": "The MCP tab: server status, the active key count, and the searchable catalog of tools the Hub publishes.",
           "motion": "drift-down",
           "capture": {
             "path": "/settings?tab=mcp",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='mcp-settings']",
+            "before": [
+              { "waitFor": "[data-testid='mcp-tool-search']" },
+              {
+                "eval": "() => document.querySelector('[data-testid=\"mcp-tool-search\"]')?.scrollIntoView({ block: 'center' })"
+              },
+              { "wait": 600 }
+            ],
             "settle": 1200
           }
         }
@@ -353,13 +347,13 @@
       "kind": "screen",
       "chapter": "dials",
       "seconds": 5.5,
-      "caption": "Security, network, app stores, AI, logs.",
+      "caption": "Every dial the Hub has, in one place.",
       "narration": "Want the dials? They are all here. Reading your own logs costs nothing.",
       "shots": [
         {
           "id": "hub-settings",
-          "url": "hub.ci.lan/settings",
-          "alt": "Hub settings with its tab row: Settings, Security, App Stores, Network, AI, MCP, System, Logs.",
+          "url": "hub-living-room-server-acme.ci.computer/settings",
+          "alt": "Hub settings — the full tab row on desktop, collapsed behind More on a phone.",
           "motion": "push-in",
           "capture": {
             "path": "/settings",
@@ -370,37 +364,14 @@
         },
         {
           "id": "hub-settings-security",
-          "url": "hub.ci.lan/settings",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=security",
           "alt": "The Security tab of Hub settings.",
-          "motion": "push-in",
+          "motion": "drift-down",
           "capture": {
             "path": "/settings?tab=security",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='settings-scroll-container']",
             "settle": 1200
-          }
-        }
-      ]
-    },
-    {
-      "id": "resource-monitor",
-      "kind": "screen",
-      "chapter": "dials",
-      "seconds": 4.5,
-      "caption": "Per-app CPU and memory, sampled live.",
-      "narration": "Resource Monitor charts CPU and memory.",
-      "shots": [
-        {
-          "id": "hub-resource-monitor",
-          "url": "hub.ci.lan/resource-monitor",
-          "alt": "The Resource Monitor: workload summary cards above the per-app table.",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/resource-monitor",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "text=Resource Monitor",
-            "settle": 1200,
-            "mask": ["text=Last sampled"]
           }
         }
       ]
@@ -415,7 +386,8 @@
         { "label": "Hardware", "value": "Yours" },
         { "label": "Domain", "value": "Yours" },
         { "label": "Data", "value": "Stays home" },
-        { "label": "Subscriptions", "value": "None" }
+        { "label": "Monthly fee", "value": "$0" },
+        { "label": "Apps", "value": "200+" }
       ]
     },
     {

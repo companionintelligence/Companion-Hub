@@ -1,6 +1,7 @@
 import { client } from '@/api-client/client.gen';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { configureHubApiPort, isLocalTauriDevOrigin, isTauriReleaseBuild, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { isLocalTauriDevOrigin } from '@/lib/hub-runtime-mode';
 
 describe('tauri-hub-probe', () => {
   beforeEach(() => {

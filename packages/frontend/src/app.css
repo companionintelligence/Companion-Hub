@@ -23,4 +23,7 @@ body {
   max-width: 300px;
   text-align: center;
   z-index: 10000;
+  /* Portal tooltip must never participate in document flow */
+  position: fixed;
+  pointer-events: none;
 }

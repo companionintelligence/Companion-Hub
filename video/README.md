@@ -5,6 +5,35 @@
 Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub's FTUE and major
 screens, from this repo's own UI. Both are produced from [`storyboard.json`](storyboard.json).
 
+## Videos are built locally, on demand
+
+There is **no GitHub Actions workflow, no schedule, and no stored MP4** for this video. A cut is
+a *build output*: render one when you need it, then delete it. Nothing here is an artifact, a
+release asset, or a committed `.mp4`.
+
+What is *meant* to be committed is the input — the screenshots under `assets/shots/`. Once they
+exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
+reviewable image diff.
+
+> ⚠️ **25 of 30 shots are captured and committed; 5 render as slates, on purpose.**
+> `install-and-run` and `bring-your-own-app` have no shot in either viewport, and
+> `configure-install` has none in portrait. Each has a named cause — see
+> [Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet). Two of the three are
+> product bugs, not stage problems. Do not "fix" them by seeding a greener status.
+
+The runner lives in the **CI-Engineering checkout** beside this one:
+
+```bash
+node tools/make-videos.mjs --list           # every product, and whether its video/ is ready
+node tools/make-videos.mjs companion-hub    # render this repo's two cuts from the committed shots
+```
+
+It resolves `video-kit` straight from the CI-Common checkout on disk — no npm registry, no token.
+
+`--capture` is **not** wired up for Companion Hub yet: our stage is a seeded Hub plus a
+CI-Marketplace checkout, which the runner does not script. To re-shoot the UI, bring the stage up
+by hand ([below](#the-capture-stage)) and run `npm run capture` in this directory.
+
 ## Quick start
 
 ```bash
@@ -29,70 +58,99 @@ PREVIEW build**, i.e. the three entries in `playwright.config.ts` → `webServer
 preview build (not `dev`) is what `playwright.config.ts` already selects under CI —
 no HMR client, no dev overlay, so a rerun on unchanged UI is byte-identical.
 
-Prerequisites: Postgres on `6543` and RabbitMQ on `5672` (`e2e/docker-compose.e2e.yml`
-or the service containers in `.github/workflows/e2e.yml`), and a **CI-Marketplace
-checkout** — `e2e/start-backend.sh` symlinks `$CI_MARKETPLACE_DIR/apps` into the Hub's
-store. Without it `app-details`, `install-dialog`, `running-app` and the installed-app
-tiles in `hub-home` have no app info to render, and the workflow now fails on that
-rather than shipping four slates.
+Prerequisites: Postgres and RabbitMQ (`e2e/docker-compose.e2e.yml` or the service
+containers in `.github/workflows/e2e.yml`), and a **CI-Marketplace checkout** —
+`e2e/start-backend.sh` symlinks `$CI_MARKETPLACE_DIR/apps` into the Hub's store. Without
+it `app-details`, `install-dialog` and the installed-app tiles in `hub-home` have no app
+info to render, so check for `CI-Marketplace: linked` in the backend log before capturing
+rather than discovering four empty screens afterwards.
 
-In CI that checkout needs **`secrets.CI_ORG_READ_TOKEN`**, a PAT with read access to the
-private CI-Marketplace repo. `secrets.GITHUB_TOKEN` is scoped to CI-Hub and cannot do it.
+Locally that checkout is just the sibling clone you already have — point
+`CI_MARKETPLACE_DIR` at it. No PAT is involved; capture never runs on a hosted runner.
 
-From the **repo root**:
+Ports below are the video stage's own (`9191`+) so a capture never collides with a Hub or
+an E2E run already using the defaults. From the **repo root**:
 
 ```bash
-export SERVER_IP=localhost FRONTEND_PORT=9091 BACKEND_PORT=3000 API_PORT=3000 \
-       MOCK_PORTAL_PORT=4444 CI_CLOUD_URL=http://localhost:4444 \
-       POSTGRES_PORT=6543 POSTGRES_USERNAME=companion POSTGRES_PASSWORD=postgres \
-       POSTGRES_DBNAME=companiondb RABBITMQ_PORT=5672 RABBITMQ_USERNAME=companion \
+export SERVER_IP=localhost FRONTEND_PORT=9191 BACKEND_PORT=9192 API_PORT=9192 \
+       MOCK_PORTAL_PORT=9193 CI_CLOUD_URL=http://localhost:9193 \
+       POSTGRES_PORT=9194 POSTGRES_USERNAME=companion POSTGRES_PASSWORD=postgres \
+       POSTGRES_DBNAME=companiondb RABBITMQ_PORT=9195 RABBITMQ_USERNAME=companion \
        RABBITMQ_PASSWORD=admin JWT_SECRET=e2e-test-secret E2E_TEST=true TZ=UTC \
-       DEVICE_ID=test-device-e2e CI_HUB_DATA_DIR=/tmp/ci-hub-e2e \
-       CI_MARKETPLACE_DIR="$PWD/../CI-Marketplace"
+       DEVICE_ID=test-device-e2e CI_HUB_DATA_DIR=/tmp/ci-hub-video \
+       CI_HUB_FORWARD_AUTH_URL=http://localhost:9192/api/auth/traefik \
+       CI_MARKETPLACE_DIR="$PWD/../CI-Marketplace" \
+       MOCK_PORTAL_OPERATOR_EMAIL=owner@acme.com MOCK_PORTAL_OPERATOR_PASSWORD=password
+
+docker run -d --name hub-video-pg -p 9194:9194 -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_USER=companion -e POSTGRES_DB=companiondb postgres:14 -p 9194
+docker run -d --name hub-video-mq -p 9195:5672 -e RABBITMQ_DEFAULT_USER=companion \
+  -e RABBITMQ_DEFAULT_PASS=admin rabbitmq:4-alpine
 
 MOCK_PORTAL_SCENARIO=registered pnpm exec tsx e2e/mock-portal/server.ts &
 bash e2e/start-backend.sh &
 pnpm run --filter frontend build && pnpm run --filter frontend preview &
 
-# Seed the local admin the storyboard signs in as (test@test.com / password), plus
-# three DB-only installed apps. Do NOT clearDatabase() — it deletes schema.appStore,
-# and the `ci-marketplace` row is only ever created by registerCloudAppStore() at boot.
-pnpm exec tsx -e "
-  const f = await import('./e2e/fixtures/fixtures.ts');
-  const dbh = await import('./e2e/helpers/db.ts');
-  const schema = await import('./packages/backend/src/core/database/drizzle/schema.ts');
-  await dbh.seedOrganization(); await f.createTestUser();
-  await dbh.db.insert(schema.app).values([
-    { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'immich' },
-    { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'jellyfin' },
-    { status: 'running', config: {}, appStoreSlug: 'ci-marketplace', appName: 'home-assistant' },
-  ]);
-"
+pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows
 
-cd video && npm run capture -- --only login-screen,hub-home,hub-store,store-alternatives,\
-app-details,install-dialog,running-app,custom-app-create,port-expose,ai-hardware,\
-mcp-tools,hub-settings,hub-settings-security,hub-resource-monitor
+cd video && APP_URL=http://localhost:9191 npm run capture -- \
+  --only login-screen,hub-home,hub-store,store-alternatives,app-details,install-dialog,\
+port-expose,ai-hardware,mcp-tools,hub-settings,hub-settings-security
 ```
 
-The app rows are deliberately DB-only: `populateAppInfo` falls back to the marketplace
-catalog when the installed files are absent
-(`packages/backend/src/modules/apps/apps.service.ts`), so `hub-home` gets real tiles and
-`running-app` gets a real status pill without a Docker install in flight.
+`MOCK_PORTAL_OPERATOR_EMAIL` is not optional. Hub login is **Portal-backed** —
+`AuthService.login` never checks the local password column, it POSTs the credentials to the
+Portal's `/api/auth/sign-in/email` and only then mints a session. The mock portal grew that
+route (and `/api/devices/check-in`, whose absence drove the Hub into the `degraded`
+provisioning phase after three failures) in the same change that landed these shots; it
+accepts the e2e `test@test.com` user plus whatever pair those two env vars name.
+
+**Re-run `video/stage/seed.mts` immediately before each pass.** `app.service.ts` publishes
+`sync_app_statuses` on a five-minute cron and AppStatusSyncService flips every app with no
+matching Docker container to `missing`, which empties `hub-home`'s tile row. The seed script
+is idempotent and re-arms the rows.
+
+**The store shots are shot against a recording, not the mock portal.** `/store` opens on the
+*featured* view, proxied from the Portal (`GET /api/store/listings` →
+`portal-client.fetchStoreListings`), **not** from the CI-Marketplace symlink. The mock portal
+answers every query with the same two stub apps. `capture.config.mjs` therefore fulfils
+`/api/store/listings` and `/api/store/alternatives` from `fixtures/portal-store-*.json`,
+which are recordings of the live production Portal (`https://hub.ci.computer/api/store`, a
+public endpoint) — real app names, real descriptions, real counts, stable bytes. Re-record
+with `node video/fixtures/record-portal-store.mjs`. The symlink still matters: it feeds the
+search/category views, the `/store/ci-marketplace/immich` page, and every card icon
+(`/api/marketplace/apps/<urn>/image`).
+
+The installed-app rows are deliberately DB-only: `populateAppInfo` falls back to the
+marketplace catalog when the installed files are absent
+(`packages/backend/src/modules/apps/apps.service.ts`), so `hub-home` gets real tiles without
+a Docker install in flight. Immich is **not** among them — `app-details` and `install-dialog`
+film its *store* page, and the header swaps Install for Open the moment it is installed.
+
+## Shots that cannot be filmed yet
+<a id="shots-that-cannot-be-filmed-yet"></a>
+
+| Shot | Scene | Why it is a slate |
+|---|---|---|
+| `running-app` | `install-and-run` | The caption promises a green badge. A DB-seeded `running` app cannot produce one: `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install is not available either — `installApp` → `ReposHelpers.downloadAppFiles` pulls the bundle from the **Portal** (`/api/store/:id/install`, device-authenticated), and the mock portal answers 404 (`Failed to fetch app files`). Needs a pass with a real Portal install bundle and a real container. |
+| `install-dialog` (portrait only) | `configure-install` | **The Install dialog does not fit a phone.** At the 375 px mobile viewport the dialog renders wider than the screen: the third exposure mode reads `Pub`, the subdomain suffix and the generated hostname are both cut mid-word. The landscape frame is captured and good; the portrait one was thrown away rather than shipped as a screenshot of an overflowing dialog. Give the dialog a responsive width, then `capture --only install-dialog`. |
+| `custom-app-create` | `bring-your-own-app` | **`/apps/create` is broken on `dev`, in the product.** `multi-service-form.tsx:26` calls `dynamicComposeSchema.omit({ schemaVersion: true })`, but that schema ends in `.superRefine(...)`, so Zod throws `.omit() cannot be used on object schemas containing refinements` at module evaluation. React Router treats the failed route module as a load error and reloads forever: blank body, infinite navigation loop. Fix the schema, then re-shoot — nothing about the stage is wrong. |
 
 ## Three capture passes
 
 Two FTUE shots need Hub state that is mutually exclusive with an operational, onboarded
-Hub, so `.github/workflows/video.yml` captures in three passes. They used to be declared
-and left as permanent slates; they are filmed now.
+Hub, so a full capture runs in three passes. They used to be declared and left as
+permanent slates; they are filmed now.
 
 | Pass | Shots | Setup |
 |---|---|---|
-| 1 | everything except the two below | the seed above |
+| 1 | everything except the two below, minus the two slates | `video/stage/seed.mts`, re-run immediately before the pass |
 | 2 | `onboarding-wizard` | `setWelcomeSeen(false)` (`e2e/helpers/settings.ts`) re-arms the wizard, which `onboarding-page.tsx` otherwise skips whenever `hasCompletedOnboarding` is true. Each pass gets a fresh BrowserContext, so this shot carries its own login in `before`. |
-| 3 | `device-registration` | flip the mock portal with `curl -X POST localhost:4444/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
+| 3 | `device-registration` | flip the mock portal with `curl -X POST localhost:9193/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
 
-Pass 1 derives its `--only` list from `storyboard.json` so a new scene is picked up
-automatically. Only the two FTUE shot ids are named in the workflow.
+Pass 1 is every shot id in `storyboard.json` except those two and the two in
+[Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet) — the `--only` list in
+the command above. Add a scene, add its id there.
 
 ## Screens deliberately left out
 
@@ -103,8 +161,10 @@ so nobody re-adds them as a shot that can only ever render a slate:
 |---|---|
 | `/connect` | Only renders inside the Tauri mobile shell — `connect-page.tsx`'s loader redirects off-mobile and the component returns `null` when `!isTauriMobileSync()`. Filming it needs a simulator-based capture stage, which is a different project. |
 | `/restore-apps` | A recovery interstitial, not a major screen. Reaching it needs a recorded restore intent from a re-pair against a portal that already owns apps. |
-| Settings → Logs | `LogsContainer` streams live backend log lines over SSE, so the shot would differ on every run and open a `chore/video-shot-refresh` PR every Monday. Masking the terminal leaves an empty black rectangle. |
+| Settings → Logs | `LogsContainer` streams live backend log lines over SSE, so the shot would differ on every capture and show up as permanent, meaningless churn in `assets/shots`. Masking the terminal leaves an empty black rectangle. |
 | An `installing → running` transition | The kit captures still PNGs (`page.screenshot`); there is no video capture path, so no narration should imply motion inside a shot. |
+| `/resource-monitor` | Cut. Its totals are summed from live container stats, and the documented stage seeds DB rows with no Docker install in flight — so every column reads `0.0% / 0 B / 0 containers` and the chart shows "Collecting enough samples". A caption promising live per-app CPU over a table of zeros is a false claim. Re-add it only alongside a pass that runs at least one genuinely installed app. |
+| The installed app's own UI on its own hostname | The reference cut's payoff beat (`videos/ci-tutorial-video/storyboard/v2/scenes-v2.json` → `c4-store-live`, "Read the URL bar"). It is the strongest shot this video does not have, and it needs a real container behind Traefik on a real domain with real content in it — a materially bigger stage than everything above. Worth building; not something to declare as a shot that can only render a slate. |
 
 ## Editing the video
 
@@ -123,9 +183,20 @@ picked up automatically from `assets/audio/<sceneId>.mp3`; regenerate it from th
 
 ## What is committed
 
-`assets/shots/*.png` and `assets/audio/*.mp3` **are** committed — they are the record of what the
-product looked like, and captures are byte-stable, so a diff in them means the UI genuinely
-changed. `out/` is not committed.
+`assets/audio/*.mp3` **are** committed — one per scene with a `narration` field, regenerated with
+`npm run narrate` whenever that string changes.
+
+`assets/shots/*.png` **belong** here too and are committed *once captured* — they are the record
+of what the product looked like, and captures are byte-stable, so a diff in them means the UI
+genuinely changed. Review that diff and update `storyboard.json` captions if a screen's meaning
+changed.
+
+`fixtures/portal-store-*.json` are committed too. They are recorded Portal responses, not
+hand-written data — regenerate them with `node fixtures/record-portal-store.mjs` rather than
+editing them, and expect the diff to be large when the catalog grows.
+
+`out/` is **not** committed, and the MP4s are not stored anywhere else either — no artifacts, no
+release assets. Re-render from the committed shots whenever you need a cut.
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.

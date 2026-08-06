@@ -17,6 +17,7 @@ import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
 import { MemoryConnectionModule } from '../memory-connect/memory-connection.module';
+import { McpModule } from '../mcp/mcp.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
     forwardRef(() => RegistrationModule),
     ApiKeyModule,
     MemoryConnectionModule,
+    forwardRef(() => McpModule),
   ],
   controllers: [AppsController],
   providers: [

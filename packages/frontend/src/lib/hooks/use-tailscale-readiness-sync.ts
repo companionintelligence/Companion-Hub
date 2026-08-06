@@ -1,4 +1,4 @@
-import { appContextQueryKey, getStatus4QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { syncExposure } from '@/api-client/sdk.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
@@ -50,7 +50,7 @@ export function useTailscaleReadinessSync(status: TailscaleReadinessStatus | und
           Promise.all([
             queryClient.invalidateQueries({ queryKey: appContextQueryKey() }),
             queryClient.invalidateQueries({ queryKey: ['tailscale-serve'] }),
-            queryClient.invalidateQueries({ queryKey: getStatus4QueryKey() }),
+            queryClient.invalidateQueries({ queryKey: getStatus5QueryKey() }),
           ]),
         )
         .catch(() => undefined);

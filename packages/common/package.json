@@ -20,6 +20,11 @@
       "types": "./dist/types/index.d.ts",
       "default": "./dist/types/index.js"
     },
+    "./validation": {
+      "import": "./dist/validation/index.js",
+      "types": "./dist/validation/index.d.ts",
+      "default": "./dist/validation/index.js"
+    },
     "./i18n/translations/*": "./i18n/translations/*"
   },
   "typesVersions": {
@@ -29,6 +34,9 @@
       ],
       "types": [
         "dist/types/index.d.ts"
+      ],
+      "validation": [
+        "dist/validation/index.d.ts"
       ]
     }
   },
@@ -51,7 +59,11 @@
     "@arethetypeswrong/cli": "^0.18.1",
     "@changesets/cli": "^2.29.3",
     "@types/node": "^24.12.2",
+    "@types/validator": "^13.15.2",
     "vitest": "^4.0.4"
+  },
+  "dependencies": {
+    "validator": "^13.15.20"
   },
   "peerDependencies": {
     "typescript": ">=5",

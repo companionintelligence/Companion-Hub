@@ -17,12 +17,15 @@ export function createZodDto<T extends z.ZodType>(schema: T): ZodDto<T> {
     return schema.parse(data);
   }
 
-  // NestJS requires a class (constructor function) for metatype reflection
-  const DtoClass = class {} as unknown as ZodDto<T>;
-  Object.defineProperty(DtoClass, 'schema', { value: schema, writable: false });
-  Object.defineProperty(DtoClass, 'parse', { value: parse, writable: false });
-  Object.defineProperty(DtoClass, 'parseUnknown', { value: parse, writable: false });
-  return DtoClass;
+  // NestJS requires a class (constructor function) for metatype reflection.
+  // Subclasses inherit `schema` for swagger generation.
+  // biome-ignore lint/complexity/noStaticOnlyClass: NestJS DTO metatype must be a constructor
+  class ZodDtoBase {
+    static schema = schema;
+    static parse = parse;
+    static parseUnknown = parse;
+  }
+  return ZodDtoBase as unknown as ZodDto<T>;
 }
 
 export class ZodValidationPipe implements PipeTransform {

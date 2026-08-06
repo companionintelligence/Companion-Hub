@@ -2735,8 +2735,12 @@ fn is_compose_missing_race_error(raw: &str) -> bool {
 
 /// Whether a start failure should stick until the user confirms Retry.
 /// Transient setup races (compose not copied yet) must not block the real auto-start.
+fn is_docker_not_running_error(raw: &str) -> bool {
+    raw.contains("Docker is not running")
+}
+
 pub fn should_persist_start_failure(raw: &str) -> bool {
-    !is_compose_missing_race_error(raw)
+    !is_compose_missing_race_error(raw) && !is_docker_not_running_error(raw)
 }
 
 /// Turn raw docker/compose failures into a sticky, user-facing message.
@@ -2745,6 +2749,7 @@ pub fn format_start_failure_message(raw: &str) -> String {
     // Already normalized (e.g. retry path wrote the sticky message back through).
     if trimmed.starts_with("Docker Hub rate-limited")
         || trimmed.starts_with("Hub start ran before desktop setup finished")
+        || trimmed.starts_with("Docker is not running")
     {
         return truncate_start_failure_message(trimmed, START_FAILED_MARKER_MAX_BYTES);
     }
@@ -2860,7 +2865,12 @@ pub fn decide_hub_watchdog_action(
     user_stopped: bool,
     start_failed: bool,
     api_container_up: bool,
+    docker_available: bool,
 ) -> HubWatchdogAction {
+    // If Docker is not running there is nothing we can do — skip silently.
+    if !docker_available {
+        return HubWatchdogAction::None;
+    }
     // Respect intentional stop and sticky start failures — both require explicit user action.
     if user_stopped || start_failed {
         return HubWatchdogAction::None;
@@ -2896,6 +2906,7 @@ pub fn should_trigger_hub_watchdog(
             user_stopped,
             start_failed,
             false,
+            is_docker_available(),
         ),
         HubWatchdogAction::StartHub
     )
@@ -5260,6 +5271,12 @@ fn start_hub_inner(
         ),
     );
 
+    if !is_docker_available() {
+        let message = "Docker is not running — please start Docker Desktop and try again.";
+        let _ = append_desktop_log_for(data_dir, "hub.start", message);
+        return Err(message.to_string());
+    }
+
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
         let message = format!("Traefik runtime preflight failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
@@ -5737,6 +5754,21 @@ pub fn pull_stack_images(
 /// Stop Hub containers without marking user-stopped (for updates).
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+
+    // If Docker is not available there are no containers to tear down.
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped for update.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.update", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.update",
@@ -5781,6 +5813,23 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
     }
+
+    // If Docker is not available there are no containers to tear down.
+    // Return success immediately rather than letting `docker compose down`
+    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
@@ -5843,6 +5892,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 }
 
 pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+    if !is_docker_available() {
+        return Ok(None);
+    }
+
     let output = docker_command()
         .args(managed_app_container_ps_args())
         .output()
@@ -9359,27 +9412,31 @@ mod tests {
         use super::{decide_hub_watchdog_action, HubWatchdogAction};
         // Three failures used to trigger start_hub — must not when the container is already up.
         assert_eq!(
-            decide_hub_watchdog_action(3, None, false, false, true),
+            decide_hub_watchdog_action(3, None, false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(5, None, false, false, true),
+            decide_hub_watchdog_action(5, None, false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, None, false, false, true),
+            decide_hub_watchdog_action(6, None, false, false, true, true),
             HubWatchdogAction::RestartWedgedContainer
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, Some(60), false, false, true),
+            decide_hub_watchdog_action(6, Some(60), false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(3, None, false, false, false),
+            decide_hub_watchdog_action(3, None, false, false, false, true),
             HubWatchdogAction::StartHub
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, None, true, false, true),
+            decide_hub_watchdog_action(6, None, true, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, false, false),
             HubWatchdogAction::None
         );
     }

@@ -45,10 +45,10 @@ describe('portal-session-hint', () => {
   it('falls back to a direct Portal session probe when the hub hint has no email', async () => {
     vi.mocked(portalSessionHint).mockResolvedValue({
       data: {
-        email: null,
+        email: '',
         portalBaseUrl: 'https://ci-portal.localhost',
-        source: null,
-      },
+        source: 'hub_operator',
+      } as Awaited<ReturnType<typeof portalSessionHint>>['data'],
       error: undefined,
       request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,
@@ -68,10 +68,10 @@ describe('portal-session-hint', () => {
 
     vi.mocked(portalSessionHint).mockResolvedValue({
       data: {
-        email: null,
+        email: '',
         portalBaseUrl: 'https://ci-portal.localhost',
-        source: null,
-      },
+        source: 'hub_operator',
+      } as Awaited<ReturnType<typeof portalSessionHint>>['data'],
       error: undefined,
       request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,

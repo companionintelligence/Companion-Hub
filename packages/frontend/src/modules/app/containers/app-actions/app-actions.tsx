@@ -165,7 +165,6 @@ const IconActionButton: React.FC<IconBtnProps> = ({ icon: Icon, label, className
     size="icon"
     variant="ghost"
     aria-label={label}
-    title={label}
     data-testid={`icon-action-${label.toLowerCase().replace(/\s+/g, '-')}`}
     data-tooltip-id="app-actions-tooltip"
     data-tooltip-content={label}
@@ -993,9 +992,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
             });
           })}
         </div>
-        <Tooltip id="app-actions-tooltip" className="tooltip" />
         {layout === 'hero' ? null : InstallErrorMessage}
       </div>
+      <Tooltip id="app-actions-tooltip" className="tooltip" positionStrategy="fixed" />
     </>
   );
 };

@@ -162,7 +162,17 @@ export class AppLifecycleTools implements OnModuleInit {
   }
 
   async installApp(params: { appUrn: string; form?: Record<string, unknown> }) {
-    return this.appLifecycleService.installApp({ appUrn: castAppUrn(params.appUrn), form: params.form ?? {} });
+    const appUrn = castAppUrn(params.appUrn);
+    const form = params.form ?? {};
+    const validation = await this.appLifecycleService.validateAppConfig(appUrn, form);
+    if (!validation.valid) {
+      return {
+        error: true,
+        message: `Install config invalid: ${validation.errors.map((e) => e.label).join(', ')}`,
+        errors: validation.errors,
+      };
+    }
+    return this.appLifecycleService.installApp({ appUrn, form });
   }
   async startApp(params: { appUrn: string }) {
     return this.appLifecycleService.startApp({ appUrn: castAppUrn(params.appUrn) });

@@ -519,7 +519,6 @@ export const AiSetupStep = ({
               selectedModelIds={selectedModelIds}
               onToggleModel={handleToggleModel}
               preferredModelId={preferredModelId}
-              chatBackend={selectedBackend}
             />
           </RecommendedModels>
 

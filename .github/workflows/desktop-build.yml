@@ -50,6 +50,9 @@ jobs:
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout
@@ -96,18 +99,16 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Build frontend
         env:
-          NODE_ENV: production
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release desktop embeds bootstrap only — product UI is served by the stack container.
+      # See docs/DESKTOP-UI-ARCHITECTURE.md and packages/desktop/bootstrap/.
 
       - name: Install create-dmg
         if: runner.os == 'macOS'

@@ -10,7 +10,7 @@ export const appFormSchema = z
     exposed: z.boolean().optional(),
     exposedLocal: z.boolean().optional(),
     exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
-    openPort: z.boolean().default(true),
+    openPort: z.boolean().optional(),
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),
@@ -27,9 +27,9 @@ export const appFormSchema = z
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
-    skipEnv: z.boolean().default(false),
-    skipPull: z.boolean().default(false),
-    skipRun: z.boolean().default(false),
+    skipEnv: z.boolean().optional(),
+    skipPull: z.boolean().optional(),
+    skipRun: z.boolean().optional(),
   })
   .passthrough();
 
@@ -83,3 +83,16 @@ export class LifecycleRequestDto extends createZodDto(lifecycleRequestSchema) {}
 export class CancelOperationBody extends createZodDto(cancelOperationBodySchema) {}
 
 export class CancelOperationResponseDto extends createZodDto(cancelOperationResponseSchema) {}
+
+const validateConfigResultSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(
+    z.object({
+      env_variable: z.string(),
+      label: z.string(),
+      messageKey: z.string(),
+    }),
+  ),
+});
+
+export class ValidateConfigResultDto extends createZodDto(validateConfigResultSchema) {}

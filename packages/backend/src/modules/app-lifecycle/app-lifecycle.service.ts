@@ -44,6 +44,7 @@ import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 import type { MemoryConnectService } from '../memory-connect/memory-connect.service';
+import { validateAppFormFields } from '@ci-hub/common/validation';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -547,6 +548,38 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
+  /** Shared install-form validation used by UI pre-check, install, and hub_install_app MCP tool. */
+  async validateAppConfig(appUrn: AppUrn, form: unknown) {
+    const info = await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn);
+    if (!info) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, HttpStatus.NOT_FOUND);
+    }
+
+    const parsedFormResult = appFormSchema.safeParse(form ?? {});
+    if (!parsedFormResult.success) {
+      return {
+        valid: false,
+        errors: [{ env_variable: '_form', label: 'form', messageKey: 'SYSTEM_ERROR_INVALID_BODY' }],
+      };
+    }
+
+    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
+
+    if (parsedForm.exposedLocal && !parsedForm.localSubdomain?.trim() && info.exposable) {
+      parsedForm.localSubdomain = appUrn.split(':')[0];
+    }
+
+    const { isProduction } = this.config.getConfig();
+    const errors = validateAppFormFields(parsedForm as Record<string, unknown>, info.form_fields ?? [], {
+      requirePortWhenExposedLocal: isProduction,
+    });
+
+    return {
+      valid: errors.length === 0,
+      errors: errors.map((e) => ({ env_variable: e.env_variable, label: e.label, messageKey: e.messageKey })),
+    };
+  }
+
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
     const { appUrn, form, skipRun } = params;
     const { demoMode, architecture } = this.config.getConfig();
@@ -583,6 +616,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
+
+    const configValidation = await this.validateAppConfig(appUrn, parsedForm);
+    if (!configValidation.valid) {
+      const labels = configValidation.errors.map((e) => e.label).join(', ');
+      throw new TranslatableError('APP_INSTALL_FORM_ERROR_INVALID', { fields: labels }, HttpStatus.BAD_REQUEST);
+    }
 
     const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
     const apps = await this.appRepository.getApps();

@@ -68,7 +68,6 @@ const defaultMetadata: AppMetadata = {
   composeSchemaVersion: 5,
   hasCustomConfig: false,
   minHubVersion: '0.5.0',
-  localSubdomain: 'test-app',
 };
 
 describe('AppDetailsTabs — compatibility surfacing', () => {

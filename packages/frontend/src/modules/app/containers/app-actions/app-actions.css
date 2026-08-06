@@ -66,10 +66,14 @@
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  background: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  /* Recessed control cluster — distinct from the card surface (--ci-card) it sits on */
+  border: 1px solid var(--ci-border-1);
+  background: var(--ci-surface-recess);
   border-radius: var(--radius-md);
   padding: 0.25rem;
+  /* Lock height so tooltip hover states never nudge the header row */
+  min-height: calc(2.5rem + 0.5rem);
+  flex-shrink: 0;
 }
 
 .hero-actions-layout {
@@ -85,6 +89,10 @@
   border-radius: var(--radius-sm);
   width: 2.5rem;
   height: 2.5rem;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .installation-progress-button {
