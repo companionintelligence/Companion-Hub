@@ -220,11 +220,11 @@ export const InstallForm: React.FC<IProps> = ({
     const formValues = {
       ...withDefaults,
       exposureMode: watchExposureMode,
-      exposedLocal: watchExposureMode === 'cloudflare',
+      exposedLocal: info.exposable && watchExposureMode === 'cloudflare',
       port: watchPort || (info.port ? info.port.toString() : undefined),
     };
 
-    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+    if (isProduction && info.exposable && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       onValidityChange(false);
       return;
     }
@@ -618,7 +618,7 @@ export const InstallForm: React.FC<IProps> = ({
     const formValues = {
       ...withFieldDefaults,
       exposureMode,
-      exposedLocal: exposureMode === 'cloudflare', // backward compat
+      exposedLocal: info.exposable && exposureMode === 'cloudflare', // backward compat
       enableAuth: withFieldDefaults.enableAuth ?? true,
       port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
@@ -631,7 +631,7 @@ export const InstallForm: React.FC<IProps> = ({
     const validationErrors = validateAppConfig(formValues, formFields, { requirePortWhenExposedLocal: isProduction });
 
     // In production, require port when publishing to internet (legacy path when exposedLocal set without port)
-    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+    if (isProduction && info.exposable && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
     }
 

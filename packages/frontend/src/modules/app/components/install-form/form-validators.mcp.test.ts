@@ -23,6 +23,19 @@ describe('n8n-mcp optional-only install validation', () => {
       ),
     ).toBe(true);
   });
+
+  it('rejects accidental cloudflare exposure flags without a subdomain', () => {
+    expect(
+      isInstallFormValid(
+        {
+          N8N_API_URL: 'http://n8n:5678',
+          exposedLocal: true,
+        },
+        n8nFields,
+        { requirePortWhenExposedLocal: true },
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('filesystem-mcp required field with default', () => {
