@@ -205,6 +205,13 @@ async fn install_docker_engine_alternative_command(
         })?
 }
 
+/// Local Hub UI/API origin for the desktop bootstrap (respects API_PORT in .env).
+#[tauri::command]
+fn get_hub_api_url_command(state: tauri::State<'_, hub_manager::HubPaths>) -> String {
+    let port = port_manager::read_api_port(&state.env_path);
+    format!("http://127.0.0.1:{port}")
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -456,6 +463,7 @@ pub fn run() {
             is_stack_dev_mode_command,
             check_docker_available,
             check_docker_access_command,
+            get_hub_api_url_command,
             get_hub_status_command,
             get_startup_progress_command,
             read_desktop_logs_command,

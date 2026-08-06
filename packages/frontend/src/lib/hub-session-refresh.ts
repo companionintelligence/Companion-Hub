@@ -2,7 +2,7 @@ import { getHubSessionIssuedAt, getTauriSessionId, HUB_SESSION_REFRESH_AFTER_MS,
 import { refreshSession } from '@/api-client/sdk.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 import { handleSessionExpired } from '@/lib/session-expired';
-import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 
 export const HUB_SESSION_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -32,7 +32,7 @@ export function isHubSessionRefreshDue(): boolean {
 }
 
 function canAttemptHubSessionRefresh(): boolean {
-  if (isTauriReleaseBuild()) {
+  if (usesCrossOriginDesktopApi()) {
     return Boolean(getTauriSessionId());
   }
 
@@ -65,7 +65,7 @@ export async function refreshHubSessionIfDue(): Promise<boolean> {
       }
 
       const data = (result.data ?? {}) as { sessionId?: string; issuedAt?: number };
-      if (data.sessionId && isTauriReleaseBuild()) {
+      if (data.sessionId && usesCrossOriginDesktopApi()) {
         setTauriSessionId(data.sessionId, data.issuedAt);
       } else {
         markHubSessionIssuedAt(data.issuedAt ?? Date.now());

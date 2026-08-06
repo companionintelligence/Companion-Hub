@@ -1,6 +1,6 @@
 import { client } from '@/api-client/client.gen';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
-import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 import { runtimeFetch } from './runtime-fetch';
 
 export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
@@ -14,7 +14,7 @@ let tauriSessionId: string | null = null;
 
 /** Desktop release builds must survive full app quit/relaunch — sessionStorage does not. */
 function usesPersistentSessionStorage(): boolean {
-  return isTauriReleaseBuild();
+  return usesCrossOriginDesktopApi();
 }
 
 function readStoredSessionId(): string | null {

@@ -3,12 +3,12 @@ import { client } from '@/api-client/client.gen';
 import { TAURI_SESSION_STORAGE_KEY, apiFetch, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
 import { resetActiveFetch, setActiveFetch } from './runtime-fetch';
 
-const { isTauriReleaseBuild } = vi.hoisted(() => ({
-  isTauriReleaseBuild: vi.fn(() => false),
+const { usesCrossOriginDesktopApi } = vi.hoisted(() => ({
+  usesCrossOriginDesktopApi: vi.fn(() => false),
 }));
 
-vi.mock('@/lib/tauri-hub-probe', () => ({
-  isTauriReleaseBuild,
+vi.mock('@/lib/hub-runtime-mode', () => ({
+  usesCrossOriginDesktopApi,
 }));
 
 const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn(async () => {}) }));
@@ -18,7 +18,7 @@ describe('api-fetch session storage', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    isTauriReleaseBuild.mockReturnValue(false);
+    usesCrossOriginDesktopApi.mockReturnValue(false);
     setTauriSessionId(null);
   });
 
@@ -35,7 +35,7 @@ describe('api-fetch session storage', () => {
   });
 
   it('stores the session in localStorage for Tauri release builds', () => {
-    isTauriReleaseBuild.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
 
     setTauriSessionId('desktop-session');
 
@@ -45,7 +45,7 @@ describe('api-fetch session storage', () => {
   });
 
   it('restores a Tauri release session after an in-memory reset (simulated relaunch)', () => {
-    isTauriReleaseBuild.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
     setTauriSessionId('desktop-session');
 
     setTauriSessionId(null);
@@ -55,7 +55,7 @@ describe('api-fetch session storage', () => {
   });
 
   it('migrates legacy sessionStorage sessions into localStorage on read', () => {
-    isTauriReleaseBuild.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
     sessionStorage.setItem(TAURI_SESSION_STORAGE_KEY, 'legacy-session');
 
     expect(getTauriSessionId()).toBe('legacy-session');
@@ -63,7 +63,7 @@ describe('api-fetch session storage', () => {
   });
 
   it('clears stale sessions from all stores', () => {
-    isTauriReleaseBuild.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
     setTauriSessionId('desktop-session');
 
     clearStaleTauriSession();
@@ -80,7 +80,7 @@ describe('apiFetch (raw helper — session header + native routing)', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    isTauriReleaseBuild.mockReturnValue(true); // mobile/desktop release: session via header
+    usesCrossOriginDesktopApi.mockReturnValue(true); // mobile/desktop release: session via header
     setTauriSessionId(null);
     handleSessionExpired.mockClear();
     // Point the client at a remote Hub and route through a fake native fetch.

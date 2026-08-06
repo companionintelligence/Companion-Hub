@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
 import { getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
-import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 
 type Props<T> = {
   topic: T;
@@ -52,8 +52,8 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
       return;
     }
 
-    const isTauri = isTauriReleaseBuild();
-    const baseUrl = isTauri ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
+    const crossOrigin = usesCrossOriginDesktopApi();
+    const baseUrl = crossOrigin ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
     const url = new URL(`${baseUrl}/api/sse/${topic}`);
 
     if (props.params) {
@@ -61,7 +61,7 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
     }
 
     // EventSource doesn't support custom headers, so pass session ID as query param for Tauri
-    if (isTauri) {
+    if (crossOrigin) {
       const sid = getTauriSessionId();
       if (sid) {
         url.searchParams.set('session_id', sid);

@@ -23,7 +23,8 @@ import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
-import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
+import { configureHubApiPort, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from './lib/hub-runtime-mode';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
@@ -145,18 +146,16 @@ client.interceptors.response.use(async (res) => {
   return res;
 });
 
-// In Tauri release mode, the frontend is served from tauri://localhost
-// but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
-// Cross-origin credentials ('include') are blocked by browsers when the server
-// responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
-const isTauriRelease = isTauriReleaseBuild();
-const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
+// Cross-origin desktop (legacy embedded SPA or mobile) uses header auth and API port probing.
+// Release desktop loads stack UI at http://127.0.0.1:PORT — same-origin cookies, like browser.
+const crossOriginDesktopApi = usesCrossOriginDesktopApi();
+const credentialMode: RequestCredentials = crossOriginDesktopApi ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-const tauriBaseUrlReady: Promise<void> = isTauriRelease
+const tauriBaseUrlReady: Promise<void> = crossOriginDesktopApi
   ? (async () => {
       // On mobile there is no local backend — the app is a thin client pointed at
       // a remote Hub the user chose. initMobileConnection() applies any stored Hub
@@ -288,12 +287,12 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
-  const [apiReady, setApiReady] = useState(() => !isTauriRelease);
+  const [apiReady, setApiReady] = useState(() => !crossOriginDesktopApi);
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
-    if (!isTauriRelease) return;
+    if (!crossOriginDesktopApi) return;
 
     let cancelled = false;
     void tauriBaseUrlReady.then(() => {

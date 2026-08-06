@@ -7,7 +7,8 @@ import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
-import { configureHubApiPort, getTauriInvoke, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
 import {
   DOCKER_MAC_ARCH_HINT,

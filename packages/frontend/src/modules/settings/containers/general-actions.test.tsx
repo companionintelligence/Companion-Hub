@@ -6,8 +6,9 @@ import toast from 'react-hot-toast';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
 
-const { getAutoUpdates } = vi.hoisted(() => ({
+const { getAutoUpdates, checkHubForUpdatesApi } = vi.hoisted(() => ({
   getAutoUpdates: vi.fn(),
+  checkHubForUpdatesApi: vi.fn(),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -22,7 +23,7 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
     setAutoUpdates: vi.fn(),
     restartOnboarding: vi.fn(),
     factoryReset: vi.fn(),
-    checkForUpdates: vi.fn(),
+    checkForUpdates: checkHubForUpdatesApi,
   };
 });
 
@@ -58,11 +59,11 @@ vi.mock('@/components/markdown/markdown', () => ({
 
 const mockUseAppContext = vi.mocked(useAppContext);
 const mockCheckForUpdates = vi.mocked(checkForUpdates);
+const mockCheckHubForUpdatesApi = vi.mocked(checkHubForUpdatesApi);
 const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
 const mockToastSuccess = vi.mocked(toast.success);
-const mockToastError = vi.mocked(toast.error);
 
 describe('GeneralActionsContainer', () => {
   beforeEach(() => {
@@ -79,9 +80,10 @@ describe('GeneralActionsContainer', () => {
     } as unknown as ReturnType<typeof useAppContext>);
 
     getAutoUpdates.mockResolvedValue(sdkOk({ enabled: true }));
+    mockCheckHubForUpdatesApi.mockResolvedValue(sdkOk({ updateAvailable: false, latest: '4.7.0' }));
   });
 
-  it('shows the desktop version and linux download installer action in tauri mode', async () => {
+  it('shows the stack version in the primary card and shell update in the shell card on desktop', async () => {
     mockIsTauri.mockReturnValue(true);
     mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
     mockCheckForUpdates.mockResolvedValue({
@@ -95,9 +97,9 @@ describe('GeneralActionsContainer', () => {
 
     render(<GeneralActionsContainer />);
 
-    expect(await screen.findByText('Current version: 0.2.23')).toBeInTheDocument();
-    expect(screen.getByTestId('hub-update-btn')).toHaveTextContent('Download installer');
-    expect(screen.queryByText('Current version: 4.7.0')).not.toBeInTheDocument();
+    expect(await screen.findByText('Current version: 4.7.0')).toBeInTheDocument();
+    expect(screen.getByTestId('hub-shell-update-btn')).toHaveTextContent('Download installer');
+    expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
   });
 
   it('shows manual update instructions matching the installer format on linux', async () => {
@@ -140,7 +142,7 @@ describe('GeneralActionsContainer', () => {
 
     render(<GeneralActionsContainer />);
 
-    await userEvent.click(await screen.findByTestId('hub-update-btn'));
+    await userEvent.click(await screen.findByTestId('hub-shell-update-btn'));
 
     expect(await screen.findByText('Installer download opened in your browser.')).toBeInTheDocument();
     expect(screen.getByTestId('manual-update-instructions')).toHaveTextContent('sudo apt purge companion-hub -y');
@@ -165,7 +167,7 @@ describe('GeneralActionsContainer', () => {
 
     render(<GeneralActionsContainer />);
 
-    await userEvent.click(await screen.findByTestId('hub-update-btn'));
+    await userEvent.click(await screen.findByTestId('hub-shell-update-btn'));
 
     await waitFor(() => {
       expect(mockPerformUpdate).toHaveBeenCalled();
@@ -174,7 +176,7 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByText('Installer download opened in your browser.')).toBeInTheDocument();
   });
 
-  it('treats missing desktop version detection as a failed desktop update check', async () => {
+  it('checks stack updates from the API even when shell version detection fails', async () => {
     mockIsTauri.mockReturnValue(true);
     mockGetInstalledDesktopVersion.mockResolvedValue(null);
 
@@ -183,10 +185,11 @@ describe('GeneralActionsContainer', () => {
     await userEvent.click(await screen.findByTestId('hub-check-updates-btn'));
 
     await waitFor(() => {
-      expect(mockCheckForUpdates).not.toHaveBeenCalled();
-      expect(mockToastError).toHaveBeenCalledWith('Could not check for updates.');
+      expect(mockCheckHubForUpdatesApi).toHaveBeenCalled();
+      expect(mockToastSuccess).toHaveBeenCalledWith('You are on the latest version.');
     });
-    expect(screen.getByText('Current version: Unknown')).toBeInTheDocument();
+    expect(screen.getByText('Current version: 4.7.0')).toBeInTheDocument();
+    expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
   });
 
   it('shows only the latest release card when multiple versions are available', async () => {

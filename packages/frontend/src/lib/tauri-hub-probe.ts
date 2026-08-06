@@ -1,4 +1,6 @@
 import { client } from '@/api-client/client.gen';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 
 /** Hub listens on 5002 (Docker / desktop) or 5004 (local source dev). */
 export const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 5004] as const;
@@ -6,25 +8,13 @@ export const LOCAL_HUB_API_HOST = '127.0.0.1';
 
 const TAURI_HUB_HEALTH_PROBE_MS = 2500;
 
-export function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } })
-      .__TAURI_INTERNALS__.invoke;
-  }
-  return null;
-}
-
-export function isLocalTauriDevOrigin(origin = window.location.origin): boolean {
-  try {
-    const url = new URL(origin);
-    return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
-  } catch {
-    return false;
-  }
-}
-
+/**
+ * True when the SPA must talk to the API cross-origin (header auth, omit cookies).
+ *
+ * @deprecated Prefer {@link usesCrossOriginDesktopApi} from `hub-runtime-mode.ts`.
+ */
 export function isTauriReleaseBuild(): boolean {
-  return Boolean(getTauriInvoke()) && !isLocalTauriDevOrigin();
+  return usesCrossOriginDesktopApi();
 }
 
 function healthProbePorts(): number[] {
@@ -66,11 +56,12 @@ async function probeWithTauriInvoke(): Promise<number | null> {
 
 /** Resolve a reachable local Hub API port and configure the API client when found. */
 export async function probeHealthyHubApiPort(configureClient = false): Promise<number | null> {
-  const port = isTauriReleaseBuild() ? await probeWithTauriInvoke() : await probeWithFetch();
+  const crossOrigin = usesCrossOriginDesktopApi();
+  const port = crossOrigin ? await probeWithTauriInvoke() : await probeWithFetch();
   if (port !== null && configureClient) {
     client.setConfig({
       baseUrl: `http://${LOCAL_HUB_API_HOST}:${port}`,
-      credentials: isTauriReleaseBuild() ? 'omit' : 'include',
+      credentials: crossOrigin ? 'omit' : 'include',
     });
   }
   return port;
@@ -79,6 +70,6 @@ export async function probeHealthyHubApiPort(configureClient = false): Promise<n
 export function configureHubApiPort(port: number): void {
   client.setConfig({
     baseUrl: `http://${LOCAL_HUB_API_HOST}:${port}`,
-    credentials: isTauriReleaseBuild() ? 'omit' : 'include',
+    credentials: usesCrossOriginDesktopApi() ? 'omit' : 'include',
   });
 }
