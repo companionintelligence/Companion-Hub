@@ -673,6 +673,24 @@ describe('AppLifecycleService', () => {
 
         expect(result).toEqual({ valid: true, errors: [] });
       });
+
+      it('does not leak the fallback into the queued form, so port allocation is unchanged', async () => {
+        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
+
+        // The fallback lands on validateAppConfig's own parse of the form, never on the object handed to
+        // the worker. install-app-command still resolves `preferredHostPort: form.port ?? appInfo.port`,
+        // so an install that already worked allocates exactly the port it allocated before.
+        const published = appEventsQueue.publish.mock.calls[0]?.[0] as any;
+        expect(published.form.port).toBeUndefined();
+      });
+
+      it('does not mutate the caller-supplied form', async () => {
+        const form = { exposureMode: 'cloudflare' as const, exposedLocal: true, localSubdomain: 'testapp' };
+
+        await service.validateAppConfig(appUrn, form);
+
+        expect(form).not.toHaveProperty('port');
+      });
     });
 
     it('MUST persist exposureMode=cloudflare when provided in form', async () => {
