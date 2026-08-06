@@ -2865,7 +2865,12 @@ pub fn decide_hub_watchdog_action(
     user_stopped: bool,
     start_failed: bool,
     api_container_up: bool,
+    docker_available: bool,
 ) -> HubWatchdogAction {
+    // If Docker is not running there is nothing we can do — skip silently.
+    if !docker_available {
+        return HubWatchdogAction::None;
+    }
     // Respect intentional stop and sticky start failures — both require explicit user action.
     if user_stopped || start_failed {
         return HubWatchdogAction::None;
@@ -2901,6 +2906,7 @@ pub fn should_trigger_hub_watchdog(
             user_stopped,
             start_failed,
             false,
+            is_docker_available(),
         ),
         HubWatchdogAction::StartHub
     )
@@ -5886,6 +5892,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 }
 
 pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+    if !is_docker_available() {
+        return Ok(None);
+    }
+
     let output = docker_command()
         .args(managed_app_container_ps_args())
         .output()
@@ -9402,27 +9412,31 @@ mod tests {
         use super::{decide_hub_watchdog_action, HubWatchdogAction};
         // Three failures used to trigger start_hub — must not when the container is already up.
         assert_eq!(
-            decide_hub_watchdog_action(3, None, false, false, true),
+            decide_hub_watchdog_action(3, None, false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(5, None, false, false, true),
+            decide_hub_watchdog_action(5, None, false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, None, false, false, true),
+            decide_hub_watchdog_action(6, None, false, false, true, true),
             HubWatchdogAction::RestartWedgedContainer
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, Some(60), false, false, true),
+            decide_hub_watchdog_action(6, Some(60), false, false, true, true),
             HubWatchdogAction::None
         );
         assert_eq!(
-            decide_hub_watchdog_action(3, None, false, false, false),
+            decide_hub_watchdog_action(3, None, false, false, false, true),
             HubWatchdogAction::StartHub
         );
         assert_eq!(
-            decide_hub_watchdog_action(6, None, true, false, true),
+            decide_hub_watchdog_action(6, None, true, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, false, false),
             HubWatchdogAction::None
         );
     }

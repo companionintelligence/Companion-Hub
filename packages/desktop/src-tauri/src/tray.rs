@@ -443,6 +443,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
                         crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
                         api_container_up,
+                        crate::hub_manager::is_docker_available(),
                     )
                 };
                 match action {
