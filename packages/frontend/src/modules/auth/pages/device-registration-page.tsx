@@ -760,7 +760,11 @@ export default function DeviceRegistrationPage() {
                   {t('DEVICE_REGISTRATION_ENTER_PAIRING_CODE')}
                 </HintText>
               </label>
-              <div className="flex gap-2">
+              {/*
+                Stack below `sm`: the fixed `w-40` button left the code field ~62px wide
+                inside the two-column card, so the 6-char placeholder rendered as "AB".
+              */}
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   id="pairing-code"
                   ref={pairingInputRef}
@@ -788,7 +792,7 @@ export default function DeviceRegistrationPage() {
                   onClick={() => void handlePair()}
                   disabled={pairingCode.length !== 6 || isPairing}
                   loading={isPairing}
-                  className="w-40 shrink-0"
+                  className="w-full shrink-0 sm:w-40"
                 >
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>

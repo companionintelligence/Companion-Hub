@@ -95,7 +95,13 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
           </span>
         </div>
 
-        <h3 className="font-bold text-base sm:text-lg mb-1 truncate text-foreground group-hover:text-primary transition-colors">{app.name}</h3>
+        {/*
+          `truncate` clipped real first-party names to "Companion Me…" / "Companion Plan…"
+          in the four-up store grid. Clamp to two lines instead, matching the description.
+        */}
+        <h3 title={app.name} className="font-bold text-base sm:text-lg mb-1 line-clamp-2 text-foreground group-hover:text-primary transition-colors">
+          {app.name}
+        </h3>
         <p className="text-sm text-muted-foreground line-clamp-2 mb-4 flex-grow">{limitText(app.short_desc, 80)}</p>
 
         <div className="flex items-center justify-end mt-auto">

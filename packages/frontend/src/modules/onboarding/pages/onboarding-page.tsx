@@ -233,9 +233,14 @@ function OnboardingWizard() {
           />
         )}
 
-        <div aria-hidden className="h-2" />
+        {/*
+          Spacer must clear the sticky footer, otherwise the last card can never be
+          scrolled out from under it. `h-2` left the System Overview rows (RAM/GPU)
+          permanently covered on a 375px viewport.
+        */}
+        <div aria-hidden className="h-24 sm:h-20" />
 
-        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-lg sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-0.5 min-w-0">
             <ModelDownloadFooterSummary pullState={modelPullState} />
             <p className="text-sm text-muted-foreground">

@@ -54,15 +54,20 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
     const renderSuffix = () => {
       if (!groupSuffix) return null;
       if (typeof groupSuffix === 'string') {
+        // Single-line + truncate rather than `break-all`: a long domain suffix
+        // such as `-living-room-server-acme.ci.computer` otherwise wraps
+        // mid-word onto a second line and grows the row past the field height,
+        // which reads as a layout bug (worst at the 375px viewport).
         return (
           <div
+            title={groupSuffix}
             className={cn(
-              'flex max-w-[50%] min-w-0 items-center whitespace-normal break-all rounded-r-md border border-l-0 border-input bg-muted leading-tight text-muted-foreground',
-              isSm ? 'h-8 px-2 py-0 text-xs' : 'px-3 py-1 text-sm',
+              'flex max-w-[50%] min-w-0 items-center rounded-r-md border border-l-0 border-input bg-muted leading-tight text-muted-foreground',
+              isSm ? 'h-8 px-2 py-0 text-xs' : 'h-11 px-3 py-1 text-sm',
               groupSuffixClassName,
             )}
           >
-            {groupSuffix}
+            <span className="block w-full min-w-0 truncate">{groupSuffix}</span>
           </div>
         );
       }

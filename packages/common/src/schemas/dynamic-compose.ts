@@ -331,26 +331,43 @@ export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) =>
   assertCustomAppServiceSecurity(service, ctx);
 });
 
-export const dynamicComposeSchema = z
-  .object({
-    schemaVersion: z.literal(2),
-    services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
-    overrides: z
-      .array(
-        z.object({
-          architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
-          services: serviceSchemaV2Object.partial().array(),
-        }),
-      )
-      .optional(),
-  })
-  .superRefine((compose, ctx) => {
-    for (const override of compose.overrides ?? []) {
-      for (const service of override.services) {
-        assertCustomAppServiceSecurity(service, ctx);
-      }
+/**
+ * Unrefined object form of the dynamic compose schema.
+ *
+ * Keep this separate from `dynamicComposeSchema`: Zod 4 rejects `.omit()` /
+ * `.pick()` on an object schema that carries refinements ("`.omit()` cannot be
+ * used on object schemas containing refinements"). Callers that need a subset
+ * of the shape must derive it from this object and re-apply
+ * `assertComposeOverrideSecurity` themselves — see `dynamicComposeFormSchema`.
+ */
+export const dynamicComposeObject = z.object({
+  schemaVersion: z.literal(2),
+  services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+  overrides: z
+    .array(
+      z.object({
+        architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
+        services: serviceSchemaV2Object.partial().array(),
+      }),
+    )
+    .optional(),
+});
+
+const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
+  for (const override of compose.overrides ?? []) {
+    for (const service of override.services) {
+      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], ctx);
     }
-  });
+  }
+};
+
+export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertComposeOverrideSecurity);
+
+/**
+ * Shape used by the custom-app builder form, which supplies `schemaVersion`
+ * itself on submit and therefore must not require it as user input.
+ */
+export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
 
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
 
