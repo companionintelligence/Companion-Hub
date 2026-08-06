@@ -48,6 +48,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -142,12 +143,16 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
       - name: Install Bun
         if: env.BUILD_ENABLED
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Set environment config
         if: env.BUILD_ENABLED
         shell: bash
