@@ -8,6 +8,10 @@ vi.mock('@uidotdev/usehooks', () => ({
   useLocalStorage: (...args: unknown[]) => mockUseLocalStorage(...args),
 }));
 
+vi.mock('@/lib/use-resolved-theme', () => ({
+  useResolvedTheme: () => 'light',
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
