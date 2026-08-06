@@ -200,3 +200,16 @@ release assets. Re-render from the committed shots whenever you need a cut.
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
+
+## Why Playwright is pinned exactly
+
+`video/package.json` pins `playwright` to an exact version, not a range.
+
+Captures are byte-stable — that is what makes committing the shots worthwhile, because a UI change
+then lands as a reviewable image diff instead of noise. But that property only holds **within one
+Chromium build**. A `^1.58.0` range resolved to 1.62.1 on one machine and rewrote every committed
+shot in a repo by 0.07–0.47% of pixels: pure text antialiasing, no layout change, and completely
+indistinguishable from a real UI change in review.
+
+So the range is gone. Re-pin deliberately when you want the newer browser, and re-capture the whole
+shot set in the same commit.
