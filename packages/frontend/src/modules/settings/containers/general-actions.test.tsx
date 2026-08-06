@@ -64,7 +64,6 @@ const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
 const mockToastSuccess = vi.mocked(toast.success);
-const mockToastError = vi.mocked(toast.error);
 
 describe('GeneralActionsContainer', () => {
   beforeEach(() => {

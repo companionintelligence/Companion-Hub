@@ -2,9 +2,6 @@ import { client } from '@/api-client/client.gen';
 import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 
-export { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
-export { isLocalTauriDevOrigin } from '@/lib/hub-runtime-mode';
-
 /** Hub listens on 5002 (Docker / desktop) or 5004 (local source dev). */
 export const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 5004] as const;
 export const LOCAL_HUB_API_HOST = '127.0.0.1';
