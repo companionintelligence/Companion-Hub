@@ -7,11 +7,19 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import si from 'systeminformation';
 
-const { execAsyncMock } = vi.hoisted(() => ({
+const { execAsyncMock, archOverride } = vi.hoisted(() => ({
   execAsyncMock: vi.fn(),
+  // null = use the real arch. Set to 'arm64'/'x64' to pin the host architecture for a test, so the
+  // native-Apple-Silicon path is exercised on an Intel/Linux CI runner too.
+  archOverride: { value: null as string | null },
 }));
 
 vi.mock('systeminformation');
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  const patched = { ...actual, arch: () => archOverride.value ?? actual.arch() };
+  return { ...patched, default: patched };
+});
 vi.mock('node:child_process', () => ({
   exec: vi.fn(),
 }));
@@ -51,6 +59,7 @@ describe('HardwareInspectorService', () => {
 
   afterEach(() => {
     process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
+    archOverride.value = null;
     vi.clearAllMocks();
   });
 
@@ -548,6 +557,10 @@ describe('HardwareInspectorService', () => {
 
     it('should use host platform override for macOS GPU detection', async () => {
       process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      // An Intel Mac with a discrete Radeon Pro — that is what this fixture describes, and the arch
+      // now matters: a darwin host on arm64 is treated as Apple Silicon (see HW-mac-native below),
+      // so leaving this to the developer's own machine would make the test pass or fail by laptop.
+      archOverride.value = 'x64';
       const detectMacGpuSpy = vi.spyOn(service as any, 'detectMacGpu').mockResolvedValue({
         available: true,
         vendor: 'amd',
@@ -1301,6 +1314,76 @@ describe('HardwareInspectorService', () => {
       execAsyncMock.mockRejectedValue(new Error('docker daemon unreachable'));
       const profile = await service.detect();
       expect(profile.gpu.containerHostKind).toBe('unknown');
+    });
+  });
+  // ─── Native macOS host (backend NOT in a container, so no host probe) ───────
+
+  describe('native Apple Silicon host (HW-mac-native)', () => {
+    /** What `system_profiler SPDisplaysDataType -json` really prints on an M2 Max: an Apple
+     *  integrated GPU with a core count and NO VRAM field. Verified on the machine that took the
+     *  committed `ai-hardware.png` store screenshot. */
+    const APPLE_SILICON_SPDISPLAYS = JSON.stringify({
+      SPDisplaysDataType: [
+        {
+          _name: 'Apple M2 Max',
+          spdisplays_vendor: 'sppci_vendor_Apple',
+          sppci_bus: 'spdisplays_builtin',
+          sppci_cores: '38',
+          sppci_device_type: 'spdisplays_gpu',
+          sppci_model: 'Apple M2 Max',
+        },
+      ],
+    });
+
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      archOverride.value = 'arm64';
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 12, brand: 'M2 Max' });
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.mem as any) = vi.fn().mockResolvedValue({ total: 103079215104, available: 10951401472 });
+      execAsyncMock.mockResolvedValue({ stdout: APPLE_SILICON_SPDISPLAYS });
+      // No probe file: nothing writes one when the backend runs directly on the Mac.
+      filesystemService.readTextFile.mockResolvedValue(null);
+      filesystemService.pathExists.mockResolvedValue(false);
+    });
+
+    it('reports the integrated GPU instead of "No GPU detected"', async () => {
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('apple');
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.model).toBe('M2 Max (Apple Silicon)');
+      expect(profile.gpu.runtimeAvailable).toBe(true);
+    });
+
+    it('sizes the GPU from unified memory and tiers on it', async () => {
+      const profile = await service.detect();
+
+      expect(profile.gpu.vramMb).toBe(profile.ram.totalMb);
+      expect(profile.tier).toBe('high');
+    });
+
+    it('leaves an Intel Mac alone', async () => {
+      archOverride.value = 'x64';
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Intel Core i9' });
+      execAsyncMock.mockResolvedValue({ stdout: JSON.stringify({ SPDisplaysDataType: [] }) });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).not.toBe('apple');
+      expect(profile.gpu.available).toBe(false);
+      expect(profile.gpu.unifiedMemory).toBe(false);
+    });
+
+    it('does not claim Apple Silicon for a non-darwin host', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Ampere Altra' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).not.toBe('apple');
     });
   });
 });

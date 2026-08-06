@@ -168,7 +168,23 @@ export class HardwareInspectorService {
     // Host probe platform is authoritative on Docker Desktop (macOS/Windows); the container reports linux.
     const hostPlatform = hostProbe?.platform;
     const platform = hostPlatform ?? this.getHostPlatform();
-    const isAppleSilicon = macOsProbe?.isAppleSilicon === true || (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64');
+    // A host probe only exists when the backend runs inside a VM/container and something on the
+    // host wrote one (init-host-probe, the Tauri desktop shell). Running the backend DIRECTLY on
+    // an Apple Silicon Mac — `pnpm dev`, `e2e/start-backend.sh`, the video capture stage — there is
+    // no probe to read, and every Apple-Silicon branch below used to be skipped: detectMacGpu()
+    // asks `system_profiler SPDisplaysDataType`, which reports the integrated GPU as
+    // `sppci_model: "Apple M2 Max"` with NO VRAM field, so its vendor match (nvidia/amd/intel) and
+    // its `vramMb > 0` gate both fail. The Hub then told a 38-core M2 Max "No GPU detected … consider
+    // installing a graphics card". os.platform()/os.arch() ARE the host's on a native run, so use them.
+    const nativeAppleSilicon = !hostProbe && platform === 'darwin' && cpuInfo.arch === 'arm64';
+    const isAppleSilicon =
+      macOsProbe?.isAppleSilicon === true || (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64') || nativeAppleSilicon;
+
+    if (nativeAppleSilicon) {
+      this.logger.info(
+        `[HardwareInspector] Apple Silicon host detected natively (${cpuInfo.model}); reporting the integrated GPU with ${ramInfo.totalMb} MB unified memory.`,
+      );
+    }
     const appleGpuModel = cpuInfo.model ? `${cpuInfo.model} (Apple Silicon)` : 'Apple Silicon';
 
     let gpu: HardwareProfile['gpu'] = {
