@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted — implementation in progress.
+Implemented on `dev` — desktop release uses bootstrap + stack UI; see CI rules below.
 
 ## Problem
 
@@ -54,11 +54,11 @@ Frontend code uses explicit modes (`hub-runtime-mode.ts`), not URL-origin infere
 - **Primary update** — stack pull (Settings → Update Hub). Updates UI automatically.
 - **Shell update** — separate, rare; only when the Tauri/Rust layer changed.
 
-## CI rules (target)
+## CI rules
 
-1. Build full frontend **once** per release tag → container image.
-2. Desktop release embeds **bootstrap only** (not `packages/frontend/dist/client`).
-3. Production: `desktop CI_HUB_BUILD_VERSION == container image tag`.
+1. Build full frontend **once** per release tag inside the container image (`build-container.yml` / `Dockerfile`). Desktop and browser CI do not rebuild the SPA.
+2. Desktop release embeds **bootstrap only** (not `packages/frontend/dist/client`). `desktop-release.yml` and `desktop-build.yml` follow this.
+3. Production: `desktop CI_HUB_BUILD_VERSION == container image tag` (enforced by `desktop-release.yml` → `build-container` with matching `tag` input).
 
 ## Bootstrap
 
@@ -73,5 +73,6 @@ Release desktop loads a minimal embedded splash, polls stack health via Tauri in
 
 - `packages/desktop/bootstrap/` — release bootstrap splash
 - `packages/frontend/src/lib/hub-runtime-mode.ts` — runtime mode detection
+- `packages/frontend/src/lib/desktop-stack-session.ts` — stack update pending + steady session flags
 - `docs/DESKTOP-AUTO-UPDATE.md` — shell vs stack update mechanics
 - `scripts/launch-tauri-desktop.ts` — stack-dev precedent (`devUrl: http://127.0.0.1:PORT`)
