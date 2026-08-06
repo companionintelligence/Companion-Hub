@@ -47,7 +47,7 @@ describe('MarketplaceService', () => {
       listLocalScreenshotFilenames: vi.fn().mockResolvedValue([]),
       findDemoVideoPath: vi.fn().mockResolvedValue(null),
       getScreenshot: vi.fn(),
-      getDemoVideo: vi.fn(),
+      getDemoVideoFile: vi.fn().mockResolvedValue(null),
     };
 
     spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
@@ -70,7 +70,7 @@ describe('MarketplaceService', () => {
         listLocalScreenshotFilenames: spies.listLocalScreenshotFilenames,
         findDemoVideoPath: spies.findDemoVideoPath,
         getScreenshot: spies.getScreenshot,
-        getDemoVideo: spies.getDemoVideo,
+        getDemoVideoFile: spies.getDemoVideoFile,
       };
     });
 
@@ -397,6 +397,138 @@ describe('MarketplaceService', () => {
         screenshots: ['https://github.com/user-attachments/assets/abc123'],
         demoVideoUrl: null,
       });
+    });
+  });
+
+  describe('getAppMedia demo video precedence', () => {
+    const APP_URN = 'ci-memory:ci-marketplace' as any;
+    const PORTAL_VIDEO = 'https://portal.example.com/api/store/ci-memory/demo-video';
+
+    const useCiMarketplaceStore = async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      configService.getConfig.mockReturnValue({ architecture: 'amd64', ciCloudUrl: 'https://portal.example.com' } as any);
+    };
+
+    beforeEach(useCiMarketplaceStore);
+
+    // The exact regression: every CI-Marketplace app declares a relative demo_video, but the MP4 is
+    // gitignored and is not shipped in the install bundle, so it is absent on a real appliance.
+    it('falls through to the portal URL when a relative manifest ref does not resolve locally', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        screenshots: [],
+        demo_video: './metadata/media/ci-memory-landscape.mp4',
+      });
+      spies.findDemoVideoPath.mockResolvedValue(null);
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: PORTAL_VIDEO });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: PORTAL_VIDEO });
+    });
+
+    it('prefers a locally resolvable relative ref over the portal URL', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        screenshots: [],
+        demo_video: './metadata/media/ci-memory-landscape.mp4',
+      });
+      spies.findDemoVideoPath.mockResolvedValue('/data/apps/ci-marketplace/ci-memory/metadata/media/ci-memory-landscape.mp4');
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: PORTAL_VIDEO });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({
+        demoVideoUrl: '/api/marketplace/apps/ci-memory%3Aci-marketplace/demo-video',
+      });
+      expect(spies.findDemoVideoPath).toHaveBeenCalled();
+    });
+
+    it('prefers an absolute manifest ref over the portal URL without touching the disk', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        screenshots: [],
+        demo_video: 'https://cdn.example.com/manifest.mp4',
+      });
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: PORTAL_VIDEO });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: 'https://cdn.example.com/manifest.mp4' });
+      expect(spies.findDemoVideoPath).not.toHaveBeenCalled();
+    });
+
+    it('ignores a relative portal demo_video and logs the miss', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ screenshots: [], demo_video: './metadata/media/ci-memory-landscape.mp4' });
+      spies.findDemoVideoPath.mockResolvedValue(null);
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: './metadata/media/ci-memory-landscape.mp4' });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: null });
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('No demo video resolved for ci-memory:ci-marketplace'));
+    });
+
+    it('uses the portal URL when the manifest declares no demo video at all', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ screenshots: [] });
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: PORTAL_VIDEO });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: PORTAL_VIDEO });
+    });
+
+    it('returns null and stays quiet when neither side declares a demo video', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ screenshots: [] });
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ screenshots: [] });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: null });
+      expect(loggerService.warn).not.toHaveBeenCalledWith(expect.stringContaining('No demo video resolved'));
+    });
+
+    it('still falls back to the portal URL when local resolution throws', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ screenshots: [], demo_video: './metadata/media/ci-memory-landscape.mp4' });
+      spies.findDemoVideoPath.mockRejectedValue(new Error('EACCES'));
+      portalCatalog.fetchStoreAppDetails.mockResolvedValue({ demo_video: PORTAL_VIDEO });
+
+      await expect(service.getAppMedia(APP_URN)).resolves.toMatchObject({ demoVideoUrl: PORTAL_VIDEO });
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve local demo video'));
+    });
+  });
+
+  describe('getAppDemoVideo', () => {
+    beforeEach(async () => {
+      await service.initialize();
+    });
+
+    it('returns an on-disk file descriptor rather than buffered bytes', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ demo_video: './metadata/media/demo.mp4' });
+      spies.getDemoVideoFile.mockResolvedValue({
+        path: '/data/apps/store-1/app-1/metadata/media/demo.mp4',
+        size: 52_428_800,
+        etag: '"3200000-18f"',
+        contentType: 'video/mp4',
+      });
+
+      await expect(service.getAppDemoVideo('app-1:store-1' as any)).resolves.toEqual({
+        path: '/data/apps/store-1/app-1/metadata/media/demo.mp4',
+        size: 52_428_800,
+        etag: '"3200000-18f"',
+        contentType: 'video/mp4',
+      });
+    });
+
+    it('does not serve absolute refs from the hub endpoint', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ demo_video: 'https://cdn.example.com/demo.mp4' });
+
+      await expect(service.getAppDemoVideo('app-1:store-1' as any)).resolves.toBeNull();
+      expect(spies.getDemoVideoFile).not.toHaveBeenCalled();
+    });
+
+    it('warns when a declared local video is missing', async () => {
+      spies.getAppInfoFromAppStore.mockResolvedValue({ demo_video: './metadata/media/demo.mp4' });
+      spies.getDemoVideoFile.mockResolvedValue(null);
+
+      await expect(service.getAppDemoVideo('app-1:store-1' as any)).resolves.toBeNull();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('no such file exists on disk'));
+    });
+
+    it('opens a bounded read stream for a byte range', () => {
+      const file = { path: '/data/apps/store-1/app-1/metadata/media/demo.mp4', size: 100, etag: '"x"', contentType: 'video/mp4' };
+      service.createDemoVideoStream(file, 10, 49);
+
+      expect(filesystemService.createReadStream).toHaveBeenCalledWith(file.path, { start: 10, end: 49 });
     });
   });
 });

@@ -16,9 +16,12 @@ import {
 } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import { pipeline } from 'node:stream/promises';
+import { LoggerService } from '@/core/logger/logger.service';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { RegistrationGuard } from '../registration/registration.guard';
+import { parseByteRange } from './app-media.helpers';
 import {
   AllAppStoresDto,
   AppMediaDto,
@@ -33,12 +36,21 @@ import {
 import { ImageSizeService } from './image-size.service';
 import { MarketplaceService } from './marketplace.service';
 
+const isExpectedStreamAbortError = (error: unknown) => {
+  if (!(error instanceof Error) || !('code' in error)) {
+    return false;
+  }
+
+  return error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.code === 'ECONNRESET' || error.code === 'EPIPE';
+};
+
 @Controller('marketplace')
 export class MarketplaceController {
   constructor(
     private readonly marketplaceService: MarketplaceService,
     private readonly appStoreService: AppStoreService,
     private readonly imageSizeService: ImageSizeService,
+    private readonly logger: LoggerService,
   ) {}
 
   @Get('apps/search')
@@ -124,28 +136,65 @@ export class MarketplaceController {
 
   @Get('apps/:urn/demo-video')
   async getAppDemoVideo(@Param('urn') urn: string, @Res() res: Response, @Req() req: Request) {
-    const { video, etag, contentType } = await this.marketplaceService.getAppDemoVideo(castAppUrn(urn));
+    const file = await this.marketplaceService.getAppDemoVideo(castAppUrn(urn));
 
-    if (!video) {
+    if (!file) {
       throw new NotFoundException('Demo video not found');
     }
 
-    if (req.headers['if-none-match'] === etag) {
-      res.set({
-        'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-        'Content-Type': contentType || 'video/mp4',
-        ETag: etag,
-      });
+    const { size, etag, contentType } = file;
+    const headers: Record<string, string> = {
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
+      'Content-Type': contentType || 'video/mp4',
+    };
+    if (etag) {
+      headers.ETag = etag;
+    }
+
+    if (etag && req.headers['if-none-match'] === etag) {
+      res.set(headers);
       return res.status(304).end();
     }
 
-    res.set({
-      'Cache-Control': 'public, max-age=0, stale-while-revalidate=86400, stale-if-error=86400',
-      'Content-Type': contentType || 'video/mp4',
-      ETag: etag,
-    });
+    const range = parseByteRange(req.headers.range, size);
 
-    return res.send(video);
+    if (range === 'unsatisfiable') {
+      res.set({ ...headers, 'Content-Range': `bytes */${size}` });
+      return res.status(416).end();
+    }
+
+    if (size === 0) {
+      res.set({ ...headers, 'Content-Length': '0' });
+      return res.status(200).end();
+    }
+
+    const start = range ? range.start : 0;
+    const end = range ? range.end : size - 1;
+
+    res.set({
+      ...headers,
+      'Content-Length': String(end - start + 1),
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+    });
+    res.status(range ? 206 : 200);
+
+    const stream = this.marketplaceService.createDemoVideoStream(file, start, end);
+
+    try {
+      await pipeline(stream, res);
+    } catch (error) {
+      // Seeking and tab-closing abort in-flight video requests constantly; that is not an error.
+      if (!isExpectedStreamAbortError(error)) {
+        this.logger.warn(`Demo video stream failed for ${urn}: ${error instanceof Error ? error.message : String(error)}`);
+        if (!res.headersSent) {
+          res.status(500);
+        }
+      }
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
   }
 
   @Post('pull')

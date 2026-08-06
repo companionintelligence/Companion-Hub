@@ -9,10 +9,11 @@ import type { AppInfo } from '@ci-hub/common/schemas';
 import MiniSearch from 'minisearch';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
-import { AppStoreFilesManager } from '../app-stores/app-store-files-manager';
+import { AppStoreFilesManager, type DemoVideoFile } from '../app-stores/app-store-files-manager';
 import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-store.service';
 import {
   extractScreenshotFilename,
+  isAbsoluteMediaUrl,
   isSafeMediaFilename,
   marketplaceDemoVideoPath,
   marketplaceScreenshotPath,
@@ -410,13 +411,42 @@ export class MarketplaceService {
       }
     }
 
-    const demoVideoRef = info?.demo_video ?? portalDetails?.demo_video;
-    if (typeof demoVideoRef === 'string' && demoVideoRef.trim()) {
-      if (/^https?:\/\//i.test(demoVideoRef.trim())) {
-        demoVideoUrl = demoVideoRef.trim();
-      } else if (store && (await store.findDemoVideoPath(appUrn, demoVideoRef))) {
-        demoVideoUrl = marketplaceDemoVideoPath(appUrn);
+    // Precedence: an absolute manifest ref, then a manifest ref that actually resolves on disk,
+    // then the Portal's absolute URL. A relative manifest ref must NOT veto the Portal fallback —
+    // every CI-Marketplace app declares `./metadata/media/<slug>-landscape.mp4`, but the bytes are
+    // gitignored and are not part of the install bundle, so on most appliances they are not local.
+    const localRef = typeof info?.demo_video === 'string' ? info.demo_video.trim() : '';
+    const portalRef = typeof portalDetails?.demo_video === 'string' ? portalDetails.demo_video.trim() : '';
+    let localResolutionFailed = false;
+
+    if (localRef && isAbsoluteMediaUrl(localRef)) {
+      demoVideoUrl = localRef;
+    } else {
+      if (localRef && store) {
+        try {
+          if (await store.findDemoVideoPath(appUrn, localRef)) {
+            demoVideoUrl = marketplaceDemoVideoPath(appUrn);
+          } else {
+            localResolutionFailed = true;
+          }
+        } catch (e) {
+          localResolutionFailed = true;
+          const message = e instanceof Error ? e.message : String(e);
+          this.logger.warn(`Failed to resolve local demo video for ${appUrn} (ref "${localRef}"): ${message}`);
+        }
+      } else if (localRef) {
+        localResolutionFailed = true;
       }
+
+      if (!demoVideoUrl && portalRef && isAbsoluteMediaUrl(portalRef)) {
+        demoVideoUrl = portalRef;
+      }
+    }
+
+    if (!demoVideoUrl && (localRef || portalRef)) {
+      this.logger.warn(
+        `No demo video resolved for ${appUrn}: manifest ref ${localRef ? `"${localRef}"${localResolutionFailed ? ' (not found on disk)' : ''}` : '(none)'}, portal ref ${portalRef ? `"${portalRef}" (not an absolute URL)` : '(none)'}`,
+      );
     }
 
     return { screenshots, demoVideoUrl };
@@ -451,24 +481,39 @@ export class MarketplaceService {
     }
   }
 
-  public async getAppDemoVideo(appUrn: AppUrn) {
+  /**
+   * Locate the on-disk demo video for an app, if one is present locally.
+   * Returns a descriptor only — the controller streams the bytes so a ~50MB file never lands in
+   * the heap of an appliance that may only have a couple of gigabytes to spare.
+   */
+  public async getAppDemoVideo(appUrn: AppUrn): Promise<DemoVideoFile | null> {
     try {
       const info = await this.getAppInfoFromAppStore(appUrn).catch(() => null);
-      const demoVideoRef = info?.demo_video;
-      if (!demoVideoRef || /^https?:\/\//i.test(demoVideoRef.trim())) {
-        return { video: null, etag: '', contentType: 'video/mp4' };
+      const demoVideoRef = typeof info?.demo_video === 'string' ? info.demo_video.trim() : '';
+      if (!demoVideoRef || isAbsoluteMediaUrl(demoVideoRef)) {
+        // Absolute refs are served by whoever hosts them (Portal/R2), not by the Hub.
+        return null;
       }
 
       const { store } = this.getStoreFromUrn(appUrn);
       if (!store) {
-        return { video: null, etag: '', contentType: 'video/mp4' };
+        return null;
       }
 
-      return store.getDemoVideo(appUrn, demoVideoRef);
+      const file = await store.getDemoVideoFile(appUrn, demoVideoRef);
+      if (!file) {
+        this.logger.warn(`Demo video for ${appUrn} declared as "${demoVideoRef}" but no such file exists on disk`);
+      }
+      return file;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.logger.warn(`Failed to get demo video for ${appUrn}: ${message}`);
-      return { video: null, etag: '', contentType: 'video/mp4' };
+      return null;
     }
+  }
+
+  /** Open a byte-range read stream over a resolved demo-video file. */
+  public createDemoVideoStream(file: DemoVideoFile, start: number, end: number) {
+    return this.filesystem.createReadStream(file.path, { start, end });
   }
 }
