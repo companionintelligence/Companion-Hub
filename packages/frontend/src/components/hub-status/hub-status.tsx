@@ -1,4 +1,8 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { colorizeLogLine } from '@/lib/log-ansi';
+import { useResolvedTheme } from '@/lib/use-resolved-theme';
+import DOMPurify from 'dompurify';
+import '@/components/logs-terminal/logs-terminal.css';
+import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
@@ -660,6 +664,17 @@ export function HubStatus({ children }: HubStatusProps) {
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const resolvedTheme = useResolvedTheme();
+  const renderedLogs = useMemo(() => {
+    if (!logs) {
+      return DOMPurify.sanitize(t('HUB_STATUS_NO_LOGS_AVAILABLE'));
+    }
+
+    return logs
+      .split('\n')
+      .map((line) => DOMPurify.sanitize(colorizeLogLine(line, resolvedTheme)))
+      .join('<br />');
+  }, [logs, resolvedTheme, t]);
   const [confirmRetry, setConfirmRetry] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -1032,9 +1047,11 @@ export function HubStatus({ children }: HubStatusProps) {
                 {t('HUB_STATUS_HIDE')}
               </button>
             </div>
-            <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
-              {logs || t('HUB_STATUS_NO_LOGS_AVAILABLE')}
-            </pre>
+            <pre
+              className="log-terminal log-terminal--panel wrap-lines"
+              // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized ANSI output from local log files
+              dangerouslySetInnerHTML={{ __html: renderedLogs }}
+            />
           </div>
         )}
       </div>
