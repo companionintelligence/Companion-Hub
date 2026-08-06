@@ -66,10 +66,33 @@ const server = http.createServer((req, res) => {
   const routes = buildRoutes(currentScenario);
   const key = `${req.method} ${pathname}`;
   const handler = routes[key] || routes[`${req.method} ${pathname}/`];
-  const result = handler ? handler(url) : { body: { error: 'Not found' }, status: 404 };
 
-  res.writeHead(result.status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(result.body));
+  const respond = (body?: unknown) => {
+    const result = handler ? handler(url, body) : { body: { error: 'Not found' }, status: 404 };
+    res.writeHead(result.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result.body));
+  };
+
+  // Credential-checking routes (sign-in) need the payload, so buffer it for any
+  // method that carries one. GETs skip the read and answer immediately.
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    respond();
+    return;
+  }
+
+  let raw = '';
+  req.on('data', (chunk: Buffer) => {
+    raw += chunk.toString();
+  });
+  req.on('end', () => {
+    let parsed: unknown;
+    try {
+      parsed = raw ? JSON.parse(raw) : undefined;
+    } catch {
+      parsed = undefined;
+    }
+    respond(parsed);
+  });
 });
 
 server.listen(PORT, () => {

@@ -70,8 +70,7 @@
             "path": "/device-registration",
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='ABC123']",
-            "settle": 900,
-            "mask": ["text=Device ID"]
+            "settle": 900
           }
         }
       ]
@@ -94,7 +93,7 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
               { "fill": ["input[placeholder='Enter your password']", "password"] },
               { "click": "button[type='submit']" },
               { "waitFor": "[data-testid='finish-setup-btn']" },
@@ -123,7 +122,7 @@
             "waitUntil": "domcontentloaded",
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
-              { "fill": ["input[placeholder='you@example.com']", "test@test.com"] },
+              { "fill": ["input[placeholder='you@example.com']", "owner@acme.com"] },
               { "fill": ["input[placeholder='Enter your password']", "password"] },
               { "click": "button[type='submit']" },
               { "waitFor": "text=Disk space" },
@@ -219,11 +218,7 @@
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='action-install']",
-            "before": [
-              { "click": "[data-testid='action-install']" },
-              { "waitFor": "[role='dialog']" },
-              { "wait": 1200 }
-            ],
+            "before": [{ "click": "[data-testid='action-install']" }, { "waitFor": "[role='dialog']" }, { "wait": 1200 }],
             "settle": 1200
           }
         }
@@ -335,6 +330,13 @@
             "path": "/settings?tab=mcp",
             "waitUntil": "domcontentloaded",
             "waitFor": "[data-testid='mcp-settings']",
+            "before": [
+              { "waitFor": "[data-testid='mcp-tool-search']" },
+              {
+                "eval": "() => document.querySelector('[data-testid=\"mcp-tool-search\"]')?.scrollIntoView({ block: 'center' })"
+              },
+              { "wait": 600 }
+            ],
             "settle": 1200
           }
         }

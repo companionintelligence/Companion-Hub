@@ -1,0 +1,4005 @@
+{
+  "_source": "https://hub.ci.computer/api/store",
+  "_capturedAt": "2026-08-06",
+  "_note": "Recorded, then projected onto the four fields the Hub actually reads (see video/capture.config.mjs). icon is intentionally absent so AppCard falls back to the Hub-local /api/marketplace/apps/<urn>/image and serves the same logo off the CI-Marketplace checkout instead of hitting the network mid-capture.",
+  "queries": {
+    "tags=companion-intelligence": [
+      "ci-memory",
+      "ci-planning",
+      "ci-web-xr-scan",
+      "ci-hermes",
+      "ci-import-tools",
+      "ci-just-in-case",
+      "ci-local-bench",
+      "ci-openclaw",
+      "ci-spatial-companion-webxr",
+      "ci-spellbook"
+    ],
+    "tags=featured": [
+      "audiobookshelf",
+      "code-server",
+      "collabora-online",
+      "comfyui",
+      "ci-memory",
+      "coolify",
+      "cyberchef",
+      "dify",
+      "drawio",
+      "excalidraw",
+      "firefly-iii",
+      "frigate",
+      "ghost",
+      "gitea",
+      "hermes-agent",
+      "home-assistant",
+      "immich",
+      "ci-import-tools",
+      "jellyfin",
+      "jitsi",
+      "mastodon",
+      "metabase",
+      "mindustry",
+      "miniflux",
+      "n8n",
+      "navidrome",
+      "nextcloud",
+      "ollama",
+      "open-webui",
+      "openclaw",
+      "opencode",
+      "paperless",
+      "photoview",
+      "pi-hole",
+      "rocketchat",
+      "spliit",
+      "steam-headless",
+      "stirling-pdf",
+      "syncthing",
+      "vaultwarden"
+    ],
+    "sort=trending": [
+      "zima",
+      "zeronote",
+      "zen",
+      "yuvomi",
+      "yt-navigator",
+      "yamtrack",
+      "youtube-transcript-mcp",
+      "xinference",
+      "woodpecker-ci",
+      "wordpress",
+      "worldmonitor",
+      "windows",
+      "wizarr",
+      "windows-arm",
+      "wingfit",
+      "wikijs",
+      "whisperx-fastapi",
+      "whisper-webui",
+      "wewe-rss",
+      "webcheck",
+      "wealthfolio",
+      "wallos",
+      "wanderer",
+      "vui",
+      "vitriol",
+      "veloren",
+      "vikunja",
+      "vert",
+      "vane",
+      "vaultwarden",
+      "valorgrid",
+      "uptime-kuma",
+      "unity-mcp",
+      "unity-mcp-ivanmurzak",
+      "unreal-engine-mcp",
+      "twenty",
+      "umami",
+      "tubearchivist",
+      "triliumnext",
+      "trip",
+      "trek",
+      "trilium-notes",
+      "transmute",
+      "transmission",
+      "tooljet",
+      "torbrowser",
+      "tor",
+      "threema",
+      "tldraw",
+      "thelounge",
+      "thinkdashboard",
+      "tensorzero",
+      "termix",
+      "telegrapho",
+      "teable",
+      "taxhacker",
+      "teampass",
+      "taiga",
+      "tandoor",
+      "tautulli",
+      "syncthing",
+      "synapse",
+      "surfsense",
+      "swingmusic",
+      "stirling-pdf",
+      "sure",
+      "super-productivity",
+      "stunnel",
+      "strix",
+      "steam-mcp",
+      "stalwart-mail",
+      "standard-notes",
+      "steam-headless",
+      "stash",
+      "sqlitebrowser",
+      "speaches",
+      "spliit",
+      "sqlite-mcp",
+      "sonarr",
+      "spacebot",
+      "solidtime",
+      "snowflake",
+      "snort",
+      "sillytavern",
+      "slink",
+      "snapify",
+      "smartest-tv-mcp",
+      "skybro",
+      "sickchill",
+      "showdoc",
+      "securo",
+      "secondme",
+      "sglang",
+      "searxng",
+      "seatable",
+      "seafile",
+      "sdwebui-forge-neo",
+      "sdwebui",
+      "sdwebuiforge",
+      "satsbook",
+      "safeos",
+      "samba",
+      "sabnzbd",
+      "rotki",
+      "route96",
+      "rsshub",
+      "romm",
+      "rolltop",
+      "rocketchat",
+      "rna-sequencing",
+      "rms-mail",
+      "remmina",
+      "remotion-studio",
+      "reitti",
+      "rembg",
+      "readeck",
+      "reddit-mcp",
+      "readur",
+      "razzia",
+      "readarr",
+      "rallly",
+      "ragflow",
+      "radarr",
+      "radicale",
+      "rabbitmq",
+      "quarkdown",
+      "qinglong",
+      "qbittorrent",
+      "public-pool",
+      "pyload-ng",
+      "proxmox-mail",
+      "proxmox-backup",
+      "prestashop",
+      "project-nomad",
+      "prowlarr",
+      "prometheus",
+      "privatebin",
+      "plugnmeet",
+      "poznote",
+      "postiz",
+      "pocketbase",
+      "pogolo",
+      "postgres-mcp",
+      "plex",
+      "plausible",
+      "plane",
+      "playwright-mcp",
+      "planka",
+      "piefed",
+      "pingvin-share",
+      "pinchflat",
+      "picsur",
+      "picoclaw",
+      "photoview",
+      "photoprism",
+      "pi-hole",
+      "penpot",
+      "pds",
+      "pdfmathtranslate",
+      "pastefy",
+      "passky-server",
+      "passky-client",
+      "passbolt",
+      "paperless",
+      "papra",
+      "papercups",
+      "paperclip",
+      "pairdrop",
+      "paddle-ocr",
+      "owncloud",
+      "owncast",
+      "outline",
+      "openshell-pi",
+      "openshell-ollama",
+      "openshell-gemini",
+      "openproject",
+      "openshell-base",
+      "openshell-droid",
+      "opengist",
+      "openclaw",
+      "openedai-speech",
+      "opencode-web",
+      "open-webui",
+      "open-notebook",
+      "opencut",
+      "opencode",
+      "onlyoffice-documentserver",
+      "onlyoffice",
+      "onlyoffice-docspace-mcp",
+      "omnitools",
+      "ollama",
+      "odoo",
+      "omegaclaw",
+      "olmocr",
+      "odysseus",
+      "obsidian-livesync",
+      "obsidian-mcp",
+      "obsidian",
+      "ntfy",
+      "nzbget",
+      "novel",
+      "notesnook",
+      "notediscovery",
+      "notion-mcp",
+      "nostrudel",
+      "nostream",
+      "nofx",
+      "nostr-relay",
+      "nextcloud",
+      "nocodb",
+      "nocobase",
+      "networkingtoolbox",
+      "navidrome",
+      "netdata",
+      "n8n",
+      "n8n-mcp",
+      "music-assistant",
+      "myspeed",
+      "munin",
+      "mysql",
+      "mtranserver",
+      "mstream",
+      "mqttx-web",
+      "morphos",
+      "mongodb",
+      "monetr",
+      "mixpost",
+      "miniflux",
+      "minio",
+      "mindustry",
+      "mindmap",
+      "metube",
+      "migpttts",
+      "migpt",
+      "metabase",
+      "mermaid-live",
+      "memos",
+      "mesh-llm",
+      "medusa",
+      "mealie",
+      "md",
+      "mazanoke",
+      "mattermost",
+      "matomo",
+      "maxkb",
+      "mastodon",
+      "mainsail",
+      "mailu",
+      "macos",
+      "mailflow",
+      "mailarchiver",
+      "lunalytics",
+      "lubelogger",
+      "logseq",
+      "localai",
+      "lobe-chat",
+      "llmfit",
+      "louter",
+      "llamafactory",
+      "litellm",
+      "llama-cpp",
+      "listmonk",
+      "linkstack",
+      "linkwarden",
+      "lingva-translate",
+      "libretranslate",
+      "librespeed",
+      "lidarr",
+      "librechat",
+      "librephotos",
+      "libreoffice",
+      "lego-oracle-mcp",
+      "leantime",
+      "langbot",
+      "langfuse",
+      "leafwiki",
+      "langflow",
+      "l-town",
+      "kiwix",
+      "komga",
+      "kokoro",
+      "koodo-reader",
+      "kwaainet",
+      "kitchenowl",
+      "keila",
+      "kimai",
+      "karakeep",
+      "kan",
+      "jupyterlab",
+      "jupyterhub",
+      "jupyter-notebook",
+      "joplin",
+      "jsonhero",
+      "jitsi",
+      "jotty",
+      "jellyfin",
+      "jellyseerr",
+      "jackett",
+      "jdownloader2",
+      "ipfs",
+      "it-tools",
+      "invoice-ninja",
+      "invio",
+      "invidious",
+      "influxdb2",
+      "influxdb",
+      "immich",
+      "hunyuan3d-rocm",
+      "hunyuan3d",
+      "indexttsv2",
+      "hoppscotch",
+      "hortusfox",
+      "homehub",
+      "homebox",
+      "home-assistant",
+      "hindsight",
+      "homarr",
+      "hermitstash",
+      "hermes-agent",
+      "hi-events",
+      "heimdall",
+      "hasura",
+      "gyroflow",
+      "halo",
+      "habitica",
+      "gupt",
+      "grocy",
+      "graylog",
+      "grafana",
+      "grist",
+      "glasshome",
+      "gitlab",
+      "gitingest",
+      "gitea-mirror",
+      "github-mcp",
+      "gitea",
+      "freecut",
+      "ghost",
+      "ghostfolio",
+      "git-mcp",
+      "galette",
+      "funclip",
+      "geth",
+      "frigate",
+      "gaianet",
+      "freshrss",
+      "freeter",
+      "freqtrade",
+      "freepbx",
+      "fossflow",
+      "formbricks",
+      "flowise",
+      "forgejo",
+      "focalboard",
+      "flatnotes",
+      "foldergram",
+      "fizzy",
+      "flaresolverr",
+      "fish-speech-cpu",
+      "firefox",
+      "fish-speech",
+      "fireflyiii",
+      "firecrawl",
+      "firefly-iii",
+      "file-browser",
+      "filesystem-mcp",
+      "fedimint",
+      "falco",
+      "fastgpt",
+      "fetch-mcp",
+      "fast-note-sync",
+      "facefusion",
+      "excalidraw",
+      "espocrm",
+      "etherpad",
+      "excalidraw-mcp",
+      "ethercalc",
+      "ersatztv-legacy",
+      "endurain",
+      "enclosed",
+      "emulatorjs",
+      "emby",
+      "element",
+      "embeddinggemma",
+      "electrs",
+      "echomimicv2",
+      "duplicati",
+      "dumbpad",
+      "duix-avatar",
+      "dtan-server",
+      "dub",
+      "dropgate",
+      "drawio",
+      "drawdb",
+      "doordash-mcp",
+      "donetick",
+      "domain-locker",
+      "docuseal",
+      "documenso",
+      "docker-android",
+      "docmost",
+      "directus",
+      "dify",
+      "dnsmasq",
+      "deluge",
+      "degoog",
+      "deepseek-ocr-webui",
+      "deerflow",
+      "cyberchef",
+      "databag",
+      "cypht",
+      "cryptpad",
+      "cryptgeon",
+      "copyparty",
+      "cosyvoice",
+      "crawl4ai",
+      "coolify",
+      "convertx",
+      "convert",
+      "colanode",
+      "collabora-online",
+      "code-server",
+      "comfyui",
+      "context7",
+      "cmproxy",
+      "cloudreve",
+      "ci-spellbook",
+      "ci-web-xr-scan",
+      "ci-memory",
+      "ci-openclaw",
+      "ci-spatial-companion-webxr",
+      "ci-planning",
+      "ci-local-bench",
+      "ci-just-in-case",
+      "ci-import-tools",
+      "ci-hermes",
+      "chrony",
+      "chinesesubfinder",
+      "chromium",
+      "chatwoot",
+      "chess-mcp",
+      "changedetection",
+      "calibre",
+      "calibre-web",
+      "bytebase",
+      "campfire",
+      "cal",
+      "budibase",
+      "bookstack",
+      "brewers-almanack-mcp",
+      "blockbench",
+      "blinko",
+      "booklore",
+      "bitcoind",
+      "bitboard",
+      "blender-mcp",
+      "bisq2-node",
+      "bisheng",
+      "bifrost",
+      "beatsync",
+      "baserow",
+      "bentopdf",
+      "bazarr",
+      "baikal",
+      "awesomedigitalhuman",
+      "autobrr",
+      "audiomass",
+      "audiobookshelf",
+      "astrbot",
+      "arkanum",
+      "asciiflow",
+      "astral",
+      "appwrite",
+      "archivebox",
+      "appsmith",
+      "appflowy",
+      "anything-llm",
+      "answer",
+      "am-i-exposed",
+      "alist",
+      "akaunting",
+      "agentzero",
+      "airtrail",
+      "agent-zero",
+      "adventurelog",
+      "activepieces",
+      "affine",
+      "adguardhome-sync",
+      "adguardhome",
+      "ace-step",
+      "inkscape",
+      "claude-code"
+    ],
+    "sort=newest": [
+      "fish-speech-cpu",
+      "freepbx",
+      "firecrawl",
+      "fastgpt",
+      "falco",
+      "duix-avatar",
+      "dub",
+      "dify",
+      "bisheng",
+      "awesomedigitalhuman",
+      "youtube-transcript-mcp",
+      "sqlite-mcp",
+      "ollama",
+      "nextcloud",
+      "mongodb",
+      "mesh-llm",
+      "langflow",
+      "jdownloader2",
+      "fetch-mcp",
+      "ci-planning",
+      "adguardhome",
+      "sdwebui",
+      "sdwebuiforge",
+      "pds",
+      "deerflow",
+      "worldmonitor",
+      "safeos",
+      "remotion-studio",
+      "openshell-pi",
+      "openshell-ollama",
+      "openshell-gemini",
+      "openshell-base",
+      "openshell-droid",
+      "freecut",
+      "ci-web-xr-scan",
+      "ci-spatial-companion-webxr",
+      "beatsync",
+      "omegaclaw",
+      "zen",
+      "zeronote",
+      "yuvomi",
+      "yt-navigator",
+      "yamtrack",
+      "wingfit",
+      "wikijs",
+      "whisperx-fastapi",
+      "whisper-webui",
+      "webcheck",
+      "wealthfolio",
+      "wanderer",
+      "vikunja",
+      "vert",
+      "valorgrid",
+      "tubearchivist",
+      "trilium-notes",
+      "trek",
+      "transmute",
+      "torbrowser",
+      "threema",
+      "thelounge",
+      "thinkdashboard",
+      "tensorzero",
+      "termix",
+      "telegrapho",
+      "synapse",
+      "swingmusic",
+      "sure",
+      "super-productivity",
+      "stash",
+      "sqlitebrowser",
+      "spacebot",
+      "snowflake",
+      "skybro",
+      "sickchill",
+      "showdoc",
+      "secondme",
+      "sdwebui-forge-neo",
+      "sabnzbd",
+      "route96",
+      "rsshub",
+      "romm",
+      "rna-sequencing",
+      "remmina",
+      "rembg",
+      "readur",
+      "readarr",
+      "radicale",
+      "rabbitmq",
+      "qinglong",
+      "pyload-ng",
+      "privatebin",
+      "poznote",
+      "planka",
+      "pinchflat",
+      "pingvin-share",
+      "picsur",
+      "photoview",
+      "picoclaw",
+      "pdfmathtranslate",
+      "pastefy",
+      "passky-server",
+      "passky-client",
+      "papra",
+      "paperless",
+      "owncast",
+      "owncloud",
+      "opengist",
+      "openedai-speech",
+      "opencode",
+      "onlyoffice-documentserver",
+      "omnitools",
+      "obsidian-livesync",
+      "obsidian",
+      "ntfy",
+      "nostrudel",
+      "nostream",
+      "nocobase",
+      "networkingtoolbox",
+      "mysql",
+      "mstream",
+      "mqttx-web",
+      "morphos",
+      "minio",
+      "miniflux",
+      "mindmap",
+      "migpttts",
+      "migpt",
+      "metube",
+      "metabase",
+      "mealie",
+      "md",
+      "mazanoke",
+      "maxkb",
+      "mailflow",
+      "mailarchiver",
+      "lunalytics",
+      "lubelogger",
+      "louter",
+      "llmfit",
+      "llamafactory",
+      "llama-cpp",
+      "litellm",
+      "linkwarden",
+      "linkstack",
+      "librephotos",
+      "langfuse",
+      "leafwiki",
+      "langbot",
+      "l-town",
+      "komga",
+      "kokoro",
+      "kitchenowl",
+      "kimai",
+      "kan",
+      "jupyterhub",
+      "jupyterlab",
+      "jupyter-notebook",
+      "jsonhero",
+      "jotty",
+      "jellyseerr",
+      "ipfs",
+      "invoice-ninja",
+      "invio",
+      "invidious",
+      "influxdb2",
+      "influxdb",
+      "indexttsv2",
+      "homehub",
+      "homarr",
+      "hindsight",
+      "heimdall",
+      "hasura",
+      "halo",
+      "habitica",
+      "glasshome",
+      "gitingest",
+      "gitea-mirror",
+      "geth",
+      "freshrss",
+      "gaianet",
+      "fossflow",
+      "foldergram",
+      "flatnotes",
+      "fizzy",
+      "flaresolverr",
+      "fish-speech",
+      "fireflyiii",
+      "firefox",
+      "firefly-iii",
+      "etherpad",
+      "endurain",
+      "ersatztv-legacy",
+      "enclosed",
+      "emby",
+      "embeddinggemma",
+      "duplicati",
+      "echomimicv2",
+      "dtan-server",
+      "dumbpad",
+      "donetick",
+      "domain-locker",
+      "directus",
+      "databag",
+      "cosyvoice",
+      "copyparty",
+      "context7",
+      "convertx",
+      "cmproxy",
+      "claude-code",
+      "chinesesubfinder",
+      "chromium",
+      "campfire",
+      "calibre-web",
+      "calibre",
+      "budibase",
+      "bookstack",
+      "booklore",
+      "bifrost",
+      "bisq2-node",
+      "audiobookshelf",
+      "autobrr",
+      "baikal",
+      "astral",
+      "appsmith",
+      "akaunting",
+      "agentzero",
+      "agent-zero",
+      "ace-step",
+      "zima",
+      "xinference",
+      "wewe-rss",
+      "transmission",
+      "triliumnext",
+      "tor",
+      "tautulli",
+      "syncthing",
+      "stunnel",
+      "sonarr",
+      "speaches",
+      "sglang",
+      "seatable",
+      "samba",
+      "rallly",
+      "ragflow",
+      "radarr",
+      "proxmox-mail",
+      "proxmox-backup",
+      "prowlarr",
+      "piefed",
+      "nzbget",
+      "nofx",
+      "munin",
+      "mtranserver",
+      "localai",
+      "lidarr",
+      "karakeep",
+      "jackett",
+      "homebox",
+      "grafana",
+      "funclip",
+      "freqtrade",
+      "formbricks",
+      "focalboard",
+      "fast-note-sync",
+      "facefusion",
+      "dnsmasq",
+      "deluge",
+      "crawl4ai",
+      "chrony",
+      "blinko",
+      "bazarr",
+      "astrbot",
+      "answer",
+      "alist",
+      "tooljet",
+      "teampass",
+      "spliit",
+      "outline",
+      "opencut",
+      "mermaid-live",
+      "koodo-reader",
+      "kwaainet",
+      "it-tools",
+      "grist",
+      "ethercalc",
+      "drawio",
+      "drawdb",
+      "docker-android",
+      "cyberchef",
+      "cryptgeon",
+      "convert",
+      "blockbench",
+      "bentopdf",
+      "audiomass",
+      "asciiflow",
+      "gyroflow",
+      "hi-events",
+      "olmocr",
+      "degoog",
+      "taxhacker",
+      "wizarr",
+      "cal",
+      "chatwoot",
+      "cryptpad",
+      "odysseus",
+      "ci-memory",
+      "airtrail",
+      "am-i-exposed",
+      "bitboard",
+      "changedetection",
+      "electrs",
+      "fedimint",
+      "ghostfolio",
+      "gupt",
+      "hermitstash",
+      "hortusfox",
+      "libretranslate",
+      "lingva-translate",
+      "mainsail",
+      "mindustry",
+      "monetr",
+      "myspeed",
+      "navidrome",
+      "notesnook",
+      "open-notebook",
+      "paperclip",
+      "pogolo",
+      "project-nomad",
+      "public-pool",
+      "razzia",
+      "reddit-mcp",
+      "reitti",
+      "rotki",
+      "satsbook",
+      "slink",
+      "snapify",
+      "strix",
+      "surfsense",
+      "trip",
+      "veloren",
+      "medusa",
+      "bytebase",
+      "colanode",
+      "freeter",
+      "librespeed",
+      "mailu",
+      "mastodon",
+      "memos",
+      "qbittorrent",
+      "quarkdown",
+      "rms-mail",
+      "rolltop",
+      "securo",
+      "vui",
+      "adguardhome-sync",
+      "adventurelog",
+      "anything-llm",
+      "archivebox",
+      "bitcoind",
+      "blender-mcp",
+      "brewers-almanack-mcp",
+      "chess-mcp",
+      "ci-hermes",
+      "ci-import-tools",
+      "ci-just-in-case",
+      "ci-local-bench",
+      "ci-openclaw",
+      "ci-spellbook",
+      "cloudreve",
+      "code-server",
+      "cypht",
+      "deepseek-ocr-webui",
+      "docmost",
+      "doordash-mcp",
+      "dropgate",
+      "emulatorjs",
+      "excalidraw-mcp",
+      "filesystem-mcp",
+      "git-mcp",
+      "github-mcp",
+      "gitlab",
+      "grocy",
+      "hermes-agent",
+      "hunyuan3d",
+      "hunyuan3d-rocm",
+      "kiwix",
+      "lego-oracle-mcp",
+      "librechat",
+      "macos",
+      "music-assistant",
+      "n8n-mcp",
+      "nostr-relay",
+      "notediscovery",
+      "notion-mcp",
+      "novel",
+      "obsidian-mcp",
+      "onlyoffice-docspace-mcp",
+      "opencode-web",
+      "paddle-ocr",
+      "playwright-mcp",
+      "plugnmeet",
+      "postgres-mcp",
+      "readeck",
+      "sillytavern",
+      "smartest-tv-mcp",
+      "snort",
+      "solidtime",
+      "stalwart-mail",
+      "steam-mcp",
+      "stirling-pdf",
+      "tandoor",
+      "teable",
+      "unity-mcp",
+      "unity-mcp-ivanmurzak",
+      "unreal-engine-mcp",
+      "uptime-kuma",
+      "vane",
+      "vitriol",
+      "wallos",
+      "windows",
+      "windows-arm",
+      "openclaw",
+      "pi-hole",
+      "searxng",
+      "coolify",
+      "documenso",
+      "jellyfin",
+      "jitsi",
+      "leantime",
+      "matomo",
+      "onlyoffice",
+      "plex",
+      "galette",
+      "open-webui",
+      "activepieces",
+      "appflowy",
+      "appwrite",
+      "collabora-online",
+      "comfyui",
+      "docuseal",
+      "element",
+      "espocrm",
+      "excalidraw",
+      "file-browser",
+      "flowise",
+      "forgejo",
+      "frigate",
+      "ghost",
+      "gitea",
+      "graylog",
+      "home-assistant",
+      "hoppscotch",
+      "immich",
+      "inkscape",
+      "joplin",
+      "libreoffice",
+      "listmonk",
+      "lobe-chat",
+      "logseq",
+      "mattermost",
+      "mixpost",
+      "n8n",
+      "netdata",
+      "nocodb",
+      "odoo",
+      "openproject",
+      "pairdrop",
+      "papercups",
+      "passbolt",
+      "photoprism",
+      "plane",
+      "plausible",
+      "pocketbase",
+      "postiz",
+      "prestashop",
+      "prometheus",
+      "rocketchat",
+      "seafile",
+      "standard-notes",
+      "steam-headless",
+      "taiga",
+      "tldraw",
+      "twenty",
+      "umami",
+      "vaultwarden",
+      "woodpecker-ci",
+      "wordpress",
+      "affine",
+      "baserow",
+      "arkanum",
+      "penpot",
+      "keila"
+    ],
+    "": [
+      "ace-step",
+      "activepieces",
+      "adguardhome",
+      "adguardhome-sync",
+      "adventurelog",
+      "affine",
+      "agent-zero",
+      "agentzero",
+      "airtrail",
+      "akaunting",
+      "alist",
+      "am-i-exposed",
+      "answer",
+      "anything-llm",
+      "appflowy",
+      "appsmith",
+      "appwrite",
+      "archivebox",
+      "arkanum",
+      "asciiflow",
+      "astral",
+      "astrbot",
+      "audiobookshelf",
+      "audiomass",
+      "autobrr",
+      "awesomedigitalhuman",
+      "baikal",
+      "baserow",
+      "bazarr",
+      "beatsync",
+      "bentopdf",
+      "bifrost",
+      "bisheng",
+      "bisq2-node",
+      "bitboard",
+      "bitcoind",
+      "blender-mcp",
+      "blinko",
+      "blockbench",
+      "pds",
+      "booklore",
+      "bookstack",
+      "brewers-almanack-mcp",
+      "budibase",
+      "bytebase",
+      "cal",
+      "calibre",
+      "calibre-web",
+      "campfire",
+      "changedetection",
+      "cmproxy",
+      "chatwoot",
+      "chinesesubfinder",
+      "chromium",
+      "chrony",
+      "claude-code",
+      "cloudreve",
+      "code-server",
+      "colanode",
+      "collabora-online",
+      "comfyui",
+      "ci-memory",
+      "ci-planning",
+      "ci-web-xr-scan",
+      "context7",
+      "convert",
+      "convertx",
+      "coolify",
+      "copyparty",
+      "cosyvoice",
+      "crawl4ai",
+      "cryptgeon",
+      "cryptpad",
+      "cyberchef",
+      "cypht",
+      "databag",
+      "deepseek-ocr-webui",
+      "deerflow",
+      "degoog",
+      "deluge",
+      "dify",
+      "directus",
+      "dnsmasq",
+      "docker-android",
+      "docmost",
+      "documenso",
+      "docuseal",
+      "domain-locker",
+      "donetick",
+      "doordash-mcp",
+      "drawio",
+      "drawdb",
+      "dropgate",
+      "dtan-server",
+      "dub",
+      "duix-avatar",
+      "dumbpad",
+      "duplicati",
+      "echomimicv2",
+      "electrs",
+      "element",
+      "embeddinggemma",
+      "emby",
+      "emulatorjs",
+      "enclosed",
+      "endurain",
+      "ersatztv-legacy",
+      "espocrm",
+      "ethercalc",
+      "geth",
+      "etherpad",
+      "excalidraw",
+      "excalidraw-mcp",
+      "facefusion",
+      "falco",
+      "fast-note-sync",
+      "fastgpt",
+      "fedimint",
+      "fetch-mcp",
+      "file-browser",
+      "filesystem-mcp",
+      "firecrawl",
+      "firefly-iii",
+      "fireflyiii",
+      "firefox",
+      "fish-speech",
+      "fish-speech-cpu",
+      "fizzy",
+      "flaresolverr",
+      "flatnotes",
+      "flowise",
+      "focalboard",
+      "foldergram",
+      "forgejo",
+      "formbricks",
+      "fossflow",
+      "freecut",
+      "freepbx",
+      "freeter",
+      "freqtrade",
+      "freshrss",
+      "frigate",
+      "funclip",
+      "gaianet",
+      "galette",
+      "ghost",
+      "ghostfolio",
+      "git-mcp",
+      "gitea",
+      "gitea-mirror",
+      "github-mcp",
+      "gitingest",
+      "gitlab",
+      "glasshome",
+      "grafana",
+      "graylog",
+      "grist",
+      "grocy",
+      "gupt",
+      "gyroflow",
+      "habitica",
+      "halo",
+      "hasura",
+      "heimdall",
+      "ci-hermes",
+      "hermes-agent",
+      "hermitstash",
+      "hi-events",
+      "hindsight",
+      "homarr",
+      "home-assistant",
+      "homebox",
+      "homehub",
+      "hoppscotch",
+      "hortusfox",
+      "hunyuan3d",
+      "hunyuan3d-rocm",
+      "immich",
+      "ci-import-tools",
+      "indexttsv2",
+      "influxdb",
+      "influxdb2",
+      "inkscape",
+      "invidious",
+      "invio",
+      "invoice-ninja",
+      "ipfs",
+      "it-tools",
+      "jackett",
+      "jdownloader2",
+      "jellyfin",
+      "jitsi",
+      "joplin",
+      "jotty",
+      "jsonhero",
+      "jupyter-notebook",
+      "jupyterhub",
+      "jupyterlab",
+      "ci-just-in-case",
+      "kan",
+      "karakeep",
+      "keila",
+      "kimai",
+      "kitchenowl",
+      "kiwix",
+      "kokoro",
+      "komga",
+      "koodo-reader",
+      "kwaainet",
+      "l-town",
+      "langbot",
+      "langflow",
+      "langfuse",
+      "leafwiki",
+      "leantime",
+      "lego-oracle-mcp",
+      "librechat",
+      "libreoffice",
+      "librephotos",
+      "librespeed",
+      "libretranslate",
+      "lidarr",
+      "lingva-translate",
+      "linkstack",
+      "linkwarden",
+      "listmonk",
+      "litellm",
+      "llamafactory",
+      "llama-cpp",
+      "llmfit",
+      "lobe-chat",
+      "ci-local-bench",
+      "localai",
+      "logseq",
+      "louter",
+      "lubelogger",
+      "lunalytics",
+      "macos",
+      "mailarchiver",
+      "mailflow",
+      "mailu",
+      "mainsail",
+      "mastodon",
+      "matomo",
+      "mattermost",
+      "maxkb",
+      "mazanoke",
+      "chess-mcp",
+      "mealie",
+      "medusa",
+      "memos",
+      "mermaid-live",
+      "mesh-llm",
+      "metabase",
+      "metube",
+      "migpt",
+      "migpttts",
+      "mindustry",
+      "miniflux",
+      "minio",
+      "mixpost",
+      "monetr",
+      "mongodb",
+      "morphos",
+      "mqttx-web",
+      "mstream",
+      "mtranserver",
+      "munin",
+      "music-assistant",
+      "myspeed",
+      "mysql",
+      "n8n",
+      "n8n-mcp",
+      "navidrome",
+      "netdata",
+      "networkingtoolbox",
+      "nextcloud",
+      "nocobase",
+      "nocodb",
+      "nofx",
+      "nostr-relay",
+      "nostream",
+      "nostrudel",
+      "notediscovery",
+      "notesnook",
+      "notion-mcp",
+      "novel",
+      "ntfy",
+      "nzbget",
+      "obsidian",
+      "obsidian-livesync",
+      "obsidian-mcp",
+      "odoo",
+      "odysseus",
+      "ollama",
+      "olmocr",
+      "omegaclaw",
+      "omnitools",
+      "onlyoffice",
+      "onlyoffice-docspace-mcp",
+      "onlyoffice-documentserver",
+      "open-notebook",
+      "open-webui",
+      "openclaw",
+      "ci-openclaw",
+      "opencode",
+      "opencode-web",
+      "opencut",
+      "openedai-speech",
+      "opengist",
+      "openproject",
+      "openshell-ollama",
+      "openshell-droid",
+      "openshell-gemini",
+      "openshell-pi",
+      "openshell-base",
+      "outline",
+      "owncast",
+      "owncloud",
+      "paddle-ocr",
+      "pairdrop",
+      "paperclip",
+      "papercups",
+      "paperless",
+      "papra",
+      "passbolt",
+      "passky-client",
+      "passky-server",
+      "pastefy",
+      "pdfmathtranslate",
+      "penpot",
+      "photoprism",
+      "photoview",
+      "pi-hole",
+      "picoclaw",
+      "picsur",
+      "piefed",
+      "pinchflat",
+      "pingvin-share",
+      "plane",
+      "planka",
+      "plausible",
+      "playwright-mcp",
+      "plex",
+      "plugnmeet",
+      "pocketbase",
+      "pogolo",
+      "postgres-mcp",
+      "postiz",
+      "poznote",
+      "prestashop",
+      "privatebin",
+      "project-nomad",
+      "prometheus",
+      "prowlarr",
+      "proxmox-backup",
+      "proxmox-mail",
+      "public-pool",
+      "pyload-ng",
+      "qbittorrent",
+      "qinglong",
+      "quarkdown",
+      "rabbitmq",
+      "radarr",
+      "radicale",
+      "ragflow",
+      "rallly",
+      "razzia",
+      "readarr",
+      "readeck",
+      "readur",
+      "reddit-mcp",
+      "reitti",
+      "rembg",
+      "remmina",
+      "remotion-studio",
+      "rms-mail",
+      "rna-sequencing",
+      "rocketchat",
+      "rolltop",
+      "romm",
+      "rotki",
+      "route96",
+      "rsshub",
+      "sabnzbd",
+      "safeos",
+      "samba",
+      "satsbook",
+      "sdwebui-forge-neo",
+      "seafile",
+      "searxng",
+      "seatable",
+      "secondme",
+      "securo",
+      "jellyseerr",
+      "sglang",
+      "showdoc",
+      "sickchill",
+      "sillytavern",
+      "mindmap",
+      "skybro",
+      "slink",
+      "smartest-tv-mcp",
+      "snapify",
+      "snort",
+      "solidtime",
+      "sonarr",
+      "spacebot",
+      "ci-spatial-companion-webxr",
+      "speaches",
+      "ci-spellbook",
+      "spliit",
+      "sqlitebrowser",
+      "sqlite-mcp",
+      "sdwebui",
+      "sdwebuiforge",
+      "stalwart-mail",
+      "standard-notes",
+      "stash",
+      "steam-headless",
+      "steam-mcp",
+      "stirling-pdf",
+      "strix",
+      "stunnel",
+      "super-productivity",
+      "sure",
+      "surfsense",
+      "swingmusic",
+      "synapse",
+      "syncthing",
+      "taiga",
+      "tandoor",
+      "tautulli",
+      "taxhacker",
+      "teable",
+      "teampass",
+      "telegrapho",
+      "tensorzero",
+      "termix",
+      "thelounge",
+      "thinkdashboard",
+      "threema",
+      "tldraw",
+      "tooljet",
+      "tor",
+      "torbrowser",
+      "snowflake",
+      "transmission",
+      "transmute",
+      "trek",
+      "trilium-notes",
+      "triliumnext",
+      "trip",
+      "tubearchivist",
+      "twenty",
+      "umami",
+      "unity-mcp",
+      "unity-mcp-ivanmurzak",
+      "unreal-engine-mcp",
+      "uptime-kuma",
+      "valorgrid",
+      "vane",
+      "vaultwarden",
+      "veloren",
+      "vert",
+      "vikunja",
+      "vitriol",
+      "vui",
+      "wallos",
+      "wanderer",
+      "wealthfolio",
+      "webcheck",
+      "md",
+      "wewe-rss",
+      "whisper-webui",
+      "whisperx-fastapi",
+      "wikijs",
+      "windows",
+      "windows-arm",
+      "wingfit",
+      "wizarr",
+      "woodpecker-ci",
+      "wordpress",
+      "worldmonitor",
+      "xinference",
+      "yamtrack",
+      "youtube-transcript-mcp",
+      "yt-navigator",
+      "yuvomi",
+      "zen",
+      "zeronote",
+      "zima"
+    ]
+  },
+  "apps": {
+    "ci-memory": {
+      "name": "Companion Memory",
+      "short_desc": "Companion Memory server is a fully self-hosted AI memory appliance that runs on your own hardware and does the extremely serious work of remembering your digital life so you, and your agents, can stop pretending you definitely had that context two seconds ago.",
+      "categories": ["companion-intelligence", "ai", "utilities", "featured"]
+    },
+    "ci-planning": {
+      "name": "Companion Planning",
+      "short_desc": "Local-first personal planner — tasks, time blocks, and calendar sync, with optional local-LLM briefings",
+      "categories": ["companion-intelligence", "utilities"]
+    },
+    "ci-web-xr-scan": {
+      "name": "Companion Scan",
+      "short_desc": "Point your phone at a room and capture a private semantic 3D map",
+      "categories": ["companion-intelligence", "media"]
+    },
+    "ci-hermes": {
+      "name": "Hermes",
+      "short_desc": "Hermes Agent with web terminal and dashboard — messaging AI assistant for the CI marketplace",
+      "categories": ["companion-intelligence", "agents", "ai", "utilities"]
+    },
+    "ci-import-tools": {
+      "name": "Import Tools",
+      "short_desc": "Securely migrate files, social accounts, and cloud histories into your localized ecosystem",
+      "categories": ["companion-intelligence", "utilities", "featured"]
+    },
+    "ci-just-in-case": {
+      "name": "Just In Case",
+      "short_desc": "An offline, LLM-powered survival and preparedness engine when internet goes dark",
+      "categories": ["companion-intelligence", "utilities"]
+    },
+    "ci-local-bench": {
+      "name": "Local Bench",
+      "short_desc": "Benchmark LLM performance directly on your local hardware to validate inference",
+      "categories": ["companion-intelligence", "utilities"]
+    },
+    "ci-openclaw": {
+      "name": "OpenClaw WebCLI",
+      "short_desc": "Self-hosted personal AI assistant with browser automation and tool use",
+      "categories": ["companion-intelligence", "agents", "ai", "utilities"]
+    },
+    "ci-spatial-companion-webxr": {
+      "name": "Spatial Companion",
+      "short_desc": "Talk to a 3D companion avatar in your space — WebXR (Quest / Vision Pro / iPad / browser), powered by your local Ollama models",
+      "categories": ["companion-intelligence", "ai"]
+    },
+    "ci-spellbook": {
+      "name": "Spellbook",
+      "short_desc": "Supercharge your local AI with structured prompts and reusable workflow templates",
+      "categories": ["companion-intelligence", "utilities"]
+    },
+    "audiobookshelf": {
+      "name": "Audiobookshelf",
+      "short_desc": "Self-hosted audiobook and podcast server with per-user progress sync",
+      "categories": ["books", "media", "featured"]
+    },
+    "code-server": {
+      "name": "Code Server",
+      "short_desc": "VS Code in the browser",
+      "categories": ["development", "featured"]
+    },
+    "collabora-online": {
+      "name": "Collabora Online",
+      "short_desc": "Collabora Online Development Edition (CODE).",
+      "categories": ["featured", "utilities"]
+    },
+    "comfyui": {
+      "name": "ComfyUI",
+      "short_desc": "Powerful modular Stable Diffusion GUI and backend optimized for AMD ROCm (Strix Halo).",
+      "categories": ["ai", "featured"]
+    },
+    "coolify": {
+      "name": "Coolify",
+      "short_desc": "An open-source & self-hostable Heroku / Netlify / Vercel alternative.",
+      "categories": ["development", "featured"]
+    },
+    "cyberchef": {
+      "name": "CyberChef",
+      "short_desc": "The Cyber Swiss Army Knife — encode, decode, hash, decrypt, and parse data entirely in your browser",
+      "categories": ["security", "utilities", "featured"]
+    },
+    "dify": {
+      "name": "Dify",
+      "short_desc": "Open-source platform for building and running LLM apps, agentic workflows, and RAG pipelines with a visual builder.",
+      "categories": ["ai", "development", "featured"]
+    },
+    "drawio": {
+      "name": "draw.io",
+      "short_desc": "Diagram editor for flowcharts, UML, ERDs, network maps, and BPMN — running entirely on your Hub",
+      "categories": ["development", "utilities", "featured"]
+    },
+    "excalidraw": {
+      "name": "Excalidraw",
+      "short_desc": "An open source virtual hand-drawn style whiteboard",
+      "categories": ["data", "featured"]
+    },
+    "firefly-iii": {
+      "name": "Firefly III",
+      "short_desc": "Free and open-source personal finance manager — accounts, budgets, bills, and reports",
+      "categories": ["finance", "utilities", "featured"]
+    },
+    "frigate": {
+      "name": "Frigate",
+      "short_desc": "A complete and local NVR",
+      "categories": ["automation", "featured"]
+    },
+    "ghost": {
+      "name": "Ghost",
+      "short_desc": "A platform for creators to publish, grow, and monetize their content",
+      "categories": ["data", "featured"]
+    },
+    "gitea": {
+      "name": "Gitea",
+      "short_desc": "Git with a cup of tea!",
+      "categories": ["development", "featured"]
+    },
+    "hermes-agent": {
+      "name": "Hermes Agent",
+      "short_desc": "Self-hosted AI agent with a web dashboard and messaging gateway",
+      "categories": ["agents", "ai", "utilities", "featured"]
+    },
+    "home-assistant": {
+      "name": "Home Assistant",
+      "short_desc": "Open source home automation.",
+      "categories": ["automation", "featured"]
+    },
+    "immich": {
+      "name": "Immich",
+      "short_desc": "Self-hosted photo and video management solution",
+      "categories": ["data", "featured", "media", "photography"]
+    },
+    "jellyfin": {
+      "name": "Jellyfin",
+      "short_desc": "The Free Software Media System for your movies, music, and TV shows",
+      "categories": ["featured", "media"]
+    },
+    "jitsi": {
+      "name": "Jitsi Meet",
+      "short_desc": "Secure, simple and scalable video conferences.",
+      "categories": ["utilities", "featured"]
+    },
+    "mastodon": {
+      "name": "Mastodon",
+      "short_desc": "Self-hosted social networking server",
+      "categories": ["social", "featured"]
+    },
+    "metabase": {
+      "name": "Metabase",
+      "short_desc": "Open source business intelligence tool for querying, visualizing, and sharing data across your organization without writing SQL.",
+      "categories": ["data", "utilities", "featured"]
+    },
+    "mindustry": {
+      "name": "Mindustry Server",
+      "short_desc": "Headless dedicated server for Mindustry, the tower-defense factory game.",
+      "categories": ["gaming", "featured"]
+    },
+    "miniflux": {
+      "name": "Miniflux",
+      "short_desc": "Minimalist, opinionated feed reader for RSS, Atom, and JSON feeds with a fast, distraction-free web UI.",
+      "categories": ["media", "featured"]
+    },
+    "n8n": {
+      "name": "n8n",
+      "short_desc": "Fair-code workflow automation platform.",
+      "categories": ["automation", "featured"]
+    },
+    "navidrome": {
+      "name": "Navidrome",
+      "short_desc": "Self-hosted music server and streamer compatible with Subsonic clients.",
+      "categories": ["music", "media", "featured"]
+    },
+    "nextcloud": {
+      "name": "Nextcloud",
+      "short_desc": "A safe home for all your data.",
+      "categories": ["data", "featured"]
+    },
+    "ollama": {
+      "name": "Ollama",
+      "short_desc": "Local OpenAI-compatible server for running open-weight LLMs like Llama, Qwen, and DeepSeek.",
+      "categories": ["ai", "featured"]
+    },
+    "open-webui": {
+      "name": "Open WebUI",
+      "short_desc": "Chat with Ollama, vLLM, or Lemonade models running on your device",
+      "categories": ["ai", "featured"]
+    },
+    "openclaw": {
+      "name": "OpenClaw",
+      "short_desc": "Self-hosted AI assistant connecting messaging platforms to AI providers",
+      "categories": ["agents", "ai", "utilities", "featured"]
+    },
+    "opencode": {
+      "name": "OpenCode",
+      "short_desc": "Open-source, terminal-born AI coding agent with a self-hosted browser UI and 75+ model providers.",
+      "categories": ["development", "ai", "featured"]
+    },
+    "paperless": {
+      "name": "Paperless-ngx",
+      "short_desc": "Scan, OCR, and index your documents into a searchable, tag-based archive",
+      "categories": ["data", "utilities", "featured"]
+    },
+    "photoview": {
+      "name": "Photoview",
+      "short_desc": "Self-hosted photo gallery that indexes RAW photos and videos on disk with EXIF search, face recognition, and shareable albums.",
+      "categories": ["photography", "media", "featured"]
+    },
+    "pi-hole": {
+      "name": "Pi-hole",
+      "short_desc": "Network-wide ad blocking via your own DNS server",
+      "categories": ["network", "featured"]
+    },
+    "rocketchat": {
+      "name": "Rocket.Chat",
+      "short_desc": "Open-source team communication platform",
+      "categories": ["social", "featured"]
+    },
+    "spliit": {
+      "name": "Spliit",
+      "short_desc": "Split shared expenses with friends, housemates, and family — a self-hosted Splitwise alternative",
+      "categories": ["finance", "utilities", "featured"]
+    },
+    "steam-headless": {
+      "name": "Steam Headless",
+      "short_desc": "Headless Steam gaming server with web UI access via noVNC",
+      "categories": ["media", "featured"]
+    },
+    "stirling-pdf": {
+      "name": "Stirling-PDF",
+      "short_desc": "Powerful locally hosted web based PDF manipulation tool",
+      "categories": ["utilities", "data", "featured"]
+    },
+    "syncthing": {
+      "name": "Syncthing",
+      "short_desc": "Continuous, peer-to-peer file synchronization that keeps folders in sync across two or more devices in real time, with no cloud or central server.",
+      "categories": ["data", "utilities", "featured"]
+    },
+    "vaultwarden": {
+      "name": "VaultWarden",
+      "short_desc": "Unofficial Bitwarden compatible server written in Rust, formerly known as bitwarden_rs",
+      "categories": ["data", "featured", "security"]
+    },
+    "zima": {
+      "name": "ZimaOS",
+      "short_desc": "Run ZimaOS in a browser-accessible VM powered by QEMU",
+      "categories": ["utilities"]
+    },
+    "zeronote": {
+      "name": "ZeroNote",
+      "short_desc": "Offline-first encrypted notes, passwords, bookmarks, and 2FA in one app.",
+      "categories": ["security", "data"]
+    },
+    "zen": {
+      "name": "Zen",
+      "short_desc": "Minimalist, private Markdown note-taking backed by local SQLite.",
+      "categories": ["utilities", "data"]
+    },
+    "yuvomi": {
+      "name": "Yuvomi",
+      "short_desc": "Self-hosted family planner: calendar, tasks, shopping, meals, and budget",
+      "categories": ["utilities"]
+    },
+    "yt-navigator": {
+      "name": "YT Navigator",
+      "short_desc": "AI-powered YouTube channel explorer — semantically search and chat with a channel's videos and get answers with precise timestamps.",
+      "categories": ["ai", "media"]
+    },
+    "yamtrack": {
+      "name": "Yamtrack",
+      "short_desc": "Self-hosted tracker for movies, TV, anime, manga, games, and books",
+      "categories": ["media"]
+    },
+    "youtube-transcript-mcp": {
+      "name": "YouTube Transcript MCP",
+      "short_desc": "Fetch transcripts and metadata for YouTube videos so the model can read what was said.",
+      "categories": ["mcp", "media"]
+    },
+    "xinference": {
+      "name": "Xinference",
+      "short_desc": "Self-hosted, OpenAI-compatible server for running open-source LLM, embedding, reranker, image, and speech models with a built-in web UI.",
+      "categories": ["ai", "development"]
+    },
+    "woodpecker-ci": {
+      "name": "Woodpecker CI",
+      "short_desc": "A simple CI engine with great extensibility.",
+      "categories": ["development"]
+    },
+    "wordpress": {
+      "name": "WordPress",
+      "short_desc": "Popular CMS for websites and blogs",
+      "categories": ["social"]
+    },
+    "worldmonitor": {
+      "name": "World Monitor",
+      "short_desc": "Real-time global intelligence dashboard — news, geopolitics, markets, and infrastructure on a live map",
+      "categories": ["ai", "data"]
+    },
+    "windows": {
+      "name": "Windows",
+      "short_desc": "Run Windows in a browser-accessible VM powered by QEMU/KVM",
+      "categories": ["utilities"]
+    },
+    "wizarr": {
+      "name": "Wizarr",
+      "short_desc": "Automated user invitation and onboarding system for Plex, Jellyfin, and Emby",
+      "categories": ["media"]
+    },
+    "windows-arm": {
+      "name": "Windows ARM",
+      "short_desc": "Run Windows ARM64 in a Docker container with KVM acceleration and web-based viewer",
+      "categories": ["utilities"]
+    },
+    "wingfit": {
+      "name": "Wingfit",
+      "short_desc": "Minimalist, distraction-free workout logging app for tracking sets, reps, and personal records over time",
+      "categories": ["utilities"]
+    },
+    "wikijs": {
+      "name": "WikiJS",
+      "short_desc": "Extensible open-source wiki engine for team documentation with pluggable auth, storage, and rendering",
+      "categories": ["development"]
+    },
+    "whisperx-fastapi": {
+      "name": "WhisperX FastAPI",
+      "short_desc": "Self-hosted WhisperX REST API for speech-to-text, forced alignment, and speaker diarization, with an OpenAI-compatible transcription endpoint.",
+      "categories": ["ai", "utilities"]
+    },
+    "whisper-webui": {
+      "name": "Whisper-WebUI",
+      "short_desc": "Self-hosted Gradio web UI for transcribing audio/video into subtitles with Whisper, plus translation and speaker diarization.",
+      "categories": ["ai", "utilities"]
+    },
+    "wewe-rss": {
+      "name": "WeWe RSS",
+      "short_desc": "Turns WeChat Official Accounts into standard RSS feeds using WeChat Reading account tokens, with a self-hosted web console.",
+      "categories": ["utilities", "social"]
+    },
+    "webcheck": {
+      "name": "WebCheck",
+      "short_desc": "All-in-one OSINT tool that scans any website for DNS, headers, security, and performance details",
+      "categories": ["network", "security"]
+    },
+    "wealthfolio": {
+      "name": "Wealthfolio",
+      "short_desc": "Self-hosted, single-user investment portfolio tracker with local SQLite storage and no third-party data sharing",
+      "categories": ["finance"]
+    },
+    "wallos": {
+      "name": "Wallos",
+      "short_desc": "Open-Source Personal Subscription Tracker",
+      "categories": ["finance", "utilities"]
+    },
+    "wanderer": {
+      "name": "Wanderer",
+      "short_desc": "Self-hosted trail database for planning, mapping, and sharing hiking and biking routes",
+      "categories": ["data", "utilities"]
+    },
+    "vui": {
+      "name": "VUI",
+      "short_desc": "A lightweight web UI for browsing and reading from a Suwayomi server",
+      "categories": ["media"]
+    },
+    "vitriol": {
+      "name": "Vitriol",
+      "short_desc": "Self-hosted file converter with a clean web interface",
+      "categories": ["utilities"]
+    },
+    "veloren": {
+      "name": "Veloren Server",
+      "short_desc": "Headless dedicated server for the open-source voxel RPG Veloren.",
+      "categories": ["gaming"]
+    },
+    "vikunja": {
+      "name": "Vikunja",
+      "short_desc": "Self-hosted to-do app with list, Kanban, Gantt, and table views plus CalDAV sync",
+      "categories": ["utilities", "development"]
+    },
+    "vert": {
+      "name": "VERT",
+      "short_desc": "Privacy-first client-side file converter for images, video, audio, and documents",
+      "categories": ["utilities", "media"]
+    },
+    "vane": {
+      "name": "Vane",
+      "short_desc": "AI-powered answering engine",
+      "categories": ["ai"]
+    },
+    "valorgrid": {
+      "name": "ValorGrid",
+      "short_desc": "Private, local-first investment portfolio tracker backed by SQLite",
+      "categories": ["finance"]
+    },
+    "uptime-kuma": {
+      "name": "Uptime Kuma",
+      "short_desc": "A fancy self-hosted monitoring tool.",
+      "categories": ["utilities", "network"]
+    },
+    "unity-mcp": {
+      "name": "Unity MCP",
+      "short_desc": "Control the Unity Editor from an MCP client — inspect the scene, manipulate GameObjects, run scripts, and drive the build pipeline.",
+      "categories": ["mcp", "utilities"]
+    },
+    "unity-mcp-ivanmurzak": {
+      "name": "Unity MCP (Ivan Murzak)",
+      "short_desc": "Unity Editor MCP bridge for inspecting scenes, assets, and project state.",
+      "categories": ["mcp", "utilities", "development"]
+    },
+    "unreal-engine-mcp": {
+      "name": "Unreal Engine MCP",
+      "short_desc": "Control Unreal Engine from an MCP client through a native automation bridge.",
+      "categories": ["mcp", "utilities", "development"]
+    },
+    "twenty": {
+      "name": "Twenty",
+      "short_desc": "An adaptable CRM solution for seamless team collaboration and growth",
+      "categories": ["data"]
+    },
+    "umami": {
+      "name": "Umami",
+      "short_desc": "Simple, fast, privacy-focused alternative to Google Analytics",
+      "categories": ["development"]
+    },
+    "tubearchivist": {
+      "name": "Tube Archivist",
+      "short_desc": "Self-hosted YouTube archive: subscribe to channels, auto-download via yt-dlp, index and watch offline.",
+      "categories": ["media"]
+    },
+    "triliumnext": {
+      "name": "TriliumNext",
+      "short_desc": "Self-hosted hierarchical note-taking app for building a large personal knowledge base.",
+      "categories": ["utilities"]
+    },
+    "trip": {
+      "name": "TRIP",
+      "short_desc": "A minimalist self-hosted map tracker and trip planner.",
+      "categories": ["utilities", "data"]
+    },
+    "trek": {
+      "name": "TREK",
+      "short_desc": "Self-hosted, real-time collaborative travel planner with maps, budgeting, packing lists, and a travel journal.",
+      "categories": ["utilities", "social"]
+    },
+    "trilium-notes": {
+      "name": "Trilium Notes",
+      "short_desc": "Hierarchical personal knowledge base with rich WYSIWYG editing, per-note encryption, scripting, and a REST API.",
+      "categories": ["utilities", "data"]
+    },
+    "transmute": {
+      "name": "Transmute",
+      "short_desc": "Self-hosted universal file converter (images, video, audio, docs, data, fonts, diagrams) with a REST API for automation",
+      "categories": ["utilities", "data"]
+    },
+    "transmission": {
+      "name": "Transmission",
+      "short_desc": "Lightweight, cross-platform BitTorrent client with a fast web UI for remote-managed downloads.",
+      "categories": ["network", "utilities"]
+    },
+    "tooljet": {
+      "name": "ToolJet",
+      "short_desc": "Open source low-code platform for building and deploying internal tools",
+      "categories": ["development", "data"]
+    },
+    "torbrowser": {
+      "name": "Tor Browser",
+      "short_desc": "Web-based Tor Browser for anonymous, private, censorship-resistant browsing, run entirely on your appliance",
+      "categories": ["network", "security"]
+    },
+    "tor": {
+      "name": "Tor",
+      "short_desc": "SOCKS5 and HTTPS proxy into the Tor anonymity network",
+      "categories": ["security", "network"]
+    },
+    "threema": {
+      "name": "Threema Web",
+      "short_desc": "Self-hosted web client for the Threema encrypted messenger, paired to your phone via QR/WebRTC",
+      "categories": ["social"]
+    },
+    "tldraw": {
+      "name": "tldraw",
+      "short_desc": "Collaborative whiteboard and infinite canvas",
+      "categories": ["utilities", "development"]
+    },
+    "thelounge": {
+      "name": "The Lounge",
+      "short_desc": "Modern, always-on web IRC client, deployed in open public mode.",
+      "categories": ["social"]
+    },
+    "thinkdashboard": {
+      "name": "ThinkDashboard",
+      "short_desc": "Lightweight keyboard-driven bookmark start-page dashboard",
+      "categories": ["utilities"]
+    },
+    "tensorzero": {
+      "name": "TensorZero",
+      "short_desc": "Unified LLM gateway with observability, evaluations, and optimization for production AI applications.",
+      "categories": ["ai", "development"]
+    },
+    "termix": {
+      "name": "Termix",
+      "short_desc": "Browser-based SSH terminal, tunnel manager, and remote file/desktop manager for your servers.",
+      "categories": ["development", "network"]
+    },
+    "telegrapho": {
+      "name": "Telegrapho",
+      "short_desc": "Private, self-hosted realtime text-clipboard sync between your devices.",
+      "categories": ["utilities", "network"]
+    },
+    "teable": {
+      "name": "Teable",
+      "short_desc": "Open source no-code database and Airtable alternative",
+      "categories": ["data"]
+    },
+    "taxhacker": {
+      "name": "TaxHacker",
+      "short_desc": "Self-hosted AI accounting app for receipts, invoices, and expense tracking",
+      "categories": ["finance", "ai"]
+    },
+    "teampass": {
+      "name": "TeamPass",
+      "short_desc": "Collaborative, self-hosted password manager for teams — folders, per-item permissions, and a full audit log",
+      "categories": ["security"]
+    },
+    "taiga": {
+      "name": "Taiga",
+      "short_desc": "Project management platform",
+      "categories": ["development"]
+    },
+    "tandoor": {
+      "name": "Tandoor Recipes",
+      "short_desc": "Recipe manager",
+      "categories": ["utilities", "data"]
+    },
+    "tautulli": {
+      "name": "Tautulli",
+      "short_desc": "Monitoring, analytics, and notifications dashboard for Plex Media Server activity and library stats.",
+      "categories": ["media", "utilities"]
+    },
+    "synapse": {
+      "name": "Synapse",
+      "short_desc": "Self-hosted Matrix homeserver for owning your real-time chat history and identity.",
+      "categories": ["social"]
+    },
+    "surfsense": {
+      "name": "SurfSense",
+      "short_desc": "Open-source AI research assistant and NotebookLM/Perplexity alternative.",
+      "categories": ["ai", "data", "utilities"]
+    },
+    "swingmusic": {
+      "name": "Swing Music",
+      "short_desc": "Self-hosted, privacy-first music streaming with a modern folder-based library UI.",
+      "categories": ["music", "media"]
+    },
+    "sure": {
+      "name": "Sure",
+      "short_desc": "Self-hosted personal finance: linked accounts, budgets, investments, and an AI money assistant.",
+      "categories": ["finance"]
+    },
+    "super-productivity": {
+      "name": "Super Productivity",
+      "short_desc": "Personal task, time-tracking, and project management app with Pomodoro timer and Jira/GitHub/GitLab integration.",
+      "categories": ["utilities"]
+    },
+    "stunnel": {
+      "name": "stunnel",
+      "short_desc": "Add TLS encryption to any existing TCP service",
+      "categories": ["security", "network"]
+    },
+    "strix": {
+      "name": "Strix",
+      "short_desc": "Smart IP camera stream finder that auto-generates Frigate/go2rtc configs.",
+      "categories": ["network", "utilities", "media"]
+    },
+    "steam-mcp": {
+      "name": "Steam MCP",
+      "short_desc": "Expose a Steam library to MCP clients for natural-language questions about owned games.",
+      "categories": ["mcp", "data", "utilities"]
+    },
+    "stalwart-mail": {
+      "name": "Stalwart Mail",
+      "short_desc": "Open-source mail server solution with JMAP, IMAP4, and SMTP support",
+      "categories": ["network", "utilities"]
+    },
+    "standard-notes": {
+      "name": "Standard Notes",
+      "short_desc": "End-to-end encrypted note-taking app",
+      "categories": ["data"]
+    },
+    "stash": {
+      "name": "Stash",
+      "short_desc": "Private on-device AI inbox that auto-classifies, tags, and semantically indexes anything you paste or save.",
+      "categories": ["ai", "utilities"]
+    },
+    "sqlitebrowser": {
+      "name": "SQLite Browser",
+      "short_desc": "Visual database browser and editor for SQLite files (DB4S), served as a linuxserver.io web GUI.",
+      "categories": ["development", "utilities"]
+    },
+    "speaches": {
+      "name": "Speaches",
+      "short_desc": "Self-hosted OpenAI-API-compatible speech-to-text and text-to-speech server (formerly Faster Whisper Server), powered by faster-whisper, Kokoro, and Piper.",
+      "categories": ["ai", "utilities"]
+    },
+    "sqlite-mcp": {
+      "name": "SQLite MCP",
+      "short_desc": "Query and modify a local SQLite database from MCP — schema browsing plus read/write SQL execution.",
+      "categories": ["mcp", "data"]
+    },
+    "sonarr": {
+      "name": "Sonarr",
+      "short_desc": "Smart PVR that monitors for new TV episodes and automatically downloads, renames, and organizes them via Usenet or BitTorrent.",
+      "categories": ["media", "automation"]
+    },
+    "spacebot": {
+      "name": "Spacebot",
+      "short_desc": "Stateful AI agent framework with a typed SQLite memory graph and task/goal state machine for teams and communities.",
+      "categories": ["agents", "ai", "automation"]
+    },
+    "solidtime": {
+      "name": "Solidtime",
+      "short_desc": "Open-source time tracking application for teams and freelancers",
+      "categories": ["utilities"]
+    },
+    "snowflake": {
+      "name": "Tor Snowflake Proxy",
+      "short_desc": "Run a Tor Snowflake proxy to help people bypass internet censorship",
+      "categories": ["network", "security"]
+    },
+    "snort": {
+      "name": "Snort",
+      "short_desc": "Fast Nostr UI",
+      "categories": ["social"]
+    },
+    "sillytavern": {
+      "name": "SillyTavern",
+      "short_desc": "LLM frontend for power users — roleplay, chat, and AI companion interface",
+      "categories": ["ai"]
+    },
+    "slink": {
+      "name": "Slink",
+      "short_desc": "Self-hosted image sharing and screenshot upload platform.",
+      "categories": ["media", "photography", "utilities"]
+    },
+    "snapify": {
+      "name": "Snapify",
+      "short_desc": "Open-source, self-hostable Loom alternative for screen recording.",
+      "categories": ["media", "utilities", "development"]
+    },
+    "smartest-tv-mcp": {
+      "name": "Smartest TV MCP",
+      "short_desc": "Control smart TVs and launch streaming apps by name through MCP.",
+      "categories": ["mcp", "utilities"]
+    },
+    "skybro": {
+      "name": "SkyBro",
+      "short_desc": "Live aircraft, satellite, weather, and astronomy tracker with push alerts",
+      "categories": ["network", "utilities"]
+    },
+    "sickchill": {
+      "name": "SickChill",
+      "short_desc": "Automatic TV show library manager that finds, downloads, and organizes new episodes via Usenet and BitTorrent.",
+      "categories": ["media"]
+    },
+    "showdoc": {
+      "name": "ShowDoc",
+      "short_desc": "Self-hosted Markdown tool for writing and sharing API docs, data dictionaries, and technical documentation with your team.",
+      "categories": ["development"]
+    },
+    "securo": {
+      "name": "Securo",
+      "short_desc": "Self-hosted personal finance manager with bank sync and budgeting tools",
+      "categories": ["finance"]
+    },
+    "secondme": {
+      "name": "Second Me",
+      "short_desc": "Train a locally-hosted AI clone of yourself from your own memories and data, with a fine-tuned local model and GraphRAG-based memory.",
+      "categories": ["ai", "utilities"]
+    },
+    "sglang": {
+      "name": "SGLang",
+      "short_desc": "Self-hosted SGLang inference engine — serve any Hugging Face safetensors model behind an OpenAI-compatible API with RadixAttention prefix caching.",
+      "categories": ["ai"]
+    },
+    "searxng": {
+      "name": "SearXNG",
+      "short_desc": "Privacy-respecting, hackable metasearch engine",
+      "categories": ["utilities"]
+    },
+    "seatable": {
+      "name": "SeaTable",
+      "short_desc": "Self-hosted, spreadsheet-like no-code database with unlimited rows, custom views, automations, and a full REST API.",
+      "categories": ["data", "development"]
+    },
+    "seafile": {
+      "name": "Seafile",
+      "short_desc": "Reliable and Performant File Sync and Share Solution",
+      "categories": ["data"]
+    },
+    "sdwebui-forge-neo": {
+      "name": "SD WebUI Forge Neo",
+      "short_desc": "A leaner, actively developed fork of Stable Diffusion WebUI Forge with a rewritten backend for running the newest image-generation model families.",
+      "categories": ["ai", "media"]
+    },
+    "sdwebui": {
+      "name": "Stable Diffusion WebUI",
+      "short_desc": "AUTOMATIC1111's browser-based interface for generating and editing images with Stable Diffusion models.",
+      "categories": ["ai", "media"]
+    },
+    "sdwebuiforge": {
+      "name": "Stable Diffusion WebUI Forge",
+      "short_desc": "lllyasviel's fork of AUTOMATIC1111's Stable Diffusion WebUI, rebuilt for faster inference and lower VRAM use with native SDXL/SD3/Flux support.",
+      "categories": ["ai", "media"]
+    },
+    "satsbook": {
+      "name": "Satsbook",
+      "short_desc": "Self-hosted general ledger and accounting for Bitcoin Lightning node operators.",
+      "categories": ["finance"]
+    },
+    "safeos": {
+      "name": "SafeOS Guardian",
+      "short_desc": "Local-first AI guardian for pets, babies, and elder care — runs deep-learning in the browser.",
+      "categories": ["security", "ai"]
+    },
+    "samba": {
+      "name": "Samba",
+      "short_desc": "SMB/CIFS file server for sharing folders with Windows, macOS, and Linux",
+      "categories": ["network", "utilities"]
+    },
+    "sabnzbd": {
+      "name": "SABnzbd",
+      "short_desc": "Automated Usenet (NZB) download, verification, and extraction tool",
+      "categories": ["network", "utilities"]
+    },
+    "rotki": {
+      "name": "rotki",
+      "short_desc": "A privacy-preserving portfolio manager and crypto accounting tool.",
+      "categories": ["finance", "data", "security"]
+    },
+    "route96": {
+      "name": "Route96",
+      "short_desc": "Self-hosted Blossom/NIP-96 media server for the Nostr protocol",
+      "categories": ["social", "utilities"]
+    },
+    "rsshub": {
+      "name": "RSSHub",
+      "short_desc": "Generates RSS, Atom, and JSON feeds for thousands of websites and apps that don't publish their own feed.",
+      "categories": ["data", "utilities"]
+    },
+    "romm": {
+      "name": "RomM",
+      "short_desc": "Self-hosted ROM/game-library manager with metadata scraping and in-browser emulation.",
+      "categories": ["gaming", "media"]
+    },
+    "rolltop": {
+      "name": "Rolltop",
+      "short_desc": "Self-hosted IMAP mirror with local search and compose",
+      "categories": ["utilities", "data"]
+    },
+    "rna-sequencing": {
+      "name": "RNA Sequencing",
+      "short_desc": "GPU-accelerated JupyterLab workspace for single-cell RNA sequencing (scRNA-seq) analysis, powered by NVIDIA RAPIDS and rapids-singlecell.",
+      "categories": ["ai", "data"]
+    },
+    "rms-mail": {
+      "name": "RMS Mail",
+      "short_desc": "High-performance self-hosted email for large mailboxes",
+      "categories": ["social"]
+    },
+    "remmina": {
+      "name": "Remmina",
+      "short_desc": "Web-based remote desktop client supporting RDP, VNC, SPICE, SSH, and more.",
+      "categories": ["network", "utilities"]
+    },
+    "remotion-studio": {
+      "name": "Remotion Studio",
+      "short_desc": "Create videos programmatically with React - drag-and-drop video editor with code",
+      "categories": ["media", "development", "utilities"]
+    },
+    "reitti": {
+      "name": "Reitti",
+      "short_desc": "Self-hosted location, visit, and trip tracking & analysis.",
+      "categories": ["data", "utilities"]
+    },
+    "rembg": {
+      "name": "Rembg",
+      "short_desc": "AI-powered background remover that strips backgrounds from images via a web UI or HTTP API, using a choice of pretrained segmentation models.",
+      "categories": ["ai", "photography"]
+    },
+    "readeck": {
+      "name": "Readeck",
+      "short_desc": "Save and read web pages securely",
+      "categories": ["utilities", "books"]
+    },
+    "reddit-mcp": {
+      "name": "Reddit MCP",
+      "short_desc": "MCP server for Reddit — search and browse subreddits, read posts and comments, and create, reply, edit, or delete content.",
+      "categories": ["mcp", "social"]
+    },
+    "readur": {
+      "name": "Readur",
+      "short_desc": "Self-hosted OCR document management with full-text search and folder watching.",
+      "categories": ["utilities", "data"]
+    },
+    "razzia": {
+      "name": "Razzia",
+      "short_desc": "Straightforward, open-source quiz platform for small events",
+      "categories": ["social"]
+    },
+    "readarr": {
+      "name": "Readarr",
+      "short_desc": "Ebook and audiobook collection manager that automatically finds, downloads, and organizes your library via Usenet and BitTorrent.",
+      "categories": ["books", "media"]
+    },
+    "rallly": {
+      "name": "Rallly",
+      "short_desc": "Open-source scheduling and polling tool for finding a meeting time that works for everyone.",
+      "categories": ["utilities"]
+    },
+    "ragflow": {
+      "name": "RAGFlow",
+      "short_desc": "Open-source RAG engine that turns documents into cited, hallucination-resistant answers via deep document understanding and agentic workflows.",
+      "categories": ["ai", "data"]
+    },
+    "radarr": {
+      "name": "Radarr",
+      "short_desc": "Movie collection manager that automatically monitors, downloads, and organizes movies via Usenet and BitTorrent.",
+      "categories": ["media"]
+    },
+    "radicale": {
+      "name": "Radicale",
+      "short_desc": "Lightweight, self-hosted CalDAV and CardDAV server for syncing calendars, to-dos, journals, and contacts across devices.",
+      "categories": ["utilities"]
+    },
+    "rabbitmq": {
+      "name": "RabbitMQ",
+      "short_desc": "Open-source message broker with a web management UI for reliable queuing and routing between apps and services.",
+      "categories": ["development", "data"]
+    },
+    "quarkdown": {
+      "name": "Quarkdown",
+      "short_desc": "Markdown-based typesetting for books, docs, and presentations",
+      "categories": ["development", "utilities"]
+    },
+    "qinglong": {
+      "name": "Qinglong",
+      "short_desc": "Web-based cron and task manager for scheduling and monitoring Python, JavaScript, Shell, and TypeScript scripts.",
+      "categories": ["automation", "development"]
+    },
+    "qbittorrent": {
+      "name": "qBittorrent",
+      "short_desc": "Open-source BitTorrent client with a web interface",
+      "categories": ["network", "utilities"]
+    },
+    "public-pool": {
+      "name": "Public Pool",
+      "short_desc": "Self-hosted Bitcoin solo mining pool with a stratum server.",
+      "categories": ["finance", "utilities"]
+    },
+    "pyload-ng": {
+      "name": "pyLoad-ng",
+      "short_desc": "Multi-site download manager for one-click hosters and video sites.",
+      "categories": ["utilities", "network"]
+    },
+    "proxmox-mail": {
+      "name": "Proxmox Mail Gateway",
+      "short_desc": "Email spam and virus filtering gateway",
+      "categories": ["utilities", "security"]
+    },
+    "proxmox-backup": {
+      "name": "Proxmox Backup Server",
+      "short_desc": "Encrypted, deduplicated backup server for Proxmox VE guests",
+      "categories": ["utilities"]
+    },
+    "prestashop": {
+      "name": "PrestaShop",
+      "short_desc": "Open-source e-commerce platform",
+      "categories": ["finance"]
+    },
+    "project-nomad": {
+      "name": "Project N.O.M.A.D.",
+      "short_desc": "Offline-first knowledge, education, and AI survival server.",
+      "categories": ["ai", "books", "utilities"]
+    },
+    "prowlarr": {
+      "name": "Prowlarr",
+      "short_desc": "Indexer manager that syncs torrent and Usenet indexers across your Sonarr, Radarr, Lidarr, and other *arr apps.",
+      "categories": ["media", "utilities"]
+    },
+    "prometheus": {
+      "name": "Prometheus",
+      "short_desc": "The Prometheus monitoring system and time series database.",
+      "categories": ["utilities"]
+    },
+    "privatebin": {
+      "name": "PrivateBin",
+      "short_desc": "Minimalist, end-to-end encrypted, self-destructing online pastebin",
+      "categories": ["security", "utilities"]
+    },
+    "plugnmeet": {
+      "name": "plugNmeet",
+      "short_desc": "Open-source self-hosted video conferencing software with AI agent",
+      "categories": ["social"]
+    },
+    "poznote": {
+      "name": "Poznote",
+      "short_desc": "Rich-text and Markdown note-taking app with tags, attachments, and Excalidraw sketches",
+      "categories": ["utilities", "data"]
+    },
+    "postiz": {
+      "name": "Postiz",
+      "short_desc": "Open-source social media scheduling and analytics",
+      "categories": ["social"]
+    },
+    "pocketbase": {
+      "name": "PocketBase",
+      "short_desc": "Open Source backend for your next SaaS and Mobile app in 1 file",
+      "categories": ["development"]
+    },
+    "pogolo": {
+      "name": "Pogolo",
+      "short_desc": "Solo, db-less Bitcoin-only mining pool for LAN swarms.",
+      "categories": ["finance", "utilities"]
+    },
+    "postgres-mcp": {
+      "name": "Postgres MCP",
+      "short_desc": "Read-only SQL access to a Postgres database — schema introspection plus parameterized SELECT queries.",
+      "categories": ["mcp", "data"]
+    },
+    "plex": {
+      "name": "Plex",
+      "short_desc": "Personal media server for streaming movies, TV shows, music, and photos to any device",
+      "categories": ["media"]
+    },
+    "plausible": {
+      "name": "Plausible Analytics",
+      "short_desc": "Easy to use and privacy-friendly Google Analytics alternative",
+      "categories": ["development"]
+    },
+    "plane": {
+      "name": "Plane",
+      "short_desc": "Open Source JIRA, Linear, Monday, and Asana Alternative",
+      "categories": ["utilities"]
+    },
+    "playwright-mcp": {
+      "name": "Playwright MCP",
+      "short_desc": "Drive a Chromium / Firefox / WebKit browser as MCP tools — navigate, click, type, screenshot, and extract structured page state.",
+      "categories": ["mcp", "network", "development"]
+    },
+    "planka": {
+      "name": "Planka",
+      "short_desc": "Self-hosted real-time Kanban board (Trello alternative) for team project management",
+      "categories": ["utilities"]
+    },
+    "piefed": {
+      "name": "PieFed",
+      "short_desc": "Federated discussion and link aggregation platform (Lemmy/Mbin alternative)",
+      "categories": ["social"]
+    },
+    "pingvin-share": {
+      "name": "Pingvin Share",
+      "short_desc": "Self-hosted WeTransfer-style file sharing with expiring links, visitor limits, and reverse shares",
+      "categories": ["utilities", "network"]
+    },
+    "pinchflat": {
+      "name": "Pinchflat",
+      "short_desc": "Automated YouTube channel/playlist backup and archival tool built on yt-dlp",
+      "categories": ["media", "automation"]
+    },
+    "picsur": {
+      "name": "Picsur",
+      "short_desc": "Lightweight self-hosted image upload/sharing service with basic in-browser edit tools",
+      "categories": ["photography", "utilities"]
+    },
+    "picoclaw": {
+      "name": "PicoClaw",
+      "short_desc": "Ultra-lightweight personal AI assistant with a multi-provider gateway, MCP support, and chat-app channels",
+      "categories": ["ai", "mcp"]
+    },
+    "photoprism": {
+      "name": "PhotoPrism",
+      "short_desc": "Self-host your photo and video library",
+      "categories": ["data"]
+    },
+    "penpot": {
+      "name": "Penpot",
+      "short_desc": "Design and prototyping platform",
+      "categories": ["development"]
+    },
+    "pds": {
+      "name": "Bluesky PDS",
+      "short_desc": "Self-hosted Personal Data Server for the AT Protocol — run your own Bluesky account on infrastructure you control.",
+      "categories": ["social", "network"]
+    },
+    "pdfmathtranslate": {
+      "name": "PDFMathTranslate",
+      "short_desc": "AI-powered PDF translation that preserves formulas, layouts, tables of contents, and annotations.",
+      "categories": ["utilities", "ai"]
+    },
+    "pastefy": {
+      "name": "Pastefy",
+      "short_desc": "Self-hosted pastebin for sharing code snippets and text, with optional private pastes.",
+      "categories": ["development", "utilities"]
+    },
+    "passky-server": {
+      "name": "Passky Server",
+      "short_desc": "Backend API and database for the Passky encrypted password manager.",
+      "categories": ["security"]
+    },
+    "passky-client": {
+      "name": "Passky Client",
+      "short_desc": "Web frontend for the Passky encrypted password manager (pairs with Passky Server).",
+      "categories": ["security"]
+    },
+    "passbolt": {
+      "name": "Passbolt",
+      "short_desc": "Open source password manager for teams.",
+      "categories": ["security"]
+    },
+    "papra": {
+      "name": "Papra",
+      "short_desc": "Minimalist self-hosted document archiving platform for long-term storage and retrieval.",
+      "categories": ["data"]
+    },
+    "papercups": {
+      "name": "Papercups",
+      "short_desc": "Open source customer support.",
+      "categories": ["social"]
+    },
+    "paperclip": {
+      "name": "Paperclip",
+      "short_desc": "The open-source app everyone uses to manage AI agents at work.",
+      "categories": ["agents", "ai", "automation", "utilities"]
+    },
+    "pairdrop": {
+      "name": "PairDrop",
+      "short_desc": "Local file sharing in your browser, inspired by Apple's AirDrop",
+      "categories": ["utilities", "network"]
+    },
+    "paddle-ocr": {
+      "name": "PaddleOCR",
+      "short_desc": "Industry-leading OCR and document AI engine by Baidu PaddlePaddle.",
+      "categories": ["ai"]
+    },
+    "owncloud": {
+      "name": "ownCloud",
+      "short_desc": "Self-hosted cloud storage, file sync, and collaboration suite with calendars, contacts, and tasks.",
+      "categories": ["data"]
+    },
+    "owncast": {
+      "name": "Owncast",
+      "short_desc": "Self-hosted live video streaming and web chat server that accepts an RTMP feed from OBS and serves it to your own branded viewer page.",
+      "categories": ["media", "social"]
+    },
+    "outline": {
+      "name": "Outline",
+      "short_desc": "Fast, realtime collaborative wiki and knowledge base for growing teams",
+      "categories": ["data"]
+    },
+    "openshell-pi": {
+      "name": "OpenShell Pi",
+      "short_desc": "Pi coding agent in a secure NVIDIA OpenShell sandbox, served as a browser terminal",
+      "categories": ["agents", "ai", "development"]
+    },
+    "openshell-ollama": {
+      "name": "OpenShell + Ollama",
+      "short_desc": "OpenShell agent sandbox wired to the Hub's built-in Ollama for local models",
+      "categories": ["agents", "ai", "development"]
+    },
+    "openshell-gemini": {
+      "name": "OpenShell Gemini CLI",
+      "short_desc": "Google Gemini CLI in a secure NVIDIA OpenShell sandbox, served as a browser terminal",
+      "categories": ["agents", "ai", "development"]
+    },
+    "openproject": {
+      "name": "OpenProject",
+      "short_desc": "Open source project management software",
+      "categories": ["data", "utilities"]
+    },
+    "openshell-base": {
+      "name": "OpenShell Sandbox",
+      "short_desc": "Secure NVIDIA OpenShell agent sandbox (Claude, Codex, OpenCode, Copilot) in a browser terminal",
+      "categories": ["agents", "ai", "development"]
+    },
+    "openshell-droid": {
+      "name": "OpenShell Droid",
+      "short_desc": "Factory Droid CLI in a secure NVIDIA OpenShell sandbox, served as a browser terminal",
+      "categories": ["agents", "ai", "development"]
+    },
+    "opengist": {
+      "name": "Opengist",
+      "short_desc": "A Git-powered pastebin for code snippets, notes, and small file collections",
+      "categories": ["development"]
+    },
+    "openedai-speech": {
+      "name": "OpenedAI Speech",
+      "short_desc": "Self-hosted, OpenAI-compatible text-to-speech server using Piper (CPU) voices, no API key required.",
+      "categories": ["ai", "media"]
+    },
+    "opencode-web": {
+      "name": "OpenCode Web",
+      "short_desc": "AI-powered coding assistant with a browser-based interface",
+      "categories": ["ai", "development"]
+    },
+    "open-notebook": {
+      "name": "Open Notebook",
+      "short_desc": "Open-source, privacy-first NotebookLM alternative for AI research notebooks.",
+      "categories": ["ai", "data", "utilities"]
+    },
+    "opencut": {
+      "name": "OpenCut",
+      "short_desc": "Browser-based video editor — a free, self-hosted CapCut alternative",
+      "categories": ["media", "utilities"]
+    },
+    "onlyoffice-documentserver": {
+      "name": "ONLYOFFICE Document Server",
+      "short_desc": "Self-hosted ONLYOFFICE Document Server engine for real-time collaborative editing of Word, Excel, and PowerPoint-compatible documents.",
+      "categories": ["utilities", "data"]
+    },
+    "onlyoffice": {
+      "name": "ONLYOFFICE Desktop Editors",
+      "short_desc": "Full ONLYOFFICE desktop office suite in your browser",
+      "categories": ["data", "utilities"]
+    },
+    "onlyoffice-docspace-mcp": {
+      "name": "ONLYOFFICE DocSpace MCP",
+      "short_desc": "Official ONLYOFFICE DocSpace MCP server for rooms, files, users, and document workflows.",
+      "categories": ["mcp", "utilities", "data"]
+    },
+    "omnitools": {
+      "name": "OmniTools",
+      "short_desc": "80+ browser-based tools for file conversion, image/PDF editing, and everyday utilities",
+      "categories": ["utilities"]
+    },
+    "odoo": {
+      "name": "Odoo",
+      "short_desc": "All your business on one platform.",
+      "categories": ["utilities"]
+    },
+    "omegaclaw": {
+      "name": "OmegaClaw",
+      "short_desc": "Neural-symbolic autonomous agent (Hyperon/MeTTa) that chats over Telegram, Slack, IRC, or WebSocket",
+      "categories": ["ai"]
+    },
+    "olmocr": {
+      "name": "olmOCR",
+      "short_desc": "Drop PDFs or images in a folder and get back clean Markdown, powered by Ai2's olmOCR vision-language OCR model.",
+      "categories": ["ai"]
+    },
+    "odysseus": {
+      "name": "Odysseus",
+      "short_desc": "Self-hosted AI workspace for chat, agents, research, documents, and local model workflows.",
+      "categories": ["ai", "utilities", "data"]
+    },
+    "obsidian-livesync": {
+      "name": "Obsidian LiveSync",
+      "short_desc": "Self-hosted CouchDB sync server for the Obsidian LiveSync plugin, pre-configured for encrypted cross-device note sync.",
+      "categories": ["utilities", "data"]
+    },
+    "obsidian-mcp": {
+      "name": "Obsidian MCP",
+      "short_desc": "Work with Obsidian vault notes through the Obsidian Local REST API plugin.",
+      "categories": ["mcp", "utilities", "data"]
+    },
+    "obsidian": {
+      "name": "Obsidian",
+      "short_desc": "The full Obsidian note-taking app, streamed to the browser via KasmVNC; notes stay local.",
+      "categories": ["utilities", "data"]
+    },
+    "ntfy": {
+      "name": "ntfy",
+      "short_desc": "Simple pub-sub push notification relay for scripts, cron jobs, and self-hosted services",
+      "categories": ["automation", "utilities"]
+    },
+    "nzbget": {
+      "name": "Nzbget",
+      "short_desc": "Efficient, script-extensible Usenet binary downloader with par2 repair, unpack, and a web UI.",
+      "categories": ["network", "utilities"]
+    },
+    "novel": {
+      "name": "Novel",
+      "short_desc": "Notion-style WYSIWYG editor with AI-powered autocompletions",
+      "categories": ["utilities", "ai"]
+    },
+    "notesnook": {
+      "name": "Notesnook",
+      "short_desc": "Open-source, end-to-end encrypted note-taking sync server.",
+      "categories": ["utilities", "security", "data"]
+    },
+    "notediscovery": {
+      "name": "NoteDiscovery",
+      "short_desc": "Self-hosted knowledge base and note-taking application",
+      "categories": ["utilities"]
+    },
+    "notion-mcp": {
+      "name": "Notion MCP",
+      "short_desc": "Official Notion API MCP server for pages, databases, comments, users, and search.",
+      "categories": ["mcp", "utilities", "data"]
+    },
+    "nostrudel": {
+      "name": "noStrudel",
+      "short_desc": "Power-user Nostr web client for exploring the protocol — feeds, relays, Blossom servers, NIP-29 groups",
+      "categories": ["social"]
+    },
+    "nostream": {
+      "name": "Nostream",
+      "short_desc": "Self-hosted Nostr relay written in TypeScript, backed by PostgreSQL and Redis.",
+      "categories": ["social", "network"]
+    },
+    "nofx": {
+      "name": "NOFX",
+      "short_desc": "AI trading terminal that runs LLM-powered strategies (GPT, Claude, DeepSeek, Gemini, and more) against nine crypto/forex exchanges, with hard risk limits enforced outside the model.",
+      "categories": ["finance", "ai"]
+    },
+    "nostr-relay": {
+      "name": "Nostr Relay",
+      "short_desc": "Backup all your Nostr activity with your private relay",
+      "categories": ["social"]
+    },
+    "nocodb": {
+      "name": "NocoDB",
+      "short_desc": "Open Source Airtable Alternative",
+      "categories": ["data"]
+    },
+    "nocobase": {
+      "name": "NocoBase",
+      "short_desc": "Open-source, extensibility-first no-code platform for building business applications and databases",
+      "categories": ["data", "utilities"]
+    },
+    "networkingtoolbox": {
+      "name": "Networking Toolbox",
+      "short_desc": "Offline-first toolbox of IP/subnet/DNS/SSL/CIDR utilities for sysadmins",
+      "categories": ["development", "network"]
+    },
+    "netdata": {
+      "name": "Netdata",
+      "short_desc": "High-performance, open-source observability platform",
+      "categories": ["utilities"]
+    },
+    "n8n-mcp": {
+      "name": "n8n MCP",
+      "short_desc": "MCP bridge for n8n workflows, nodes, templates, validation, and automation design.",
+      "categories": ["mcp", "development", "utilities"]
+    },
+    "music-assistant": {
+      "name": "Music Assistant",
+      "short_desc": "Music library manager connecting multiple sources",
+      "categories": ["media"]
+    },
+    "myspeed": {
+      "name": "MySpeed",
+      "short_desc": "A self-hosted internet speed-test tracker.",
+      "categories": ["utilities", "network"]
+    },
+    "munin": {
+      "name": "Munin",
+      "short_desc": "Network and system monitoring with historical graphs",
+      "categories": ["network", "utilities"]
+    },
+    "mysql": {
+      "name": "MySQL",
+      "short_desc": "MySQL 8.4 LTS database server with a lightweight Adminer web console.",
+      "categories": ["development", "data"]
+    },
+    "mtranserver": {
+      "name": "MTranServer",
+      "short_desc": "Ultra-lightweight offline translation model server with ~50ms responses and no GPU required.",
+      "categories": ["utilities", "ai"]
+    },
+    "mstream": {
+      "name": "mStream",
+      "short_desc": "Self-hosted private music streaming server for your own library",
+      "categories": ["media"]
+    },
+    "mqttx-web": {
+      "name": "MQTTX Web",
+      "short_desc": "Browser-based MQTT 5.0 client toolbox for testing and debugging brokers",
+      "categories": ["automation", "development"]
+    },
+    "morphos": {
+      "name": "Morphos server",
+      "short_desc": "Self-hosted file converter with web UI + API — images, PDF↔images, DOCX↔PDF, XLSX↔CSV, and ebooks.",
+      "categories": ["utilities", "data"]
+    },
+    "mongodb": {
+      "name": "MongoDB",
+      "short_desc": "Document-oriented NoSQL database server with a bundled mongo-express web console.",
+      "categories": ["data", "development"]
+    },
+    "monetr": {
+      "name": "monetr",
+      "short_desc": "Self-hosted budgeting app for managing recurring expenses.",
+      "categories": ["finance", "utilities"]
+    },
+    "mixpost": {
+      "name": "Mixpost",
+      "short_desc": "Self-hosted social media management",
+      "categories": ["social", "automation"]
+    },
+    "minio": {
+      "name": "MinIO",
+      "short_desc": "High-performance, S3 API-compatible object storage server with a built-in web console for buckets, objects, and access policies.",
+      "categories": ["development", "data"]
+    },
+    "mindmap": {
+      "name": "SimpleMindMap",
+      "short_desc": "Self-hosted web-based mind mapping tool with rich node styling, themes, and export options.",
+      "categories": ["utilities"]
+    },
+    "metube": {
+      "name": "MeTube",
+      "short_desc": "Self-hosted web UI for yt-dlp to download videos, audio, subtitles, and playlists from YouTube and hundreds of other sites.",
+      "categories": ["media", "utilities"]
+    },
+    "migpttts": {
+      "name": "MiGPT-TTS",
+      "short_desc": "Self-hosted multi-backend text-to-speech microservice for MiGPT, your custom Xiaomi speaker voice assistant.",
+      "categories": ["ai", "utilities"]
+    },
+    "migpt": {
+      "name": "MiGPT",
+      "short_desc": "Turn a Xiaomi smart speaker into an LLM-powered voice assistant, configured entirely from a web GUI with built-in text-to-speech.",
+      "categories": ["ai", "automation"]
+    },
+    "mermaid-live": {
+      "name": "Mermaid Live",
+      "short_desc": "Diagram-as-code editor — write Mermaid text, see the flowchart render live, entirely offline",
+      "categories": ["development", "utilities"]
+    },
+    "memos": {
+      "name": "Memos",
+      "short_desc": "Open-source, self-hosted note-taking for quick capture.",
+      "categories": ["data"]
+    },
+    "mesh-llm": {
+      "name": "Mesh LLM",
+      "short_desc": "Pool GPUs across machines into one OpenAI-compatible API, or just serve models solo.",
+      "categories": ["ai"]
+    },
+    "medusa": {
+      "name": "Medusa",
+      "short_desc": "Open-source headless commerce platform for building custom storefronts and ecommerce backends",
+      "categories": ["development"]
+    },
+    "mealie": {
+      "name": "Mealie",
+      "short_desc": "Self-hosted recipe manager, meal planner, and shopping list with recipe import from any URL.",
+      "categories": ["utilities"]
+    },
+    "md": {
+      "name": "WeChat Markdown Editor",
+      "short_desc": "A minimalist Markdown editor that converts your writing into richly styled, ready-to-paste WeChat Official Account posts.",
+      "categories": ["media"]
+    },
+    "mazanoke": {
+      "name": "Mazanoke",
+      "short_desc": "Privacy-focused, browser-based image optimizer/converter (JPEG/PNG/WebP/SVG/GIF) — all processing happens client-side, nothing is uploaded.",
+      "categories": ["media", "photography"]
+    },
+    "mattermost": {
+      "name": "Mattermost",
+      "short_desc": "Team Chat, Open Source, Self-Hosted",
+      "categories": ["social"]
+    },
+    "matomo": {
+      "name": "Matomo",
+      "short_desc": "Google Analytics alternative that protects your data and privacy.",
+      "categories": ["utilities"]
+    },
+    "maxkb": {
+      "name": "MaxKB",
+      "short_desc": "Open-source RAG chatbot platform for building and embedding enterprise-grade AI agents with knowledge base search.",
+      "categories": ["ai", "development"]
+    },
+    "mainsail": {
+      "name": "Mainsail",
+      "short_desc": "Web interface for Klipper 3D printers.",
+      "categories": ["utilities", "automation"]
+    },
+    "mailu": {
+      "name": "Mailu",
+      "short_desc": "Open-source mail server stack with admin UI, IMAP/SMTP, and antispam",
+      "categories": ["network", "utilities"]
+    },
+    "macos": {
+      "name": "macOS",
+      "short_desc": "Run macOS in a browser-accessible VM powered by QEMU/KVM",
+      "categories": ["utilities"]
+    },
+    "mailflow": {
+      "name": "MailFlow",
+      "short_desc": "Unified self-hosted webmail client for multiple IMAP/SMTP accounts with SSO/OIDC and Microsoft 365 OAuth support.",
+      "categories": ["network", "utilities"]
+    },
+    "mailarchiver": {
+      "name": "Mail Archiver",
+      "short_desc": "Archives, searches, and exports email from multiple IMAP/Microsoft 365 accounts with configurable retention policies.",
+      "categories": ["utilities", "data"]
+    },
+    "lunalytics": {
+      "name": "Lunalytics",
+      "short_desc": "Team uptime and TLS-certificate monitoring dashboard for HTTP/TCP endpoints with alerting and status pages.",
+      "categories": ["network", "utilities"]
+    },
+    "lubelogger": {
+      "name": "LubeLogger",
+      "short_desc": "Track vehicle maintenance history, fuel mileage, and total cost of ownership across multiple vehicles",
+      "categories": ["utilities", "data"]
+    },
+    "logseq": {
+      "name": "Logseq",
+      "short_desc": "Privacy-first, open-source knowledge base",
+      "categories": ["utilities", "data"]
+    },
+    "localai": {
+      "name": "LocalAI",
+      "short_desc": "Self-hosted, OpenAI-compatible inference server for running LLMs, vision, image, and audio models on your own hardware, no GPU required.",
+      "categories": ["ai", "development"]
+    },
+    "lobe-chat": {
+      "name": "Lobe Chat",
+      "short_desc": "An open-source, modern-design AI chat framework",
+      "categories": ["ai"]
+    },
+    "llmfit": {
+      "name": "LLMFit",
+      "short_desc": "Hardware-aware LLM advisor that scores hundreds of models for fit, speed, and quality on your machine.",
+      "categories": ["development", "ai"]
+    },
+    "louter": {
+      "name": "Louter",
+      "short_desc": "Single-binary local LLM gateway that routes every AI agent to the right model — cloud or local — with a built-in distillation pipeline.",
+      "categories": ["ai", "development"]
+    },
+    "llamafactory": {
+      "name": "LLaMA Factory",
+      "short_desc": "Fine-tune 100+ open LLMs and VLMs (LLaMA, Qwen, Gemma, Mistral) through a zero-code web UI or a single CLI command.",
+      "categories": ["ai", "development"]
+    },
+    "litellm": {
+      "name": "LiteLLM",
+      "short_desc": "Self-hosted OpenAI-compatible proxy that routes requests to 100+ LLM providers with virtual keys, budgets, and spend tracking.",
+      "categories": ["ai", "development"]
+    },
+    "llama-cpp": {
+      "name": "llama.cpp Server",
+      "short_desc": "OpenAI-compatible LLM inference server from the llama.cpp project — pick any GGUF model from Hugging Face and serve it over a REST API and web UI.",
+      "categories": ["ai"]
+    },
+    "listmonk": {
+      "name": "Listmonk",
+      "short_desc": "High performance, self-hosted, newsletter and mailing list manager with a modern dashboard",
+      "categories": ["utilities"]
+    },
+    "linkstack": {
+      "name": "LinkStack",
+      "short_desc": "Self-hosted, fully customizable Linktree-style link-in-bio page with multi-user support",
+      "categories": ["social", "utilities"]
+    },
+    "linkwarden": {
+      "name": "Linkwarden",
+      "short_desc": "Collaborative bookmark manager that archives pages as screenshot + PDF to beat link rot",
+      "categories": ["social", "utilities"]
+    },
+    "lingva-translate": {
+      "name": "Lingva Translate",
+      "short_desc": "Privacy-focused alternative front-end for Google Translate.",
+      "categories": ["utilities", "ai"]
+    },
+    "libretranslate": {
+      "name": "LibreTranslate",
+      "short_desc": "Free and open-source self-hosted machine translation API and web UI.",
+      "categories": ["utilities", "ai"]
+    },
+    "librespeed": {
+      "name": "LibreSpeed",
+      "short_desc": "Self-hosted internet speed test with no tracking.",
+      "categories": ["network", "utilities"]
+    },
+    "lidarr": {
+      "name": "Lidarr",
+      "short_desc": "Automated music collection manager that finds, downloads, and organizes your library via Usenet and BitTorrent.",
+      "categories": ["music", "automation"]
+    },
+    "librechat": {
+      "name": "LibreChat",
+      "short_desc": "Open-source AI chat platform supporting OpenAI, Anthropic, Google, Ollama, and more",
+      "categories": ["ai"]
+    },
+    "librephotos": {
+      "name": "LibrePhotos",
+      "short_desc": "Self-hosted photo/video library with AI face and object recognition, albums, and timeline search.",
+      "categories": ["photography", "media"]
+    },
+    "libreoffice": {
+      "name": "LibreOffice",
+      "short_desc": "Do more - easier, quicker, smarter",
+      "categories": ["data"]
+    },
+    "lego-oracle-mcp": {
+      "name": "LEGO Oracle MCP",
+      "short_desc": "Query LEGO sets, parts, minifigs, and inventories from an MCP client.",
+      "categories": ["mcp", "data", "utilities"]
+    },
+    "leantime": {
+      "name": "Leantime",
+      "short_desc": "Open source project management for non-project managers",
+      "categories": ["utilities"]
+    },
+    "langbot": {
+      "name": "LangBot",
+      "short_desc": "Production-grade platform for building AI-powered bots on Discord, Slack, Telegram, WeChat, and a dozen other IM platforms with one web dashboard.",
+      "categories": ["ai", "development"]
+    },
+    "langfuse": {
+      "name": "Langfuse",
+      "short_desc": "Open-source LLM engineering platform for tracing, evaluating, and managing prompts across AI applications.",
+      "categories": ["ai", "development"]
+    },
+    "leafwiki": {
+      "name": "LeafWiki",
+      "short_desc": "Lightweight self-hosted wiki for organizing docs, guides, and notes without a heavy stack.",
+      "categories": ["utilities", "data"]
+    },
+    "langflow": {
+      "name": "Langflow",
+      "short_desc": "UI for building and deploying multi-agent LLM systems and workflows",
+      "categories": ["ai"]
+    },
+    "l-town": {
+      "name": "L-Town",
+      "short_desc": "Open-source multiplayer first-person-shooter that runs entirely in the browser, no install or account needed.",
+      "categories": ["gaming", "social"]
+    },
+    "kiwix": {
+      "name": "Kiwix",
+      "short_desc": "Self-hosted offline web content server for ZIM files",
+      "categories": ["books", "utilities"]
+    },
+    "komga": {
+      "name": "Komga",
+      "short_desc": "Self-hosted server for organizing, browsing, and reading your comics, manga, BDs, magazines, and eBooks.",
+      "categories": ["books", "media"]
+    },
+    "kokoro": {
+      "name": "Kokoro",
+      "short_desc": "Lightweight, high-quality open-source text-to-speech model server with an OpenAI-compatible API",
+      "categories": ["ai", "media"]
+    },
+    "koodo-reader": {
+      "name": "Koodo Reader",
+      "short_desc": "Self-hosted ebook reader and library — epub, pdf, mobi, azw3, cbr, plus an OPDS feed for your e-reader",
+      "categories": ["books", "media"]
+    },
+    "kwaainet": {
+      "name": "KwaaiNet",
+      "short_desc": "Decentralized AI node — contribute storage and compute to the Kwaai community network",
+      "categories": ["ai", "network"]
+    },
+    "kitchenowl": {
+      "name": "KitchenOwl",
+      "short_desc": "Collaborative grocery list, recipe manager, meal planner, and shared-expense tracker",
+      "categories": ["data", "utilities"]
+    },
+    "keila": {
+      "name": "Keila",
+      "short_desc": "Open source newsletter and email marketing tool with self-hosting support",
+      "categories": ["utilities", "network"]
+    },
+    "kimai": {
+      "name": "Kimai",
+      "short_desc": "Self-hosted time tracking for freelancers and project-driven teams",
+      "categories": ["utilities"]
+    },
+    "karakeep": {
+      "name": "Karakeep",
+      "short_desc": "Self-hostable bookmark, note, and image manager with AI-based auto-tagging and full-text search.",
+      "categories": ["utilities", "ai"]
+    },
+    "kan": {
+      "name": "kan",
+      "short_desc": "Open-source Trello-style kanban board for project and task management.",
+      "categories": ["utilities", "development"]
+    },
+    "jupyterlab": {
+      "name": "JupyterLab",
+      "short_desc": "Web-based interactive notebooks and IDE for Python data science and computing.",
+      "categories": ["development", "data"]
+    },
+    "jupyterhub": {
+      "name": "JupyterHub",
+      "short_desc": "Multi-user Jupyter notebook hub that spawns a notebook server per user on the same host, from JupyterHub's official self-contained demo image.",
+      "categories": ["development", "data"]
+    },
+    "jupyter-notebook": {
+      "name": "Jupyter Notebook",
+      "short_desc": "Classic web-based notebook interface for writing and running live code, equations, visualizations, and narrative text.",
+      "categories": ["development", "data"]
+    },
+    "joplin": {
+      "name": "Joplin Server",
+      "short_desc": "Joplin - the privacy-focused note taking app with sync capabilities for Windows, macOS, Linux, Android and iOS.",
+      "categories": ["data"]
+    },
+    "jsonhero": {
+      "name": "JSON Hero",
+      "short_desc": "Browse, search, and visually explore JSON documents with Tree, Column, and Editor views.",
+      "categories": ["development", "utilities"]
+    },
+    "jotty": {
+      "name": "Jotty",
+      "short_desc": "Lightweight, file-based checklists and rich-text notes with Kanban boards, time tracking, and sharing.",
+      "categories": ["utilities", "data"]
+    },
+    "jellyseerr": {
+      "name": "Seerr",
+      "short_desc": "Media discovery and request-management frontend for Jellyfin, Plex, or Emby libraries.",
+      "categories": ["media"]
+    },
+    "jackett": {
+      "name": "Jackett",
+      "short_desc": "API proxy that unifies 100+ torrent tracker sites behind a single Torznab/RSS feed for apps like Sonarr and Radarr.",
+      "categories": ["network", "utilities"]
+    },
+    "jdownloader2": {
+      "name": "JDownloader 2",
+      "short_desc": "Open-source download management tool for one-click hosters and direct links, accessed via a browser-based GUI.",
+      "categories": ["utilities"]
+    },
+    "ipfs": {
+      "name": "IPFS",
+      "short_desc": "A self-hosted IPFS (Kubo) node with the official web UI for managing files, pins, peers, and IPNS, plus an HTTP gateway and P2P swarm.",
+      "categories": ["development", "network"]
+    },
+    "it-tools": {
+      "name": "IT-Tools",
+      "short_desc": "Offline developer toolbox — encoders, hashes, converters, generators, and network helpers, all in-browser",
+      "categories": ["development", "utilities"]
+    },
+    "invoice-ninja": {
+      "name": "Invoice Ninja",
+      "short_desc": "Self-hosted invoicing, quotes, expenses, and time tracking",
+      "categories": ["finance"]
+    },
+    "invio": {
+      "name": "Invio",
+      "short_desc": "Minimalist self-hosted invoicing for freelancers and small teams",
+      "categories": ["finance"]
+    },
+    "invidious": {
+      "name": "Invidious",
+      "short_desc": "Ad-free, tracking-free alternative front-end for YouTube",
+      "categories": ["social", "media"]
+    },
+    "influxdb2": {
+      "name": "InfluxDB 2",
+      "short_desc": "Time-series database platform with built-in UI (2.x line, Flux/SQL)",
+      "categories": ["development", "data"]
+    },
+    "influxdb": {
+      "name": "InfluxDB",
+      "short_desc": "Time-series database with the Chronograf visualization UI (1.x line)",
+      "categories": ["development", "data"]
+    },
+    "hunyuan3d-rocm": {
+      "name": "Hunyuan3D ROCm",
+      "short_desc": "Generate Hunyuan3D 2.1 assets through a ROCm-ready ComfyUI workflow on AMD x64 hosts.",
+      "categories": ["media"]
+    },
+    "hunyuan3d": {
+      "name": "Hunyuan3D",
+      "short_desc": "Generate textured 3D assets from images with the Hunyuan3D 2.1 web UI on x64 NVIDIA hosts.",
+      "categories": ["media"]
+    },
+    "indexttsv2": {
+      "name": "IndexTTS2",
+      "short_desc": "Zero-shot text-to-speech with precise duration control and independent emotion/timbre control from Bilibili's Index Speech Team.",
+      "categories": ["ai"]
+    },
+    "hoppscotch": {
+      "name": "Hoppscotch",
+      "short_desc": "Open source API development ecosystem.",
+      "categories": ["utilities"]
+    },
+    "hortusfox": {
+      "name": "HortusFox",
+      "short_desc": "Self-hosted collaborative plant management and gardening companion.",
+      "categories": ["utilities", "data"]
+    },
+    "homehub": {
+      "name": "HomeHub",
+      "short_desc": "Shared household hub for notes, chores, groceries, and expenses",
+      "categories": ["utilities", "social"]
+    },
+    "homebox": {
+      "name": "HomeBox",
+      "short_desc": "Self-hosted home inventory and organization system for tracking items, locations, warranties, and maintenance.",
+      "categories": ["utilities"]
+    },
+    "hindsight": {
+      "name": "Hindsight",
+      "short_desc": "Long-term memory for your AI agents",
+      "categories": ["ai"]
+    },
+    "homarr": {
+      "name": "Homarr",
+      "short_desc": "Customizable self-hosted dashboard for organizing your web apps and services",
+      "categories": ["utilities", "network"]
+    },
+    "hermitstash": {
+      "name": "HermitStash",
+      "short_desc": "Post-quantum encrypted, self-hosted file upload and sharing server.",
+      "categories": ["security", "utilities", "data"]
+    },
+    "hi-events": {
+      "name": "Hi.Events",
+      "short_desc": "Self-hosted event management and ticket selling platform",
+      "categories": ["social", "utilities"]
+    },
+    "heimdall": {
+      "name": "Heimdall",
+      "short_desc": "Simple dashboard to organize and launch links to your self-hosted apps",
+      "categories": ["utilities", "network"]
+    },
+    "hasura": {
+      "name": "Hasura",
+      "short_desc": "Instant, realtime GraphQL and REST APIs on Postgres with fine-grained access control and event webhooks.",
+      "categories": ["development", "data"]
+    },
+    "gyroflow": {
+      "name": "Gyroflow",
+      "short_desc": "Video stabilization using gyroscope data — full desktop app in your browser",
+      "categories": ["media", "photography"]
+    },
+    "halo": {
+      "name": "Halo",
+      "short_desc": "Open-source website builder for blogs, docs, and small sites, with a built-in plugin/theme marketplace and no external database required.",
+      "categories": ["media", "utilities"]
+    },
+    "habitica": {
+      "name": "Habitica",
+      "short_desc": "Gamified habit and task tracker that turns your to-do list into an RPG",
+      "categories": ["gaming", "utilities"]
+    },
+    "gupt": {
+      "name": "Gupt",
+      "short_desc": "Self-hosted, end-to-end encrypted messenger.",
+      "categories": ["social", "security"]
+    },
+    "grocy": {
+      "name": "Grocy",
+      "short_desc": "Self-hosted groceries & household management solution for your home",
+      "categories": ["utilities"]
+    },
+    "graylog": {
+      "name": "Graylog",
+      "short_desc": "Free and open source log management platform",
+      "categories": ["security", "data"]
+    },
+    "grafana": {
+      "name": "Grafana",
+      "short_desc": "Open source analytics platform for querying, visualizing, alerting on, and exploring metrics, logs, and traces from any data source.",
+      "categories": ["data", "utilities"]
+    },
+    "grist": {
+      "name": "Grist",
+      "short_desc": "Spreadsheet-database hybrid with real Python formulas, stored as portable SQLite files",
+      "categories": ["data", "utilities"]
+    },
+    "glasshome": {
+      "name": "GlassHome",
+      "short_desc": "Drag-and-drop, no-YAML local dashboard for Home Assistant with area-based views and a hardware-free demo mode.",
+      "categories": ["automation", "utilities"]
+    },
+    "gitlab": {
+      "name": "GitLab CE",
+      "short_desc": "The DevSecOps platform — git hosting, CI/CD, registry, and more.",
+      "categories": ["development"]
+    },
+    "gitingest": {
+      "name": "Gitingest",
+      "short_desc": "Converts any Git repository into a structured, LLM-friendly text digest for prompting AI coding assistants.",
+      "categories": ["development", "ai"]
+    },
+    "gitea-mirror": {
+      "name": "Gitea Mirror",
+      "short_desc": "Automatically mirrors GitHub repositories (incl. orgs, starred repos, issues, wikis, PRs) to a self-hosted Gitea instance.",
+      "categories": ["development"]
+    },
+    "github-mcp": {
+      "name": "GitHub MCP",
+      "short_desc": "Official GitHub MCP server — repos, issues, pull requests, code search, actions, security, and more from a single MCP endpoint.",
+      "categories": ["mcp", "development"]
+    },
+    "freecut": {
+      "name": "FreeCut",
+      "short_desc": "Browser-based multi-track video editor — no uploads, media stays local (Chromium recommended)",
+      "categories": ["media", "utilities"]
+    },
+    "ghostfolio": {
+      "name": "Ghostfolio",
+      "short_desc": "Open-source wealth management and portfolio tracking.",
+      "categories": ["finance", "utilities"]
+    },
+    "git-mcp": {
+      "name": "Git MCP",
+      "short_desc": "Local git operations as MCP tools — status, diff, log, branch, commit, and more, scoped to a configured repo.",
+      "categories": ["mcp", "development"]
+    },
+    "galette": {
+      "name": "Galette",
+      "short_desc": "Gestionnaire d'adherents libre.",
+      "categories": ["finance"]
+    },
+    "funclip": {
+      "name": "FunClip",
+      "short_desc": "Open-source video transcription and clipping tool: FunASR speech recognition plus manual or LLM-assisted highlight clipping with auto-generated subtitles.",
+      "categories": ["ai", "media"]
+    },
+    "geth": {
+      "name": "Ethereum",
+      "short_desc": "Run a full go-ethereum (geth) node exposing JSON-RPC, WebSocket, and Engine APIs for wallets, dApps, and block explorers.",
+      "categories": ["finance", "development"]
+    },
+    "gaianet": {
+      "name": "GaiaNet",
+      "short_desc": "Self-hosted AI agent node bundling a WasmEdge LLM, embedding model, and Qdrant knowledge base behind an OpenAI-compatible API.",
+      "categories": ["ai", "utilities"]
+    },
+    "freshrss": {
+      "name": "FreshRSS",
+      "short_desc": "Self-hosted RSS/Atom feed reader with Fever and Google Reader API support",
+      "categories": ["utilities", "books"]
+    },
+    "freeter": {
+      "name": "Freeter",
+      "short_desc": "Personal workspace organizer for managing projects and web tools",
+      "categories": ["utilities"]
+    },
+    "freqtrade": {
+      "name": "Freqtrade",
+      "short_desc": "Open-source cryptocurrency trading bot with backtesting, strategy optimization, and a bundled web UI, controllable via REST API or Telegram.",
+      "categories": ["finance", "utilities"]
+    },
+    "freepbx": {
+      "name": "FreePBX",
+      "short_desc": "Open-source web GUI for Asterisk — extensions, trunks, IVR, ring groups, voicemail, CDR reporting",
+      "categories": ["network", "utilities"]
+    },
+    "fossflow": {
+      "name": "FossFLOW",
+      "short_desc": "Browser-based editor for isometric infrastructure and architecture diagrams, with local auto-save and JSON import/export.",
+      "categories": ["development", "utilities"]
+    },
+    "formbricks": {
+      "name": "Formbricks",
+      "short_desc": "Open-source survey platform and experience management suite with AI-powered feedback enrichment via Formbricks Hub.",
+      "categories": ["utilities", "data"]
+    },
+    "flowise": {
+      "name": "Flowise",
+      "short_desc": "Drag & drop UI to build your customized LLM flow",
+      "categories": ["ai"]
+    },
+    "forgejo": {
+      "name": "Forgejo",
+      "short_desc": "A self-hosted lightweight software forge",
+      "categories": ["development"]
+    },
+    "focalboard": {
+      "name": "Focalboard",
+      "short_desc": "Open-source, self-hosted alternative to Trello, Notion, and Asana for organizing team and personal work.",
+      "categories": ["utilities"]
+    },
+    "flatnotes": {
+      "name": "Flatnotes",
+      "short_desc": "Self-hosted, database-less markdown notes app with full-text search, wikilinks, and a WYSIWYG/raw-markdown toggle.",
+      "categories": ["utilities", "data"]
+    },
+    "foldergram": {
+      "name": "Foldergram",
+      "short_desc": "Turns a folder of photos and videos into a private, Instagram-style browsing feed with albums, timeline, and rediscovery views.",
+      "categories": ["media", "photography"]
+    },
+    "fizzy": {
+      "name": "Fizzy",
+      "short_desc": "Minimalist, fast kanban board from 37signals (Basecamp/HEY makers) — drag-and-drop, auto-closing cards.",
+      "categories": ["utilities"]
+    },
+    "flaresolverr": {
+      "name": "FlareSolverr",
+      "short_desc": "Headless-browser proxy that solves Cloudflare and DDoS-Guard challenges so other tools can fetch protected pages.",
+      "categories": ["network", "utilities"]
+    },
+    "fish-speech-cpu": {
+      "name": "Fish Speech (CPU)",
+      "short_desc": "Run Fish Speech text-to-speech and voice cloning with no GPU at all, on amd64 or arm64 hosts including Apple Silicon — substantially slower than the NVIDIA build.",
+      "categories": ["ai"]
+    },
+    "firefox": {
+      "name": "Firefox",
+      "short_desc": "Full desktop Firefox browser streamed to any web browser via LinuxServer.io's container, with a persistent profile.",
+      "categories": ["utilities", "network"]
+    },
+    "fish-speech": {
+      "name": "Fish Speech",
+      "short_desc": "Open-source, SOTA text-to-speech and voice cloning with a Gradio web UI, 80+ languages, and inline emotion/prosody tags.",
+      "categories": ["ai"]
+    },
+    "fireflyiii": {
+      "name": "Firefly III",
+      "short_desc": "Self-hosted personal finance manager for budgets, bills, and net worth tracking.",
+      "categories": ["finance", "utilities"]
+    },
+    "firecrawl": {
+      "name": "Firecrawl",
+      "short_desc": "Self-hosted API that turns any website into clean Markdown, structured JSON, or screenshots for AI apps and agents.",
+      "categories": ["development", "ai"]
+    },
+    "file-browser": {
+      "name": "File Browser",
+      "short_desc": "Browse and manage files on your Companion OS host",
+      "categories": ["data"]
+    },
+    "filesystem-mcp": {
+      "name": "Filesystem MCP",
+      "short_desc": "Read, write, and search files on the device under explicit allow-listed roots. The foundational MCP server.",
+      "categories": ["mcp", "utilities"]
+    },
+    "fedimint": {
+      "name": "Fedimint",
+      "short_desc": "Federated Bitcoin Chaumian e-cash mint guardian server.",
+      "categories": ["finance"]
+    },
+    "falco": {
+      "name": "Falco",
+      "short_desc": "Cloud native runtime security agent that detects abnormal behavior on hosts, containers, and Kubernetes via real-time kernel syscall monitoring.",
+      "categories": ["security", "development"]
+    },
+    "fastgpt": {
+      "name": "FastGPT",
+      "short_desc": "Self-hosted AI Agent platform combining RAG knowledge bases, a visual workflow builder, and an OpenAI-compatible API.",
+      "categories": ["ai", "development"]
+    },
+    "fetch-mcp": {
+      "name": "Fetch MCP",
+      "short_desc": "Fetch a URL and return cleaned-up Markdown — the model's web read-only window.",
+      "categories": ["mcp", "network"]
+    },
+    "fast-note-sync": {
+      "name": "Fast Note Sync",
+      "short_desc": "Self-hosted real-time sync backend for the Obsidian Fast Note Sync plugin, with REST API, web admin, attachment sync, and a built-in MCP server.",
+      "categories": ["data", "utilities"]
+    },
+    "facefusion": {
+      "name": "FaceFusion",
+      "short_desc": "Browser-based AI platform for face swapping, face enhancement, and other face/frame editing on images and video.",
+      "categories": ["ai", "media"]
+    },
+    "espocrm": {
+      "name": "EspoCRM",
+      "short_desc": "Open-source CRM for customer relationship management",
+      "categories": ["data"]
+    },
+    "etherpad": {
+      "name": "Etherpad",
+      "short_desc": "Real-time collaborative text editor with color-coded authorship and version history.",
+      "categories": ["data", "utilities"]
+    },
+    "excalidraw-mcp": {
+      "name": "Excalidraw MCP",
+      "short_desc": "Create and update Excalidraw diagrams through a streamable MCP app server.",
+      "categories": ["mcp", "utilities"]
+    },
+    "ethercalc": {
+      "name": "EtherCalc",
+      "short_desc": "Zero-signup real-time collaborative spreadsheet with a REST API",
+      "categories": ["data", "utilities"]
+    },
+    "ersatztv-legacy": {
+      "name": "ErsatzTV Legacy",
+      "short_desc": "Build custom live/IPTV-style channels with scheduling and an XMLTV guide from your own media library.",
+      "categories": ["media"]
+    },
+    "endurain": {
+      "name": "Endurain",
+      "short_desc": "Self-hosted, privacy-focused Strava alternative for tracking activities, gear, and fitness stats.",
+      "categories": ["social", "utilities"]
+    },
+    "enclosed": {
+      "name": "Enclosed",
+      "short_desc": "Minimalist end-to-end encrypted note/secret sharing with browser-native crypto and self-destructing links.",
+      "categories": ["security", "utilities"]
+    },
+    "emulatorjs": {
+      "name": "EmulatorJS",
+      "short_desc": "Self-hosted Javascript emulation for various systems",
+      "categories": ["media"]
+    },
+    "emby": {
+      "name": "Emby",
+      "short_desc": "Personal media server for movies, TV, music, and photos with real-time transcoding and multi-user profiles.",
+      "categories": ["media"]
+    },
+    "element": {
+      "name": "Element",
+      "short_desc": "A glossy Matrix client compatible with Synapse",
+      "categories": ["social"]
+    },
+    "embeddinggemma": {
+      "name": "EmbeddingGemma",
+      "short_desc": "Local OpenAI-compatible text embeddings from Google's EmbeddingGemma-300M, served via beclab's ONNX embedding engine.",
+      "categories": ["ai"]
+    },
+    "electrs": {
+      "name": "Electrs (Electrum Server)",
+      "short_desc": "Efficient Electrum Server in Rust",
+      "categories": ["finance", "network"]
+    },
+    "echomimicv2": {
+      "name": "EchoMimicV2",
+      "short_desc": "Turn a reference photo, an audio clip, and a hand-pose sequence into a lifelike half-body talking avatar video.",
+      "categories": ["media", "ai"]
+    },
+    "duplicati": {
+      "name": "Duplicati",
+      "short_desc": "Encrypted, incremental backups to local disk, network shares, or cloud storage",
+      "categories": ["utilities", "data"]
+    },
+    "dumbpad": {
+      "name": "DumbPad",
+      "short_desc": "Minimal file-based notepad with collaborative editing and fuzzy search",
+      "categories": ["utilities"]
+    },
+    "duix-avatar": {
+      "name": "Duix Avatar",
+      "short_desc": "Self-hosted, fully offline AI avatar toolkit that clones a face and voice from reference video/audio and renders lip-synced talking-head videos on an NVIDIA GPU.",
+      "categories": ["ai", "media"]
+    },
+    "dtan-server": {
+      "name": "DTAN Server",
+      "short_desc": "Nostr relay and DHT tracker for decentralized torrent distribution",
+      "categories": ["network"]
+    },
+    "dub": {
+      "name": "Dub",
+      "short_desc": "Open-source link management and attribution platform",
+      "categories": ["utilities"]
+    },
+    "dropgate": {
+      "name": "Dropgate",
+      "short_desc": "Self-hosted file gateway and secure sharing platform",
+      "categories": ["utilities"]
+    },
+    "drawdb": {
+      "name": "drawDB",
+      "short_desc": "Database diagram editor and SQL generator — design schemas in the browser, no signup, diagrams stored locally",
+      "categories": ["development", "data"]
+    },
+    "doordash-mcp": {
+      "name": "DoorDash MCP Server",
+      "short_desc": "DoorDash Drive API MCP server for delivery quotes, deliveries, businesses, and stores.",
+      "categories": ["mcp", "network", "utilities"]
+    },
+    "donetick": {
+      "name": "Donetick",
+      "short_desc": "Assign, schedule, and track household chores and recurring tasks",
+      "categories": ["utilities", "automation"]
+    },
+    "domain-locker": {
+      "name": "Domain Locker",
+      "short_desc": "Track DNS, SSL, WHOIS, and expiry across your whole domain portfolio",
+      "categories": ["network", "data"]
+    },
+    "docuseal": {
+      "name": "Docuseal",
+      "short_desc": "Digital document signing and processing",
+      "categories": ["utilities"]
+    },
+    "documenso": {
+      "name": "Documenso",
+      "short_desc": "Open-source digital document signing platform.",
+      "categories": ["utilities"]
+    },
+    "docker-android": {
+      "name": "Docker-Android",
+      "short_desc": "Run a full Android emulator in a container with a browser-based noVNC viewer, adb, and Appium.",
+      "categories": ["development", "automation"]
+    },
+    "docmost": {
+      "name": "Docmost",
+      "short_desc": "Open-source collaborative wiki and documentation platform",
+      "categories": ["data", "utilities"]
+    },
+    "directus": {
+      "name": "Directus",
+      "short_desc": "Open-source headless CMS and data platform that wraps any SQL database in instant REST/GraphQL APIs, a no-code admin app, and workflow automation.",
+      "categories": ["development", "data"]
+    },
+    "dnsmasq": {
+      "name": "dnsmasq",
+      "short_desc": "Lightweight DNS and DHCP server",
+      "categories": ["network", "utilities"]
+    },
+    "deluge": {
+      "name": "Deluge",
+      "short_desc": "Lightweight, cross-platform BitTorrent client with a full-featured web UI and plugin system.",
+      "categories": ["network", "utilities"]
+    },
+    "degoog": {
+      "name": "Degoog",
+      "short_desc": "Self-hosted search aggregator with a plugin/extension system",
+      "categories": ["utilities", "network"]
+    },
+    "deepseek-ocr-webui": {
+      "name": "DeepSeek-OCR-WebUI",
+      "short_desc": "Intelligent OCR web app powered by DeepSeek-OCR-2 with Vue 3 UI and GPU acceleration.",
+      "categories": ["ai"]
+    },
+    "deerflow": {
+      "name": "DeerFlow",
+      "short_desc": "Open-source super-agent harness that orchestrates sub-agents, memory, sandboxes, and skills for deep research and long-horizon tasks.",
+      "categories": ["agents", "ai", "automation"]
+    },
+    "databag": {
+      "name": "Databag",
+      "short_desc": "Tiny self-hosted federated, end-to-end-encrypted messenger for the decentralized web",
+      "categories": ["social"]
+    },
+    "cypht": {
+      "name": "Cypht",
+      "short_desc": "Self-hosted unified inbox for email, RSS feeds, and messaging",
+      "categories": ["social"]
+    },
+    "cryptpad": {
+      "name": "CryptPad",
+      "short_desc": "End-to-end encrypted collaborative office suite",
+      "categories": ["utilities", "data"]
+    },
+    "cryptgeon": {
+      "name": "Cryptgeon",
+      "short_desc": "Self-destructing, end-to-end encrypted notes and files that are destroyed after reading",
+      "categories": ["security", "utilities"]
+    },
+    "copyparty": {
+      "name": "copyparty",
+      "short_desc": "All-in-one file server: HTTP/WebDAV/FTP, media streaming, tagging and search",
+      "categories": ["data", "utilities"]
+    },
+    "cosyvoice": {
+      "name": "CosyVoice",
+      "short_desc": "Multi-lingual AI voice generation model for text-to-speech, voice cloning, and cross-lingual synthesis.",
+      "categories": ["media", "ai"]
+    },
+    "crawl4ai": {
+      "name": "Crawl4AI",
+      "short_desc": "Open-source LLM-friendly web crawler that turns any page into clean Markdown or structured data for RAG and AI-agent pipelines.",
+      "categories": ["development", "ai"]
+    },
+    "convertx": {
+      "name": "ConvertX",
+      "short_desc": "Self-hosted server-side file converter supporting 1000+ formats",
+      "categories": ["utilities", "data"]
+    },
+    "convert": {
+      "name": "Convert to it!",
+      "short_desc": "Universal file converter that runs entirely in your browser - no uploads",
+      "categories": ["utilities", "media"]
+    },
+    "colanode": {
+      "name": "Colanode",
+      "short_desc": "Open-source, local-first collaboration workspace (chat, pages, databases, files)",
+      "categories": ["social", "data"]
+    },
+    "context7": {
+      "name": "Context7",
+      "short_desc": "MCP server that gives AI coding assistants live, version-specific library documentation and code examples instead of stale training data.",
+      "categories": ["mcp", "development"]
+    },
+    "cmproxy": {
+      "name": "ChatGPT Web Midjourney Proxy",
+      "short_desc": "Self-hosted web UI that unifies ChatGPT chat, Midjourney image generation, and other AI providers behind one interface.",
+      "categories": ["ai", "utilities"]
+    },
+    "cloudreve": {
+      "name": "Cloudreve",
+      "short_desc": "Self-hosted file management system with muilt-cloud support.",
+      "categories": ["utilities"]
+    },
+    "chrony": {
+      "name": "chrony",
+      "short_desc": "Lightweight NTP server for network-wide time synchronization",
+      "categories": ["network", "utilities"]
+    },
+    "chinesesubfinder": {
+      "name": "ChineseSubFinder",
+      "short_desc": "Automatically finds and downloads Chinese subtitles for your Emby, Jellyfin, Plex, or tinyMediaManager movie and TV library.",
+      "categories": ["media"]
+    },
+    "chromium": {
+      "name": "Chromium",
+      "short_desc": "Web-accessible Chromium browser running in a container, streamed to any device as a full virtual desktop.",
+      "categories": ["utilities"]
+    },
+    "chatwoot": {
+      "name": "Chatwoot",
+      "short_desc": "Open-source customer support platform with shared inbox and live chat",
+      "categories": ["social", "utilities"]
+    },
+    "chess-mcp": {
+      "name": "MCP Chess",
+      "short_desc": "Play chess through MCP, including board rendering and move validation.",
+      "categories": ["mcp", "ai", "utilities"]
+    },
+    "changedetection": {
+      "name": "changedetection.io",
+      "short_desc": "Self-hosted website change detection and notification.",
+      "categories": ["utilities", "automation", "network"]
+    },
+    "calibre": {
+      "name": "Calibre",
+      "short_desc": "Browser-accessible desktop e-book manager for viewing, converting, editing, and cataloging e-books in all major formats.",
+      "categories": ["media", "utilities"]
+    },
+    "calibre-web": {
+      "name": "Calibre-Web",
+      "short_desc": "Browser-based library for browsing, reading, and downloading eBooks from a Calibre database.",
+      "categories": ["books"]
+    },
+    "bytebase": {
+      "name": "Bytebase",
+      "short_desc": "Database CI/CD and schema lifecycle management platform",
+      "categories": ["data", "utilities"]
+    },
+    "campfire": {
+      "name": "Campfire",
+      "short_desc": "Simple self-hosted team chat from Basecamp with rooms, DMs, and a bot API",
+      "categories": ["social"]
+    },
+    "cal": {
+      "name": "Cal.diy",
+      "short_desc": "Open-source scheduling and booking platform.",
+      "categories": ["automation", "utilities"]
+    },
+    "budibase": {
+      "name": "Budibase",
+      "short_desc": "Low-code platform for building internal tools, forms, portals, and approval apps",
+      "categories": ["development", "automation"]
+    },
+    "bookstack": {
+      "name": "BookStack",
+      "short_desc": "Self-hosted wiki and documentation platform with a book/chapter/page structure",
+      "categories": ["data", "utilities"]
+    },
+    "brewers-almanack-mcp": {
+      "name": "Brewers Almanack MCP",
+      "short_desc": "Brewing knowledge MCP for beer styles, ingredients, recipes, and off-flavour diagnosis.",
+      "categories": ["mcp", "data", "utilities"]
+    },
+    "blockbench": {
+      "name": "Blockbench",
+      "short_desc": "Low-poly 3D model editor for Minecraft and beyond — runs entirely in your browser",
+      "categories": ["media", "gaming"]
+    },
+    "blinko": {
+      "name": "Blinko",
+      "short_desc": "Open-source, self-hosted AI note tool for quick capture, Markdown notes, and RAG-powered natural-language search.",
+      "categories": ["ai", "data"]
+    },
+    "booklore": {
+      "name": "BookLore",
+      "short_desc": "Self-hosted library manager and reader for books, comics, and PDFs with automatic metadata and OPDS sync",
+      "categories": ["books", "media"]
+    },
+    "bitcoind": {
+      "name": "Bitcoin",
+      "short_desc": "Bitcoin core node",
+      "categories": ["finance"]
+    },
+    "bitboard": {
+      "name": "bitBoard",
+      "short_desc": "A customizable self-hosted cryptocurrency price dashboard.",
+      "categories": ["finance", "utilities"]
+    },
+    "blender-mcp": {
+      "name": "Blender MCP",
+      "short_desc": "Control Blender from an MCP client — query scenes, manipulate objects, generate assets, run arbitrary Python in the running Blender instance.",
+      "categories": ["mcp", "utilities"]
+    },
+    "bisq2-node": {
+      "name": "Bisq 2 Node",
+      "short_desc": "Run your own Bisq 2 node for private peer-to-peer Bitcoin trading",
+      "categories": ["finance", "network"]
+    },
+    "bisheng": {
+      "name": "BISHENG",
+      "short_desc": "Open-source LLM DevOps platform for enterprise AI: visual workflow/agent builder with RAG, model management, and access control.",
+      "categories": ["ai", "development"]
+    },
+    "bifrost": {
+      "name": "Bifrost",
+      "short_desc": "High-performance, OpenAI-compatible AI gateway that unifies OpenAI, Anthropic, Bedrock, Vertex, and other LLM providers behind one API with automatic failover.",
+      "categories": ["ai", "development"]
+    },
+    "beatsync": {
+      "name": "Beatsync",
+      "short_desc": "High-precision multi-device audio player for synchronized, spatial listening rooms",
+      "categories": ["music"]
+    },
+    "baserow": {
+      "name": "Baserow",
+      "short_desc": "Open source no-code database and Airtable alternative",
+      "categories": ["data", "utilities"]
+    },
+    "bentopdf": {
+      "name": "BentoPDF",
+      "short_desc": "Privacy-first PDF toolkit — 50+ tools that run entirely in your browser, no uploads",
+      "categories": ["utilities", "data"]
+    },
+    "bazarr": {
+      "name": "Bazarr",
+      "short_desc": "Automatic subtitle manager and companion app for Sonarr and Radarr.",
+      "categories": ["media"]
+    },
+    "baikal": {
+      "name": "Baikal",
+      "short_desc": "Lightweight self-hosted CalDAV/CardDAV server for syncing calendars and contacts across your own devices",
+      "categories": ["network", "utilities"]
+    },
+    "awesomedigitalhuman": {
+      "name": "Awesome Digital Human",
+      "short_desc": "Open-source Live2D digital human with pluggable ASR, LLM/Agent, and TTS engines that connect to Dify, FastGPT, Coze, or any OpenAI-compatible API.",
+      "categories": ["ai", "media"]
+    },
+    "autobrr": {
+      "name": "autobrr",
+      "short_desc": "IRC/API announce monitor that auto-grabs releases and hands them to your download client",
+      "categories": ["automation", "network"]
+    },
+    "audiomass": {
+      "name": "AudioMass",
+      "short_desc": "Waveform audio editor that runs entirely in your browser — audio never leaves the appliance",
+      "categories": ["media", "music"]
+    },
+    "astrbot": {
+      "name": "AstrBot",
+      "short_desc": "Multi-platform LLM chatbot and development framework connecting Discord, Telegram, QQ, WeChat, Slack, and more to any LLM backend, with plugins and a web dashboard.",
+      "categories": ["ai", "development"]
+    },
+    "arkanum": {
+      "name": "Arkanum",
+      "short_desc": "Code-Server container optimized for daily use.",
+      "categories": ["development"]
+    },
+    "asciiflow": {
+      "name": "ASCIIFlow",
+      "short_desc": "Draw ASCII diagrams — boxes, lines, and arrows you can paste straight into code comments",
+      "categories": ["development", "utilities"]
+    },
+    "astral": {
+      "name": "Astral",
+      "short_desc": "Web-based Nostr client for browsing feeds, direct messaging, and sending Lightning tips on the decentralized Nostr social network.",
+      "categories": ["social", "finance"]
+    },
+    "appwrite": {
+      "name": "Appwrite",
+      "short_desc": "Open-source backend-as-a-service platform",
+      "categories": ["development"]
+    },
+    "archivebox": {
+      "name": "ArchiveBox",
+      "short_desc": "Self-hosted web archiving with a searchable personal archive",
+      "categories": ["data", "utilities"]
+    },
+    "appsmith": {
+      "name": "Appsmith",
+      "short_desc": "Low-code platform for building admin panels, internal tools, and dashboards backed by your own databases and APIs.",
+      "categories": ["development"]
+    },
+    "appflowy": {
+      "name": "AppFlowy",
+      "short_desc": "Open-source Notion alternative with privacy focus",
+      "categories": ["data"]
+    },
+    "anything-llm": {
+      "name": "AnythingLLM",
+      "short_desc": "The all-in-one AI app: chat with your docs, AI agents, multi-user, privacy-first",
+      "categories": ["ai", "utilities"]
+    },
+    "answer": {
+      "name": "Answer",
+      "short_desc": "Self-hosted Q&A platform for team forums, help centers, and knowledge bases, Stack Overflow style.",
+      "categories": ["utilities"]
+    },
+    "am-i-exposed": {
+      "name": "Am I Exposed?",
+      "short_desc": "Bitcoin privacy scanner - find out what the blockchain reveals about you.",
+      "categories": ["security", "utilities"]
+    },
+    "alist": {
+      "name": "AList",
+      "short_desc": "Web-based file listing and manager that unifies 40+ cloud drives, network shares, and local storage behind one browsable, WebDAV-enabled interface.",
+      "categories": ["utilities", "network"]
+    },
+    "akaunting": {
+      "name": "Akaunting",
+      "short_desc": "Self-hosted accounting, invoicing, and expense tracking for small businesses",
+      "categories": ["finance"]
+    },
+    "agentzero": {
+      "name": "Agent Zero",
+      "short_desc": "Self-hosted, general-purpose agentic AI framework with a Linux desktop, browser control, persistent memory, and a plugin ecosystem.",
+      "categories": ["agents", "ai", "automation"]
+    },
+    "airtrail": {
+      "name": "AirTrail",
+      "short_desc": "Self-hosted flight tracking and personal flight logbook.",
+      "categories": ["utilities", "data"]
+    },
+    "agent-zero": {
+      "name": "Agent Zero",
+      "short_desc": "Personal agentic AI framework with memory, code execution, and computer use",
+      "categories": ["agents", "ai"]
+    },
+    "adventurelog": {
+      "name": "AdventureLog",
+      "short_desc": "Self-hostable travel tracker and trip planner",
+      "categories": ["data"]
+    },
+    "activepieces": {
+      "name": "Activepieces",
+      "short_desc": "Your friendliest open source AI automation tool",
+      "categories": ["automation"]
+    },
+    "affine": {
+      "name": "Affine",
+      "short_desc": "Open source alternative to Notion, Miro, and Airtable",
+      "categories": ["data"]
+    },
+    "adguardhome-sync": {
+      "name": "Adguard Home Sync",
+      "short_desc": "Synchronize AdGuard Home config to replica instances",
+      "categories": ["network", "utilities"]
+    },
+    "adguardhome": {
+      "name": "AdGuard Home",
+      "short_desc": "Network-wide DNS server that blocks ads, trackers, and malware domains for every device on your network.",
+      "categories": ["network", "security"]
+    },
+    "ace-step": {
+      "name": "ACE-Step 1.5",
+      "short_desc": "Local, GPU-accelerated AI model that generates full songs with vocals and instrumentation from a text prompt and lyrics, rivaling commercial music generators.",
+      "categories": ["music", "ai"]
+    },
+    "inkscape": {
+      "name": "Inkscape",
+      "short_desc": "Professional vector graphics editor via KasmVNC",
+      "categories": ["media"]
+    },
+    "claude-code": {
+      "name": "Claude Code",
+      "short_desc": "Anthropic's agentic coding CLI, running inside a full browser-based Ubuntu desktop so it works without a local install.",
+      "categories": ["development", "agents", "ai"]
+    }
+  }
+}
