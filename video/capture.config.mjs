@@ -4,7 +4,8 @@
  * `ci-video capture` drives the REAL app through this config. The stage is the
  * repo's own Playwright E2E stage — mock-portal + backend + frontend PREVIEW
  * build — exactly the three servers in `playwright.config.ts` -> `webServer[]`.
- * See video/README.md and .github/workflows/video.yml for the boot command.
+ * See video/README.md § "The capture stage" for the boot command. There is no
+ * GitHub Actions workflow for this video — captures are run by hand.
  *
  * Why the preview build and not `pnpm run --filter frontend dev`:
  * playwright.config.ts already makes that choice for CI
@@ -44,26 +45,56 @@
  *    use). HANDLED: every authenticated shot uses `settle: 1200`, comfortably
  *    past the spring's settle time.
  *
- * 4. RESOURCE MONITOR SAMPLE CLOCK — modules/system/pages/resource-monitor-page.tsx
- *    renders `RESOURCE_MONITOR_LAST_SAMPLED` ("Last sampled {{time}}") from the
- *    SERVER's timestamp, so `context.clock.install` does not freeze it.
- *    HANDLED: masked via `text=Last sampled` on that shot. The per-app CPU and
- *    memory columns are volatile too, but on a fresh stage no apps are
- *    installed, so the table is empty and the totals read 0.0% / 0 B.
+ * 4. RESOURCE MONITOR — NO LONGER SHOT, and the reason is worth keeping.
+ *    modules/system/pages/resource-monitor-page.tsx sums its totals from live
+ *    container stats (app-runtime-monitor.service.ts -> dockerService
+ *    .getAppRuntimeStats). The stage below seeds DB rows only, with no Docker
+ *    install in flight, so every column reads 0.0% / 0 B / 0 containers and the
+ *    chart falls back to "Collecting enough samples to draw the CPU history
+ *    chart." (`history.length < 2`). Its `waitFor` was the <h1>, so nothing
+ *    stopped the empty shot from being taken under a caption promising live
+ *    per-app CPU and memory. The scene was cut from storyboard.json rather than
+ *    shipped as zeros. To bring it back you need at least one genuinely running
+ *    installed app during the pass — and then `RESOURCE_MONITOR_LAST_SAMPLED`
+ *    ("Last sampled {{time}}") is rendered from the SERVER's timestamp, so
+ *    `context.clock.install` will not freeze it and the shot needs
+ *    `mask: ["text=Last sampled"]` plus a mask over the volatile CPU/memory
+ *    columns.
  *
  * 5. DEVICE ID — the device-registration page prints the Hub's device id.
  *    HANDLED: masked via `text=Device ID`. On the E2E stage it is pinned to
  *    `test-device-e2e` anyway (playwright.config.ts backendEnv.DEVICE_ID).
  *
  * 6. STORE CATALOG DEPTH — NOT HANDLED, and it is a stage prerequisite, not a
- *    code problem. `e2e/start-backend.sh` symlinks `$CI_MARKETPLACE_DIR/apps`
- *    (default `../CI-Marketplace`) into `$CI_HUB_DATA_DIR/repos/ci-marketplace/apps`;
- *    without that checkout the script prints "app store will be empty" and the
- *    store + app-details shots film an empty grid and then FAIL on their
- *    `a[href^='/store/']` waitFor. The mock portal's own `GET /api/store`
- *    (e2e/mock-portal/scenarios.ts) returns only two sample apps and is NOT the
- *    catalog these pages render. Check out CI-Marketplace beside this repo
- *    before capturing.
+ *    code problem. There are TWO catalogs behind /store, and they come from
+ *    different places:
+ *
+ *    a) The DEFAULT view. app-store-page.tsx sets DEFAULT_STORE_CATEGORY =
+ *       'featured', and FeaturedStoreView sources all four of its sections from
+ *       `portalStoreListingsQueryOptions` -> GET /api/store/listings
+ *       (app.controller.ts) -> portal-client.fetchStoreListings -> the PORTAL's
+ *       `/store`. On this stage CI_CLOUD_URL=http://localhost:4444, so that is
+ *       the mock portal, whose `GET /api/store` handler returns exactly two
+ *       apps (ci-openclaw, n8n) and IGNORES the `tags` / `sort` query — all four
+ *       sections render the same two cards. `GET /api/store/alternatives`
+ *       likewise returns a single row (Notion -> AppFlowy). So `hub-store` and
+ *       `store-alternatives` CANNOT be shot honestly against the mock portal:
+ *       point CI_CLOUD_URL at a real Portal for the pass, or enrich
+ *       `sampleStoreApps` / `sampleAlternatives` in e2e/mock-portal/scenarios.ts
+ *       first.
+ *
+ *    b) The SEARCH / CATEGORY views and the app-detail pages, which read the
+ *       Hub's own catalog. `e2e/start-backend.sh` symlinks
+ *       `$CI_MARKETPLACE_DIR/apps` (default `../CI-Marketplace`) into
+ *       `$CI_HUB_DATA_DIR/repos/ci-marketplace/apps`; without that checkout the
+ *       script prints "app store will be empty" and `app-details` /
+ *       `install-dialog` FAIL on their waitFor. Check out CI-Marketplace beside
+ *       this repo before capturing.
+ *
+ *    Both shots that land on an app page name Immich explicitly
+ *    (`/store/ci-marketplace/immich`) rather than clicking the first store card:
+ *    on the mock stage the first card is ci-openclaw, a third-party upstream the
+ *    video pipeline's app-matrix excludes.
  *
  * 7. SESSION — there is no storageState file, on purpose. The first authenticated
  *    shot (`hub-home`) performs the real login in its `before` block, and the kit
@@ -77,8 +108,8 @@
  *
  *    The two FTUE shots are the exception: `onboarding-wizard` and
  *    `device-registration` are captured in their own later passes with their own
- *    fresh BrowserContext (.github/workflows/video.yml), so `onboarding-wizard`
- *    carries its own login in `before`.
+ *    fresh BrowserContext (video/README.md § "Three capture passes"), so
+ *    `onboarding-wizard` carries its own login in `before`.
  *
  * 8. HARDWARE PROFILE — the `ai-hardware` shot films the AI tab's hardware card,
  *    which reads `/api/inference/onboarding-profile`. Free RAM and free disk on a
