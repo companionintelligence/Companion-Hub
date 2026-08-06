@@ -1342,8 +1342,13 @@ describe('HardwareInspectorService', () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
       (si.mem as any) = vi.fn().mockResolvedValue({ total: 103079215104, available: 10951401472 });
       execAsyncMock.mockResolvedValue({ stdout: APPLE_SILICON_SPDISPLAYS });
-      // No probe file: nothing writes one when the backend runs directly on the Mac.
-      filesystemService.readTextFile.mockResolvedValue(null);
+      // No probe file — nothing writes one when the backend runs directly on the Mac — but DO pin
+      // the memory read. detectRam falls back to os.totalmem() when meminfo is absent, which would
+      // make the tier assertion depend on how much RAM the machine running the test happens to have
+      // (96 GB here, 16 GB on a GitHub runner: "high" vs "low").
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) =>
+        filePath === '/host/proc/meminfo' ? 'MemTotal: 100663296\nMemAvailable: 10485760' : null,
+      );
       filesystemService.pathExists.mockResolvedValue(false);
     });
 
@@ -1360,6 +1365,7 @@ describe('HardwareInspectorService', () => {
     it('sizes the GPU from unified memory and tiers on it', async () => {
       const profile = await service.detect();
 
+      expect(profile.ram.totalMb).toBe(98304);
       expect(profile.gpu.vramMb).toBe(profile.ram.totalMb);
       expect(profile.tier).toBe('high');
     });
