@@ -107,14 +107,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build frontend
-        env:
-          NODE_ENV: production
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
+      # Release desktop embeds bootstrap only — product UI is served by the stack container.
+      # See docs/DESKTOP-UI-ARCHITECTURE.md and packages/desktop/bootstrap/.
 
       - name: Install create-dmg
         if: runner.os == 'macOS'
