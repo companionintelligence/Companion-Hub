@@ -4,7 +4,7 @@
 
 ## Status
 
-Implemented on `dev` — desktop release uses bootstrap + stack UI; see CI rules below.
+**Implemented on `dev`.** Desktop release uses bootstrap + container-served SPA; CI aligned; stack reconnect on update. Pending: Desktop Release smoke test on hardware before tagging 0.2.52.
 
 ## Problem
 
