@@ -10,6 +10,14 @@ import type { AppUrn } from '@ci-hub/common/types';
 
 const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
 
+/** An on-disk demo video, described but not read. Bytes are streamed by the HTTP layer. */
+export type DemoVideoFile = {
+  path: string;
+  size: number;
+  etag: string;
+  contentType: string;
+};
+
 /** Drop unknown marketplace categories so newer catalog tags do not fail Zod parse. */
 function normalizeAppConfigCategories(config: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(config.categories)) {
@@ -492,13 +500,30 @@ export class AppStoreFilesManager {
     return null;
   }
 
-  public async getDemoVideo(appUrn: AppUrn, demoVideoRef: string) {
+  /**
+   * Resolve a demo-video ref to an on-disk file descriptor.
+   *
+   * Deliberately returns metadata rather than bytes: demo videos run to tens of megabytes, so the
+   * HTTP layer streams them (with Range support) instead of buffering the whole file.
+   */
+  public async getDemoVideoFile(appUrn: AppUrn, demoVideoRef: string): Promise<DemoVideoFile | null> {
     const filePath = await this.findDemoVideoPath(appUrn, demoVideoRef);
     if (!filePath) {
-      return { video: null, etag: '', contentType: 'video/mp4' };
+      return null;
     }
 
-    const video = await this.filesystem.readBinaryFile(filePath);
+    let size: number;
+    try {
+      const stats = await this.filesystem.getStats(filePath);
+      if (!stats.isFile()) {
+        return null;
+      }
+      size = stats.size;
+    } catch (error) {
+      this.logger.warn(`Error stating demo video for app ${appUrn} from repo ${this.storeConfig.slug}:`, error);
+      return null;
+    }
+
     const etag = await this.filesystem.getFileEtag(filePath);
     const ext = path.extname(filePath).toLowerCase().substring(1);
 
@@ -506,7 +531,7 @@ export class AppStoreFilesManager {
     if (ext === 'webm') contentType = 'video/webm';
     else if (ext === 'mov') contentType = 'video/quicktime';
 
-    return { video, etag, contentType };
+    return { path: filePath, size, etag: etag ?? '', contentType };
   }
 
   public async getConfigJson(appUrn: AppUrn) {
