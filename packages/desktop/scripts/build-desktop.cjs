@@ -1,5 +1,4 @@
 const { execSync } = require('node:child_process');
-const { existsSync } = require('node:fs');
 const path = require('node:path');
 
 function loadCliPathHelper() {
@@ -61,13 +60,7 @@ function resolveTauriBuildCommand() {
   return 'cargo tauri build';
 }
 
-const frontendDist = path.resolve(process.cwd(), '../frontend/dist/client');
 const standaloneCliOut = path.resolve(process.cwd(), 'src-tauri/resources', process.platform === 'win32' ? 'cihub.exe' : 'cihub');
-
-if (!existsSync(frontendDist)) {
-  console.log(`Frontend build output missing at ${frontendDist}; building frontend first...`);
-  execSync('pnpm --dir ../frontend run build', options);
-}
 
 execSync(`node ../../scripts/build-standalone-cli.cjs --outfile "${standaloneCliOut}" --bundle-resource`, options);
 

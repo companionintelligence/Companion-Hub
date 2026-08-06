@@ -2735,8 +2735,12 @@ fn is_compose_missing_race_error(raw: &str) -> bool {
 
 /// Whether a start failure should stick until the user confirms Retry.
 /// Transient setup races (compose not copied yet) must not block the real auto-start.
+fn is_docker_not_running_error(raw: &str) -> bool {
+    raw.contains("Docker is not running")
+}
+
 pub fn should_persist_start_failure(raw: &str) -> bool {
-    !is_compose_missing_race_error(raw)
+    !is_compose_missing_race_error(raw) && !is_docker_not_running_error(raw)
 }
 
 /// Turn raw docker/compose failures into a sticky, user-facing message.
@@ -2745,6 +2749,7 @@ pub fn format_start_failure_message(raw: &str) -> String {
     // Already normalized (e.g. retry path wrote the sticky message back through).
     if trimmed.starts_with("Docker Hub rate-limited")
         || trimmed.starts_with("Hub start ran before desktop setup finished")
+        || trimmed.starts_with("Docker is not running")
     {
         return truncate_start_failure_message(trimmed, START_FAILED_MARKER_MAX_BYTES);
     }
@@ -5259,6 +5264,12 @@ fn start_hub_inner(
             env_path.display()
         ),
     );
+
+    if !is_docker_available() {
+        let message = "Docker is not running — please start Docker Desktop and try again.";
+        let _ = append_desktop_log_for(data_dir, "hub.start", message);
+        return Err(message.to_string());
+    }
 
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
         let message = format!("Traefik runtime preflight failed before startup: {}", error);

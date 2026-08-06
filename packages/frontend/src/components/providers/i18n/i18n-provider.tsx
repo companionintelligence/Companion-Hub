@@ -4,10 +4,8 @@ import HttpBackend from 'i18next-http-backend';
 import { type PropsWithChildren, useEffect, useState } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { client } from '@/api-client/client.gen';
-import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
 import en from '@ci-hub/common/i18n/translations/en.json';
-
-const isTauriRelease = isTauriReleaseBuild();
 
 let i18nInitialized = false;
 
@@ -17,10 +15,10 @@ function initI18n() {
 
   const Backend = new HttpBackend(null, {
     loadPath: '/api/i18n/locales/{{ns}}/{{lng}}.json',
-    // Override the request function for Tauri release mode to prefix baseUrl
     request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
-      const fullUrl = isTauriRelease ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
-      fetch(fullUrl, { credentials: isTauriRelease ? 'omit' : 'include' })
+      const crossOrigin = usesCrossOriginDesktopApi();
+      const fullUrl = crossOrigin ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
+      fetch(fullUrl, { credentials: crossOrigin ? 'omit' : 'include' })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();
@@ -45,8 +43,6 @@ function initI18n() {
         },
       },
       react: {
-        // Suspense without a boundary above HubStatus caused a blank Tauri window
-        // while non-English locales loaded (or failed) from the API.
         useSuspense: false,
       },
       fallbackLng: 'en',

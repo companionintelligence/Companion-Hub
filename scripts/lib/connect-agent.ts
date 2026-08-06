@@ -41,7 +41,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join, win32 as pathWin32 } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { isCompiledCihubBinary } from '../port-availability';
@@ -902,8 +902,16 @@ export function runFailureMessage(result: RunResult, what: string): string {
  * destination relative to a cwd keeps the drive letter out of the argv entirely, and
  * bsdtar and GNU tar both take it.
  */
+function pathModuleFor(filePath: string) {
+  return /^[A-Za-z]:[\\/]/.test(filePath) || filePath.includes('\\') ? pathWin32 : { basename, dirname };
+}
+
 export function tarExtractCommand(archive: string, staging: string): { args: string[]; cwd: string } {
-  return { args: ['-xzf', basename(archive), '-C', basename(staging), '--strip-components=1'], cwd: dirname(staging) };
+  const paths = pathModuleFor(archive);
+  return {
+    args: ['-xzf', paths.basename(archive), '-C', paths.basename(staging), '--strip-components=1'],
+    cwd: paths.dirname(staging),
+  };
 }
 
 export function commandExists(name: string): boolean {

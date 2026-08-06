@@ -491,8 +491,8 @@ Tauri's WebView2 blocks cross-origin cookie access. The desktop app detects it's
 - **Deep link scheme:** `cihub://`
 - **macOS minimum:** 11.0
 - **Release builds:** LTO enabled, symbols stripped, panic=abort, size-optimized (`opt-level=s`)
-- **Frontend source:** Points to `packages/frontend/dist/client` (shared build)
-- **Dev URL:** `http://localhost:9091` (Vite dev server)
+- **Release builds:** Bootstrap splash only (`packages/desktop/bootstrap/`); product UI served from the stack container at `http://127.0.0.1:${API_PORT}/`. See `docs/DESKTOP-UI-ARCHITECTURE.md`.
+- **Dev URL:** `http://localhost:5005` (Vite) or stack-dev via `scripts/launch-tauri-desktop.ts`
 
 ---
 

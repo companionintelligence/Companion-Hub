@@ -5,6 +5,28 @@
 Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub's FTUE and major
 screens, from this repo's own UI. Both are produced from [`storyboard.json`](storyboard.json).
 
+## Videos are built locally, on demand
+
+There is **no GitHub Actions workflow, no schedule, and no stored MP4** for this video. A cut is
+a *build output*: render one when you need it, then delete it. Nothing here is an artifact, a
+release asset, or a committed `.mp4`.
+
+What **is** committed is the input — the screenshots under `assets/shots/`. They let anyone
+render a cut without booting the whole stage, and a moved UI shows up as a reviewable image diff.
+
+The runner lives in the **CI-Engineering checkout** beside this one:
+
+```bash
+node tools/make-videos.mjs --list           # every product, and whether its video/ is ready
+node tools/make-videos.mjs companion-hub    # render this repo's two cuts from the committed shots
+```
+
+It resolves `video-kit` straight from the CI-Common checkout on disk — no npm registry, no token.
+
+`--capture` is **not** wired up for Companion Hub yet: our stage is a seeded Hub plus a
+CI-Marketplace checkout, which the runner does not script. To re-shoot the UI, bring the stage up
+by hand ([below](#the-capture-stage)) and run `npm run capture` in this directory.
+
 ## Quick start
 
 ```bash
@@ -33,11 +55,11 @@ Prerequisites: Postgres on `6543` and RabbitMQ on `5672` (`e2e/docker-compose.e2
 or the service containers in `.github/workflows/e2e.yml`), and a **CI-Marketplace
 checkout** — `e2e/start-backend.sh` symlinks `$CI_MARKETPLACE_DIR/apps` into the Hub's
 store. Without it `app-details`, `install-dialog`, `running-app` and the installed-app
-tiles in `hub-home` have no app info to render, and the workflow now fails on that
-rather than shipping four slates.
+tiles in `hub-home` have no app info to render, so check for `CI-Marketplace: linked` in
+the backend log before capturing rather than discovering four empty screens afterwards.
 
-In CI that checkout needs **`secrets.CI_ORG_READ_TOKEN`**, a PAT with read access to the
-private CI-Marketplace repo. `secrets.GITHUB_TOKEN` is scoped to CI-Hub and cannot do it.
+Locally that checkout is just the sibling clone you already have — point
+`CI_MARKETPLACE_DIR` at it. No PAT is involved; capture never runs on a hosted runner.
 
 From the **repo root**:
 
@@ -82,8 +104,8 @@ catalog when the installed files are absent
 ## Three capture passes
 
 Two FTUE shots need Hub state that is mutually exclusive with an operational, onboarded
-Hub, so `.github/workflows/video.yml` captures in three passes. They used to be declared
-and left as permanent slates; they are filmed now.
+Hub, so a full capture runs in three passes. They used to be declared and left as
+permanent slates; they are filmed now.
 
 | Pass | Shots | Setup |
 |---|---|---|
@@ -91,8 +113,8 @@ and left as permanent slates; they are filmed now.
 | 2 | `onboarding-wizard` | `setWelcomeSeen(false)` (`e2e/helpers/settings.ts`) re-arms the wizard, which `onboarding-page.tsx` otherwise skips whenever `hasCompletedOnboarding` is true. Each pass gets a fresh BrowserContext, so this shot carries its own login in `before`. |
 | 3 | `device-registration` | flip the mock portal with `curl -X POST localhost:4444/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
 
-Pass 1 derives its `--only` list from `storyboard.json` so a new scene is picked up
-automatically. Only the two FTUE shot ids are named in the workflow.
+Pass 1 is every shot id in `storyboard.json` except those two — the `--only` list in the
+command above. Add a scene, add its id there.
 
 ## Screens deliberately left out
 
@@ -103,7 +125,7 @@ so nobody re-adds them as a shot that can only ever render a slate:
 |---|---|
 | `/connect` | Only renders inside the Tauri mobile shell — `connect-page.tsx`'s loader redirects off-mobile and the component returns `null` when `!isTauriMobileSync()`. Filming it needs a simulator-based capture stage, which is a different project. |
 | `/restore-apps` | A recovery interstitial, not a major screen. Reaching it needs a recorded restore intent from a re-pair against a portal that already owns apps. |
-| Settings → Logs | `LogsContainer` streams live backend log lines over SSE, so the shot would differ on every run and open a `chore/video-shot-refresh` PR every Monday. Masking the terminal leaves an empty black rectangle. |
+| Settings → Logs | `LogsContainer` streams live backend log lines over SSE, so the shot would differ on every capture and show up as permanent, meaningless churn in `assets/shots`. Masking the terminal leaves an empty black rectangle. |
 | An `installing → running` transition | The kit captures still PNGs (`page.screenshot`); there is no video capture path, so no narration should imply motion inside a shot. |
 
 ## Editing the video
@@ -125,7 +147,10 @@ picked up automatically from `assets/audio/<sceneId>.mp3`; regenerate it from th
 
 `assets/shots/*.png` and `assets/audio/*.mp3` **are** committed — they are the record of what the
 product looked like, and captures are byte-stable, so a diff in them means the UI genuinely
-changed. `out/` is not committed.
+changed. Review that diff and update `storyboard.json` captions if a screen's meaning changed.
+
+`out/` is **not** committed, and the MP4s are not stored anywhere else either — no artifacts, no
+release assets. Re-render from the committed shots whenever you need a cut.
 
 See [CI-Engineering `projects/product-video-pipeline/`](https://github.com/companionintelligence/CI-Engineering/tree/main/projects/product-video-pipeline)
 for the full contract.
