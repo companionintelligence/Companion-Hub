@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { clearHubSteadySession, markStackUpdatePending } from '@/lib/desktop-stack-session';
 import toast from 'react-hot-toast';
 import {
   checkForUpdates,
@@ -160,9 +161,9 @@ export const GeneralActionsContainer = () => {
     try {
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
-        const message = getUpdateMessage(stackResult);
-        setUpdateMessage(message);
-        setTimeout(() => window.location.reload(), 15000);
+        markStackUpdatePending();
+        clearHubSteadySession();
+        setUpdateMessage(getUpdateMessage(stackResult));
       } else {
         setUpdateMessage(getUpdateMessage(stackResult));
         setUpdating(false);
@@ -383,11 +384,10 @@ export const GeneralActionsContainer = () => {
       {desktop && shellVersion ? (
         <Card data-testid="desktop-shell-update-card">
           <CardHeader>
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE', 'Desktop app shell')}</CardTitle>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
             <CardDescription>
               {t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE', {
                 version: shellVersion,
-                defaultValue: 'Native window and host integration (version {{version}}). Hub UI updates with stack updates above.',
               })}
             </CardDescription>
           </CardHeader>
@@ -401,7 +401,7 @@ export const GeneralActionsContainer = () => {
                       {t('SETTINGS_ACTIONS_UPDATING')}
                     </>
                   ) : shellUpdate.manualDownload ? (
-                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER', 'Download installer')
+                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER')
                   ) : (
                     t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: shellUpdate.latestVersion })
                   )}
@@ -409,7 +409,7 @@ export const GeneralActionsContainer = () => {
                 {renderManualUpdateInstructions()}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE', 'Desktop shell is up to date.')}</p>
+              <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
             )}
           </CardContent>
         </Card>
