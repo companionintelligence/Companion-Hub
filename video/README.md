@@ -11,8 +11,14 @@ There is **no GitHub Actions workflow, no schedule, and no stored MP4** for this
 a *build output*: render one when you need it, then delete it. Nothing here is an artifact, a
 release asset, or a committed `.mp4`.
 
-What **is** committed is the input — the screenshots under `assets/shots/`. They let anyone
-render a cut without booting the whole stage, and a moved UI shows up as a reviewable image diff.
+What is *meant* to be committed is the input — the screenshots under `assets/shots/`. Once they
+exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
+reviewable image diff.
+
+> ⚠️ **No shot has been captured yet.** `assets/shots/` holds a `.gitkeep` and nothing else, so
+> every scene currently renders as a branded "capture pending" slate and `npm run check` fails
+> with `30 shot file(s) missing`. Bringing the stage up and landing those PNGs is the one thing
+> standing between this storyboard and a shippable cut.
 
 The runner lives in the **CI-Engineering checkout** beside this one:
 
@@ -93,8 +99,18 @@ pnpm exec tsx -e "
 
 cd video && npm run capture -- --only login-screen,hub-home,hub-store,store-alternatives,\
 app-details,install-dialog,running-app,custom-app-create,port-expose,ai-hardware,\
-mcp-tools,hub-settings,hub-settings-security,hub-resource-monitor
+mcp-tools,hub-settings,hub-settings-security
 ```
+
+**The two store shots need a real Portal, not the mock.** `/store` opens on the *featured* view,
+which is proxied from the Portal (`GET /api/store/listings` → `portal-client.fetchStoreListings`),
+**not** from the CI-Marketplace symlink. Against `MOCK_PORTAL_SCENARIO=registered` that returns
+two apps (OpenClaw, n8n) for every section and one alternatives row, so `hub-store` and
+`store-alternatives` would film a near-empty catalog under captions about breadth and choice.
+Either point `CI_CLOUD_URL` at a real Portal for the pass, or enrich `sampleStoreApps` /
+`sampleAlternatives` in `e2e/mock-portal/scenarios.ts` first. The symlink still matters — it feeds
+the search/category views and the `/store/ci-marketplace/immich` app page that `app-details` and
+`install-dialog` land on.
 
 The app rows are deliberately DB-only: `populateAppInfo` falls back to the marketplace
 catalog when the installed files are absent
@@ -127,6 +143,8 @@ so nobody re-adds them as a shot that can only ever render a slate:
 | `/restore-apps` | A recovery interstitial, not a major screen. Reaching it needs a recorded restore intent from a re-pair against a portal that already owns apps. |
 | Settings → Logs | `LogsContainer` streams live backend log lines over SSE, so the shot would differ on every capture and show up as permanent, meaningless churn in `assets/shots`. Masking the terminal leaves an empty black rectangle. |
 | An `installing → running` transition | The kit captures still PNGs (`page.screenshot`); there is no video capture path, so no narration should imply motion inside a shot. |
+| `/resource-monitor` | Cut. Its totals are summed from live container stats, and the documented stage seeds DB rows with no Docker install in flight — so every column reads `0.0% / 0 B / 0 containers` and the chart shows "Collecting enough samples". A caption promising live per-app CPU over a table of zeros is a false claim. Re-add it only alongside a pass that runs at least one genuinely installed app. |
+| The installed app's own UI on its own hostname | The reference cut's payoff beat (`videos/ci-tutorial-video/storyboard/v2/scenes-v2.json` → `c4-store-live`, "Read the URL bar"). It is the strongest shot this video does not have, and it needs a real container behind Traefik on a real domain with real content in it — a materially bigger stage than everything above. Worth building; not something to declare as a shot that can only render a slate. |
 
 ## Editing the video
 
@@ -145,9 +163,13 @@ picked up automatically from `assets/audio/<sceneId>.mp3`; regenerate it from th
 
 ## What is committed
 
-`assets/shots/*.png` and `assets/audio/*.mp3` **are** committed — they are the record of what the
-product looked like, and captures are byte-stable, so a diff in them means the UI genuinely
-changed. Review that diff and update `storyboard.json` captions if a screen's meaning changed.
+`assets/audio/*.mp3` **are** committed — one per scene with a `narration` field, regenerated with
+`npm run narrate` whenever that string changes.
+
+`assets/shots/*.png` **belong** here too and are committed *once captured* — they are the record
+of what the product looked like, and captures are byte-stable, so a diff in them means the UI
+genuinely changed. Review that diff and update `storyboard.json` captions if a screen's meaning
+changed. As of this commit the directory is still empty; see the warning at the top.
 
 `out/` is **not** committed, and the MP4s are not stored anywhere else either — no artifacts, no
 release assets. Re-render from the committed shots whenever you need a cut.
