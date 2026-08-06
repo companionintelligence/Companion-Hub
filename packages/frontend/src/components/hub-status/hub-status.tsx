@@ -9,6 +9,13 @@ import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
 import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import {
+  clearHubSteadySession,
+  clearStackUpdatePending,
+  isStackUpdatePending,
+  markHubSteadySession,
+  readHubSteadySession,
+} from '@/lib/desktop-stack-session';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
 import {
   DOCKER_MAC_ARCH_HINT,
@@ -52,32 +59,6 @@ function getErrorMessage(err: unknown): string {
 
 export function reloadCurrentWindow() {
   window.location.reload();
-}
-
-const HUB_STEADY_SESSION_KEY = 'ci-hub-steady-running';
-
-function readHubSteadySession(): boolean {
-  try {
-    return sessionStorage.getItem(HUB_STEADY_SESSION_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function markHubSteadySession(): void {
-  try {
-    sessionStorage.setItem(HUB_STEADY_SESSION_KEY, '1');
-  } catch {
-    // sessionStorage unavailable — steady-state hints are best-effort only.
-  }
-}
-
-function clearHubSteadySession(): void {
-  try {
-    sessionStorage.removeItem(HUB_STEADY_SESSION_KEY);
-  } catch {
-    // ignore
-  }
 }
 
 /** True when the user explicitly reloaded the WebView (context menu → Reload). */
@@ -932,9 +913,24 @@ export function HubStatus({ children }: HubStatusProps) {
     );
   }
 
-  // Hub is running — stay on the app if we've already reached Running (don't regress to the
-  // loading gate when Private VPN / health checks flap during steady operation).
-  if (status === 'Running' || (hubSteadyRunningRef.current && status === 'Starting')) {
+  // Hub is running — render the app. After a stack update, reload once so the WebView
+  // picks up the new container UI bundle (same origin, new hashed assets).
+  if (status === 'Running') {
+    if (isStackUpdatePending()) {
+      clearStackUpdatePending();
+      if (!hasReloadedRef.current) {
+        hasReloadedRef.current = true;
+        reloadCurrentWindow();
+        return null;
+      }
+    }
+    return <>{children}</>;
+  }
+
+  // During stack recreate, show the startup gate — not stale app UI with a dead API.
+  if (isStackUpdatePending()) {
+    // fall through to Starting / Stopped gate screens below
+  } else if (hubSteadyRunningRef.current && status === 'Starting') {
     return <>{children}</>;
   }
 
