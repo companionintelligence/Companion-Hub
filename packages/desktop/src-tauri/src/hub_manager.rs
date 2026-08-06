@@ -5746,27 +5746,21 @@ pub fn pull_stack_images(
 }
 
 /// Stop Hub containers without marking user-stopped (for updates).
-/// Returns `true` if the Docker daemon is reachable, `false` otherwise.
-/// Uses `docker info` as a lightweight probe — it exits non-zero immediately
-/// when the daemon is down, regardless of the CLI version installed.
-fn is_docker_available() -> bool {
-    docker_command()
-        .args(["info"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
 
-    if !is_docker_available() {
-        let _ = append_desktop_log_for(
-            &data_dir,
-            "hub.update",
-            "Docker daemon is not running; skipping compose down for update.",
+    // If Docker is not available there are no containers to tear down.
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped for update.",
+            reason
         );
-        return Ok("Hub already stopped (Docker daemon not running)".to_string());
+        let _ = append_desktop_log_for(&data_dir, "hub.update", &message);
+        return Ok(message);
     }
 
     let _ = append_desktop_log_for(
@@ -5814,18 +5808,22 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         mark_user_stopped(&data_dir);
     }
 
-    // If the Docker daemon is not reachable there are no containers running,
-    // so there is nothing to stop.  Return early to avoid invoking
-    // `docker compose --env-file` with a CLI binary that may not support that
-    // flag (e.g. an older docker binary resolved when Docker Desktop is down).
-    if !is_docker_available() {
-        let _ = append_desktop_log_for(
-            &data_dir,
-            "hub.stop",
-            "Docker daemon is not running; nothing to stop.",
+    // If Docker is not available there are no containers to tear down.
+    // Return success immediately rather than letting `docker compose down`
+    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped.",
+            reason
         );
-        return Ok("Hub already stopped (Docker daemon not running)".to_string());
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        return Ok(message);
     }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
