@@ -729,7 +729,7 @@ export default function DeviceRegistrationPage() {
         </div>
 
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
+          <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_STEP_2_SUBTITLE')}</p>
 
           <div className="mt-5 space-y-4">
