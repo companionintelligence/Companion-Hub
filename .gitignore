@@ -127,3 +127,8 @@ tunnel.stale-*
 
 # Scratch directories written by unit tests (cwd varies: repo root or the package dir)
 .tmp-bind-mount-helpers-test/
+
+# Fleet QA run reports (e2e/results/benchmarks/baseline.json is tracked and stays so —
+# only the dated per-run reports written by the fleet QA runner are ignored).
+/e2e/results/fleet-report-*.json
+/e2e/results/fleet-report-*.md
