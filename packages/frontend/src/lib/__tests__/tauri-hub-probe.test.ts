@@ -137,6 +137,28 @@ describe('tauri-hub-probe', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('returns null after trying every candidate when none answers', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://127.0.0.1:5012', port: '5012' },
+    });
+
+    // Both failure modes in one sweep: a refused connection, then a server that
+    // is listening but is not the Hub API.
+    const fetch = vi.fn(async (url: string) => {
+      if (url === 'http://127.0.0.1:5012/api/health/live') throw new Error('connection refused');
+      return { ok: false, status: 404 };
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await probeHealthyHubApiPort(true)).toBeNull();
+    // Only success may short-circuit the sweep — a failure has to keep going,
+    // or a healthy port behind a dead one becomes unreachable.
+    expect(fetch).toHaveBeenCalledTimes(3);
+    // Nothing answered, so the client must not be left pointed at a dead port.
+    expect(client.getConfig().baseUrl).toBe('');
+  });
+
   it('treats 127 loopback origins as local Tauri dev', () => {
     Object.defineProperty(window, 'location', {
       configurable: true,
