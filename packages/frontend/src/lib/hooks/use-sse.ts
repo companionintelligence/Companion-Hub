@@ -20,6 +20,36 @@ export function getSseRetryDelayMs(attempt: number): number {
   return Math.min(2 ** attempt * 1000, MAX_SSE_RETRY_DELAY_MS);
 }
 
+/**
+ * Build the stream URL, carrying the session id in the query string whenever the
+ * client holds one.
+ *
+ * EventSource cannot send the `X-CI-Hub-Session` header that `apiFetch` sets, so
+ * the query param is its only way to present a session. That has to apply to every
+ * runtime that holds a session id, not just cross-origin ones: the desktop portal
+ * SSO handoff (`/auth/portal/desktop-exchange`) returns its session in the response
+ * body and never plants a cookie, so on a same-origin desktop (`http://127.0.0.1:PORT`)
+ * every REST call authenticates via the header while the cookie-only EventSource
+ * 401s forever — no app events, and install spinners that only resolve on the
+ * refetch a route change triggers.
+ *
+ * A browser login is unaffected: it authenticates by cookie and stores no session
+ * id, so no param is added.
+ */
+export function buildSseUrl(baseUrl: string, topic: string, sessionId: string | null, params?: URLSearchParams): URL {
+  const url = new URL(`${baseUrl}/api/sse/${topic}`);
+
+  if (params) {
+    url.search = params.toString();
+  }
+
+  if (sessionId) {
+    url.searchParams.set('session_id', sessionId);
+  }
+
+  return url;
+}
+
 export const useSSE = <T extends Topic>(props: Props<T>) => {
   const { topic, onEvent, onError, onOpen, onReconnecting } = props;
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -54,19 +84,7 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
 
     const crossOrigin = usesCrossOriginDesktopApi();
     const baseUrl = crossOrigin ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
-    const url = new URL(`${baseUrl}/api/sse/${topic}`);
-
-    if (props.params) {
-      url.search = props.params.toString();
-    }
-
-    // EventSource doesn't support custom headers, so pass session ID as query param for Tauri
-    if (crossOrigin) {
-      const sid = getTauriSessionId();
-      if (sid) {
-        url.searchParams.set('session_id', sid);
-      }
-    }
+    const url = buildSseUrl(baseUrl, topic, getTauriSessionId(), props.params);
 
     const eventSource = new EventSource(url);
 
