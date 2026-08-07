@@ -1,5 +1,5 @@
 import { client } from '@/api-client/client.gen';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import { isLocalTauriDevOrigin } from '@/lib/hub-runtime-mode';
 
@@ -7,6 +7,14 @@ describe('tauri-hub-probe', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     client.setConfig({ baseUrl: '', credentials: 'include' });
+  });
+
+  // `restoreAllMocks` covers neither `stubGlobal` nor a hand-assigned
+  // `__TAURI_INTERNALS__`, so without this each test inherits the previous
+  // one's runtime mode and reads as passing for the wrong reason.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it('uses native check_hub_status in Tauri release builds', async () => {
@@ -119,7 +127,10 @@ describe('tauri-hub-probe', () => {
       value: { origin: 'http://127.0.0.1:5012', port: '5012' },
     });
 
-    const fetch = vi.fn(async (url: string) => ({ ok: url === 'http://127.0.0.1:5002/api/health/live', status: 503 }));
+    const fetch = vi.fn(async (url: string) => {
+      const healthy = url === 'http://127.0.0.1:5002/api/health/live';
+      return { ok: healthy, status: healthy ? 200 : 503 };
+    });
     vi.stubGlobal('fetch', fetch);
 
     expect(await probeHealthyHubApiPort()).toBe(5002);
