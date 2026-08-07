@@ -30,7 +30,8 @@
       "seconds": 4.5,
       "title": "Companion Hub",
       "caption": "Your data. Your hardware. Your AI.",
-      "narration": "Companion Hub is the app runtime that lives in your house."
+      "narration": "Companion Hub is the app runtime that lives in your house.",
+      "reveal": "paced"
     },
     {
       "id": "sign-in",
@@ -74,7 +75,8 @@
             "settle": 900
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "first-boot",
@@ -113,7 +115,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "transition": "hold"
     },
     {
       "id": "home-dashboard",
@@ -152,7 +155,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "transition": "hold"
     },
     {
       "id": "browse-the-store",
@@ -170,11 +174,20 @@
           "capture": {
             "path": "/store",
             "waitUntil": "domcontentloaded",
-            "waitFor": "a[href^='/store/']",
-            "settle": 1200
+            "waitFor": "a[href^='/store/'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store'), 0); }"
+              },
+              {
+                "waitFor": "a[href^='/store/']"
+              }
+            ]
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "open-alternatives",
@@ -188,23 +201,38 @@
           "id": "store-alternatives",
           "url": "hub-living-room-server-acme.ci.computer/store?category=alternatives",
           "alt": "The store's Alternatives view: a table pairing proprietary products with the open source apps that replace them.",
-          "motion": "drift-down",
+          "motion": "push-in",
           "capture": {
             "path": "/store?category=alternatives",
             "waitUntil": "domcontentloaded",
-            "waitFor": "text=Open source replacements for proprietary software",
+            "waitFor": "table tbody tr, input[placeholder='you@example.com']",
             "before": [
               {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store?category=alternatives'), 0); }"
+              },
+              {
                 "waitFor": "table tbody tr"
+              },
+              {
+                "waitFor": "text=Open source replacements for proprietary software"
               },
               {
                 "wait": 800
               }
             ],
             "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.27,
+              "y": 0.3,
+              "w": 0.7,
+              "h": 0.7
+            }
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "app-privacy",
@@ -222,22 +250,37 @@
           "capture": {
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='app-header-actions-row']",
+            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
             "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-header-actions-row']"
+              },
               {
                 "wait": 1500
               },
               {
-                "hover": "text=App Privacy"
+                "eval": "() => { const sc = [...document.querySelectorAll('*')].filter((e) => { const cs = getComputedStyle(e); return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && e.scrollHeight > e.clientHeight + 20; }).sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0]; if (sc) sc.scrollTop = sc.scrollHeight; }"
               },
               {
-                "wait": 600
+                "wait": 900
               }
             ],
             "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.46,
+              "y": 0.235,
+              "w": 0.54,
+              "h": 0.54
+            }
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "configure-install",
@@ -255,8 +298,14 @@
           "capture": {
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='action-install']",
+            "waitFor": "[data-testid='action-install'], input[placeholder='you@example.com']",
             "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='action-install']"
+              },
               {
                 "click": "[data-testid='action-install']"
               },
@@ -270,7 +319,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "install-and-run",
@@ -301,9 +351,18 @@
               }
             ],
             "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.02,
+              "y": 0.07,
+              "w": 0.6,
+              "h": 0.6
+            }
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "bring-your-own-app",
@@ -339,7 +398,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "transition": "hold"
     },
     {
       "id": "expose-a-port",
@@ -357,11 +417,23 @@
           "capture": {
             "path": "/apps/expose",
             "waitUntil": "domcontentloaded",
-            "waitFor": "text=Publish a service already running on this Hub",
-            "settle": 1200
+            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/expose'), 0); }"
+              },
+              {
+                "waitFor": "input[placeholder='Enter a unique name for your app']"
+              },
+              {
+                "waitFor": "text=Publish a service already running on this Hub"
+              }
+            ]
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "local-models",
@@ -379,8 +451,14 @@
           "capture": {
             "path": "/settings?tab=ai",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='hw-card-title']",
+            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
             "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='hw-card-title']"
+              },
               {
                 "waitFor": "[data-testid='tier-badge']"
               },
@@ -391,7 +469,8 @@
             "settle": 1500
           }
         }
-      ]
+      ],
+      "transition": "hold"
     },
     {
       "id": "own-your-agents",
@@ -409,8 +488,14 @@
           "capture": {
             "path": "/settings?tab=mcp",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='mcp-settings']",
+            "waitFor": "[data-testid='mcp-settings'], input[placeholder='you@example.com']",
             "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=mcp'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='mcp-settings']"
+              },
               {
                 "waitFor": "[data-testid='mcp-tool-search']"
               },
@@ -424,7 +509,8 @@
             "settle": 1200
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "every-dial",
@@ -442,8 +528,16 @@
           "capture": {
             "path": "/settings",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='settings-scroll-container']",
-            "settle": 1200
+            "waitFor": "[data-testid='settings-scroll-container'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='settings-scroll-container']"
+              }
+            ]
           }
         },
         {
@@ -454,11 +548,20 @@
           "capture": {
             "path": "/settings?tab=security",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='settings-scroll-container']",
-            "settle": 1200
+            "waitFor": "[data-testid='settings-scroll-container'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=security'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='settings-scroll-container']"
+              }
+            ]
           }
         }
-      ]
+      ],
+      "transition": "cut"
     },
     {
       "id": "recap",
@@ -485,9 +588,10 @@
         },
         {
           "label": "Apps",
-          "value": "200+"
+          "value": "490+"
         }
-      ]
+      ],
+      "reveal": "paced"
     },
     {
       "id": "close",
@@ -496,7 +600,8 @@
       "caption": "ci.computer",
       "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Hub, from Companion Intelligence. UnCloud your life."
+      "narration": "Companion Hub, from Companion Intelligence. UnCloud your life.",
+      "transition": "hold"
     }
   ]
 }
