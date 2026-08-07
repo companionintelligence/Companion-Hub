@@ -209,7 +209,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
             <Input
               label={
                 <>
-                  {t('COMMON_PORT')} <span className="text-danger">*</span>
+                  {t('COMMON_PORT')} <span className="text-destructive">*</span>
                 </>
               }
               type="number"

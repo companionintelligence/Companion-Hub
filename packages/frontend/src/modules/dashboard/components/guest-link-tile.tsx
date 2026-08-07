@@ -18,7 +18,7 @@ export const GuestLinkTile: React.FC<GuestLinkTileProps> = ({ link }) => {
     <button
       onClick={handleClick}
       type="button"
-      className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0 guest-link-tile-button"
+      className="app-link p-2 pt-0 pb-0 mb-0 guest-link-tile-button"
       data-testid={`guest-link-tile-${link.title}`}
     >
       <Card className="hover:bg-accent/50 transition-colors">

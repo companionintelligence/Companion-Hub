@@ -14,8 +14,8 @@ type Props = {
 export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
   const { t } = useTranslation();
   return (
-    <div className="row g-4">
-      <div className="col-md-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.name`, { setValueAs: (v) => v.trim() || undefined })}
           error={t(errors?.services?.[serviceIndex]?.name?.message as string)}
@@ -30,7 +30,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
           placeholder={t('MULTI_SERVICE_ESSENTIALS_SERVICE_NAME_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.image`, { setValueAs: (v) => v.trim() || undefined })}
           error={t(errors?.services?.[serviceIndex]?.image?.message as string)}
@@ -45,7 +45,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
           placeholder={t('MULTI_SERVICE_ESSENTIALS_IMAGE_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.internalPort`)}
           error={t(errors?.services?.[serviceIndex]?.internalPort?.message as string)}

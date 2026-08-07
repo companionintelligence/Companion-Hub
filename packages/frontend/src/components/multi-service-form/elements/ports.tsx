@@ -26,9 +26,9 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
   });
 
   return (
-    <div className="row g-4">
-      <div className="col-12">
-        <div className="d-flex justify-content-between align-items-center mb-3">
+    <div className="grid grid-cols-1 gap-4">
+      <div>
+        <div className="flex items-center justify-between mb-3">
           <div>
             <Tooltip className="tooltip" anchorSelect=".my-ports">
               {t('MULTI_SERVICE_PORTS_TITLE_TOOLTIP')}

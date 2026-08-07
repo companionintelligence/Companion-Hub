@@ -93,7 +93,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
               <Input
                 label={
                   <>
-                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-danger">*</span>
+                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
                   </>
                 }
                 value={appName}
@@ -101,7 +101,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
                 placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
                 title={t('CUSTOM_APP_NAME_VALIDATION_HELP')}
               />
-              <div className="form-text">{t('CUSTOM_APP_NAME_EDIT_HELP')}</div>
+              <p className="mt-1 text-xs text-muted-foreground">{t('CUSTOM_APP_NAME_EDIT_HELP')}</p>
             </div>
           </div>
         </CardContent>

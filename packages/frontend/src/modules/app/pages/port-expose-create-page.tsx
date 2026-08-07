@@ -207,7 +207,7 @@ export default function PortExposeCreatePage() {
             <Input
               label={
                 <>
-                  {t('CUSTOM_APP_NAME_LABEL')} <span className="text-danger">*</span>
+                  {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
                 </>
               }
               {...register('name')}
@@ -223,7 +223,7 @@ export default function PortExposeCreatePage() {
             <Input
               label={
                 <>
-                  {t('COMMON_PORT')} <span className="text-danger">*</span>
+                  {t('COMMON_PORT')} <span className="text-destructive">*</span>
                 </>
               }
               type="number"

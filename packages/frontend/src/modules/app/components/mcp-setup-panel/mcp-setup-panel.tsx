@@ -48,7 +48,7 @@ export function McpSetupPanel({ info, installSchema }: Props) {
                     <code className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-xs">{field.key}</code>
                     <span>{field.label}</span>
                     {field.required ? (
-                      <span className="text-xs text-danger">{t('COMMON_REQUIRED', { defaultValue: 'Required' })}</span>
+                      <span className="text-xs text-destructive">{t('COMMON_REQUIRED', { defaultValue: 'Required' })}</span>
                     ) : (
                       <span className="text-xs text-muted-foreground">{t('COMMON_OPTIONAL', { defaultValue: 'Optional' })}</span>
                     )}
