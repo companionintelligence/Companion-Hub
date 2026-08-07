@@ -168,7 +168,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('COMMON_SOURCE_CODE')}</span>
-                <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline" href={info.source}>
+                <a target="_blank" rel="noreferrer" className="text-sm text-primary underline-offset-2 hover:underline" href={info.source}>
                   {t('APP_DETAILS_LINK')}
                   <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
                 </a>
@@ -178,7 +178,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start">
                     <span className="text-sm text-muted-foreground">{t('APP_DETAILS_WEBSITE')}</span>
-                    <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline truncate max-w-[160px]" href={info.website}>
+                    <a target="_blank" rel="noreferrer" className="text-sm text-primary underline-offset-2 hover:underline truncate max-w-[160px]" href={info.website}>
                       {t('APP_DETAILS_LINK')}
                       <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
                     </a>
@@ -220,7 +220,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           {/* App Privacy card */}
           <div className="rounded-md border border-border/50 bg-muted/20 p-3 sm:p-4">
             <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-4 w-4 text-blue-400" />
+              <Shield className="h-4 w-4 text-primary" />
               <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>
             </div>
             <p className="text-xs text-muted-foreground mb-3">{t('APP_DETAILS_APP_PRIVACY_DESC')}</p>
