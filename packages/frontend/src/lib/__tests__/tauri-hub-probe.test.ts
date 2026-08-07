@@ -51,7 +51,7 @@ describe('tauri-hub-probe', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('probes the current dev server port before defaults', async () => {
+  it('probes the current dev server port before defaults, and stops there', async () => {
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { origin: 'http://127.0.0.1:5012', port: '5012' },
@@ -65,7 +65,65 @@ describe('tauri-hub-probe', () => {
     const port = await probeHealthyHubApiPort();
     expect(port).toBe(5012);
     expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:5012/api/health/live', expect.any(Object));
-    expect(fetch).toHaveBeenCalledTimes(3);
+    // Short-circuit: 5002 and 5004 are never requested once the first candidate answers.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not probe further ports once one answers on a same-origin desktop', async () => {
+    // The packaged desktop serves the stack UI from the Hub's own port, so the
+    // first candidate always answers. Probing past it produced a recurring
+    // ERR_CONNECTION_REFUSED for :5004 on every 3s hub-status poll.
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://127.0.0.1:5002', port: '5002' },
+    });
+    (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }).__TAURI_INTERNALS__ = {
+      invoke: vi.fn(),
+    };
+
+    const fetch = vi.fn(async (url: string) => ({
+      ok: url === 'http://127.0.0.1:5002/api/health/live',
+    }));
+    vi.stubGlobal('fetch', fetch);
+
+    expect(isTauriReleaseBuild()).toBe(false);
+    expect(await probeHealthyHubApiPort()).toBe(5002);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalledWith('http://127.0.0.1:5004/api/health/live', expect.any(Object));
+  });
+
+  it('falls through candidates in order when earlier ports do not answer', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://127.0.0.1:5012', port: '5012' },
+    });
+
+    const fetch = vi.fn(async (url: string) => {
+      if (url === 'http://127.0.0.1:5012/api/health/live') throw new Error('connection refused');
+      return { ok: url === 'http://127.0.0.1:5004/api/health/live' };
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const port = await probeHealthyHubApiPort();
+    expect(port).toBe(5004);
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:5012/api/health/live',
+      'http://127.0.0.1:5002/api/health/live',
+      'http://127.0.0.1:5004/api/health/live',
+    ]);
+  });
+
+  it('a non-ok response does not win, and does not stop the sweep', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://127.0.0.1:5012', port: '5012' },
+    });
+
+    const fetch = vi.fn(async (url: string) => ({ ok: url === 'http://127.0.0.1:5002/api/health/live', status: 503 }));
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await probeHealthyHubApiPort()).toBe(5002);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('treats 127 loopback origins as local Tauri dev', () => {
