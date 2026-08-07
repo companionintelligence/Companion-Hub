@@ -23,20 +23,32 @@ function healthProbePorts(): number[] {
   return [...new Set(ports)];
 }
 
+/**
+ * Try candidates in order and stop at the first that answers.
+ *
+ * Sequential, not parallel: the winner is decided by list order either way, but
+ * a parallel sweep also requests every losing port on every poll. `hub-status`
+ * polls this every 3s, so on a healthy desktop — where the first candidate is
+ * the port already serving the page — that emitted an endless console stream of
+ * `ERR_CONNECTION_REFUSED` for ports nothing was ever going to listen on.
+ *
+ * Each port keeps its own timeout rather than sharing one deadline, so a port
+ * that accepts TCP but stalls cannot starve the candidates behind it. That
+ * makes the all-ports-stalled worst case additive; connection-refused (the only
+ * case that actually recurs) returns immediately, so polling is unaffected.
+ */
 async function probeWithFetch(): Promise<number | null> {
-  const outcomes = await Promise.all(
-    healthProbePorts().map(async (port) => {
-      try {
-        const res = await fetch(`http://${LOCAL_HUB_API_HOST}:${port}/api/health/live`, {
-          signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
-        });
-        return res.ok ? port : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return outcomes.find((port) => port !== null) ?? null;
+  for (const port of healthProbePorts()) {
+    try {
+      const res = await fetch(`http://${LOCAL_HUB_API_HOST}:${port}/api/health/live`, {
+        signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
+      });
+      if (res.ok) return port;
+    } catch {
+      // try next port
+    }
+  }
+  return null;
 }
 
 async function probeWithTauriInvoke(): Promise<number | null> {
