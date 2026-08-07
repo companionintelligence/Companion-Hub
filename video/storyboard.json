@@ -283,12 +283,23 @@
         {
           "id": "running-app",
           "url": "hub-living-room-server-acme.ci.computer/apps/ci-marketplace/immich",
-          "alt": "An installed app on the Hub: a running status pill, the Open button, and the stop and restart icon actions.",
+          "alt": "An installed app on the Hub: a green Running status pill, the Open button, and the pause, restart, settings, reset and uninstall icon actions.",
           "motion": "push-in",
           "capture": {
             "path": "/apps/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='app-status-pill']",
+            "waitFor": "[data-testid='app-status-pill'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-status-pill']"
+              },
+              {
+                "wait": 2000
+              }
+            ],
             "settle": 1200
           }
         }
@@ -305,12 +316,26 @@
         {
           "id": "custom-app-create",
           "url": "hub-living-room-server-acme.ci.computer/apps/create",
-          "alt": "The custom app form: an App Name field above the multi-service Docker Compose editor.",
-          "motion": "drift-down",
+          "alt": "The custom app form: a named App Name field above the multi-service editor, with the Essentials tab showing a service's name, image and internal port.",
+          "motion": "push-in",
           "capture": {
             "path": "/apps/create",
             "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='Enter a unique name for your app']",
+            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/create'), 0); }"
+              },
+              {
+                "waitFor": "input[placeholder='Enter a unique name for your app']"
+              },
+              {
+                "fill": ["input[placeholder='Enter a unique name for your app']", "Recipe Wiki"]
+              },
+              {
+                "wait": 1200
+              }
+            ],
             "settle": 1200
           }
         }

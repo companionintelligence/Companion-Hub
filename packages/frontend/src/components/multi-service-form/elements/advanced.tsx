@@ -19,8 +19,8 @@ type Props = {
 export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Props) => {
   const { t } = useTranslation();
   return (
-    <div className="row g-4">
-      <div className="col-md-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.networkMode`, { setValueAs: (v) => v.trim() || undefined })}
           error={errors?.services?.[serviceIndex]?.networkMode?.message}
@@ -35,7 +35,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           placeholder={t('MULTI_SERVICE_ADVANCED_NETWORK_MODE_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.workingDir`, { setValueAs: (v) => v || undefined })}
           error={errors?.services?.[serviceIndex]?.workingDir?.message}
@@ -50,7 +50,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           placeholder={t('MULTI_SERVICE_ADVANCED_WORKING_DIR_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.user`, { setValueAs: (v) => v.trim() || undefined })}
           error={errors?.services?.[serviceIndex]?.user?.message}
@@ -65,7 +65,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           placeholder={t('MULTI_SERVICE_ADVANCED_USER_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Input
           {...register(`services.${serviceIndex}.hostname`, { setValueAs: (v) => v.trim() || undefined })}
           error={errors?.services?.[serviceIndex]?.hostname?.message}
@@ -80,7 +80,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           placeholder={t('MULTI_SERVICE_ADVANCED_HOSTNAME_PLACEHOLDER')}
         />
       </div>
-      <div className="col-md-6">
+      <div>
         <Controller
           control={control}
           name={`services.${serviceIndex}.privileged`}

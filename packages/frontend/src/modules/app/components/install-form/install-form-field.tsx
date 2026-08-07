@@ -30,7 +30,7 @@ export const InstallFormField = (props: IProps) => {
   const label = (
     <>
       {field.label}
-      {field.required && <span className="ms-1 text-danger">*</span>}
+      {field.required && <span className="ms-1 text-destructive">*</span>}
       {Boolean(field.hint) && (
         <>
           <Tooltip className="tooltip" anchorSelect={`.${field.env_variable}`}>
