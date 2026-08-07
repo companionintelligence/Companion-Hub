@@ -39,7 +39,7 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
             {t('MULTI_SERVICE_VOLUMES_ADD_VOLUME')}
           </Button>
         </div>
-        <Table className={clsx('border p-1', { 'd-none': fields.length === 0 })}>
+        <Table className={clsx('border p-1', { hidden: fields.length === 0 })}>
           <TableHeader>
             <TableRow>
               <TableHead>{t('MULTI_SERVICE_VOLUMES_HOST_PATH')}</TableHead>
@@ -102,7 +102,7 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
             ))}
           </TableBody>
         </Table>
-        {fields.length === 0 && <div className="text-muted small">{t('MULTI_SERVICE_VOLUMES_NO_VOLUMES')}</div>}
+        {fields.length === 0 && <div className="text-sm text-muted-foreground">{t('MULTI_SERVICE_VOLUMES_NO_VOLUMES')}</div>}
       </div>
     </div>
   );

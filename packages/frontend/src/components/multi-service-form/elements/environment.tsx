@@ -38,7 +38,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
             {t('MULTI_SERVICE_ENVIRONMENT_ADD_VARIABLE')}
           </Button>
         </div>
-        <Table className={clsx('border p-1', { 'd-none': fields.length === 0 })}>
+        <Table className={clsx('border p-1', { hidden: fields.length === 0 })}>
           <TableHeader>
             <TableRow>
               <TableHead>{t('MULTI_SERVICE_ENVIRONMENT_KEY')}</TableHead>
@@ -74,7 +74,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
             ))}
           </TableBody>
         </Table>
-        {fields.length === 0 && <div className="text-muted small">{t('MULTI_SERVICE_ENVIRONMENT_NO_VARIABLES')}</div>}
+        {fields.length === 0 && <div className="text-sm text-muted-foreground">{t('MULTI_SERVICE_ENVIRONMENT_NO_VARIABLES')}</div>}
       </div>
     </div>
   );

@@ -131,16 +131,22 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
 
   const renderTab = (tabId: string, label: string, IconComponent: typeof Settings, index: number) => {
     const isActive = activeTab === tabId;
-    const tabClass = clsx('nav-link', { active: isActive });
 
     return (
-      <li className="nav-item nav-item-c" key={tabId}>
-        <button type="button" className={tabClass} aria-current="page" onClick={() => setActiveTab(tabId)}>
-          <span className="nav-link-icon nav-link-icon-c">
-            <IconComponent size={24} />
-          </span>
-          <span className="nav-link-title nav-link-title-c">{label}</span>
-          {hasSectionErrors(tabId, index) && <span className="ms-1 text-danger">*</span>}
+      <li className="shrink-0" key={tabId}>
+        <button
+          type="button"
+          aria-pressed={isActive}
+          className={clsx(
+            'inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-all',
+            'ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+            isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
+          )}
+          onClick={() => setActiveTab(tabId)}
+        >
+          <IconComponent size={16} aria-hidden="true" />
+          <span>{label}</span>
+          {hasSectionErrors(tabId, index) && <span className="ms-1 text-destructive">*</span>}
         </button>
       </li>
     );
@@ -159,45 +165,49 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
 
   return (
     <form className="flex flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
-      <div className="main-container bg-card border rounded-lg mt-4 m-0">
+      <div className="bg-card border rounded-lg mt-4 m-0 p-0">
         {jsonEditorOpen && <JsonComposeEditor onChange={(json, jsonError) => setJson({ value: json, error: jsonError })} />}
         {!jsonEditorOpen && (
-          <div className="row ms-0 me-0">
-            <div className="col-12 col-md-2 border-end p-0">
-              <div className="d-flex justify-content-between align-items-center p-3">
-                <div className="fw-bold">{t('MULTI_SERVICE_SERVICES')}</div>
+          <div className="flex flex-col md:flex-row">
+            <div className="w-full shrink-0 border-b border-border p-0 md:w-1/6 md:border-r md:border-b-0">
+              <div className="flex items-center justify-between p-3">
+                <div className="font-semibold">{t('MULTI_SERVICE_SERVICES')}</div>
                 <Plus className="text-primary cursor-pointer" size={20} onClick={() => saveBeforeAction(addService)()} />
               </div>
-              <div className="w-full border-top">
-                <div className="list-group list-group-transparent m-0">
+              <div className="w-full border-t border-border">
+                <div className="flex flex-col">
                   {services.map((service, index) => (
                     <button
                       type="button"
                       key={service._id}
-                      className={clsx('list-group-item list-group-item-action d-flex align-items-center', { active: index === activeService })}
+                      className={clsx(
+                        'flex w-full cursor-pointer items-center px-3 py-2 text-left text-sm transition-colors',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
+                        index === activeService ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50',
+                      )}
                       onClick={() => saveBeforeAction(setActiveService)(index)}
                     >
-                      <div className="d-flex justify-content-between align-items-center w-full">
-                        <div>
+                      <div className="flex w-full items-center justify-between">
+                        <div className="truncate">
                           <span>
                             {service.name ||
                               t('MULTI_SERVICE_SERVICE_NAME', {
                                 index: index + 1,
                               })}
                           </span>
-                          {serviceHasError(index) && <span className="ms-1 text-danger">*</span>}
+                          {serviceHasError(index) && <span className="ms-1 text-destructive">*</span>}
                         </div>
                         {!service.isMain && (
                           <button
                             type="button"
-                            className="btn-close btn-close-white ms-2"
+                            className="ms-2 shrink-0 cursor-pointer rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                             aria-label={t('MULTI_SERVICE_REMOVE_SERVICE')}
                             onClick={(e) => {
                               e.stopPropagation();
                               saveBeforeAction(removeService)(index);
                             }}
                           >
-                            <X />
+                            <X size={16} />
                           </button>
                         )}
                       </div>
@@ -206,37 +216,37 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
                 </div>
               </div>
             </div>
-            <div className="col col-12 col-md-10">
-              <div className="col">
-                <ul className="nav nav-underline pt-2 gap-4 flex-nowrap overflow-auto">
+            <div className="w-full min-w-0 md:w-5/6">
+              <div className="px-3 pt-3">
+                <ul className="inline-flex max-w-full flex-nowrap items-center gap-1 overflow-x-auto rounded-md border border-border/50 bg-muted p-1">
                   {activeService !== 'json' && services[activeService] && tabs.map((tab) => renderTab(tab.id, tab.label, tab.icon, activeService))}
                 </ul>
               </div>
-              <div className="col pt-4 px-3 pb-5">
+              <div className="pt-4 px-3 pb-5">
                 {services.map((service, index) => {
                   return (
-                    <div key={service._id} className={clsx({ 'd-none': index !== activeService })}>
+                    <div key={service._id} className={clsx({ hidden: index !== activeService })}>
                       <div
                         className={clsx({
-                          'd-none': activeTab !== 'essentials',
+                          hidden: activeTab !== 'essentials',
                         })}
                       >
                         <EssentialConfig register={form.register} serviceIndex={index} errors={form.formState.errors} />
                       </div>
                       <div
                         className={clsx({
-                          'd-none': activeTab !== 'environment',
+                          hidden: activeTab !== 'environment',
                         })}
                       >
                         <EnvironmentConfig control={form.control} register={form.register} serviceIndex={index} errors={form.formState.errors} />
                       </div>
-                      <div className={clsx({ 'd-none': activeTab !== 'volumes' })}>
+                      <div className={clsx({ hidden: activeTab !== 'volumes' })}>
                         <VolumesConfig control={form.control} register={form.register} serviceIndex={index} errors={form.formState.errors} />
                       </div>
-                      <div className={clsx({ 'd-none': activeTab !== 'ports' })}>
+                      <div className={clsx({ hidden: activeTab !== 'ports' })}>
                         <PortsConfig control={form.control} register={form.register} serviceIndex={index} errors={form.formState.errors} />
                       </div>
-                      <div className={clsx({ 'd-none': activeTab !== 'advanced' })}>
+                      <div className={clsx({ hidden: activeTab !== 'advanced' })}>
                         <AdvancedConfig register={form.register} serviceIndex={index} errors={form.formState.errors} control={form.control} />
                       </div>
                     </div>
@@ -246,12 +256,12 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             </div>
           </div>
         )}
-        <div className="d-flex justify-content-between align-items-center p-3 rounded-bottom border-top">
-          <Button disabled={jsonEditorOpen} type="submit" className={clsx({ 'd-none': jsonEditorOpen })}>
+        <div className="flex items-center justify-between rounded-b-lg border-t border-border p-3">
+          <Button disabled={jsonEditorOpen} type="submit" className={clsx({ hidden: jsonEditorOpen })}>
             {t('MULTI_SERVICE_VALIDATE_ALL_SERVICES')}
           </Button>
           <Button
-            className={clsx({ 'd-none': !jsonEditorOpen })}
+            className={clsx({ hidden: !jsonEditorOpen })}
             type="button"
             disabled={Boolean(json.error)}
             onClick={() => {
@@ -262,15 +272,15 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             {t('MULTI_SERVICE_JSON_SAVE')}
           </Button>
           <div
-            className={clsx('text-muted small text-center', {
-              'd-none': !jsonEditorOpen,
+            className={clsx('text-center text-sm text-muted-foreground', {
+              hidden: !jsonEditorOpen,
             })}
           >
             <a
               href="https://docs.ci.computer"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-muted small underline-offset-2 hover:underline"
+              className="text-sm text-muted-foreground underline-offset-2 hover:underline"
             >
               {t('MULTI_SERVICE_JSON_REFERENCE')}
             </a>
@@ -284,7 +294,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
               saveBeforeAction(setJsonEditorOpen)((v) => !v);
             }}
           >
-            <span className="d-flex align-items-center">{jsonEditorOpen ? t('MULTI_SERVICE_BACK_TO_FORM') : t('MULTI_SERVICE_JSON_EDITOR')}</span>
+            <span className="flex items-center">{jsonEditorOpen ? t('MULTI_SERVICE_BACK_TO_FORM') : t('MULTI_SERVICE_JSON_EDITOR')}</span>
           </Button>
         </div>
       </div>
