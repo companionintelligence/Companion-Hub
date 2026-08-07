@@ -30,9 +30,10 @@ describe('buildSseUrl', () => {
     expect(url.searchParams.get('session_id')).toBe('sess-remote');
   });
 
-  it('adds no param when the client holds no session id', () => {
-    // A browser login authenticates by cookie and stores nothing, so the URL must
-    // stay clean rather than gain an empty `session_id`.
+  it('adds no param when no session id is supplied', () => {
+    // What a browser gets: `mayHoldCookielessSession()` is false there, so the hook
+    // passes null even though a browser login does store an id. The URL must stay
+    // clean rather than gain an empty `session_id`.
     const url = buildSseUrl('http://127.0.0.1:5002', 'app', null);
 
     expect(url.searchParams.has('session_id')).toBe(false);
@@ -40,7 +41,12 @@ describe('buildSseUrl', () => {
   });
 
   it('keeps caller params alongside the session id', () => {
-    const url = buildSseUrl('http://127.0.0.1:5002', 'app-logs', 'sess-local', new URLSearchParams({ appUrn: 'ci-memory:ci-marketplace', maxLines: '300' }));
+    const url = buildSseUrl(
+      'http://127.0.0.1:5002',
+      'app-logs',
+      'sess-local',
+      new URLSearchParams({ appUrn: 'ci-memory:ci-marketplace', maxLines: '300' }),
+    );
 
     expect(url.searchParams.get('appUrn')).toBe('ci-memory:ci-marketplace');
     expect(url.searchParams.get('maxLines')).toBe('300');

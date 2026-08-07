@@ -51,6 +51,23 @@ export function usesSameOriginHubApi(): boolean {
   return mode === 'browser' || mode === 'desktop-same-origin';
 }
 
+/**
+ * True when this runtime can hold a session that no cookie carries.
+ *
+ * Cross-origin desktop and mobile never receive one. A same-origin desktop
+ * usually does — but not through the portal SSO handoff, which returns its
+ * session in the response body and plants no cookie. A browser always has the
+ * cookie: `/auth/login` sets it on the same response whose body the login page
+ * also stores, so its stored id is a duplicate, never the only copy.
+ *
+ * Callers that cannot send `X-CI-Hub-Session` (EventSource) use this to decide
+ * whether to present the id another way. It stays false for browsers so a live
+ * session id never enters a URL for the one runtime that has no need of it.
+ */
+export function mayHoldCookielessSession(): boolean {
+  return getHubRuntimeMode() !== 'browser';
+}
+
 /** True on the minimal bootstrap splash before navigation to the stack UI. */
 export function isDesktopBootstrapPage(): boolean {
   if (typeof window === 'undefined') {
