@@ -16,6 +16,7 @@ import toast from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
@@ -589,10 +590,7 @@ export const InstallForm: React.FC<IProps> = ({
             label={
               <>
                 {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
-                  {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
-                </Tooltip>
-                <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
                 {info.hub_integration?.edge_auth?.default ? (
                   <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
                 ) : null}

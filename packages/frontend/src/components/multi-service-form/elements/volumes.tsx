@@ -8,7 +8,7 @@ import type { z } from 'zod';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
@@ -30,10 +30,7 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
       <div>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <Tooltip className="tooltip" anchorSelect=".my-volumes">
-              {t('MULTI_SERVICE_VOLUMES_TITLE_TOOLTIP')}
-            </Tooltip>
-            {t('MULTI_SERVICE_VOLUMES_TITLE')} <span className="ms-1 form-help my-volumes">?</span>
+            {t('MULTI_SERVICE_VOLUMES_TITLE')} <HintMarker anchorClass="my-volumes" hint={t('MULTI_SERVICE_VOLUMES_TITLE_TOOLTIP')} />
           </div>
           <Button type="button" onClick={() => append({ containerPath: '/', hostPath: '/' })} size="sm">
             {t('MULTI_SERVICE_VOLUMES_ADD_VOLUME')}
