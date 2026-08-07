@@ -2,10 +2,9 @@ import { Input } from '@/components/ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import type { FormField } from '@/types/app.types';
-import clsx from 'clsx';
 import { type Control, Controller, type UseFormRegister } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { FormValues } from './install-form';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 
@@ -31,14 +30,7 @@ export const InstallFormField = (props: IProps) => {
     <>
       {field.label}
       {field.required && <span className="ms-1 text-destructive">*</span>}
-      {Boolean(field.hint) && (
-        <>
-          <Tooltip className="tooltip" anchorSelect={`.${field.env_variable}`}>
-            {field.hint}
-          </Tooltip>
-          <span className={clsx('ms-1 form-help', field.env_variable)}>?</span>
-        </>
-      )}
+      {Boolean(field.hint) && <HintMarker anchorClass={field.env_variable} hint={field.hint} />}
     </>
   );
 

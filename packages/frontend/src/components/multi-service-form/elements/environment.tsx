@@ -7,7 +7,7 @@ import type { z } from 'zod';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
@@ -29,10 +29,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
       <div>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <Tooltip className="tooltip" anchorSelect=".my-env-vars">
-              {t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')}
-            </Tooltip>
-            {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <span className="ms-1 form-help my-env-vars">?</span>
+            {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <HintMarker anchorClass="my-env-vars" hint={t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')} />
           </div>
           <Button type="button" onClick={() => append({ key: '', value: '' })} size="sm">
             {t('MULTI_SERVICE_ENVIRONMENT_ADD_VARIABLE')}
