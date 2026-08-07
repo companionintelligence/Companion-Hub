@@ -18,7 +18,7 @@ import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/t
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
+import { ArrowRight, ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -497,7 +497,7 @@ export default () => {
               })}
           {isFetchingNextPage && (
             <div className="col-span-full text-center p-4">
-              <output className="spinner-border text-primary" />
+              <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
             </div>
           )}
         </div>
