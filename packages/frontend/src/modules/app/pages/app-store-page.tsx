@@ -402,19 +402,23 @@ export default () => {
                       <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
                     </div>
                   </CardHeader>
+                  {/* The tighter mobile cell padding is part of the arrow fix, not cosmetics: with the
+                      default `p-4` this table's min-content still exceeded the card at 360px, so an
+                      un-crushable arrow simply moved off the right edge of the scroller instead of
+                      disappearing inside the pill. `px-2` buys back the 32px that makes it fit. */}
                   <div className="w-full overflow-x-auto">
                     <Table>
                       <TableHeader>
                         <TableRow className="bg-muted/20 hover:bg-muted/20">
-                          <TableHead className="w-1/2 font-semibold">{t('APP_STORE_PROPRIETARY')}</TableHead>
-                          <TableHead className="w-1/2 font-semibold">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
+                          <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_PROPRIETARY')}</TableHead>
+                          <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {(items as AltItem[]).map((item, index) => (
                           // biome-ignore lint/suspicious/noArrayIndexKey: Static list
                           <TableRow key={index}>
-                            <TableCell className="py-3">
+                            <TableCell className="px-2 py-3 sm:px-4">
                               <div className="flex flex-wrap gap-2">
                                 {item.proprietary.map((prop) => (
                                   <div
@@ -430,7 +434,7 @@ export default () => {
                                 ))}
                               </div>
                             </TableCell>
-                            <TableCell className="py-3">
+                            <TableCell className="px-2 py-3 sm:px-4">
                               <div className="flex flex-wrap gap-2">
                                 {item.alternatives.map((alt) => {
                                   const isInStore = isAlternativeInStore(alt);
@@ -445,7 +449,13 @@ export default () => {
                                           <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
                                         )}
                                         {alt.name}
-                                        <ArrowRight className="h-3 w-3" />
+                                        {/* `shrink-0` is load-bearing: an <svg> carries UA `overflow: hidden`, so its
+                                            `min-width: auto` resolves to 0 (CSS Flexbox 4.5) and the arrow is the one
+                                            child of this pill that flex can crush to nothing. At 360px it did exactly
+                                            that — 55 of 113 arrows, some to 0px — while the sibling <img> and "Soon"
+                                            <span> kept their size, because `overflow: visible` earns them a
+                                            content-based minimum. */}
+                                        <ArrowRight className="h-3 w-3 shrink-0" />
                                       </Link>
                                     );
                                   }
