@@ -41,6 +41,50 @@ export function HintText({ id, hint, children, className, place = 'top', as: Tag
   );
 }
 
+/**
+ * The canonical help-marker treatment: a small circled "?" in muted text.
+ * Kept in one place so every marker in the app stays identical.
+ */
+const HINT_MARKER_CLASS =
+  'ms-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help';
+
+type HintMarkerProps = {
+  /**
+   * The react-tooltip `anchorSelect` class for this marker. Must be unique on the
+   * page and stable across renders — it is both the anchor and a plain CSS class.
+   */
+  anchorClass: string;
+  hint: ReactNode;
+  className?: string;
+  place?: 'top' | 'bottom' | 'left' | 'right';
+};
+
+/**
+ * A circled "?" that sits beside a label and reveals its hint on hover.
+ *
+ * Use this when the label itself should not be the anchor — a long label, or one
+ * that already wraps an input. When the label can be the anchor, prefer HintText,
+ * which needs no extra glyph.
+ */
+export function HintMarker({ anchorClass, hint, className, place = 'top' }: HintMarkerProps) {
+  const hintString = typeof hint === 'string' ? hint : undefined;
+
+  return (
+    <>
+      <Tooltip className="tooltip" anchorSelect={`.${anchorClass}`} place={place} content={hintString}>
+        {hintString ? undefined : hint}
+      </Tooltip>
+      {/*
+        Hover-only, like the markers this replaces. The glyph carries no meaning on its
+        own, so it is labelled with the hint text rather than announced as "question mark".
+      */}
+      <span className={cn(HINT_MARKER_CLASS, anchorClass, className)} role="img" aria-label={hintString}>
+        ?
+      </span>
+    </>
+  );
+}
+
 type LabelWithHintProps = {
   label: ReactNode;
   hint: ReactNode;

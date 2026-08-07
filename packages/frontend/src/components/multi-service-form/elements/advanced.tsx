@@ -4,7 +4,7 @@ import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
 import type { UseFormRegister, Control, FieldErrors } from 'react-hook-form';
 import { Controller } from 'react-hook-form';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
 type FormData = z.infer<typeof dynamicComposeSchema>;
@@ -26,10 +26,8 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           error={errors?.services?.[serviceIndex]?.networkMode?.message}
           label={
             <>
-              <Tooltip className="tooltip" anchorSelect=".my-network-mode">
-                {t('MULTI_SERVICE_ADVANCED_NETWORK_MODE_TOOLTIP')}
-              </Tooltip>
-              {t('MULTI_SERVICE_ADVANCED_NETWORK_MODE')} <span className="ms-1 form-help my-network-mode">?</span>
+              {t('MULTI_SERVICE_ADVANCED_NETWORK_MODE')}{' '}
+              <HintMarker anchorClass="my-network-mode" hint={t('MULTI_SERVICE_ADVANCED_NETWORK_MODE_TOOLTIP')} />
             </>
           }
           placeholder={t('MULTI_SERVICE_ADVANCED_NETWORK_MODE_PLACEHOLDER')}
@@ -41,10 +39,8 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           error={errors?.services?.[serviceIndex]?.workingDir?.message}
           label={
             <>
-              <Tooltip className="tooltip" anchorSelect=".my-working-dir">
-                {t('MULTI_SERVICE_ADVANCED_WORKING_DIR_TOOLTIP')}
-              </Tooltip>
-              {t('MULTI_SERVICE_ADVANCED_WORKING_DIR')} <span className="ms-1 form-help my-working-dir">?</span>
+              {t('MULTI_SERVICE_ADVANCED_WORKING_DIR')}{' '}
+              <HintMarker anchorClass="my-working-dir" hint={t('MULTI_SERVICE_ADVANCED_WORKING_DIR_TOOLTIP')} />
             </>
           }
           placeholder={t('MULTI_SERVICE_ADVANCED_WORKING_DIR_PLACEHOLDER')}
@@ -56,10 +52,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           error={errors?.services?.[serviceIndex]?.user?.message}
           label={
             <>
-              <Tooltip className="tooltip" anchorSelect=".my-user">
-                {t('MULTI_SERVICE_ADVANCED_USER_TOOLTIP')}
-              </Tooltip>
-              {t('MULTI_SERVICE_ADVANCED_USER')} <span className="ms-1 form-help my-user">?</span>
+              {t('MULTI_SERVICE_ADVANCED_USER')} <HintMarker anchorClass="my-user" hint={t('MULTI_SERVICE_ADVANCED_USER_TOOLTIP')} />
             </>
           }
           placeholder={t('MULTI_SERVICE_ADVANCED_USER_PLACEHOLDER')}
@@ -71,10 +64,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
           error={errors?.services?.[serviceIndex]?.hostname?.message}
           label={
             <>
-              <Tooltip className="tooltip" anchorSelect=".my-hostname">
-                {t('MULTI_SERVICE_ADVANCED_HOSTNAME_TOOLTIP')}
-              </Tooltip>
-              {t('COMMON_HOSTNAME')} <span className="ms-1 form-help my-hostname">?</span>
+              {t('COMMON_HOSTNAME')} <HintMarker anchorClass="my-hostname" hint={t('MULTI_SERVICE_ADVANCED_HOSTNAME_TOOLTIP')} />
             </>
           }
           placeholder={t('MULTI_SERVICE_ADVANCED_HOSTNAME_PLACEHOLDER')}
@@ -93,10 +83,8 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               {...rest}
               label={
                 <>
-                  <Tooltip className="tooltip" anchorSelect=".my-privileged">
-                    {t('MULTI_SERVICE_ADVANCED_PRIVILEGED_MODE_TOOLTIP')}
-                  </Tooltip>
-                  {t('MULTI_SERVICE_ADVANCED_PRIVILEGED_MODE')} <span className="ms-1 form-help my-privileged">?</span>
+                  {t('MULTI_SERVICE_ADVANCED_PRIVILEGED_MODE')}{' '}
+                  <HintMarker anchorClass="my-privileged" hint={t('MULTI_SERVICE_ADVANCED_PRIVILEGED_MODE_TOOLTIP')} />
                 </>
               }
             />
