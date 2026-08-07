@@ -13,19 +13,6 @@
  * Tailwind tokens in multi-service-form.tsx. See issue #1071.
  */
 
-/*
- * TODO(#1071 follow-up): this .bg-card is UNLAYERED, so it outranks Tailwind's
- * layered `bg-card` utility for the whole app — including <Card>. It resolves
- * --tblr-bg-surface, a legacy Tabler shim that @companionintelligence/tokens
- * only defines in its dark block, so every card in CI-Hub is #1d293d in dark
- * (instead of the --card token, #0c323c) and fully TRANSPARENT in light.
- * Deleting it is correct but changes every card in the app, so it is not in
- * the scope of the tab-bar fix.
- */
-.bg-card {
-  background-color: var(--tblr-bg-surface);
-}
-
 .cm-editor {
   border-radius: 0 var(--radius-md) 0 0;
 }
