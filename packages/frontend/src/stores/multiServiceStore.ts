@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { z } from 'zod';
-import { dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
+import { dynamicComposeFormSchema, type dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
 import toast from 'react-hot-toast';
 import i18next from 'i18next';
 
@@ -61,7 +61,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   error: '',
   setServices: (services: ServiceWithId[]) => set({ services }),
   validate: (values: z.infer<typeof dynamicComposeSchema>) => {
-    const res = dynamicComposeSchema.omit({ schemaVersion: true }).safeParse(values);
+    const res = dynamicComposeFormSchema.safeParse(values);
 
     if (!res.success) {
       set({ error: 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION' });
