@@ -26,10 +26,14 @@ reviewable image diff.
 > re-shot in the same pass because #1065 also fixed the domain suffix that used to wrap its
 > last two characters onto a second line.
 >
-> ⚠️ **`/apps/create` is still dead on `dev`, and #1065 did not fully fix it.** #1065 corrected
-> one `.omit()`-on-a-refined-schema call site; two more survive, and one of them still crashes
-> the route at module evaluation. See the table below for the exact line. `custom-app-create`
-> stays a slate until that is fixed in the product.
+> ⚠️ **`/apps/create` now LOADS — the Zod crash is fixed — and `custom-app-create` is still a
+> slate, for a different reason.** The two surviving `.omit()`-on-a-refined-schema call sites are
+> gone (plus the latent third), and a source-level guard test keeps them gone. Fixing the crash
+> revealed a **second, independent product bug underneath it**: the multi-service form's tab bar
+> is written in Tabler/Bootstrap class names (`nav nav-underline`, `nav-item`, `nav-link`, `col`)
+> that this app has no stylesheet for, so the tab row renders as an unstyled vertical list of
+> icons spilling outside the card. That defect was invisible for as long as the route crashed
+> before rendering. See the table below.
 
 The runner lives in the **CI-Engineering checkout** beside this one:
 
@@ -46,9 +50,36 @@ by hand ([below](#the-capture-stage)) and run `npm run capture` in this director
 
 ## Quick start
 
+> ⚠️ **`npm install` in this directory does not work, and never has.** `package.json` lists the
+> private `@companionintelligence/video-kit`, so npm demands a registry token and the install
+> fails before Playwright is ever fetched. Install Playwright through a **throwaway manifest**
+> instead — a scratch directory whose only dependency is the exact pinned version — and point
+> this directory at it:
+>
+> ```bash
+> mkdir -p /tmp/pw && cd /tmp/pw
+> printf '{"name":"pw","private":true,"dependencies":{"playwright":"1.62.1"}}' > package.json
+> npm install && npx playwright install chromium   # cached under ~/Library/Caches/ms-playwright
+> ln -s /tmp/pw/node_modules <this-repo>/video/node_modules
+> ```
+>
+> The version above **must** match the `playwright` pin in `package.json` — see
+> [Why Playwright is pinned exactly](#why-playwright-is-pinned-exactly). Repos with a
+> `video/make.sh` automate this; Companion Hub does not have one yet.
+>
+> Then drive the kit from the CI-Common checkout rather than `npm run`, so the scripts resolve:
+>
+> ```bash
+> node ../../CI-Common/packages/video-kit/bin/ci-video.mjs <doctor|capture|build|check|render>
+> ```
+>
+> **Check the kit version next to that bin before trusting a render** —
+> `node -e 'console.log(require("…/video-kit/package.json").version)'`. A CI-Common clone parked
+> on an old branch renders last week's brand with no warning. `package.json` here still declares
+> `"@companionintelligence/video-kit": "^0.1.0"` while the fleet renders on **0.7.0**; that range
+> is stale and is not what the commands above use.
+
 ```bash
-npm install
-npx playwright install --with-deps chromium
 npm run doctor        # verify node / ffmpeg / playwright / hyperframes / fonts
 
 # with the capture stage up (see below):
@@ -196,7 +227,7 @@ film its *store* page, and the header swaps Install for Open the moment it is in
 | Shot | Scene | Why it is a slate |
 |---|---|---|
 | `running-app` | `install-and-run` | The caption promises a green badge. A DB-seeded `running` app cannot produce one: `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install is not available either — `installApp` → `ReposHelpers.downloadAppFiles` pulls the bundle from the **Portal** (`/api/store/:id/install`, device-authenticated), and the mock portal answers 404 (`Failed to fetch app files`). Needs a pass with a real Portal install bundle and a real container. |
-| `custom-app-create` | `bring-your-own-app` | **STILL BROKEN ON `dev`. #1065 fixed one call site of three; the route still crashes.** `.omit()` on a schema carrying refinements throws in Zod 4, and `dynamicComposeSchema` ends in `.superRefine(...)`. #1065 fixed `multi-service-form.tsx` (now built from the unrefined `dynamicComposeFormSchema`) but left **`components/multi-service-form/json-compose-editor.tsx:11`** — `toJsonSchema(dynamicComposeSchema.omit({ schemaVersion: true }))` — at **module scope**. `multi-service-form.tsx:8` imports that module statically, so it is evaluated as soon as the `/apps/create` chunk loads and throws `.omit() cannot be used on object schemas containing refinements`. React Router treats the failed route module as a load error and reloads forever: **empty `<body>`, ~144 main-frame navigations in 9 s**. Two further call sites are latent (they throw on use, not on load): `stores/multiServiceStore.ts:64` (`validate`) and `modules/app/pages/custom-app-edit-page.tsx:50` (the *edit* page). Nothing about the stage is wrong — verify with `pnpm exec tsx` that the common schema module itself imports fine. Fix in the product, then `capture --only custom-app-create`. |
+| `custom-app-create` | `bring-your-own-app` | **The route loads now; the screen is not yet publishable.** The Zod crash is fixed — all three `.omit()`-on-a-refined-schema call sites (`components/multi-service-form/json-compose-editor.tsx:11` at module scope, `stores/multiServiceStore.ts:64`, `modules/app/pages/custom-app-edit-page.tsx:50`) now use `dynamicComposeFormSchema`, and `components/multi-service-form/compose-schema-usage.test.ts` fails the build if any of them comes back. What blocks the shot now is a **separate styling bug**: `components/multi-service-form/multi-service-form.tsx:211` builds the service tab bar from Tabler/Bootstrap classes — `<ul class="nav nav-underline …">`, `nav-item`, `nav-link`, `nav-link-icon`, `nav-link-title`, `col` — and **this app has no Tabler or Bootstrap dependency and no stylesheet defining them** (`grep nav-underline packages/frontend/dist/client/assets/*.css` returns nothing; the `<ul>` computes to `display: block`). The tabs therefore stack vertically as bare icons + labels, left-aligned outside the card's padding, and the Compose editor the caption promises is pushed off-frame. Filming that under "Bring your own containers. They become a real app." would ship a broken-looking product. Restyle the tab bar in the app's own Tailwind/shadcn idiom — a design call, not a mechanical one — then `capture --only hub-home,custom-app-create` (`hub-home` first: it carries the login, see hazard 7). |
 
 ## Three capture passes
 
