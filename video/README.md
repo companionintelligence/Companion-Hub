@@ -15,16 +15,21 @@ What is *meant* to be committed is the input — the screenshots under `assets/s
 exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
 reviewable image diff.
 
-> ⚠️ **25 of 30 shots are captured and committed; 5 render as slates.**
-> `install-and-run` and `bring-your-own-app` have no shot in either viewport, and
-> `configure-install` has none in portrait. Each has a named cause — see
-> [Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet). Two of the three are
-> product bugs, not stage problems. Do not "fix" them by seeding a greener status.
+> ⚠️ **26 of 30 shots are captured and committed; 4 render as slates.**
+> `install-and-run` and `bring-your-own-app` have no shot in either viewport. Both have a named
+> cause — see [Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet). **Both are
+> product bugs, not stage problems.** Do not "fix" them by seeding a greener status or by
+> pointing a shot at a screen that happens to render.
 >
-> **Two of those three blockers are now fixed in the product** (#1065: the Zod 4 `.omit()` crash on
-> `/apps/create`, and the Install dialog's mobile width). Their shots are unblocked and simply have
-> not been re-shot yet — the table below says which is which. `install-and-run` is still genuinely
-> unfilmable.
+> `configure-install` is **no longer** on that list: #1065 fixed the Install dialog's mobile
+> width, and `install-dialog.mobile.png` is captured and committed. The landscape frame was
+> re-shot in the same pass because #1065 also fixed the domain suffix that used to wrap its
+> last two characters onto a second line.
+>
+> ⚠️ **`/apps/create` is still dead on `dev`, and #1065 did not fully fix it.** #1065 corrected
+> one `.omit()`-on-a-refined-schema call site; two more survive, and one of them still crashes
+> the route at module evaluation. See the table below for the exact line. `custom-app-create`
+> stays a slate until that is fixed in the product.
 
 The runner lives in the **CI-Engineering checkout** beside this one:
 
@@ -77,12 +82,19 @@ Ports below are the video stage's own (`9191`+) so a capture never collides with
 an E2E run already using the defaults. From the **repo root**:
 
 ```bash
-export SERVER_IP=localhost FRONTEND_PORT=9191 BACKEND_PORT=9192 API_PORT=9192 \
+export NODE_ENV=development E2E_TEST=true TZ=UTC \
+       SERVER_IP=localhost FRONTEND_PORT=9191 BACKEND_PORT=9192 API_PORT=9192 \
        MOCK_PORTAL_PORT=9193 CI_CLOUD_URL=http://localhost:9193 \
-       POSTGRES_PORT=9194 POSTGRES_USERNAME=companion POSTGRES_PASSWORD=postgres \
-       POSTGRES_DBNAME=companiondb RABBITMQ_PORT=9195 RABBITMQ_USERNAME=companion \
-       RABBITMQ_PASSWORD=admin JWT_SECRET=e2e-test-secret E2E_TEST=true TZ=UTC \
-       DEVICE_ID=test-device-e2e CI_HUB_DATA_DIR=/tmp/ci-hub-video \
+       POSTGRES_HOST=localhost POSTGRES_PORT=9194 POSTGRES_USERNAME=companion \
+       POSTGRES_PASSWORD=postgres POSTGRES_DBNAME=companiondb \
+       RABBITMQ_HOST=localhost RABBITMQ_PORT=9195 RABBITMQ_USERNAME=companion \
+       RABBITMQ_PASSWORD=admin JWT_SECRET=e2e-test-secret \
+       DEVICE_ID=test-device-e2e \
+       CI_HUB_DATA_DIR=/tmp/ci-hub-video \
+       CI_HUB_APP_DATA_DIR=/tmp/ci-hub-video/app-data \
+       CI_HUB_APP_DATA_PATH=/tmp/ci-hub-video \
+       CI_HUB_TUNNEL_DIR=/tmp/ci-hub-video/tunnel \
+       ROOT_FOLDER_HOST=/tmp/ci-hub-video CI_HUB_APP_DIR="$PWD" \
        CI_HUB_FORWARD_AUTH_URL=http://localhost:9192/api/auth/traefik \
        CI_MARKETPLACE_DIR="$PWD/../CI-Marketplace" \
        MOCK_PORTAL_OPERATOR_EMAIL=owner@acme.com MOCK_PORTAL_OPERATOR_PASSWORD=password
@@ -94,13 +106,52 @@ docker run -d --name hub-video-mq -p 9195:5672 -e RABBITMQ_DEFAULT_USER=companio
 
 MOCK_PORTAL_SCENARIO=registered pnpm exec tsx e2e/mock-portal/server.ts &
 bash e2e/start-backend.sh &
+
+# Build @ci-hub/common BEFORE the frontend, and do not race them — see the warning below.
+pnpm run --filter @ci-hub/common build
 pnpm run --filter frontend build && pnpm run --filter frontend preview &
+```
+
+**Those first two lines are not optional, and neither is the ordering below them.**
+
+`NODE_ENV` and the four `CI_HUB_*` path vars must be in the **process environment**, not only in
+the `$CI_HUB_DATA_DIR/.env` that `start-backend.sh` writes. `packages/backend/src/common/constants.ts`
+reads `process.env` at *module load*, before that file is parsed:
+
+```ts
+export const APP_DATA_DIR = process.env.CI_HUB_APP_DATA_DIR || '/app-data';   // constants.ts:37
+```
+
+Omit them and the backend dies on `ENOENT: no such file or directory, mkdir '/app-data'`. Omit
+`NODE_ENV=development` and `DatabaseService.getMigrationsPath()` skips its dev branch and looks in
+`$CI_HUB_APP_DIR/assets/migrations`, which does not exist in a source checkout — the backend dies on
+`Can't find meta/_journal.json file`. `playwright.config.ts` → `backendEnv` passes all of this
+explicitly (`NODE_ENV: 'development'` at line 20); this block is the hand-run equivalent and must
+stay in step with it.
+
+```bash
 
 pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows, MCP keys
 
 cd video && APP_URL=http://localhost:9191 npm run capture -- \
   --only login-screen,hub-home,hub-store,store-alternatives,app-details,install-dialog,\
 port-expose,ai-hardware,mcp-tools,hub-settings,hub-settings-security
+```
+
+**Never let the frontend build race `start-backend.sh`.** That script builds `@ci-hub/common`
+partway through its own run. Backgrounding it and building the frontend at the same time — the
+obvious way to read the block above — compiles the frontend against **whatever `packages/common/dist`
+happened to be on disk at that moment**, which in a fresh worktree is the previous commit's. The
+capture then films a bundle that is not the tree you checked out, and nothing anywhere reports it:
+the shots look plausible, `capture` exits 0, and `check` passes.
+
+This cost a full diagnostic detour on the pass that added `install-dialog.mobile.png`: `/apps/create`
+threw the *exact* Zod error #1065 had already fixed, from a bundle seven minutes older than the
+`@ci-hub/common` build. Compare mtimes before believing any frame:
+
+```bash
+stat -f "%Sm %N" -t "%F %T" packages/common/dist/schemas/dynamic-compose.js \
+                            packages/frontend/dist/client/index.html   # frontend MUST be newer
 ```
 
 `MOCK_PORTAL_OPERATOR_EMAIL` is not optional. Hub login is **Portal-backed** —
@@ -145,8 +196,7 @@ film its *store* page, and the header swaps Install for Open the moment it is in
 | Shot | Scene | Why it is a slate |
 |---|---|---|
 | `running-app` | `install-and-run` | The caption promises a green badge. A DB-seeded `running` app cannot produce one: `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install is not available either — `installApp` → `ReposHelpers.downloadAppFiles` pulls the bundle from the **Portal** (`/api/store/:id/install`, device-authenticated), and the mock portal answers 404 (`Failed to fetch app files`). Needs a pass with a real Portal install bundle and a real container. |
-| `install-dialog` (portrait only) | `configure-install` | **FIXED IN #1065 — re-shoot pending.** The Install dialog did not fit a phone — at 375 px it rendered wider than the screen, the third exposure mode reading `Pub` and the subdomain suffix and generated hostname both cut mid-word. The landscape frame is captured and good; the portrait one was thrown away rather than shipped as a screenshot of an overflowing dialog. `DialogContent` now carries `max-w-[calc(100vw-2rem)]` + `[&>*]:min-w-0` and the domain suffix truncates on one line, so `capture --only install-dialog` at both viewports is the only remaining step. |
-| `custom-app-create` | `bring-your-own-app` | **FIXED IN #1065 — re-shoot pending.** `/apps/create` was broken on `dev`, in the product: `multi-service-form.tsx:26` called `dynamicComposeSchema.omit({ schemaVersion: true })`, but that schema ends in `.superRefine(...)`, so Zod threw `.omit() cannot be used on object schemas containing refinements` at module evaluation. React Router treated the failed route module as a load error and reloaded forever: blank body, infinite navigation loop. The form now compiles from an unrefined `dynamicComposeFormSchema`, so all five `/apps/create` shots are capturable — nothing about the stage was ever wrong. |
+| `custom-app-create` | `bring-your-own-app` | **STILL BROKEN ON `dev`. #1065 fixed one call site of three; the route still crashes.** `.omit()` on a schema carrying refinements throws in Zod 4, and `dynamicComposeSchema` ends in `.superRefine(...)`. #1065 fixed `multi-service-form.tsx` (now built from the unrefined `dynamicComposeFormSchema`) but left **`components/multi-service-form/json-compose-editor.tsx:11`** — `toJsonSchema(dynamicComposeSchema.omit({ schemaVersion: true }))` — at **module scope**. `multi-service-form.tsx:8` imports that module statically, so it is evaluated as soon as the `/apps/create` chunk loads and throws `.omit() cannot be used on object schemas containing refinements`. React Router treats the failed route module as a load error and reloads forever: **empty `<body>`, ~144 main-frame navigations in 9 s**. Two further call sites are latent (they throw on use, not on load): `stores/multiServiceStore.ts:64` (`validate`) and `modules/app/pages/custom-app-edit-page.tsx:50` (the *edit* page). Nothing about the stage is wrong — verify with `pnpm exec tsx` that the common schema module itself imports fine. Fix in the product, then `capture --only custom-app-create`. |
 
 ## Three capture passes
 
