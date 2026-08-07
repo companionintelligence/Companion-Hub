@@ -166,8 +166,26 @@ pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows, M
 
 cd video && APP_URL=http://localhost:9191 npm run capture -- \
   --only login-screen,hub-home,hub-store,store-alternatives,app-details,install-dialog,\
-port-expose,ai-hardware,mcp-tools,hub-settings,hub-settings-security
+port-expose,ai-hardware,mcp-tools,hub-settings,hub-settings-security,running-app,custom-app-create
 ```
+
+`running-app` additionally needs Immich genuinely installed and up before the pass. It is
+the one shot with a prerequisite the storyboard cannot express, so do it explicitly and
+check the containers rather than trusting the API's 201:
+
+```bash
+curl -s -c /tmp/hub.jar -X POST http://localhost:9192/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"owner@acme.com","password":"password"}'
+curl -s -b /tmp/hub.jar -X POST 'http://localhost:9192/api/app-lifecycle/immich:ci-marketplace/install' \
+  -H 'Content-Type: application/json' -d '{"port":9008,"exposedLocal":false,"exposed":false}'
+# install is async — wait for all four, and for HEALTHY, not merely Up
+docker ps --filter name=immich --format '{{.Names}} {{.Status}}'
+```
+
+`app-details` and `install-dialog` film Immich's **store** page and need its Install button,
+which the header swaps for Open the moment Immich is installed. So either capture those two
+before installing, or leave them alone — they are already committed. `--only` scoped to
+`running-app,custom-app-create` does not touch them.
 
 **Never let the frontend build race `start-backend.sh`.** That script builds `@ci-hub/common`
 partway through its own run. Backgrounding it and building the frontend at the same time — the
@@ -224,10 +242,18 @@ film its *store* page, and the header swaps Install for Open the moment it is in
 ## Shots that cannot be filmed yet
 <a id="shots-that-cannot-be-filmed-yet"></a>
 
-| Shot | Scene | Why it is a slate |
+**None.** All 30 shots across the 17 scenes are filmed. Both entries that used to live
+here — `running-app` and `custom-app-create` — were captured on 2026-08-07; what it took
+is recorded below, because both were blocked by something real rather than by effort.
+
+| Shot | Was blocked by | Unblocked by |
 |---|---|---|
-| `running-app` | `install-and-run` | The caption promises a green badge. A DB-seeded `running` app cannot produce one: `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install is not available either — `installApp` → `ReposHelpers.downloadAppFiles` pulls the bundle from the **Portal** (`/api/store/:id/install`, device-authenticated), and the mock portal answers 404 (`Failed to fetch app files`). Needs a pass with a real Portal install bundle and a real container. |
-| `custom-app-create` | `bring-your-own-app` | **The route loads now; the screen is not yet publishable.** The Zod crash is fixed — all three `.omit()`-on-a-refined-schema call sites (`components/multi-service-form/json-compose-editor.tsx:11` at module scope, `stores/multiServiceStore.ts:64`, `modules/app/pages/custom-app-edit-page.tsx:50`) now use `dynamicComposeFormSchema`, and `components/multi-service-form/compose-schema-usage.test.ts` fails the build if any of them comes back. What blocks the shot now is a **separate styling bug**: `components/multi-service-form/multi-service-form.tsx:211` builds the service tab bar from Tabler/Bootstrap classes — `<ul class="nav nav-underline …">`, `nav-item`, `nav-link`, `nav-link-icon`, `nav-link-title`, `col` — and **this app has no Tabler or Bootstrap dependency and no stylesheet defining them** (`grep nav-underline packages/frontend/dist/client/assets/*.css` returns nothing; the `<ul>` computes to `display: block`). The tabs therefore stack vertically as bare icons + labels, left-aligned outside the card's padding, and the Compose editor the caption promises is pushed off-frame. Filming that under "Bring your own containers. They become a real app." would ship a broken-looking product. Restyle the tab bar in the app's own Tailwind/shadcn idiom — a design call, not a mechanical one — then `capture --only hub-home,custom-app-create` (`hub-home` first: it carries the login, see hazard 7). |
+| `running-app` | The caption promises a green badge, and a DB-seeded `running` app cannot produce one — `getAppStatusPresentation` downgrades it to an amber, animated **Initializing** whenever runtime health reports zero containers. A genuine install was not available either: `installApp` → `ReposHelpers.downloadAppFiles` fetches the bundle from the **Portal**, and the mock portal answered 404 (`Failed to fetch app files`). | `e2e/mock-portal/server.ts` grew the missing `GET /api/store/:slug/install` route, serving `config.json` + `docker-compose.json` **off the CI-Marketplace checkout it already symlinks** — the same two files production's `GetInstallBundle` returns. Immich then installs for real: four containers (`immich-server`, `-machine-learning`, `-redis`, `-db`), all healthy, `AppMonitor` reporting live CPU for them. The pill is `bg-green-500` because the app is genuinely up, not because anything was seeded greener. |
+| `custom-app-create` | The Zod crash (#1065/#1070), then the Tabler/Bootstrap tab bar with no CSS behind it (#1071) — tabs stacked vertically as bare icons outside the card's padding. | **#1074**, which restyled the tab bar in the app's own Tailwind idiom. The shot now shows a horizontal tab bar with a visible active pill, the two-column services layout, and one panel at a time. |
+
+**`running-app` needs a real Docker runtime on the capture host** (colima on macOS). Without
+one the install still fails, just later and louder. Budget a few minutes for the first pass:
+Immich's four images are pulled for real.
 
 ## Three capture passes
 
@@ -237,13 +263,22 @@ permanent slates; they are filmed now.
 
 | Pass | Shots | Setup |
 |---|---|---|
-| 1 | everything except the two below, minus the two slates | `video/stage/seed.mts`, re-run immediately before the pass |
+| 1 | everything except the two below | `video/stage/seed.mts`, re-run immediately before the pass — plus a genuine Immich install for `running-app` (see above) |
 | 2 | `onboarding-wizard` | `setWelcomeSeen(false)` (`e2e/helpers/settings.ts`) re-arms the wizard, which `onboarding-page.tsx` otherwise skips whenever `hasCompletedOnboarding` is true. Each pass gets a fresh BrowserContext, so this shot carries its own login in `before`. |
 | 3 | `device-registration` | flip the mock portal with `curl -X POST localhost:9193/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
 
-Pass 1 is every shot id in `storyboard.json` except those two and the two in
-[Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet) — the `--only` list in
-the command above. Add a scene, add its id there.
+Pass 1 is every shot id in `storyboard.json` except those two — the `--only` list in the
+command above. Add a scene, add its id there.
+
+**Both pass-1 shots added in the 30/30 pass log themselves in.** `running-app` and
+`custom-app-create` do not inherit the session from `hub-home`'s `before` block the way the
+rest of pass 1 does: each starts at its own route, waits on `<its own selector>, input[placeholder='you@example.com']`
+(a CSS selector list, so it resolves whether the Hub answers with the page or the login
+gate), then logs in over `POST /api/auth/login` in an `eval` and navigates. That is
+idempotent — it works as shot #1 of a fresh context and as shot #11 of a warm one. Prefer
+this shape for any new shot. A `--only` run that silently inherits state from the shots that
+would have preceded it is how this fleet once filmed an entire room behind an
+"Enable Microphone" modal, with `check` passing it twice.
 
 ## Screens deliberately left out
 

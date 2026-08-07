@@ -127,22 +127,34 @@
  *    the capture runs offline they render as broken-image glyphs — check the
  *    frame, do not ship it.
  *
- * 9. APP STATUS IS NOT A RUNNING CONTAINER — NOT HANDLED, and it is why
- *    `install-and-run` has no shot. video/stage/seed.mts writes installed-app
- *    rows straight into the DB, which is enough for `hub-home`'s tiles (they
- *    render name + logo off the marketplace catalog). It is NOT enough for the
- *    status pill: getAppStatusPresentation
+ * 9. APP STATUS IS NOT A RUNNING CONTAINER — HANDLED, by running a container.
+ *    video/stage/seed.mts writes installed-app rows straight into the DB, which is
+ *    enough for `hub-home`'s tiles (they render name + logo off the marketplace
+ *    catalog). It is NOT enough for the status pill: getAppStatusPresentation
  *    (frontend/src/modules/app/components/app-status/app-status.tsx) downgrades a
  *    `running` app to an amber, animated "Initializing" whenever runtime health
- *    reports zero containers. So `/apps/<store>/<app>` films an amber pill under
- *    a caption promising a green badge.
+ *    reports zero containers. A seeded row therefore films an amber pill under a
+ *    caption promising a green badge, and `running-app` sat unfilmable for that
+ *    reason.
  *
- *    A genuine install is not available on this stage either: installApp ->
- *    ReposHelpers.downloadAppFiles pulls the app bundle from the PORTAL
- *    (`/api/store/:id/install`, device-authenticated), which the mock portal does
- *    not serve — it fails with "Failed to fetch app files: 404". Re-add the shot
- *    alongside a pass that has a real Portal install bundle and a real container
- *    running, not by seeding a greener status.
+ *    The fix is NOT a greener seeded status. `e2e/mock-portal/server.ts` now
+ *    serves `GET /api/store/:slug/install` — the one route the mock portal was
+ *    missing — from the CI-Marketplace checkout `start-backend.sh` already
+ *    symlinks, which is the same `config.json` + `docker-compose.json` pair
+ *    production's GetInstallBundle returns. `installApp` then runs unmodified:
+ *    real compose generation, real `docker compose up`, real containers, real
+ *    health. `running-app` is captured with Immich's four containers genuinely
+ *    healthy. Nothing about the status path is stubbed.
+ *
+ *    Consequences worth knowing before a re-shoot:
+ *      - The capture host needs a working Docker daemon (colima on macOS).
+ *      - CI_MARKETPLACE_DIR must NOT point at a shared clone. downloadAppFiles
+ *        WRITES the bundle into `<dataDir>/repos/ci-marketplace/apps/<slug>`,
+ *        which is that symlink — an install dirties the checkout it reads from.
+ *        Point it at a worktree of your own.
+ *      - Installing Immich swaps its store-page Install button for Open, which
+ *        is what `app-details` and `install-dialog` wait on. Capture those two
+ *        first, or scope `--only` so they are not re-shot.
  *
  * 10. EXPOSE-A-PORT DNS CHECK — the Expose a port form debounces a live
  *    subdomain-availability call (`/api/cloudflare/check-dns-availability`,
