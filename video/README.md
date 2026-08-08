@@ -2,8 +2,8 @@
 
 > **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
-Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub's FTUE and major
-screens, from this repo's own UI. Both are produced from [`storyboard.json`](storyboard.json).
+Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub, from this repo's
+own UI. Both are produced from [`storyboard.json`](storyboard.json).
 
 ## Videos are built locally, on demand
 
@@ -15,25 +15,32 @@ What is *meant* to be committed is the input — the screenshots under `assets/s
 exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
 reviewable image diff.
 
-> ⚠️ **26 of 30 shots are captured and committed; 4 render as slates.**
-> `install-and-run` and `bring-your-own-app` have no shot in either viewport. Both have a named
-> cause — see [Shots that cannot be filmed yet](#shots-that-cannot-be-filmed-yet). **Both are
-> product bugs, not stage problems.** Do not "fix" them by seeding a greener status or by
-> pointing a shot at a screen that happens to render.
+> ✅ **Every shot the storyboard references is captured — 0 slates.** The cut is **16 scenes**
+> and references **8 shot ids × 2 viewports**.
 >
-> `configure-install` is **no longer** on that list: #1065 fixed the Install dialog's mobile
-> width, and `install-dialog.mobile.png` is captured and committed. The landscape frame was
-> re-shot in the same pass because #1065 also fixed the domain suffix that used to wrap its
-> last two characters onto a second line.
+> ⚠️ **Nine shot ids are committed and are NOT in the current cut.** They are kept, not deleted,
+> and that is a deliberate deviation from the house rule that a dropped scene takes its PNGs with
+> it (see CI-Spellbook #52/#53 and CI-Web-XR-Scan #50). The reason: none of them was dropped for a
+> defect — the storyboard was rewritten around a new script that simply does not have a beat for
+> them — and two of them (`running-app`, `custom-app-create`) cost four product PRs and a real
+> four-container Immich install to unblock. They cost nothing at render time and `shot-coverage`
+> caps `have` at `need`, so they do not distort any fleet count.
 >
-> ⚠️ **`/apps/create` now LOADS — the Zod crash is fixed — and `custom-app-create` is still a
-> slate, for a different reason.** The two surviving `.omit()`-on-a-refined-schema call sites are
-> gone (plus the latent third), and a source-level guard test keeps them gone. Fixing the crash
-> revealed a **second, independent product bug underneath it**: the multi-service form's tab bar
-> is written in Tabler/Bootstrap class names (`nav nav-underline`, `nav-item`, `nav-link`, `col`)
-> that this app has no stylesheet for, so the tab row renders as an unstyled vertical list of
-> icons spilling outside the card. That defect was invisible for as long as the route crashed
-> before rendering. See the table below.
+> | Parked shot | What it is | Why it is out of this cut |
+> |---|---|---|
+> | `login-screen` | The local login form | The script opens on the problem, not on signing in |
+> | `device-registration` | The six-character pairing step | No pairing beat in the script |
+> | `app-details` | Immich's store page + App Privacy card | The App Privacy beat is cut — see below |
+> | `running-app` | Immich with a genuine green Running pill | No "it is live" beat; the strongest orphan here |
+> | `custom-app-create` | Bring-your-own-container form | No BYO beat in the script |
+> | `mcp-tools` | MCP server, keys and tool catalog | No agent-plumbing beat |
+> | `hub-settings`, `hub-settings-security` | The settings tab row and Security tab | The old cut ended a chapter on a settings page; the new one does not |
+>
+> ⚠️ **The App Privacy beat is gone.** It is not in Liam's script, and CI-Engineering's
+> `tools/EDITORIAL-REVIEW.md` finding 2 recommends dropping it outright: the card renders
+> unconditionally but its contents are a fixed i18n constant, zero of the 512 CI-Marketplace
+> manifests carry a privacy field, and `privacy_labels` on the Portal's `AppEntity` is never
+> populated. `app-details.png` stays on disk as the record of that screen.
 
 The runner lives in the **CI-Engineering checkout** beside this one:
 
@@ -76,7 +83,7 @@ by hand ([below](#the-capture-stage)) and run `npm run capture` in this director
 > **Check the kit version next to that bin before trusting a render** —
 > `node -e 'console.log(require("…/video-kit/package.json").version)'`. A CI-Common clone parked
 > on an old branch renders last week's brand with no warning. `package.json` here still declares
-> `"@companionintelligence/video-kit": "^0.1.0"` while the fleet renders on **0.7.0**; that range
+> `"@companionintelligence/video-kit": "^0.1.0"` while the fleet renders on **0.13.1**; that range
 > is stale and is not what the commands above use.
 
 ```bash
@@ -165,9 +172,29 @@ stay in step with it.
 pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows, MCP keys
 
 cd video && APP_URL=http://localhost:9191 npm run capture -- \
-  --only login-screen,hub-home,hub-store,store-alternatives,app-details,install-dialog,\
-port-expose,ai-hardware,mcp-tools,hub-settings,hub-settings-security,running-app,custom-app-create
+  --only hub-home,ai-hardware,install-dialog,port-expose,store-alternatives,app-hermes,app-openclaw
 ```
+
+That list is **the shots the current storyboard needs**, minus the two FTUE shots below. The nine
+parked ids are not re-shot by it; re-shooting them needs the longer list this file used to carry —
+`login-screen,hub-store,app-details,mcp-tools,hub-settings,hub-settings-security,running-app,custom-app-create`
+— plus a genuine Immich install for `running-app`.
+
+**Re-run `video/stage/seed.mts` immediately before the pass, and capture `hub-home` first.**
+This is the five-minute `sync_app_statuses` cron, and its symptom has changed since this file last
+described it: it no longer *empties* the tile row. It now leaves the three tiles in place and
+overlays a **red error badge on each app logo**, which is a frame that still renders, still passes
+`check`, and still looks like three broken images to anyone reading a contact sheet. Measured here:
+a `hub-home` captured six minutes after the seed came back SSIM 0.9968 against the good frame — a
+difference small enough to skim past in a diff and fatal on screen. Re-seed, then shoot it.
+
+**`hub-home` no longer logs in through the form.** It used to `fill`/`click` its way through
+`/login`, which only works as the first authenticated shot of a pass — `/login`'s clientLoader
+redirects a signed-in visitor to `/home`, so once any earlier shot had authenticated, `hub-home`
+timed out waiting for an email field that would never appear. It now uses the idempotent
+`POST /api/auth/login` + `location.assign` shape this file recommends for every new shot, so it
+works anywhere in the order. `onboarding-wizard` still uses the form shape, and still must be
+pass 2.
 
 `running-app` additionally needs Immich genuinely installed and up before the pass. It is
 the one shot with a prerequisite the storyboard cannot express, so do it explicitly and
@@ -242,7 +269,7 @@ film its *store* page, and the header swaps Install for Open the moment it is in
 ## Shots that cannot be filmed yet
 <a id="shots-that-cannot-be-filmed-yet"></a>
 
-**None.** All 30 shots across the 17 scenes are filmed. Both entries that used to live
+**None.** All 17 shot ids on disk are filmed — the 8 this cut uses and the 9 parked ones. Both entries that used to live
 here — `running-app` and `custom-app-create` — were captured on 2026-08-07; what it took
 is recorded below, because both were blocked by something real rather than by effort.
 
@@ -280,6 +307,32 @@ this shape for any new shot. A `--only` run that silently inherits state from th
 would have preceded it is how this fleet once filmed an entire room behind an
 "Enable Microphone" modal, with `check` passing it twice.
 
+## Two disclosures about what is on screen
+
+**`install-dialog` and `port-expose` are shot with "This Machine Only" selected, and that is not
+the form's default.** `resolveExposureMode` (`modules/onboarding/helpers/agent-onboarding.ts:48`)
+returns `cloudflare` whenever a Cloudflare domain is configured, so on a Hub with a domain — which
+the stage has — **the install form opens on Public Web**. Both shots therefore carry a
+`{"click": "button:has-text('This Machine Only')"}` step in their `before` block.
+
+That is a real state a user chooses, not a fixture, and it is the state the film's line is about
+("Apps arrive already configured. Already private."). The previous captures had Public Web selected
+and a public `*.ci.computer` subdomain filled in — a frame that says the opposite of the line over
+it, which is the one combination the honesty bar forbids. Nothing here should be read as a claim
+that local-only is the default; **it is not**, and that is worth a product conversation rather than
+a caption. Note also that Private VPN renders disabled on this stage because no Tailscale transport
+is configured for it.
+
+**`split` was tried for the Hermes/OpenClaw beat and rejected, with a measurement.** `split` is
+used by zero films in the fleet, and pairing the two app pages in one frame is exactly what it is
+for. In portrait it does not work: `brand.mjs` styles `.shot` as `object-fit: cover` with
+`object-position: top center`, and a `split` cell is 16:9, so a 1080×1920 mobile plate is
+cover-cropped to its **top 31.6%** — which on a Hub app page is the header and the app icon and
+stops roughly 80px above the app's *name*. The portrait cut would have shown two icons and no
+names, under a line that names both apps. The beat is two sequential shots inside one `screen`
+scene instead. `split` remains available and remains unused; anyone reaching for it should shoot
+a 16:9-safe subject or expect the top-crop.
+
 ## Screens deliberately left out
 
 Not every route belongs in the cut. These were considered and rejected, with the reason,
@@ -302,6 +355,48 @@ file**, so the script and the screenshots cannot drift apart.
 
 Adding a beat is: add a scene, add its shot's `capture` block, `npm run capture -- --only <id>`,
 then `npm run build && npm run render`.
+
+## The 30-second cut and the 6-second bumpers
+
+They are written and they are **not rendered by anything**, on purpose. The copy is parked at the
+bottom of this section so it is not lost; here is why it is parked rather than built.
+
+**The pipeline produces one film per product, in two formats, from one `storyboard.json`.** A
+30-second cut and three 6-second bumpers are four more deliverables it has no mechanism for. Three
+routes were considered:
+
+| Route | Verdict |
+|---|---|
+| Extra entries in `CI-Engineering/tools/stages.json` | **Wrong.** An entry is `{name, repo, capture, comment}` — there is no field naming *which* storyboard, so `companion-hub-30s` would resolve `CI-Hub` `origin/dev`'s one `video/storyboard.json` and render the same film again. It also corrupts every fleet count that iterates those keys: `shot-coverage`, `score-videos` ("24/24") and `build-gallery` would grow eight derivative rows. And `lib/bar.mjs` has **one** bar with `duration: [45, 105]`, so three 6-second bumpers are three permanently-red rows in a fleet whose whole point is that red means something. |
+| A kit feature | **Right shape.** A `cuts` block in the storyboard — named scene-id lists, each rendering its own pair of MP4s (`ci-hub-short-landscape.mp4`) — keeps one shot set, one `narration.json` and one place a line can drift. It needs schema, `layout()` filtering, per-cut render targets, and a per-cut duration bar so a bumper is judged as a bumper. That is a kit PR with its own version bump and a fleet re-render. |
+| Out of scope for this pass | **What was done.** |
+
+Two things a `cuts` implementation must handle, found while reading the script against the kit:
+
+- **The 30-second cut is different prose, not a subset of the long film's lines.** Under
+  `meta.pacing: "fit"` a scene is sized by its own mp3, so a short cut cannot be assembled by
+  dropping scenes — it needs its own scenes and its own recordings. `cuts` should therefore name
+  scene ids and let scenes exist that no other cut uses.
+- **A 6-second bumper has no room for a `screen` scene.** Each is one card and one line; they are
+  authoring work, not plumbing, and they need their own outro CTA handling (the kit requires a
+  `cta` on every `outro` and there is no room for a separate outro in six seconds).
+
+### The copy, verbatim, for whoever builds it
+
+**30-second cut.** "It starts as a good idea. A home server. Three weekends later there is a reverse
+proxy, a wiki tab that never closed, and a machine that dies when the lights blink. There is a much
+shorter way. Companion Hub turns a computer already sitting around into a private AI server. One
+installer, one wizard. It reads the hardware and picks the models that run fast on it. Apps arrive
+configured. A phone connects, without exposing anything to the internet. The files stay in the
+house. Companion Hub. Uncloud your life."
+
+**6-second bumpers.** 1. "That old laptop is a server now." 2. "Stop renting what could be owned."
+3. "Local AI. One roof. No landlord."
+
+Note for the 30-second cut when it is built: *"a machine that dies when the lights blink"* is a
+power-flicker beat this pipeline cannot photograph, and *"a wiki tab that never closed"* needs a
+browser tab strip the `screen` renderer does not draw. Both are typographic beats or they are cut —
+the same call made for the long film's cold open.
 
 ## Media
 
