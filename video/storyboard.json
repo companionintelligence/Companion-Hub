@@ -597,7 +597,7 @@
       "id": "close",
       "kind": "outro",
       "seconds": 4.5,
-      "caption": "ci.computer",
+      "mark": "brand:logo.full",
       "cta": "UnCloud your life.",
       "url": "ci.computer",
       "narration": "Companion Hub, from Companion Intelligence. UnCloud your life.",
