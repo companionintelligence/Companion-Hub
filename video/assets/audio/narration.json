@@ -81,9 +81,68 @@
       "adopted": true
     },
     "close": {
-      "text": "Companion Hub, from Companion Intelligence. UnCloud your life.",
-      "seconds": 5.472,
-      "adopted": true
+      "text": "Companion Hub. UnCloud your life.",
+      "seconds": 3.528
+    },
+    "second-job": {
+      "text": "You wanted a home server. What you got was a second job.",
+      "seconds": 4.056
+    },
+    "the-list": {
+      "text": "Install the OS. Find the apps. Configure the apps.",
+      "seconds": 5.016
+    },
+    "the-longer-list": {
+      "text": "Open a port, and hope. Build a VPN. Learn what a reverse proxy is. Learn what a certificate is. Learn why it broke.",
+      "seconds": 9.864
+    },
+    "most-people-quit": {
+      "text": "Most people quit right about here.",
+      "seconds": 2.592
+    },
+    "title": {
+      "text": "There is a much shorter way.",
+      "seconds": 2.04
+    },
+    "any-computer": {
+      "text": "Any computer already sitting around. The old gaming rig. The laptop in the closet. Windows, Mac, Linux, it does not matter.",
+      "seconds": 10.152
+    },
+    "one-wizard": {
+      "text": "One installer. One wizard.",
+      "seconds": 2.856
+    },
+    "reads-the-machine": {
+      "text": "Companion Hub reads the machine. CPU, GPU, memory, storage.",
+      "seconds": 6.312
+    },
+    "picks-the-models": {
+      "text": "Then it tunes itself to the hardware that is actually there, and picks models that run fast on it, not models that melt it.",
+      "seconds": 7.344
+    },
+    "apps-arrive": {
+      "text": "Apps arrive already configured. Already private.",
+      "seconds": 4.152
+    },
+    "from-a-phone": {
+      "text": "Reachable from a phone, without putting anything on the open internet.",
+      "seconds": 4.464
+    },
+    "hermes-openclaw": {
+      "text": "Hermes runs locally. OpenClaw takes the boring parts of the day.",
+      "seconds": 4.968
+    },
+    "alternatives": {
+      "text": "Every service worth renting, beside the version worth owning.",
+      "seconds": 4.056
+    },
+    "the-things-stay": {
+      "text": "The files stay in the house. The work stays in the office. The photos stay in the room where they were taken.",
+      "seconds": 7.176
+    },
+    "the-uncloud": {
+      "text": "Not the cloud. The uncloud.",
+      "seconds": 2.808
     }
   }
 }

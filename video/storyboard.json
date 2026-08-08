@@ -10,14 +10,14 @@
   "meta": {
     "fps": 30,
     "transitionSeconds": 0.5,
-    "pacing": "fit"
+    "pacing": "fit",
+    "pacingTail": 0.2
   },
   "chapters": {
-    "claim": "Claim the machine",
-    "setup": "First boot",
-    "run": "Day to day",
-    "extend": "Make it yours",
-    "dials": "Under the hood"
+    "job": "The second job",
+    "boot": "The machine you have",
+    "tune": "Tuned to it",
+    "run": "Day to day"
   },
   "media": {
     "music": null,
@@ -25,66 +25,118 @@
   },
   "scenes": [
     {
-      "id": "open",
-      "kind": "intro",
-      "seconds": 4.5,
-      "title": "Companion Hub",
-      "caption": "Your data. Your hardware. Your AI.",
-      "narration": "Four hundred and ninety apps, each one running on hardware you own.",
-      "reveal": "paced"
+      "id": "second-job",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 5,
+      "title": "What you got was a second job.",
+      "caption": "You wanted a home server.",
+      "narration": "You wanted a home server. What you got was a second job."
     },
     {
-      "id": "sign-in",
-      "kind": "screen",
-      "chapter": "claim",
-      "seconds": 5.5,
-      "caption": "A local admin account. Nothing off this machine required.",
-      "narration": "It opens on a local login. Signing in anywhere else is optional.",
-      "shots": [
+      "id": "the-list",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 4.5,
+      "caption": "The part everyone expects.",
+      "narration": "Install the OS. Find the apps. Configure the apps.",
+      "reveal": "paced",
+      "items": [
         {
-          "id": "login-screen",
-          "url": "hub-living-room-server-acme.ci.computer/login",
-          "alt": "The Hub login form: a CI Account button above the local email and password fields.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/login",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='you@example.com']",
-            "settle": 900
-          }
+          "label": "Install the OS"
+        },
+        {
+          "label": "Find the apps"
+        },
+        {
+          "label": "Configure the apps"
         }
       ]
     },
     {
-      "id": "pair-the-hub",
-      "kind": "screen",
-      "chapter": "claim",
-      "seconds": 5,
-      "caption": "Six characters, and the machine is yours.",
-      "narration": "A new Hub asks for one pairing code from Companion Portal.",
-      "shots": [
+      "id": "the-longer-list",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 10,
+      "caption": "The part nobody warns you about.",
+      "narration": "Open a port, and hope. Build a VPN. Learn what a reverse proxy is. Learn what a certificate is. Learn why it broke.",
+      "reveal": "paced",
+      "items": [
         {
-          "id": "device-registration",
-          "url": "hub-living-room-server-acme.ci.computer/device-registration",
-          "alt": "Step 2: Connect this device, with the pairing-code field waiting for six characters.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/device-registration",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='ABC123']",
-            "settle": 900
-          }
+          "label": "Open a port"
+        },
+        {
+          "label": "Build a VPN"
+        },
+        {
+          "label": "Reverse proxy"
+        },
+        {
+          "label": "Certificates"
+        },
+        {
+          "label": "Why it broke"
         }
-      ],
+      ]
+    },
+    {
+      "id": "most-people-quit",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 3,
+      "title": "Most people quit right about here.",
+      "caption": "No accepted answer.",
+      "narration": "Most people quit right about here.",
       "transition": "cut"
     },
     {
-      "id": "first-boot",
+      "id": "title",
+      "kind": "intro",
+      "seconds": 3,
+      "minSeconds": 2.9,
+      "title": "Companion Hub",
+      "caption": "A private AI server, on a computer you already own.",
+      "narration": "There is a much shorter way.",
+      "mark": "brand:logo.mark",
+      "reveal": "paced",
+      "transition": "hold"
+    },
+    {
+      "id": "any-computer",
+      "kind": "feature",
+      "chapter": "boot",
+      "seconds": 9.5,
+      "caption": "Whatever is already in the house.",
+      "narration": "Any computer already sitting around. The old gaming rig. The laptop in the closet. Windows, Mac, Linux, it does not matter.",
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "The old gaming rig"
+        },
+        {
+          "label": "The laptop in the closet"
+        },
+        {
+          "label": "Windows",
+          "icon": "brand:platform.windows"
+        },
+        {
+          "label": "macOS",
+          "icon": "brand:platform.macos"
+        },
+        {
+          "label": "Linux",
+          "icon": "brand:platform.linux"
+        }
+      ]
+    },
+    {
+      "id": "one-wizard",
       "kind": "screen",
-      "chapter": "setup",
-      "seconds": 5.5,
-      "caption": "Local models, network, apps. Then Install & Finish.",
-      "narration": "First boot is one pass. Local models, network, apps.",
+      "chapter": "boot",
+      "seconds": 3,
+      "caption": "One wizard, ending in Install & Finish.",
+      "narration": "One installer. One wizard.",
       "shots": [
         {
           "id": "onboarding-wizard",
@@ -115,87 +167,254 @@
             "settle": 1200
           }
         }
-      ],
-      "transition": "hold"
+      ]
     },
     {
-      "id": "home-dashboard",
+      "id": "reads-the-machine",
       "kind": "screen",
-      "chapter": "run",
-      "seconds": 5.5,
-      "caption": "Disk, CPU, memory. From a box you can point at.",
-      "narration": "This is home. Disk, CPU and memory, read off hardware you own.",
+      "chapter": "tune",
+      "seconds": 5,
+      "caption": "OS, CPU, RAM, GPU, VRAM, storage — read off the machine it is on.",
+      "narration": "Companion Hub reads the machine. CPU, GPU, memory, storage.",
+      "transition": "cut",
       "shots": [
         {
-          "id": "hub-home",
-          "url": "hub-living-room-server-acme.ci.computer/home",
-          "alt": "The Hub dashboard: three system stat cards above the installed-apps row.",
+          "id": "ai-hardware",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
+          "alt": "The AI tab's System Overview card: OS, CPU, RAM, GPU, VRAM and storage, with an Apple Silicon capability badge.",
           "motion": "push-in",
           "capture": {
-            "path": "/login",
+            "path": "/settings?tab=ai",
             "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='you@example.com']",
+            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
             "before": [
               {
-                "fill": ["input[placeholder='you@example.com']", "owner@acme.com"]
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
               },
               {
-                "fill": ["input[placeholder='Enter your password']", "password"]
+                "wait": 2500
               },
               {
-                "click": "button[type='submit']"
+                "waitFor": "[data-testid='hw-card-title']"
               },
               {
-                "waitFor": "text=Disk space"
+                "waitFor": "[data-testid='tier-badge']"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1500
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.075,
+              "y": 0.2,
+              "w": 0.85,
+              "h": 0.28
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "picks-the-models",
+      "kind": "screen",
+      "chapter": "tune",
+      "seconds": 9,
+      "caption": "Recommended models, pre-selected for this hardware — each one priced in RAM.",
+      "narration": "Then it tunes itself to the hardware that is actually there, and picks models that run fast on it, not models that melt it.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "ai-hardware",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
+          "alt": "The AI tab's Recommended Models card: each model tagged reasoning, vision, tools or embedding, with the RAM and VRAM it needs.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/settings?tab=ai",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
+              },
+              {
+                "wait": 2500
+              },
+              {
+                "waitFor": "[data-testid='hw-card-title']"
+              },
+              {
+                "waitFor": "[data-testid='tier-badge']"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1500
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.15,
+              "y": 0.55,
+              "w": 0.72,
+              "h": 0.45
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "apps-arrive",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 3.5,
+      "caption": "Ports, domain and settings — filled in, and shown before anything runs.",
+      "narration": "Apps arrive already configured. Already private.",
+      "shots": [
+        {
+          "id": "install-dialog",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
+          "alt": "The Install Immich dialog with Exposure mode set to This Machine Only, above the hostname and settings the app is asking for.",
+          "motion": "drift-down",
+          "capture": {
+            "path": "/store/ci-marketplace/immich",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='action-install'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='action-install']"
+              },
+              {
+                "click": "[data-testid='action-install']"
+              },
+              {
+                "waitFor": "[role='dialog']"
+              },
+              {
+                "wait": 1200
+              },
+              {
+                "click": "[role='dialog'] button:has-text('This Machine Only')"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "from-a-phone",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "This device, your private VPN, or the public web — you choose, before it is reachable.",
+      "narration": "Reachable from a phone, without putting anything on the open internet.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "port-expose",
+          "url": "hub-living-room-server-acme.ci.computer/apps/expose",
+          "alt": "The Expose a port form with the three exposure modes — this device, private VPN, public web — and This Machine Only selected.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/apps/expose",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/expose'), 0); }"
+              },
+              {
+                "waitFor": "input[placeholder='Enter a unique name for your app']"
+              },
+              {
+                "waitFor": "text=Publish a service already running on this Hub"
+              },
+              {
+                "click": "button:has-text('This Machine Only')"
+              },
+              {
+                "wait": 800
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "hermes-openclaw",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "Two agents from the store, both running on this box.",
+      "narration": "Hermes runs locally. OpenClaw takes the boring parts of the day.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "app-hermes",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/ci-hermes",
+          "alt": "Hermes' page in the Hub store — a messaging AI assistant with a web terminal and dashboard.",
+          "capture": {
+            "path": "/store/ci-marketplace/ci-hermes",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/ci-hermes'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-header-actions-row']"
               },
               {
                 "wait": 1500
               }
             ],
             "settle": 1200
-          }
-        }
-      ],
-      "transition": "hold"
-    },
-    {
-      "id": "browse-the-store",
-      "kind": "screen",
-      "chapter": "run",
-      "seconds": 5.5,
-      "caption": "The App Store, fed by the open Hub market.",
-      "narration": "The store is fed by the open Hub market. Search, or browse.",
-      "shots": [
+          },
+          "motion": "push-in"
+        },
         {
-          "id": "hub-store",
-          "url": "hub-living-room-server-acme.ci.computer/store",
-          "alt": "The Hub App Store on its featured view, with the category sidebar and the search field.",
-          "motion": "drift-down",
+          "id": "app-openclaw",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/ci-openclaw",
+          "alt": "OpenClaw's page in the Hub store — a self-hosted personal AI assistant with browser automation and tool use.",
           "capture": {
-            "path": "/store",
+            "path": "/store/ci-marketplace/ci-openclaw",
             "waitUntil": "domcontentloaded",
-            "waitFor": "a[href^='/store/'], input[placeholder='you@example.com']",
-            "settle": 1200,
+            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
             "before": [
               {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store'), 0); }"
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/ci-openclaw'), 0); }"
               },
               {
-                "waitFor": "a[href^='/store/']"
+                "waitFor": "[data-testid='app-header-actions-row']"
+              },
+              {
+                "wait": 1500
               }
-            ]
-          }
+            ],
+            "settle": 1200
+          },
+          "motion": "drift-down"
         }
-      ],
-      "transition": "cut"
+      ]
     },
     {
-      "id": "open-alternatives",
+      "id": "alternatives",
       "kind": "screen",
       "chapter": "run",
-      "seconds": 6,
-      "caption": "Alternatives: the app you rent, and the one you own.",
-      "narration": "For the software you rent, the store names the open replacement you can own.",
+      "seconds": 4.5,
+      "caption": "Alternatives: the app you rent, beside the one you own.",
+      "narration": "Every service worth renting, beside the version worth owning.",
+      "transition": "cut",
       "shots": [
         {
           "id": "store-alternatives",
@@ -231,376 +450,59 @@
             }
           }
         }
-      ],
-      "transition": "cut"
+      ]
     },
     {
-      "id": "app-privacy",
+      "id": "the-things-stay",
       "kind": "screen",
       "chapter": "run",
-      "seconds": 5,
-      "caption": "App Privacy on every app page. Right now it reads: not declared.",
-      "narration": "Every app page carries an App Privacy card, and where nobody has declared anything, it says so.",
+      "seconds": 9,
+      "caption": "Home Assistant, Jellyfin, Nextcloud — on the box in the room.",
+      "narration": "The files stay in the house. The work stays in the office. The photos stay in the room where they were taken.",
+      "transition": "cut",
       "shots": [
         {
-          "id": "app-details",
-          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
-          "alt": "Immich's app page in the Hub store, scrolled to the App Privacy card beside the Information panel. The card reads \"The developer has not provided details about how this app handles your data\" and \"Data Collection \u2014 Not declared\", under a question-mark shield.",
+          "id": "hub-home",
+          "url": "hub-living-room-server-acme.ci.computer/home",
+          "alt": "The Hub dashboard: disk, CPU and memory above the row of installed apps — Home Assistant, Jellyfin and Nextcloud.",
           "motion": "push-in",
           "capture": {
-            "path": "/store/ci-marketplace/immich",
+            "path": "/home",
             "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
+            "waitFor": "input[placeholder='you@example.com'], a[href='/store']",
             "before": [
               {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/home'), 0); }"
               },
               {
-                "waitFor": "[data-testid='app-header-actions-row']"
+                "waitFor": "text=Disk space"
               },
               {
                 "wait": 1500
-              },
-              {
-                "eval": "() => { const sc = [...document.querySelectorAll('*')].filter((e) => { const cs = getComputedStyle(e); return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && e.scrollHeight > e.clientHeight + 20; }).sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0]; if (sc) sc.scrollTop = sc.scrollHeight; }"
-              },
-              {
-                "wait": 900
-              }
-            ],
-            "settle": 1200
-          },
-          "focus": {
-            "landscape": {
-              "x": 0.46,
-              "y": 0.235,
-              "w": 0.54,
-              "h": 0.54
-            }
-          }
-        }
-      ],
-      "transition": "cut"
-    },
-    {
-      "id": "configure-install",
-      "kind": "screen",
-      "chapter": "run",
-      "seconds": 6.5,
-      "caption": "Ports, domains and settings, shown before anything runs.",
-      "narration": "Secrets generate themselves. Everything else an app asks for, you see before it runs.",
-      "shots": [
-        {
-          "id": "install-dialog",
-          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
-          "alt": "The Install Immich dialog open over the app page, listing the ports, domain and settings the app is asking for.",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/store/ci-marketplace/immich",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='action-install'], input[placeholder='you@example.com']",
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='action-install']"
-              },
-              {
-                "click": "[data-testid='action-install']"
-              },
-              {
-                "waitFor": "[role='dialog']"
-              },
-              {
-                "wait": 1200
               }
             ],
             "settle": 1200
           }
         }
-      ],
-      "transition": "cut"
+      ]
     },
     {
-      "id": "install-and-run",
-      "kind": "screen",
-      "chapter": "run",
-      "seconds": 5,
-      "caption": "A green badge, and it is live on hardware you own.",
-      "narration": "When the badge turns green, the app is live on your own machine.",
-      "shots": [
-        {
-          "id": "running-app",
-          "url": "hub-living-room-server-acme.ci.computer/apps/ci-marketplace/immich",
-          "alt": "An installed app on the Hub: a green Running status pill, the Open button, and the pause, restart, settings, reset and uninstall icon actions.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/apps/ci-marketplace/immich",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='app-status-pill'], input[placeholder='you@example.com']",
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/ci-marketplace/immich'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='app-status-pill']"
-              },
-              {
-                "wait": 2000
-              }
-            ],
-            "settle": 1200
-          },
-          "focus": {
-            "landscape": {
-              "x": 0.02,
-              "y": 0.07,
-              "w": 0.6,
-              "h": 0.6
-            }
-          }
-        }
-      ],
-      "transition": "cut"
-    },
-    {
-      "id": "bring-your-own-app",
-      "kind": "screen",
-      "chapter": "extend",
-      "seconds": 6,
-      "caption": "Bring your own containers. They become a real app.",
-      "narration": "Your own containers become a first class app, with a name and an address.",
-      "shots": [
-        {
-          "id": "custom-app-create",
-          "url": "hub-living-room-server-acme.ci.computer/apps/create",
-          "alt": "The custom app form: a named App Name field above the multi-service editor, with the Essentials tab showing a service's name, image and internal port.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/apps/create",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/create'), 0); }"
-              },
-              {
-                "waitFor": "input[placeholder='Enter a unique name for your app']"
-              },
-              {
-                "fill": ["input[placeholder='Enter a unique name for your app']", "Recipe Wiki"]
-              },
-              {
-                "wait": 1200
-              }
-            ],
-            "settle": 1200
-          }
-        }
-      ],
-      "transition": "hold"
-    },
-    {
-      "id": "expose-a-port",
-      "kind": "screen",
-      "chapter": "extend",
-      "seconds": 6.5,
-      "caption": "This device, your private VPN, or the public web.",
-      "narration": "Anything already running here gets a name, a certificate, and a door you choose.",
-      "shots": [
-        {
-          "id": "port-expose",
-          "url": "hub-living-room-server-acme.ci.computer/apps/expose",
-          "alt": "The Expose a port form, with the three exposure modes: this device, private VPN, or public web.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/apps/expose",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
-            "settle": 1200,
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/expose'), 0); }"
-              },
-              {
-                "waitFor": "input[placeholder='Enter a unique name for your app']"
-              },
-              {
-                "waitFor": "text=Publish a service already running on this Hub"
-              }
-            ]
-          }
-        }
-      ],
-      "transition": "cut"
-    },
-    {
-      "id": "local-models",
-      "kind": "screen",
-      "chapter": "dials",
-      "seconds": 6,
-      "caption": "The Hub reads the hardware, then picks the models.",
-      "narration": "The Hub reads your hardware and picks models it can actually run at home.",
-      "shots": [
-        {
-          "id": "ai-hardware",
-          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
-          "alt": "The AI tab's hardware card: CPU, RAM, GPU, VRAM and storage, with a capability tier badge.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/settings?tab=ai",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='hw-card-title']"
-              },
-              {
-                "waitFor": "[data-testid='tier-badge']"
-              },
-              {
-                "wait": 800
-              }
-            ],
-            "settle": 1500
-          }
-        }
-      ],
-      "transition": "hold"
-    },
-    {
-      "id": "own-your-agents",
-      "kind": "screen",
-      "chapter": "dials",
-      "seconds": 6,
-      "caption": "MCP tools you can read. Keys you issue, scoped.",
-      "narration": "Agents drive your Hub through tools you can read, scoped by keys you issue.",
-      "shots": [
-        {
-          "id": "mcp-tools",
-          "url": "hub-living-room-server-acme.ci.computer/settings?tab=mcp",
-          "alt": "The MCP tab: server status, the active key count, and the searchable catalog of tools the Hub publishes.",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/settings?tab=mcp",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='mcp-settings'], input[placeholder='you@example.com']",
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=mcp'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='mcp-settings']"
-              },
-              {
-                "waitFor": "[data-testid='mcp-tool-search']"
-              },
-              {
-                "eval": "() => document.querySelector('[data-testid=\"mcp-tool-search\"]')?.scrollIntoView({ block: 'center' })"
-              },
-              {
-                "wait": 600
-              }
-            ],
-            "settle": 1200
-          }
-        }
-      ],
-      "transition": "cut"
-    },
-    {
-      "id": "every-dial",
-      "kind": "screen",
-      "chapter": "dials",
-      "seconds": 5.5,
-      "caption": "Every dial the Hub has, in one place.",
-      "narration": "Want the dials? They are all here. Reading your own logs costs nothing.",
-      "shots": [
-        {
-          "id": "hub-settings",
-          "url": "hub-living-room-server-acme.ci.computer/settings",
-          "alt": "Hub settings — the full tab row on desktop, collapsed behind More on a phone.",
-          "motion": "push-in",
-          "capture": {
-            "path": "/settings",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='settings-scroll-container'], input[placeholder='you@example.com']",
-            "settle": 1200,
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='settings-scroll-container']"
-              }
-            ]
-          }
-        },
-        {
-          "id": "hub-settings-security",
-          "url": "hub-living-room-server-acme.ci.computer/settings?tab=security",
-          "alt": "The Security tab of Hub settings.",
-          "motion": "drift-down",
-          "capture": {
-            "path": "/settings?tab=security",
-            "waitUntil": "domcontentloaded",
-            "waitFor": "[data-testid='settings-scroll-container'], input[placeholder='you@example.com']",
-            "settle": 1200,
-            "before": [
-              {
-                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=security'), 0); }"
-              },
-              {
-                "waitFor": "[data-testid='settings-scroll-container']"
-              }
-            ]
-          }
-        }
-      ],
-      "transition": "cut"
-    },
-    {
-      "id": "recap",
+      "id": "the-uncloud",
       "kind": "feature",
-      "seconds": 5,
-      "caption": "Your hardware. Your domain. Your data.",
-      "narration": "Your hardware, your domain, your data. Nothing to cancel.",
-      "items": [
-        {
-          "label": "Hardware",
-          "value": "Yours"
-        },
-        {
-          "label": "Domain",
-          "value": "Yours"
-        },
-        {
-          "label": "Data",
-          "value": "Stays home"
-        },
-        {
-          "label": "Monthly fee",
-          "value": "$0"
-        },
-        {
-          "label": "Apps",
-          "value": "490+"
-        }
-      ],
-      "reveal": "paced"
+      "seconds": 3,
+      "title": "The uncloud.",
+      "caption": "Not the cloud.",
+      "narration": "Not the cloud. The uncloud."
     },
     {
       "id": "close",
       "kind": "outro",
-      "seconds": 4.5,
-      "mark": "brand:logo.full",
+      "seconds": 3.5,
+      "caption": "ci.computer",
       "cta": "UnCloud your life.",
       "url": "ci.computer",
-      "narration": "Companion Hub, from Companion Intelligence. UnCloud your life."
+      "narration": "Companion Hub. UnCloud your life.",
+      "transition": "hold"
     }
   ]
 }
