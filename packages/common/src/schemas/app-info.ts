@@ -311,6 +311,86 @@ export const marketplaceMcpSchema = z.looseObject({
 });
 export type MarketplaceMcp = z.output<typeof marketplaceMcpSchema>;
 
+// ── App privacy declaration ────────────────────────────────────────────────
+
+/**
+ * Categories of user data an app may declare it collects. Deliberately coarse:
+ * a declaration is a promise made to the person installing the app, not a
+ * compliance artifact, and a long tail of near-identical categories only makes
+ * it easier to under-declare.
+ */
+export const PRIVACY_DATA_CATEGORIES = [
+  'contact_info',
+  'health_fitness',
+  'financial_info',
+  'location',
+  'sensitive_info',
+  'contacts',
+  'user_content',
+  'browsing_history',
+  'search_history',
+  'identifiers',
+  'usage_data',
+  'diagnostics',
+  'other_data',
+] as const;
+export type PrivacyDataCategory = (typeof PRIVACY_DATA_CATEGORIES)[number];
+
+/** Why a declared category is collected. At least one per collection entry. */
+export const PRIVACY_DATA_PURPOSES = [
+  'app_functionality',
+  'analytics',
+  'product_personalization',
+  'developer_advertising',
+  'third_party_advertising',
+  'other_purposes',
+] as const;
+export type PrivacyDataPurpose = (typeof PRIVACY_DATA_PURPOSES)[number];
+
+export const privacyCollectionSchema = z.object({
+  category: z.enum(PRIVACY_DATA_CATEGORIES),
+  purposes: z.enum(PRIVACY_DATA_PURPOSES).array().min(1),
+  /** Whether the collected data is tied to the user's identity. */
+  linked_to_identity: z.boolean().optional().default(false),
+  /** Whether the data is used to track the user across other apps or sites. */
+  used_for_tracking: z.boolean().optional().default(false),
+});
+export type PrivacyCollection = z.output<typeof privacyCollectionSchema>;
+
+/**
+ * An app's privacy declaration.
+ *
+ * The PRESENCE of this block is the declaration — it is what lets a store
+ * surface say "the developer has provided details about how this app handles
+ * your data". Its ABSENCE means nobody has declared anything, which is NOT the
+ * same claim as "no data collected" and must never be rendered as one.
+ *
+ * An affirmative "this app collects nothing" is `collects: []` — an empty list
+ * someone signed their name to via `declared_by`.
+ */
+export const appPrivacySchema = z.object({
+  /** Who stands behind this declaration (developer, org, or packager). */
+  declared_by: z.string().min(1),
+  /** ISO date (YYYY-MM-DD) the declaration was last affirmed. */
+  declared_at: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'declared_at must be an ISO date (YYYY-MM-DD)'),
+  policy_url: z.url().optional(),
+  /** Empty array is meaningful: an affirmative declaration of no collection. */
+  collects: z.array(privacyCollectionSchema),
+});
+export type AppPrivacy = z.output<typeof appPrivacySchema>;
+
+/**
+ * Three-state read of an app's privacy posture. `undeclared` is the default for
+ * a catalog entry that has never carried a declaration — surfaces must render
+ * it as unknown, not as a clean bill of health.
+ */
+export type AppPrivacyState = 'undeclared' | 'no_collection' | 'collects';
+
+export function appPrivacyState(privacy?: AppPrivacy | null): AppPrivacyState {
+  if (!privacy) return 'undeclared';
+  return privacy.collects.length === 0 ? 'no_collection' : 'collects';
+}
+
 export const APP_CATEGORIES = [
   'network',
   'media',
@@ -428,6 +508,12 @@ export const appInfoObjectSchema = z.object({
   agents: agentConfigSchema,
   /** Marketplace MCP server listing block — see marketplaceMcpSchema (#936). */
   mcp: marketplaceMcpSchema.optional(),
+  /**
+   * Optional privacy declaration — see appPrivacySchema. Optional because most
+   * of the catalog is repackaged third-party software nobody has declared for
+   * yet; undefined means "undeclared", never "collects nothing".
+   */
+  privacy: appPrivacySchema.optional(),
   hub_integration: hubIntegrationSchema,
 });
 
