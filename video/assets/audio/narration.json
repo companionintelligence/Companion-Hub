@@ -1,0 +1,90 @@
+{
+  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, so a later edit to scene.narration can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "voice": "en-GB-SoniaNeural",
+  "scenes": {
+    "app-privacy": {
+      "text": "Every app page carries an App Privacy card, and where nobody has declared anything, it says so.",
+      "seconds": 6.12
+    },
+    "open": {
+      "text": "Companion Hub is the app runtime that lives in your house.",
+      "seconds": 3.888,
+      "adopted": true
+    },
+    "sign-in": {
+      "text": "It opens on a local login. Signing in anywhere else is optional.",
+      "seconds": 5.112,
+      "adopted": true
+    },
+    "pair-the-hub": {
+      "text": "A new Hub asks for one pairing code from Companion Portal.",
+      "seconds": 4.08,
+      "adopted": true
+    },
+    "first-boot": {
+      "text": "First boot is one pass. Local models, network, apps.",
+      "seconds": 5.304,
+      "adopted": true
+    },
+    "home-dashboard": {
+      "text": "This is home. Disk, CPU and memory, read off hardware you own.",
+      "seconds": 5.568,
+      "adopted": true
+    },
+    "browse-the-store": {
+      "text": "The store is fed by the open Hub market. Search, or browse.",
+      "seconds": 5.088,
+      "adopted": true
+    },
+    "open-alternatives": {
+      "text": "For the software you rent, the store names the open replacement you can own.",
+      "seconds": 4.704,
+      "adopted": true
+    },
+    "configure-install": {
+      "text": "Secrets generate themselves. Everything else an app asks for, you see before it runs.",
+      "seconds": 6.312,
+      "adopted": true
+    },
+    "install-and-run": {
+      "text": "When the badge turns green, the app is live on your own machine.",
+      "seconds": 4.104,
+      "adopted": true
+    },
+    "bring-your-own-app": {
+      "text": "Your own containers become a first class app, with a name and an address.",
+      "seconds": 4.752,
+      "adopted": true
+    },
+    "expose-a-port": {
+      "text": "Anything already running here gets a name, a certificate, and a door you choose.",
+      "seconds": 5.376,
+      "adopted": true
+    },
+    "local-models": {
+      "text": "The Hub reads your hardware and picks models it can actually run at home.",
+      "seconds": 4.32,
+      "adopted": true
+    },
+    "own-your-agents": {
+      "text": "Agents drive your Hub through tools you can read, scoped by keys you issue.",
+      "seconds": 4.728,
+      "adopted": true
+    },
+    "every-dial": {
+      "text": "Want the dials? They are all here. Reading your own logs costs nothing.",
+      "seconds": 5.616,
+      "adopted": true
+    },
+    "recap": {
+      "text": "Your hardware, your domain, your data. Nothing to cancel.",
+      "seconds": 4.92,
+      "adopted": true
+    },
+    "close": {
+      "text": "Companion Hub, from Companion Intelligence. UnCloud your life.",
+      "seconds": 5.472,
+      "adopted": true
+    }
+  }
+}

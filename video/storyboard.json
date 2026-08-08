@@ -239,13 +239,13 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5,
-      "caption": "App Privacy, on every single app page.",
-      "narration": "Every app page carries an App Privacy card. It is a short read.",
+      "caption": "App Privacy on every app page. Right now it reads: not declared.",
+      "narration": "Every app page carries an App Privacy card, and where nobody has declared anything, it says so.",
       "shots": [
         {
           "id": "app-details",
           "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
-          "alt": "Immich's app page in the Hub store, scrolled to the App Privacy card beside the Information panel.",
+          "alt": "Immich's app page in the Hub store, scrolled to the App Privacy card beside the Information panel. The card reads \"The developer has not provided details about how this app handles your data\" and \"Data Collection \u2014 Not declared\", under a question-mark shield.",
           "motion": "push-in",
           "capture": {
             "path": "/store/ci-marketplace/immich",
