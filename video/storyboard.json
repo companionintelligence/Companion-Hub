@@ -227,7 +227,7 @@
       "transition": "cut",
       "shots": [
         {
-          "id": "ai-hardware",
+          "id": "ai-models",
           "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
           "alt": "The AI tab's Recommended Models card: each model tagged reasoning, vision, tools or embedding, with the RAM and VRAM it needs.",
           "motion": "push-in",
@@ -250,16 +250,22 @@
               },
               {
                 "wait": 800
+              },
+              {
+                "eval": "() => { const h = [...document.querySelectorAll('*')].find((e) => e.children.length === 0 && /RECOMMENDED MODELS/i.test(e.textContent || '')); if (!h) throw new Error('RECOMMENDED MODELS heading not found — the AI tab moved'); h.scrollIntoView({ block: 'start' }); let p = h.parentElement; while (p && p !== document.body) { const cs = getComputedStyle(p); if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && p.scrollHeight > p.clientHeight + 20) { p.scrollTop = Math.max(0, p.scrollTop - 120); return; } p = p.parentElement; } window.scrollBy(0, -120); }"
+              },
+              {
+                "wait": 1000
               }
             ],
             "settle": 1500
           },
           "focus": {
             "landscape": {
-              "x": 0.15,
-              "y": 0.55,
-              "w": 0.72,
-              "h": 0.45
+              "x": 0.06,
+              "y": 0.06,
+              "w": 0.88,
+              "h": 0.62
             }
           }
         }
@@ -355,7 +361,7 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5,
-      "caption": "Two agents from the store, both running on this box.",
+      "caption": "Hermes and OpenClaw, in the Hub's own store.",
       "narration": "Hermes runs locally. OpenClaw takes the boring parts of the day.",
       "transition": "cut",
       "shots": [

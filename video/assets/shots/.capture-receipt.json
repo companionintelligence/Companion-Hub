@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "at": "2026-08-08T21:35:32.457Z",
+  "at": "2026-08-08T22:16:22.020Z",
   "kit": "0.13.1",
   "shots": {
     "ai-hardware.mobile.png": {
@@ -12,6 +12,16 @@
       "ok": true,
       "at": "2026-08-08T21:14:32.258Z",
       "sha256": "9b65a840bdbaedbc464993f6b32586e56d0a4c9a012658bdb0748d517dcfc312"
+    },
+    "ai-models.mobile.png": {
+      "ok": true,
+      "at": "2026-08-08T22:16:22.020Z",
+      "sha256": "1d2555529ed369cd9e69bb79c5db36aca9a8546b1f63431b3271c7068e1c8f81"
+    },
+    "ai-models.png": {
+      "ok": true,
+      "at": "2026-08-08T22:16:22.020Z",
+      "sha256": "7a304441371365031f3ccdd1bed7dea8d14dc45c4a242bb9a26687f5f1d1cde7"
     },
     "app-hermes.mobile.png": {
       "ok": true,
