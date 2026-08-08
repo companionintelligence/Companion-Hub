@@ -71,7 +71,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-muted-foreground" />
+            <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_ADVANCED_MODE_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_ADVANCED_MODE_SUBTITLE')}</p>

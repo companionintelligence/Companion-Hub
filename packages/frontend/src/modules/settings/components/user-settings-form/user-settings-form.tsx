@@ -180,7 +180,7 @@ export const UserSettingsForm = (props: IProps) => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <User className="h-5 w-5 text-muted-foreground" />
+            <User className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_USER_SETTINGS')}</CardTitle>
           </div>
         </CardHeader>
@@ -197,7 +197,7 @@ export const UserSettingsForm = (props: IProps) => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+            <SlidersHorizontal className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_SUBTITLE')}</p>

@@ -43,7 +43,7 @@ const SectionHeader = ({ icon: Icon, title, description, badge }: { icon: Lucide
   <CardHeader>
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2">
-        <Icon className="h-5 w-5 text-muted-foreground" />
+        <Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
         <CardTitle className="text-xl">{title}</CardTitle>
       </div>
       {badge}

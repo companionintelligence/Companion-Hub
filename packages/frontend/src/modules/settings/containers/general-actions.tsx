@@ -341,7 +341,7 @@ export const GeneralActionsContainer = () => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
+            <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
@@ -418,7 +418,7 @@ export const GeneralActionsContainer = () => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Wand2 className="h-5 w-5 text-muted-foreground" />
+            <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
@@ -440,7 +440,7 @@ export const GeneralActionsContainer = () => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <TriangleAlert className="h-5 w-5 text-destructive" />
+            <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
             <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
@@ -494,7 +494,7 @@ export const GeneralActionsContainer = () => {
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
-              <Smartphone className="h-5 w-5 text-muted-foreground" />
+              <Smartphone className="h-5 w-5 shrink-0 text-muted-foreground" />
               <CardTitle className="text-xl">{t('MOBILE_CONNECT_CONNECTED_HUB')}</CardTitle>
             </div>
             <CardDescription className="break-all">{getHubBaseUrlSync() ?? t('MOBILE_CONNECT_NO_HUB_SELECTED')}</CardDescription>
