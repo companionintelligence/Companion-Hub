@@ -149,10 +149,16 @@
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
               {
-                "fill": ["input[placeholder='you@example.com']", "owner@acme.com"]
+                "fill": [
+                  "input[placeholder='you@example.com']",
+                  "owner@acme.com"
+                ]
               },
               {
-                "fill": ["input[placeholder='Enter your password']", "password"]
+                "fill": [
+                  "input[placeholder='Enter your password']",
+                  "password"
+                ]
               },
               {
                 "click": "button[type='submit']"
@@ -509,6 +515,124 @@
       "url": "ci.computer",
       "narration": "Companion Hub. UnCloud your life.",
       "transition": "hold"
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "ci-hub-30",
+      "kind": "short",
+      "name": "Companion Hub — 30",
+      "scenes": [
+        {
+          "ref": "second-job",
+          "narration": "You wanted a home server. You got a second job.",
+          "title": "What you got was a second job."
+        },
+        {
+          "ref": "the-longer-list",
+          "narration": "Open a port. Build a VPN. Learn what a reverse proxy is.",
+          "items": [
+            {
+              "label": "Open a port"
+            },
+            {
+              "label": "Build a VPN"
+            },
+            {
+              "label": "Reverse proxy"
+            }
+          ]
+        },
+        "title",
+        {
+          "ref": "reads-the-machine",
+          "narration": "Companion Hub reads your hardware, and tunes itself to it."
+        },
+        "apps-arrive",
+        {
+          "ref": "the-things-stay",
+          "narration": "The files stay in the house. The photos stay in the room."
+        },
+        "close"
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-laptop",
+      "kind": "bumper",
+      "name": "Companion Hub — That old laptop is a server now.",
+      "scenes": [
+        {
+          "id": "line",
+          "kind": "feature",
+          "seconds": 3,
+          "title": "That old laptop is a server now.",
+          "caption": "A private AI server, on a computer you already own.",
+          "narration": "That old laptop is a server now."
+        },
+        {
+          "id": "close",
+          "kind": "outro",
+          "seconds": 2.4,
+          "minSeconds": 2.2,
+          "caption": "ci.computer",
+          "cta": "UnCloud your life.",
+          "url": "ci.computer",
+          "narration": "UnCloud your life.",
+          "transition": "cut"
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-renting",
+      "kind": "bumper",
+      "name": "Companion Hub — Stop renting what could be owned.",
+      "scenes": [
+        {
+          "id": "line",
+          "kind": "feature",
+          "seconds": 3,
+          "title": "Stop renting what could be owned.",
+          "caption": "A private AI server, on a computer you already own.",
+          "narration": "Stop renting what could be owned."
+        },
+        {
+          "id": "close",
+          "kind": "outro",
+          "seconds": 2.4,
+          "minSeconds": 2.2,
+          "caption": "ci.computer",
+          "cta": "UnCloud your life.",
+          "url": "ci.computer",
+          "narration": "UnCloud your life.",
+          "transition": "cut"
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-landlord",
+      "kind": "bumper",
+      "name": "Companion Hub — Local AI. One roof. No landlord.",
+      "scenes": [
+        {
+          "id": "line",
+          "kind": "feature",
+          "seconds": 3,
+          "title": "Local AI. One roof. No landlord.",
+          "caption": "A private AI server, on a computer you already own.",
+          "narration": "Local AI, one roof, no landlord."
+        },
+        {
+          "id": "close",
+          "kind": "outro",
+          "seconds": 2.4,
+          "minSeconds": 2.2,
+          "caption": "ci.computer",
+          "cta": "UnCloud your life.",
+          "url": "ci.computer",
+          "narration": "UnCloud your life.",
+          "transition": "cut"
+        }
+      ]
     }
   ]
 }

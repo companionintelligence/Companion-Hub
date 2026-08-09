@@ -1,5 +1,6 @@
 {
-  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, so a later edit to scene.narration can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, in which voice, on which engine, at what prosody — so a later edit to any of those can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "engine": "edge",
   "voice": "en-GB-SoniaNeural",
   "scenes": {
     "app-privacy": {
@@ -143,6 +144,96 @@
     "the-uncloud": {
       "text": "Not the cloud. The uncloud.",
       "seconds": 2.808
+    },
+    "ci-hub-30-second-job": {
+      "text": "You wanted a home server. You got a second job.",
+      "seconds": 3.792,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-longer-list": {
+      "text": "Open a port. Build a VPN. Learn what a reverse proxy is.",
+      "seconds": 5.664,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-reads-the-machine": {
+      "text": "Companion Hub reads your hardware, and tunes itself to it.",
+      "seconds": 4.152,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-things-stay": {
+      "text": "The files stay in the house. The photos stay in the room.",
+      "seconds": 4.296,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-laptop-line": {
+      "text": "That old laptop is a server now.",
+      "seconds": 2.64,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-laptop-close": {
+      "text": "UnCloud your life.",
+      "seconds": 2.16,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-renting-line": {
+      "text": "Stop renting what could be owned.",
+      "seconds": 2.52,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-renting-close": {
+      "text": "UnCloud your life.",
+      "seconds": 2.16,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-landlord-line": {
+      "text": "Local AI, one roof, no landlord.",
+      "seconds": 3.696,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-landlord-close": {
+      "text": "UnCloud your life.",
+      "seconds": 2.16,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
     }
   }
 }
