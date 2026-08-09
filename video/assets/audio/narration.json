@@ -83,67 +83,147 @@
     },
     "close": {
       "text": "Companion Hub. UnCloud your life.",
-      "seconds": 3.528
+      "seconds": 3.816,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
     },
     "second-job": {
       "text": "You wanted a home server. What you got was a second job.",
-      "seconds": 4.056
+      "seconds": 4.248,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "the-list": {
       "text": "Install the OS. Find the apps. Configure the apps.",
-      "seconds": 5.016
+      "seconds": 5.28,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "the-longer-list": {
       "text": "Open a port, and hope. Build a VPN. Learn what a reverse proxy is. Learn what a certificate is. Learn why it broke.",
-      "seconds": 9.864
+      "seconds": 10.392,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "most-people-quit": {
       "text": "Most people quit right about here.",
-      "seconds": 2.592
+      "seconds": 2.736,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "title": {
       "text": "There is a much shorter way.",
-      "seconds": 2.04
+      "seconds": 2.184,
+      "prosody": {
+        "rate": "-6%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
     },
     "any-computer": {
       "text": "Any computer already sitting around. The old gaming rig. The laptop in the closet. Windows, Mac, Linux, it does not matter.",
-      "seconds": 10.152
+      "seconds": 10.68,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "one-wizard": {
       "text": "One installer. One wizard.",
-      "seconds": 2.856
+      "seconds": 2.952,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "reads-the-machine": {
       "text": "Companion Hub reads the machine. CPU, GPU, memory, storage.",
-      "seconds": 6.312
+      "seconds": 6.504,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "picks-the-models": {
       "text": "Then it tunes itself to the hardware that is actually there, and picks models that run fast on it, not models that melt it.",
-      "seconds": 7.344
+      "seconds": 7.56,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "apps-arrive": {
       "text": "Apps arrive already configured. Already private.",
-      "seconds": 4.152
+      "seconds": 4.296,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "from-a-phone": {
       "text": "Reachable from a phone, without putting anything on the open internet.",
-      "seconds": 4.464
+      "seconds": 4.608,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "hermes-openclaw": {
       "text": "Hermes runs locally. OpenClaw takes the boring parts of the day.",
-      "seconds": 4.968
+      "seconds": 5.136,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "alternatives": {
       "text": "Every service worth renting, beside the version worth owning.",
-      "seconds": 4.056
+      "seconds": 4.176,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "the-things-stay": {
       "text": "The files stay in the house. The work stays in the office. The photos stay in the room where they were taken.",
-      "seconds": 7.176
+      "seconds": 7.416,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
     },
     "the-uncloud": {
       "text": "Not the cloud. The uncloud.",
-      "seconds": 2.808
+      "seconds": 2.952,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
     },
     "ci-hub-30-second-job": {
       "text": "You wanted a home server. You got a second job.",
@@ -231,6 +311,15 @@
       "seconds": 2.16,
       "prosody": {
         "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-title": {
+      "text": "There is a much shorter way. One installer, one wizard.",
+      "seconds": 4.68,
+      "prosody": {
+        "rate": "-6%",
         "pitch": "-2Hz",
         "volume": "+0%"
       }

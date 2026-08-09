@@ -11,7 +11,7 @@
     "fps": 30,
     "transitionSeconds": 0.5,
     "pacing": "fit",
-    "pacingTail": 0.2
+    "pacingTail": 0.15
   },
   "chapters": {
     "job": "The second job",
@@ -522,15 +522,20 @@
       "id": "ci-hub-30",
       "kind": "short",
       "name": "Companion Hub — 30",
+      "meta": {
+        "pacingTail": 0.12
+      },
       "scenes": [
         {
           "ref": "second-job",
           "narration": "You wanted a home server. You got a second job.",
-          "title": "What you got was a second job."
+          "title": "What you got was a second job.",
+          "seconds": 4.3
         },
         {
           "ref": "the-longer-list",
           "narration": "Open a port. Build a VPN. Learn what a reverse proxy is.",
+          "seconds": 6.2,
           "items": [
             {
               "label": "Open a port"
@@ -543,16 +548,22 @@
             }
           ]
         },
-        "title",
+        {
+          "ref": "title",
+          "narration": "There is a much shorter way. One installer, one wizard."
+        },
         {
           "ref": "reads-the-machine",
-          "narration": "Companion Hub reads your hardware, and tunes itself to it."
+          "narration": "Companion Hub reads your hardware, and tunes itself to it.",
+          "seconds": 4.6
         },
         "apps-arrive",
         {
           "ref": "the-things-stay",
-          "narration": "The files stay in the house. The photos stay in the room."
+          "narration": "The files stay in the house. The photos stay in the room.",
+          "seconds": 4.8
         },
+        "the-uncloud",
         "close"
       ]
     },
