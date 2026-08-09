@@ -51,9 +51,27 @@ node tools/make-videos.mjs companion-hub    # render this repo's two cuts from t
 
 It resolves `video-kit` straight from the CI-Common checkout on disk — no npm registry, no token.
 
-`--capture` is **not** wired up for Companion Hub yet: our stage is a seeded Hub plus a
-CI-Marketplace checkout, which the runner does not script. To re-shoot the UI, bring the stage up
-by hand ([below](#the-capture-stage)) and run `npm run capture` in this directory.
+**To re-shoot, use this repo's own runner** — one command, which stands the whole stage up,
+shoots it in two passes and takes it down again:
+
+```bash
+./video/make.sh --no-render          # stage, capture, check (no render — much faster)
+./video/make.sh                      # …and render both cuts
+./video/make.sh --only hub-home      # re-shoot one shot against a stage you already have up
+./video/make.sh --keep-up            # leave the stage running afterwards
+```
+
+`--capture` on `make-videos.mjs` is **refused, not missing**: that runner renders from a
+`git archive` export, and staging an app is not a single shell command — which is why capture
+belongs to each repo. Companion Hub had no such command until [`video/make.sh`](make.sh) and
+[`video/stage.sh`](stage.sh) landed, and in the meantime an *App Privacy* fix merged while the
+committed footage still showed the old card.
+
+**What `stage.sh` shoots is the cut**: the nine shot ids the current `storyboard.json` references.
+The nine **parked** ids listed above — `running-app` among them — are *not* re-shot, deliberately.
+`running-app` needs a genuine four-container Immich install, and installing Immich also swaps the
+store page's Install button for Open, which would change `install-dialog`. Re-shooting those is a
+separate, explicit act; the steps are still below.
 
 ## Quick start
 
@@ -71,8 +89,10 @@ by hand ([below](#the-capture-stage)) and run `npm run capture` in this director
 > ```
 >
 > The version above **must** match the `playwright` pin in `package.json` — see
-> [Why Playwright is pinned exactly](#why-playwright-is-pinned-exactly). Repos with a
-> `video/make.sh` automate this; Companion Hub does not have one yet.
+> [Why Playwright is pinned exactly](#why-playwright-is-pinned-exactly). **`video/make.sh` now
+> automates all of this** — it installs the pinned Playwright through a throwaway manifest into
+> `video/node_modules` and resolves the browser through the kit, so the block above is only for
+> driving the pieces by hand.
 >
 > Then drive the kit from the CI-Common checkout rather than `npm run`, so the scripts resolve:
 >
