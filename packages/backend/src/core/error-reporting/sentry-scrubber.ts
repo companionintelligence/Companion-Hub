@@ -218,7 +218,9 @@ function isTransientDbSentryNoise(event: ErrorEvent, hint: EventHint | undefined
   }
 
   const exceptionText = event.exception?.values?.map((value) => `${value.type ?? ''} ${value.value ?? ''}`).join(' ') ?? event.message ?? '';
-  return /EAI_AGAIN|ENOTFOUND|ApiKeyStoreUnavailable|Database temporarily unavailable/i.test(exceptionText);
+  return /EAI_AGAIN|ENOTFOUND|ApiKeyStoreUnavailable|Database temporarily unavailable|Authentication temporarily unavailable|API key store unreachable/i.test(
+    exceptionText,
+  );
 }
 
 export function scrubEvent(event: ErrorEvent, hint: EventHint): ErrorEvent | null {

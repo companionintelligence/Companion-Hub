@@ -26,6 +26,17 @@ describe('isTransientDbError', () => {
     expect(isTransientDbError(new Error('Connection terminated unexpectedly'))).toBe(true);
   });
 
+  it('classifies transient errno text in message even when code is absent', () => {
+    expect(isTransientDbError(new Error('getaddrinfo EAI_AGAIN ci-hub-db'))).toBe(true);
+    expect(isTransientDbError(new Error('connect ECONNREFUSED 172.18.0.3:5432'))).toBe(true);
+  });
+
+  it('classifies wrapped query errors whose inner message carries errno text but no code', () => {
+    const inner = new Error('lookup ci-hub-db failed: ENOTFOUND');
+    const drizzleWrapped = new Error('Failed query: SELECT ... FROM api_keys', { cause: inner });
+    expect(isTransientDbError(drizzleWrapped)).toBe(true);
+  });
+
   it('does NOT classify a plain query failure as transient', () => {
     // 42P01 = undefined_table: a real bug that retrying can never fix.
     expect(isTransientDbError(wrapped('42P01', 'relation "api_keys" does not exist'))).toBe(false);
