@@ -1,15 +1,10 @@
 name: Integraton tests
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   workflow_call:
-#   pull_request:
-#   push:
-#     branches:
-#       - dev
-# <<< ci-local:gated
 on:
-  workflow_dispatch:
   workflow_call:
+  pull_request:
+  push:
+    branches:
+      - dev
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

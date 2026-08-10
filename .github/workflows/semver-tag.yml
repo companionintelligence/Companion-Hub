@@ -1,18 +1,9 @@
 name: Auto Semver Tag
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   push:
-#     branches:
-#       - staging
-#   workflow_dispatch:
-#     inputs:
-#       bump:
-#         description: "Force bump type (patch/minor/major)"
-#         required: false
-#         type: string
-# <<< ci-local:gated
 on:
+  push:
+    branches:
+      - staging
   workflow_dispatch:
     inputs:
       bump:
