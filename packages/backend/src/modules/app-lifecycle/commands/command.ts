@@ -29,6 +29,7 @@ import {
   translateDockerNetworkOverlapError,
 } from './app-lifecycle-errors';
 import { cidrOverlaps } from '@/modules/network/cidr-overlap';
+import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import type { OperationPhase } from '../app-operation-registry';
 
@@ -139,7 +140,16 @@ export class AppLifecycleCommand {
         });
       }
 
-      const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
+      // Windows-backed app data (drvfs/9p) silently drops chown/chmod, so database services that
+      // must own their data directory cannot use a bind mount there. Probe once per build and let
+      // the compose builder redirect those volumes; every other platform keeps its bind mounts.
+      const appDataDir = configService.get('directories')?.appDataDir;
+      const posixPermissionsSupported = appDataDir ? await supportsPosixPermissions(appDataDir) : true;
+      if (!posixPermissionsSupported) {
+        logger.info(`[compose] ${appDataDir} cannot carry POSIX permissions; ownership-sensitive volumes will use named volumes`);
+      }
+
+      const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported);
       const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
       const composeFile = await dockerComposeBuilder.getDockerCompose(

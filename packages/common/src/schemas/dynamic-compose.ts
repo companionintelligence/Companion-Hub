@@ -17,6 +17,30 @@ const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/lib64',
 ];
 
+/** Docker's own constraint on volume names (see `docker volume create`). */
+const DOCKER_VOLUME_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+/**
+ * A volume mounts either a host path or a named volume — never both, never neither.
+ * `requiresPosixPermissions` describes how a bind mount must behave, so it only applies to `hostPath`.
+ */
+function assertVolumeSource(volume: { hostPath?: string; volumeName?: string; requiresPosixPermissions?: boolean }, ctx: z.RefinementCtx) {
+  const hasHostPath = volume.hostPath !== undefined;
+  const hasVolumeName = volume.volumeName !== undefined;
+
+  if (hasHostPath && hasVolumeName) {
+    ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_VOLUME_SOURCE_AMBIGUOUS', path: ['volumeName'] });
+  } else if (!hasHostPath && !hasVolumeName) {
+    // Not HOST_PATH_REQUIRED: either source satisfies the volume, so naming only the bind mount
+    // would send an author who meant to declare a named volume looking for the wrong field.
+    ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED', path: ['hostPath'] });
+  }
+
+  if (volume.requiresPosixPermissions && !hasHostPath) {
+    ctx.addIssue({ code: 'custom', message: 'CUSTOM_APP_ERROR_POSIX_PERMISSIONS_REQUIRES_HOST_PATH', path: ['requiresPosixPermissions'] });
+  }
+}
+
 function normalizeCustomAppHostPath(hostPath: string): string {
   const normalized = hostPath.replace(/\\/g, '/').replace(/\/+/g, '/');
   if (normalized.length > 1 && normalized.endsWith('/')) {
@@ -30,7 +54,7 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
   return DENIED_CUSTOM_APP_HOST_PATHS.some((denied) => normalized === denied || normalized.startsWith(`${denied}/`));
 }
 
-function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath: string }[] }, ctx: z.RefinementCtx) {
+function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath?: string }[] }, ctx: z.RefinementCtx) {
   if (service.privileged === true) {
     ctx.addIssue({
       code: 'custom',
@@ -39,7 +63,8 @@ function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes
     });
   }
   for (const [index, volume] of (service.volumes ?? []).entries()) {
-    if (isDeniedCustomAppHostPath(volume.hostPath)) {
+    // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
+    if (volume.hostPath !== undefined && isDeniedCustomAppHostPath(volume.hostPath)) {
       ctx.addIssue({
         code: 'custom',
         message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
@@ -106,7 +131,7 @@ interface SecurityCheckedService {
   privileged?: boolean;
   networkMode?: string;
   pid?: string;
-  volumes?: { hostPath: string }[];
+  volumes?: { hostPath?: string; volumeName?: string }[];
 }
 
 /**
@@ -130,6 +155,19 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
 
   const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
   for (const [index, volume] of (service.volumes ?? []).entries()) {
+    // Compose's short syntax decides bind-vs-volume from the shape of the source: `/var/run/docker.sock`
+    // in the volumeName slot is rendered as a HOST BIND, not a named volume. The schema's charset rule
+    // is only advisory at the install sink (parse failures there warn), so a volumeName that is not a
+    // plain docker volume name has to be rejected here or it would smuggle a bind past every check below.
+    if (volume.volumeName !== undefined && !DOCKER_VOLUME_NAME_PATTERN.test(volume.volumeName)) {
+      violations.push({ path: ['volumes', index, 'volumeName'], message: 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', hostPath: volume.volumeName });
+      continue;
+    }
+
+    // A genuine named volume is docker-managed and exposes no host path, so it cannot escape the sandbox.
+    if (volume.hostPath === undefined) {
+      continue;
+    }
     const normalized = normalizeCustomAppHostPath(volume.hostPath);
     if (ALLOWED_CUSTOM_APP_HOST_PATHS.has(normalized) || grantedPaths.has(normalized)) {
       continue;
@@ -217,18 +255,38 @@ const serviceSchemaV2Object = z.object({
     .or(z.array(z.string('CUSTOM_APP_ERROR_COMMAND_INVALID')).optional()),
   volumes: z
     .array(
-      z.object({
-        hostPath: z.string('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED'),
-        containerPath: z.string('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED'),
-        readOnly: z.boolean().optional(),
-        shared: z.boolean().optional(),
-        private: z.boolean().optional(),
-        bind: z
-          .object({
-            propagation: z.enum(['rprivate', 'private', 'rshared', 'shared', 'rslave', 'slave']),
-          })
-          .optional(),
-      }),
+      z
+        .object({
+          // `.min(1)` because `assertVolumeSource` only asks whether the field is present: an empty
+          // string reads as "declared", passes the source check, and then makes `setVolume` throw
+          // "declares neither hostPath nor volumeName" — a message that contradicts the manifest.
+          hostPath: z.string('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED').min(1, 'CUSTOM_APP_ERROR_HOST_PATH_REQUIRED').optional(),
+          /**
+           * Docker-managed named volume, mounted instead of a host bind. Compose scopes the name to
+           * the app's project, so `db` becomes `<app>_<store>_db` and cannot collide across apps.
+           */
+          volumeName: z.string().regex(DOCKER_VOLUME_NAME_PATTERN, 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID').optional(),
+          // An empty target renders as `source:` — compose rejects it, but only once the app is
+          // already installing, and the error names the generated file rather than the manifest.
+          containerPath: z.string('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED').min(1, 'CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED'),
+          readOnly: z.boolean().optional(),
+          /**
+           * Marks a bind mount whose contents need real POSIX ownership/permissions — database data
+           * directories above all. Windows-backed host paths (drvfs/9p) silently ignore chown/chmod,
+           * so `initdb` and `mysqld` abort with EPERM there. When this is set and the host filesystem
+           * cannot carry ownership, the Hub mounts a named volume instead of the bind. Platforms that
+           * do support ownership keep the bind mount, so existing installs never lose their data.
+           */
+          requiresPosixPermissions: z.boolean().optional(),
+          shared: z.boolean().optional(),
+          private: z.boolean().optional(),
+          bind: z
+            .object({
+              propagation: z.enum(['rprivate', 'private', 'rshared', 'shared', 'rslave', 'slave']),
+            })
+            .optional(),
+        })
+        .superRefine(assertVolumeSource),
     )
     .optional(),
   environment: z

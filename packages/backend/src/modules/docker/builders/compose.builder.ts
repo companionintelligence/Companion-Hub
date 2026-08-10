@@ -27,16 +27,77 @@ interface Network {
   };
 }
 
+type ServiceVolume = NonNullable<Service['volumes']>[number];
+
+/**
+ * Turns a bind mount's host path into a stable docker volume name (`${APP_DATA_DIR}/data/db` →
+ * `data-db`). Derived from the host path rather than the mount point or the service: sidecars that
+ * share a data directory declare the same host path and so land on the same volume, while two
+ * databases in one app land on different ones. Keying on the mount point instead would merge them —
+ * `fastgpt`'s two postgres services and `postiz`' two postgres services each declare distinct host
+ * directories under the same `/var/lib/postgresql/data`, and sharing one volume would put two
+ * servers (postiz': two different major versions) on a single data directory. The host path is also
+ * stable across app updates; a name that drifted between builds would orphan the app's data.
+ *
+ * Characters that stand in for a separator are escaped rather than simply replaced, to keep
+ * distinct paths apart: `-` doubles before `/` becomes `-`, and `_` doubles before invalid runs
+ * become `_`. This is injective across `[a-z0-9/]` — every database directory in this catalog —
+ * which read exactly as the path does. It is NOT injective across every possible host path: a `-`
+ * adjacent to a `/` (`/a-/b` vs `/a/-b`), distinct invalid characters collapsing to one `_`
+ * (`/a b` vs `/a:b`), or the leading-`v` prefix meeting a real `v` all converge. The caller
+ * (`registerVolume`) rejects any such collision at build time rather than merge two directories, so
+ * this function does not need to guarantee injectivity for inputs the catalog never produces.
+ *
+ * A leading non-alphanumeric is prefixed rather than trimmed: trimming is what would undo the
+ * escaping above and re-merge the paths it exists to keep apart.
+ */
+function deriveVolumeName(hostPath: string): string {
+  const slug = hostPath
+    // The app-data root is the same for every volume, so it carries no identity.
+    .replace(/\$\{APP_DATA_DIR\}/g, '')
+    // Leading and trailing separators are not part of the path's identity: `/data/db/` and
+    // `/data/db` are the same directory and must resolve to the same volume.
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/-/g, '--')
+    .replace(/_/g, '__')
+    .replace(/\//g, '-')
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_');
+
+  if (!slug) {
+    return 'data';
+  }
+
+  // Docker requires a volume name to start with an alphanumeric.
+  return /^[a-zA-Z0-9]/.test(slug) ? slug : `v${slug}`;
+}
+
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
+  private volumes: Record<string, Record<string, never>> = {};
+  /**
+   * Which source claimed each top-level volume name, so a collision can be caught. A declared
+   * `volumeName` is keyed by its own name; a redirected bind by its host path. `deriveVolumeName`
+   * aims to be injective but is not provably so for every possible host path, and a derived name
+   * can also land on an explicitly declared one — either way, two different sources mapping to one
+   * volume would silently merge two data directories. This turns that into a build-time error.
+   */
+  private volumeSources: Record<string, string> = {};
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private defaultCpuLimit?: string;
   private defaultMemoryLimit?: string;
+  private readonly posixPermissionsSupported: boolean;
 
-  constructor(_domain: string, localDomain: string) {
+  /**
+   * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
+   * ownership/permissions. False on Windows-backed host paths, where volumes marked
+   * `requiresPosixPermissions` are mounted as named volumes instead. Defaults to true so callers
+   * that cannot probe keep bind mounts.
+   */
+  constructor(_domain: string, localDomain: string, posixPermissionsSupported = true) {
     this.localDomain = localDomain;
+    this.posixPermissionsSupported = posixPermissionsSupported;
   }
 
   addService(service: BuiltService) {
@@ -70,12 +131,65 @@ export class DockerComposeBuilder {
 
   build() {
     const hasNetworks = Object.keys(this.networks).length > 0;
+    const hasVolumes = Object.keys(this.volumes).length > 0;
 
     return yaml.stringify({
       services: this.services,
       networks: hasNetworks ? this.networks : undefined,
+      // Declared at the top level so compose scopes them to this app's project and
+      // `down --volumes` (uninstall with data, reset) still reclaims them.
+      volumes: hasVolumes ? this.volumes : undefined,
     });
   }
+
+  /**
+   * Picks the mount source for a volume. A manifest that names a volume outright gets it declared
+   * at the top level; a bind mount that needs real ownership is redirected onto a named volume when
+   * the host filesystem cannot carry permissions. Everything else stays a plain bind mount, so
+   * platforms where binds already work keep their existing data in place.
+   */
+  /**
+   * Registers a top-level named volume, rejecting a name already claimed by a different source.
+   * The same source registering twice is fine — sidecars sharing one data directory declare the
+   * same host path on purpose and must land on the same volume.
+   */
+  private registerVolume(name: string, source: string) {
+    const existing = this.volumeSources[name];
+    if (existing !== undefined && existing !== source) {
+      throw new Error(
+        `Volume name "${name}" is claimed by two different sources (${existing} and ${source}). ` +
+          'Refusing to merge two distinct data directories into one volume.',
+      );
+    }
+    this.volumeSources[name] = source;
+    this.volumes[name] = {};
+  }
+
+  private resolveVolume = (volume: ServiceVolume) => {
+    if (volume.volumeName) {
+      this.registerVolume(volume.volumeName, `volumeName:${volume.volumeName}`);
+      return volume;
+    }
+
+    // `=== true`, not truthiness: `requiresPosixPermissions` is only warn-validated at the build
+    // sink, so a malformed non-boolean (e.g. the string "false") would otherwise read as truthy and
+    // redirect a bind the author never marked.
+    if (volume.requiresPosixPermissions !== true || this.posixPermissionsSupported || volume.hostPath === undefined) {
+      return volume;
+    }
+
+    // Key the collision check on the directory identity, not the raw string, so `/data/db` and
+    // `/data/db/` — the same directory — share a volume, while genuinely different directories that
+    // happen to derive the same name are rejected.
+    const identity = volume.hostPath
+      .replace(/\$\{APP_DATA_DIR\}/g, '')
+      .replace(/\/+/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    const volumeName = deriveVolumeName(volume.hostPath);
+    this.registerVolume(volumeName, `hostPath:${identity}`);
+
+    return { ...volume, hostPath: undefined, volumeName };
+  };
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -98,9 +212,15 @@ export class DockerComposeBuilder {
     const securityViolations = collectServiceSecurityViolations(params, TRUSTED_APP_SECURITY_ALLOWLIST[appName]);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');
+      // An unusable volume name is rejected on its shape, before any grant is consulted, so
+      // pointing the operator at the allowlist would send them after a fix that cannot work.
+      const grantable = securityViolations.some((v) => v.message !== 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
       throw new Error(
-        `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
-          'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.',
+        grantable
+          ? `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
+              'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.'
+          : `App "${appName}" service "${params.name}" declares an unusable volume name: ${details}. ` +
+              'A volume name must start with a letter or number; a path belongs in hostPath, which is checked against the app sandbox.',
       );
     }
 
@@ -132,7 +252,7 @@ export class DockerComposeBuilder {
       .setCommand(params.command)
       .setHealthCheck(params.healthCheck)
       .setDependsOn(params.dependsOn)
-      .setVolumes(params.volumes)
+      .setVolumes(params.volumes?.map(this.resolveVolume))
       .setRestartPolicy(params.restart ?? 'unless-stopped')
       .setExtraHosts(params.extraHosts)
       .setUlimits(params.ulimits)

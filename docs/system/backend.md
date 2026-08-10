@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-08-04
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -31,6 +31,28 @@ packages/backend/
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
+
+## App volumes
+
+`DockerComposeBuilder` renders each manifest volume as either a host bind mount (`hostPath`) or a
+docker-managed named volume (`volumeName`), never both. Compose scopes named volumes to the app's
+project, so `db` becomes `<app>_<store>_db`, and the existing lifecycle commands already reclaim
+them — `down --volumes` on uninstall-with-data and reset, preserved on stop/restart/update.
+
+A bind mount may also declare `requiresPosixPermissions: true`, meaning its contents need real
+ownership. Windows-backed host paths (drvfs/9p) accept `chown`/`chmod` and silently discard them,
+so postgres' `initdb`, mysql's `mysqld`, and mongo's WiredTiger all abort with `EPERM` on such a
+mount. `supportsPosixPermissions()` (`common/helpers/bind-mount-helpers.ts`) probes the app-data
+filesystem once per process by flipping a scratch file's mode and reading it back; when the mode
+does not stick, the builder mounts those volumes as named volumes instead. The redirected volume is
+named after the bind's **host path**, not its mount point — apps like `fastgpt` and `postiz` run two
+postgres services that both mount `/var/lib/postgresql/data`, and naming by mount point would put
+both servers on one data directory.
+
+The probe reports "supported" on any error **by design** — the opposite would move a working app's
+data directory into an empty named volume over what may be a transient IO failure. For the same
+reason the redirect is keyed off the filesystem rather than applied everywhere: on Linux and macOS
+bind mounts keep working and existing data stays exactly where it is.
 
 ## Database
 

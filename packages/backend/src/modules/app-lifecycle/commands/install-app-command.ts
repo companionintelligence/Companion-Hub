@@ -419,7 +419,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
             for (const svc of preServices) {
               if (svc.volumes) {
                 for (const vol of svc.volumes) {
-                  if (typeof vol === 'object' && 'hostPath' in vol) {
+                  // Named volumes carry no host path to pre-create.
+                  if (typeof vol === 'object' && typeof vol.hostPath === 'string') {
                     // Replace ${APP_DATA_DIR} with container path
                     const hostPath = (vol.hostPath as string).replace(/\$\{APP_DATA_DIR\}/g, preContainerAppDataPath);
                     if (hostPath.startsWith(preContainerAppDataPath)) {
