@@ -128,6 +128,27 @@ describe('scrubEvent transient DB handling', () => {
     expect(result?.level).toBe('warning');
     expect(result?.fingerprint).toEqual(['transient-db-unreachable']);
   });
+
+  it('downgrades 503-auth-store-unreachable wording even without originalException hint', () => {
+    const event = {
+      level: 'error',
+      exception: {
+        values: [
+          {
+            type: 'ServiceUnavailableException',
+            value: 'Authentication temporarily unavailable — API key store unreachable',
+          },
+        ],
+      },
+      tags: {},
+    };
+
+    const result = scrubEvent(event as never, noHint);
+
+    expect(result?.level).toBe('warning');
+    expect(result?.fingerprint).toEqual(['transient-db-unreachable']);
+    expect(result?.tags?.error_class).toBe('transient-db-unreachable');
+  });
 });
 
 describe('key denylist', () => {

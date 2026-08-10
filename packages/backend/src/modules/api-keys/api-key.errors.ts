@@ -27,6 +27,15 @@ function isTransientSqlState(code: string): boolean {
 }
 
 /**
+ * Some wrapped driver failures (including certain Drizzle/pg wrapping chains) lose the top-level
+ * `code` but keep the errno token in `message` (`getaddrinfo EAI_AGAIN ci-hub-db`). Treat those as
+ * transient too, or auth paths regress to "invalid key" behavior during brief infra churn.
+ */
+function hasTransientErrnoInMessage(message: string): boolean {
+  return /\b(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE)\b/i.test(message);
+}
+
+/**
  * Whether an error (or anything in its `cause` chain — Drizzle wraps driver errors in
  * `DrizzleQueryError` with the original as `cause`) is a transient infrastructure failure.
  */
@@ -36,6 +45,9 @@ export function isTransientDbError(err: unknown): boolean {
   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
     const code = (current as Error & { code?: unknown }).code;
     if (typeof code === 'string' && (TRANSIENT_ERRNO_CODES.has(code) || isTransientSqlState(code))) {
+      return true;
+    }
+    if (hasTransientErrnoInMessage(current.message)) {
       return true;
     }
     // node-postgres pool timeouts carry a message but no code.
