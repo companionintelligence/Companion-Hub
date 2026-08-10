@@ -17,6 +17,7 @@ Part of the [CI OS](https://github.com/companionintelligence) ecosystem. License
 - **Cloudflare Tunnel** — Optionally expose your hub and apps to the internet through CI Cloud
 - **Private VPN** — Built-in Headscale/Tailscale support for encrypted peer-to-peer remote access
 - **Desktop app** — Native Tauri app for macOS, Windows, and Linux with system tray, mDNS discovery, and deep linking
+- **Headless / CLI** — No display needed: `companion-hub --detached` starts the stack over SSH, and the bundled [`cihub` CLI](docs/CLI.md#headless--no-graphical-session-required) manages everything from the terminal
 - **Real-time status** — Server-Sent Events stream app logs and status changes live to the dashboard
 - **Backup & restore** — Per-app backup/restore via compressed archives with configurable retention
 - **Custom apps** — Define your own Docker Compose apps directly in the Hub UI

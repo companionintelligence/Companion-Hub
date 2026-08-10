@@ -3,3 +3,8 @@
  .
  Use it to install and manage apps, review Hub status, configure AI
  and network settings, and access your private local-first workspace.
+ .
+ Works without a graphical session: `companion-hub --detached` starts
+ the Hub stack headless, and the bundled `cihub` CLI (installed to
+ /usr/bin/cihub) manages the Hub entirely from the terminal — see
+ `companion-hub --help` and `cihub --help`.

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Make the bundled cihub CLI usable immediately after `apt install`, without
+# requiring the desktop app to launch first (which needs a graphical session).
+set -eu
+
+CLI_LINK=/usr/bin/cihub
+
+find_bundled_cli() {
+  for dir in "/usr/lib/Companion Hub/resources" "/usr/lib/companion-hub/resources"; do
+    if [ -f "$dir/cihub" ]; then
+      printf '%s\n' "$dir/cihub"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if cli_path=$(find_bundled_cli); then
+  chmod 755 "$cli_path" || true
+  # Don't clobber a user- or npm-managed cihub; only manage our own symlink.
+  if [ ! -e "$CLI_LINK" ] || [ -L "$CLI_LINK" ]; then
+    ln -sfn "$cli_path" "$CLI_LINK"
+  fi
+fi
+
+exit 0

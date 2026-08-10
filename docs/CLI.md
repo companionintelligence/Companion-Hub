@@ -23,6 +23,43 @@ Homebrew and other package managers expose the same `cihub` executable on `PATH`
 
 ---
 
+## Headless — no graphical session required
+
+Everything the Hub does runs in Docker; only the desktop *UI* needs a display.
+On an SSH-only machine, a server, or in CI (including coding agents driving the
+box), use one of these instead of launching the GUI:
+
+```bash
+companion-hub --detached   # one-shot headless start of the Hub stack, then exits
+cihub up                   # same, via the CLI
+cihub status               # containers, tunnel, VPN, models
+cihub register --code <c>  # pair with CI Cloud without the desktop pairing UI
+```
+
+Discoverability guarantees:
+
+- The Linux packages (.deb/.rpm) install the bundled CLI at **`/usr/bin/cihub`**,
+  executable immediately after `apt install` — no first GUI launch required.
+- `companion-hub --help` and `--version` work without a display (they never
+  touch GTK).
+- Launching `companion-hub` in desktop mode with no `DISPLAY`/`WAYLAND_DISPLAY`
+  prints guidance pointing to `--detached` and `cihub` and exits with status 2,
+  instead of panicking inside the GTK backend.
+- `apt show companion-hub` mentions the headless entry points in the package
+  description.
+
+Developer stack override (attach to an externally managed compose stack instead
+of the bundled one — skips reconciliation):
+
+```bash
+CI_HUB_STACK_DEV=1 \
+CI_HUB_STACK_DEV_COMPOSE_PATH=/path/to/docker-compose.yml \
+CI_HUB_STACK_DEV_ENV_PATH=/path/to/.env \
+companion-hub --detached
+```
+
+---
+
 ## On-device testing loop
 
 Use this loop when iterating on CLI/TUI or developer workflow changes:

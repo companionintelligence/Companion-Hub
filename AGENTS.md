@@ -134,6 +134,8 @@ pnpm run dev            # appliance stack (.env.dev)
 
 Scoped checks: see [`.cursor/rules/ci-checks.mdc`](.cursor/rules/ci-checks.mdc)
 
+**No graphical session** (SSH box, server, CI)? The desktop UI cannot start, but the Hub does not need it: use `companion-hub --detached` to start the stack headless, or the `cihub` CLI (`/usr/bin/cihub` from the .deb, or `npm i -g ci-hub`) for lifecycle, status, logs, pairing, models, and app management. See [docs/CLI.md](docs/CLI.md) → "Headless".
+
 ---
 
 ## Git discipline

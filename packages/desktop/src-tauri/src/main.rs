@@ -1383,8 +1383,71 @@ mod tests {
     }
 }
 
+fn build_version() -> &'static str {
+    option_env!("CI_HUB_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// Plain-text usage, printed before any GTK/windowing initialization so it
+/// works over SSH and in containers. This is the first thing users and coding
+/// agents probe on a headless machine — it must never panic.
+fn print_cli_help() {
+    println!(
+        "\
+Companion Hub {version} — desktop app + headless launcher for the Companion Intelligence Hub
+
+USAGE:
+  companion-hub                   Launch the desktop app (requires a graphical session)
+  companion-hub --detached        Start the Hub stack headless (no display needed) and exit
+  companion-hub update [--check]  Install (or just check for) desktop + stack updates
+  companion-hub --help | -h       Show this help
+  companion-hub --version | -V    Show the version
+
+NO GRAPHICAL SESSION? (SSH, servers, CI, agents)
+  The Hub itself runs in Docker and does not need a display.
+    companion-hub --detached      one-shot headless start of the Hub stack
+    cihub --help                  full CLI: lifecycle, status, logs, pairing,
+                                  models, and app management
+  `cihub` ships with this package and is also available via `npm install -g ci-hub`.
+
+ENVIRONMENT (developer stack override):
+  {stack_dev}=1                  Attach to an externally managed compose stack
+  {stack_dev_compose}=<path>     Compose file of that stack
+  {stack_dev_env}=<path>         Env file of that stack
+
+Docs: https://github.com/companionintelligence/CI-Hub/blob/main/docs/CLI.md",
+        version = build_version(),
+        stack_dev = STACK_DEV_ENV,
+        stack_dev_compose = STACK_DEV_COMPOSE_PATH_ENV,
+        stack_dev_env = STACK_DEV_ENV_PATH_ENV,
+    );
+}
+
+/// Whether a display server is reachable. Launching the GTK/Tauri UI without
+/// one panics deep inside tao ("Failed to initialize gtk backend!"), which
+/// reads like a crash instead of a usage problem — so we check first and
+/// print actionable guidance.
+#[cfg(target_os = "linux")]
+fn graphical_session_available() -> bool {
+    let non_empty = |name: &str| {
+        std::env::var_os(name)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+    };
+    non_empty("DISPLAY") || non_empty("WAYLAND_DISPLAY")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_cli_help();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("companion-hub {}", build_version());
+        return;
+    }
 
     if args.iter().any(|a| a == "update") {
         let check_only = args.iter().any(|a| a == "--check");
@@ -1413,6 +1476,22 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    if !graphical_session_available() {
+        eprintln!(
+            "\
+companion-hub: no graphical session detected (DISPLAY/WAYLAND_DISPLAY are unset).
+
+The desktop UI needs a display, but the Hub itself does not:
+  companion-hub --detached      start the Hub stack headless
+  cihub --help                  manage the Hub from the terminal
+  companion-hub --help          all options
+
+To use the desktop UI, log into a desktop session on this machine."
+        );
+        std::process::exit(2);
     }
 
     run();

@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DESKTOP_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 POSTRM_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/postrm"
+POSTINST_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/postinst"
 METAINFO_SOURCE="$DESKTOP_DIR/src-tauri/linux/companion-hub.metainfo.xml"
 LONG_DESCRIPTION_SOURCE="$DESKTOP_DIR/src-tauri/linux/deb/description-long.txt"
 
@@ -19,6 +20,11 @@ fi
 
 if [ ! -f "$POSTRM_SOURCE" ]; then
   echo "[deb-patch][ERROR] Missing postrm source: $POSTRM_SOURCE" >&2
+  exit 1
+fi
+
+if [ ! -f "$POSTINST_SOURCE" ]; then
+  echo "[deb-patch][ERROR] Missing postinst source: $POSTINST_SOURCE" >&2
   exit 1
 fi
 
@@ -42,6 +48,7 @@ find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/n
     echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
     dpkg-deb -R "$deb_path" "$temp_dir"
     install -Dm755 "$POSTRM_SOURCE" "$temp_dir/DEBIAN/postrm"
+    install -Dm755 "$POSTINST_SOURCE" "$temp_dir/DEBIAN/postinst"
     install -Dm644 "$METAINFO_SOURCE" "$temp_dir/usr/share/metainfo/computer.ci.app.hub.metainfo.xml"
     python3 - "$temp_dir/DEBIAN/control" "$LONG_DESCRIPTION_SOURCE" <<'PY'
 from pathlib import Path
