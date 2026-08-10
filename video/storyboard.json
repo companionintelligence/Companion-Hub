@@ -143,6 +143,16 @@
           "url": "hub-living-room-server-acme.ci.computer/onboarding",
           "alt": "The Set Up Your Hub wizard with its sticky Install and Finish footer.",
           "motion": "drift-down",
+          "pointer": {
+            "landscape": {
+              "x": 0.876,
+              "y": 0.899
+            },
+            "portrait": {
+              "x": 0.269,
+              "y": 0.888
+            }
+          },
           "capture": {
             "path": "/onboarding",
             "waitUntil": "domcontentloaded",
@@ -218,6 +228,12 @@
               "y": 0.003,
               "w": 0.68,
               "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
             }
           }
         }
@@ -236,7 +252,7 @@
           "id": "ai-models",
           "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
           "alt": "The AI tab's Recommended Models card: each model tagged reasoning, vision, tools or embedding, with the RAM and VRAM it needs.",
-          "motion": "push-in",
+          "motion": "pull-back",
           "capture": {
             "path": "/settings?tab=ai",
             "waitUntil": "domcontentloaded",
@@ -272,6 +288,12 @@
               "y": 0.027,
               "w": 0.704,
               "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
             }
           }
         }
@@ -284,12 +306,13 @@
       "seconds": 3.5,
       "caption": "Ports, domain and settings — filled in, and shown before anything runs.",
       "narration": "Apps arrive already configured. Already private.",
+      "transition": "cut",
       "shots": [
         {
           "id": "install-dialog",
           "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
           "alt": "The Install Immich dialog with Exposure mode set to This Machine Only, above the hostname and settings the app is asking for.",
-          "motion": "drift-down",
+          "motion": "push-in",
           "capture": {
             "path": "/store/ci-marketplace/immich",
             "waitUntil": "domcontentloaded",
@@ -318,6 +341,30 @@
               }
             ],
             "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.125,
+              "y": 0.153,
+              "w": 0.75,
+              "h": 0.75
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
+          },
+          "pointer": {
+            "landscape": {
+              "x": 0.5,
+              "y": 0.738
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.793
+            }
           }
         }
       ]
@@ -335,7 +382,7 @@
           "id": "port-expose",
           "url": "hub-living-room-server-acme.ci.computer/apps/expose",
           "alt": "The Expose a port form with the three exposure modes — this device, private VPN, public web — and This Machine Only selected.",
-          "motion": "push-in",
+          "motion": "pull-back",
           "capture": {
             "path": "/apps/expose",
             "waitUntil": "domcontentloaded",
@@ -358,6 +405,30 @@
                 "wait": 800
               }
             ]
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.231,
+              "y": 0.234,
+              "w": 0.538,
+              "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
+          },
+          "pointer": {
+            "landscape": {
+              "x": 0.34,
+              "y": 0.503
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.635
+            }
           }
         }
       ]
@@ -392,7 +463,21 @@
             ],
             "settle": 1200
           },
-          "motion": "push-in"
+          "motion": "push-in",
+          "focus": {
+            "landscape": {
+              "x": 0.212,
+              "y": 0.0,
+              "w": 0.761,
+              "h": 0.761
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
         },
         {
           "id": "app-openclaw",
@@ -432,7 +517,7 @@
           "id": "store-alternatives",
           "url": "hub-living-room-server-acme.ci.computer/store?category=alternatives",
           "alt": "The store's Alternatives view: a table pairing proprietary products with the open source apps that replace them.",
-          "motion": "push-in",
+          "motion": "pull-back",
           "capture": {
             "path": "/store?category=alternatives",
             "waitUntil": "domcontentloaded",
@@ -459,6 +544,12 @@
               "y": 0.24,
               "w": 0.56,
               "h": 0.56
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.05,
+              "w": 0.94,
+              "h": 0.94
             }
           }
         }
@@ -494,6 +585,20 @@
               }
             ],
             "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.0,
+              "y": 0.0,
+              "w": 0.63,
+              "h": 0.63
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
           }
         }
       ]
@@ -504,7 +609,8 @@
       "seconds": 3,
       "title": "The uncloud.",
       "caption": "Not the cloud.",
-      "narration": "Not the cloud. The uncloud."
+      "narration": "Not the cloud. The uncloud.",
+      "transition": "cut"
     },
     {
       "id": "close",
