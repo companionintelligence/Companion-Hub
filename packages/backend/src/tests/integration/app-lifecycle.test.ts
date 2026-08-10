@@ -51,6 +51,7 @@ import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/c
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
+import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
@@ -278,6 +279,12 @@ describe('App lifecycle', () => {
         {
           provide: InferenceEnvResolver,
           useValue: mock<InferenceEnvResolver>(),
+        },
+        {
+          provide: CloudFallbackService,
+          useValue: mock<CloudFallbackService>({
+            getEnabledProviders: vi.fn().mockReturnValue([]),
+          }),
         },
         {
           provide: ApiKeyService,
