@@ -6614,6 +6614,85 @@
                       ],
                       "additionalProperties": {}
                     },
+                    "privacy": {
+                      "type": "object",
+                      "properties": {
+                        "declared_by": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "declared_at": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        },
+                        "policy_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "collects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "category": {
+                                "type": "string",
+                                "enum": [
+                                  "contact_info",
+                                  "health_fitness",
+                                  "financial_info",
+                                  "location",
+                                  "sensitive_info",
+                                  "contacts",
+                                  "user_content",
+                                  "browsing_history",
+                                  "search_history",
+                                  "identifiers",
+                                  "usage_data",
+                                  "diagnostics",
+                                  "other_data"
+                                ]
+                              },
+                              "purposes": {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "app_functionality",
+                                    "analytics",
+                                    "product_personalization",
+                                    "developer_advertising",
+                                    "third_party_advertising",
+                                    "other_purposes"
+                                  ]
+                                }
+                              },
+                              "linked_to_identity": {
+                                "default": false,
+                                "type": "boolean"
+                              },
+                              "used_for_tracking": {
+                                "default": false,
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "category",
+                              "purposes",
+                              "linked_to_identity",
+                              "used_for_tracking"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "declared_by",
+                        "declared_at",
+                        "collects"
+                      ],
+                      "additionalProperties": false
+                    },
                     "hub_integration": {
                       "type": "object",
                       "properties": {
@@ -7687,6 +7766,85 @@
                         "tags"
                       ],
                       "additionalProperties": {}
+                    },
+                    "privacy": {
+                      "type": "object",
+                      "properties": {
+                        "declared_by": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "declared_at": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        },
+                        "policy_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "collects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "category": {
+                                "type": "string",
+                                "enum": [
+                                  "contact_info",
+                                  "health_fitness",
+                                  "financial_info",
+                                  "location",
+                                  "sensitive_info",
+                                  "contacts",
+                                  "user_content",
+                                  "browsing_history",
+                                  "search_history",
+                                  "identifiers",
+                                  "usage_data",
+                                  "diagnostics",
+                                  "other_data"
+                                ]
+                              },
+                              "purposes": {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "app_functionality",
+                                    "analytics",
+                                    "product_personalization",
+                                    "developer_advertising",
+                                    "third_party_advertising",
+                                    "other_purposes"
+                                  ]
+                                }
+                              },
+                              "linked_to_identity": {
+                                "default": false,
+                                "type": "boolean"
+                              },
+                              "used_for_tracking": {
+                                "default": false,
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "category",
+                              "purposes",
+                              "linked_to_identity",
+                              "used_for_tracking"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "declared_by",
+                        "declared_at",
+                        "collects"
+                      ],
+                      "additionalProperties": false
                     },
                     "hub_integration": {
                       "type": "object",
@@ -8906,6 +9064,85 @@
                   "tags"
                 ],
                 "additionalProperties": {}
+              },
+              "privacy": {
+                "type": "object",
+                "properties": {
+                  "declared_by": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "declared_at": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                  },
+                  "policy_url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "collects": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "category": {
+                          "type": "string",
+                          "enum": [
+                            "contact_info",
+                            "health_fitness",
+                            "financial_info",
+                            "location",
+                            "sensitive_info",
+                            "contacts",
+                            "user_content",
+                            "browsing_history",
+                            "search_history",
+                            "identifiers",
+                            "usage_data",
+                            "diagnostics",
+                            "other_data"
+                          ]
+                        },
+                        "purposes": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "app_functionality",
+                              "analytics",
+                              "product_personalization",
+                              "developer_advertising",
+                              "third_party_advertising",
+                              "other_purposes"
+                            ]
+                          }
+                        },
+                        "linked_to_identity": {
+                          "default": false,
+                          "type": "boolean"
+                        },
+                        "used_for_tracking": {
+                          "default": false,
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "category",
+                        "purposes",
+                        "linked_to_identity",
+                        "used_for_tracking"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "declared_by",
+                  "declared_at",
+                  "collects"
+                ],
+                "additionalProperties": false
               },
               "hub_integration": {
                 "type": "object",
