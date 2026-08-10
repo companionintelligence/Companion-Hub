@@ -1,19 +1,15 @@
 name: Desktop Build
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   workflow_dispatch:
-#   push:
-#     branches:
-#       - dev
-#     paths:
-#       - 'packages/desktop/**'
-#       - 'packages/frontend/**'
-#       - 'packages/common/**'
-#       - '.github/workflows/desktop-build.yml'
-# <<< ci-local:gated
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'packages/desktop/**'
+      - 'packages/frontend/**'
+      - 'packages/common/**'
+      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}

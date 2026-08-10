@@ -8,12 +8,8 @@ name: 'Dependency Review'
 # Probes the dependency-graph API first so the job skips cleanly when GHAS
 # is unavailable, but still blocks merges on real high+ advisories once enabled.
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   pull_request:
-# <<< ci-local:gated
 on:
-  workflow_dispatch:
+  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

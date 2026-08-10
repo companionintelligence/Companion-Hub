@@ -1,12 +1,8 @@
 name: PR Compliance
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   pull_request:
-#     types: [opened, edited, synchronize]
-# <<< ci-local:gated
 on:
-  workflow_dispatch:
+  pull_request:
+    types: [opened, edited, synchronize]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

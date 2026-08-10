@@ -1,17 +1,13 @@
 name: 'CodeQL - Code Quality'
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   push:
-#     branches:
-#       - dev
-#       - main
-#   pull_request:
-#   schedule:
-#     - cron: '0 6 * * 1'
-# <<< ci-local:gated
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
